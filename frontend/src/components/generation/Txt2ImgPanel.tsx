@@ -5,6 +5,7 @@ import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
 import Button from "../common/Button";
+import Slider from "../common/Slider";
 import ModelSelector from "../common/ModelSelector";
 import { generateTxt2Img, GenerationParams } from "@/utils/api";
 
@@ -65,36 +66,33 @@ export default function Txt2ImgPanel() {
         </Card>
 
         <Card title="Parameters">
-          <div className="grid grid-cols-2 gap-4">
-            <Input
+          <div className="space-y-4">
+            <Slider
               label="Steps"
-              type="number"
               min={1}
               max={150}
+              step={1}
               value={params.steps}
               onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
             />
-            <Input
+            <Slider
               label="CFG Scale"
-              type="number"
               min={1}
               max={30}
               step={0.5}
               value={params.cfg_scale}
               onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
             />
-            <Input
+            <Slider
               label="Width"
-              type="number"
               min={64}
               max={2048}
               step={64}
               value={params.width}
               onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
             />
-            <Input
+            <Slider
               label="Height"
-              type="number"
               min={64}
               max={2048}
               step={64}

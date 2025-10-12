@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Input from "./Input";
-import { Upload, Folder, Globe } from "lucide-react";
+import { Folder, Globe } from "lucide-react";
 
 interface Model {
   name: string;
@@ -22,13 +22,13 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<"local" | "huggingface" | "upload">("local");
+  const [selectedTab, setSelectedTab] = useState<"local" | "huggingface">("local");
 
   // Form states
   const [huggingfaceRepo, setHuggingfaceRepo] = useState("");
   const [huggingfaceRevision, setHuggingfaceRevision] = useState("");
   const [localModelPath, setLocalModelPath] = useState("");
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [browseFile, setBrowseFile] = useState<File | null>(null);
 
   useEffect(() => {
     loadModels();
@@ -88,35 +88,69 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     }
   };
 
-  const handleUpload = async () => {
-    if (!uploadFile) return;
+  const handleBrowseAndLoad = async () => {
+    if (!browseFile) return;
 
     setLoading(true);
     try {
+      // First, upload the file
       const formData = new FormData();
-      formData.append("file", uploadFile);
+      formData.append("file", browseFile);
 
-      const response = await fetch("/api/models/upload", {
+      const uploadResponse = await fetch("/api/models/upload", {
         method: "POST",
         body: formData,
       });
 
-      const data = await response.json();
-      if (data.success) {
-        alert("Model uploaded successfully!");
-        loadModels();
-        setUploadFile(null);
+      const uploadData = await uploadResponse.json();
+      if (!uploadData.success) {
+        throw new Error("Upload failed");
+      }
+
+      // Reload models list
+      await loadModels();
+
+      // Then load the uploaded model
+      const loadFormData = new FormData();
+      loadFormData.append("source_type", "safetensors");
+      loadFormData.append("source", uploadData.path);
+
+      const loadResponse = await fetch("/api/models/load", {
+        method: "POST",
+        body: loadFormData,
+      });
+
+      const loadData = await loadResponse.json();
+      if (loadData.success) {
+        setCurrentModel(loadData.model_info);
+        if (onModelLoad) {
+          onModelLoad(loadData.model_info);
+        }
+        alert("Model uploaded and loaded successfully!");
+        setBrowseFile(null);
       }
     } catch (error) {
-      console.error("Failed to upload model:", error);
-      alert("Failed to upload model");
+      console.error("Failed to upload and load model:", error);
+      alert("Failed to upload and load model");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Card title="Model Selection">
+    <Card
+      title="Model Selection"
+      collapsible={true}
+      defaultCollapsed={false}
+      collapsedPreview={
+        currentModel && (
+          <div className="flex items-center justify-between text-sm py-1">
+            <span className="text-gray-400">Currently Loaded:</span>
+            <span className="text-white font-medium truncate ml-2">{currentModel.source}</span>
+          </div>
+        )
+      }
+    >
       <div className="space-y-4">
         {/* Current Model Display */}
         {currentModel && (
@@ -151,17 +185,6 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
             <Globe className="inline w-4 h-4 mr-2" />
             HuggingFace
           </button>
-          <button
-            onClick={() => setSelectedTab("upload")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
-              selectedTab === "upload"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            <Upload className="inline w-4 h-4 mr-2" />
-            Upload
-          </button>
         </div>
 
         {/* Local Files Tab */}
@@ -192,8 +215,58 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
             )}
 
             <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Or select a local file
+              </label>
+              <div className="space-y-2">
+                <div className="flex space-x-2">
+                  <Input
+                    placeholder="Select .safetensors file"
+                    value={browseFile?.name || ""}
+                    readOnly
+                    className="flex-1"
+                  />
+                  <input
+                    type="file"
+                    accept=".safetensors"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setBrowseFile(file);
+                      }
+                    }}
+                    className="hidden"
+                    id="local-file-browse"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => document.getElementById('local-file-browse')?.click()}
+                  >
+                    Browse
+                  </Button>
+                </div>
+                {browseFile && (
+                  <div className="bg-gray-800 p-2 rounded-lg">
+                    <p className="text-xs text-gray-400">
+                      {(browseFile.size / (1024 ** 3)).toFixed(2)} GB
+                    </p>
+                  </div>
+                )}
+                <Button
+                  onClick={handleBrowseAndLoad}
+                  disabled={!browseFile || loading}
+                  className="w-full"
+                >
+                  {loading ? "Uploading and Loading..." : "Upload and Load"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Or enter full path manually
+              </label>
               <Input
-                label="Or enter path manually"
                 placeholder="/path/to/model or model.safetensors"
                 value={localModelPath}
                 onChange={(e) => setLocalModelPath(e.target.value)}
@@ -253,44 +326,6 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                 ))}
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Upload Tab */}
-        {selectedTab === "upload" && (
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Upload .safetensors file
-              </label>
-              <input
-                type="file"
-                accept=".safetensors"
-                onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-gray-400
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-lg file:border-0
-                  file:text-sm file:font-medium
-                  file:bg-blue-600 file:text-white
-                  hover:file:bg-blue-700
-                  file:cursor-pointer cursor-pointer"
-              />
-            </div>
-            {uploadFile && (
-              <div className="bg-gray-800 p-3 rounded-lg">
-                <p className="text-sm text-white">{uploadFile.name}</p>
-                <p className="text-xs text-gray-500">
-                  {(uploadFile.size / (1024 ** 3)).toFixed(2)} GB
-                </p>
-              </div>
-            )}
-            <Button
-              onClick={handleUpload}
-              disabled={!uploadFile || loading}
-              className="w-full"
-            >
-              {loading ? "Uploading..." : "Upload Model"}
-            </Button>
           </div>
         )}
       </div>

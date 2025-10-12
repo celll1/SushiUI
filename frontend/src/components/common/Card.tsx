@@ -1,18 +1,40 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 interface CardProps {
   title?: string;
   children?: ReactNode;
   className?: string;
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
+  collapsedPreview?: ReactNode;
 }
 
-export default function Card({ title, children, className = "" }: CardProps) {
+export default function Card({
+  title,
+  children,
+  className = "",
+  collapsible = false,
+  defaultCollapsed = false,
+  collapsedPreview
+}: CardProps) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+
   return (
     <section className={`space-y-2 px-4 pb-4 pt-2 bg-gray-900 rounded-lg ${className}`}>
       {title && (
-        <h3 className="text-sm font-semibold uppercase text-gray-400">{title}</h3>
+        <div
+          className={`flex items-center justify-between ${collapsible ? 'cursor-pointer' : ''}`}
+          onClick={() => collapsible && setCollapsed(!collapsed)}
+        >
+          <h3 className="text-sm font-semibold uppercase text-gray-400">{title}</h3>
+          {collapsible && (
+            collapsed ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronUp className="w-4 h-4 text-gray-400" />
+          )}
+        </div>
       )}
-      {children}
+      {collapsed && collapsedPreview}
+      {!collapsed && children}
     </section>
   );
 }

@@ -1,0 +1,63 @@
+# Python
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# 出力ファイル
+outputs/
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+
+# 開発環境
+.env
+.env.local
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# フロントエンド
+node_modules/
+.next/
+out/
+dist/
+build/
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+
+# データベース
+*.db
+*.sqlite
+*.sqlite3
+
+# ログ
+*.log
+logs/
+
+# サムネイル
+thumbnails/
+
+# 一時ファイル
+tmp/
+temp/
+.cache/
+
+# OS
+Thumbs.db
+.DS_Store

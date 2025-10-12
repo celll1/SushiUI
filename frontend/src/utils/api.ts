@@ -1,0 +1,119 @@
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "/api",
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export interface GenerationParams {
+  prompt: string;
+  negative_prompt?: string;
+  steps?: number;
+  cfg_scale?: number;
+  sampler?: string;
+  seed?: number;
+  width?: number;
+  height?: number;
+  model?: string;
+}
+
+export interface Img2ImgParams extends GenerationParams {
+  denoising_strength?: number;
+}
+
+export interface GeneratedImage {
+  id: number;
+  filename: string;
+  prompt: string;
+  negative_prompt: string;
+  model_name: string;
+  sampler: string;
+  steps: number;
+  cfg_scale: number;
+  seed: number;
+  width: number;
+  height: number;
+  generation_type: string;
+  parameters: any;
+  created_at: string;
+  is_favorite: boolean;
+}
+
+export const generateTxt2Img = async (params: GenerationParams) => {
+  const response = await api.post("/generate/txt2img", params);
+  return response.data;
+};
+
+export const generateImg2Img = async (params: Img2ImgParams, image: File) => {
+  const formData = new FormData();
+  formData.append("image", image);
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("steps", String(params.steps || 20));
+  formData.append("cfg_scale", String(params.cfg_scale || 7.0));
+  formData.append("denoising_strength", String(params.denoising_strength || 0.75));
+  formData.append("seed", String(params.seed || -1));
+
+  const response = await api.post("/generate/img2img", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export const getImages = async (skip = 0, limit = 50, search?: string) => {
+  const params = new URLSearchParams();
+  params.append("skip", String(skip));
+  params.append("limit", String(limit));
+  if (search) params.append("search", search);
+
+  const response = await api.get(`/images?${params.toString()}`);
+  return response.data;
+};
+
+export const getImage = async (id: number) => {
+  const response = await api.get(`/images/${id}`);
+  return response.data;
+};
+
+export const deleteImage = async (id: number) => {
+  const response = await api.delete(`/images/${id}`);
+  return response.data;
+};
+
+export const getModels = async () => {
+  const response = await api.get("/models");
+  return response.data;
+};
+
+export const getCurrentModel = async () => {
+  const response = await api.get("/models/current");
+  return response.data;
+};
+
+export const loadModel = async (sourceType: string, source: string, revision?: string) => {
+  const formData = new FormData();
+  formData.append("source_type", sourceType);
+  formData.append("source", source);
+  if (revision) {
+    formData.append("revision", revision);
+  }
+
+  const response = await api.post("/models/load", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export const uploadModel = async (file: File) => {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await api.post("/models/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export default api;

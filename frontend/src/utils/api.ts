@@ -13,6 +13,7 @@ export interface GenerationParams {
   steps?: number;
   cfg_scale?: number;
   sampler?: string;
+  schedule_type?: string;
   seed?: number;
   width?: number;
   height?: number;
@@ -113,6 +114,16 @@ export const uploadModel = async (file: File) => {
   const response = await api.post("/models/upload", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
+  return response.data;
+};
+
+export const getSamplers = async () => {
+  const response = await api.get("/samplers");
+  return response.data;
+};
+
+export const getScheduleTypes = async () => {
+  const response = await api.get("/schedule-types");
   return response.data;
 };
 

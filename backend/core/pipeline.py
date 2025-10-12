@@ -12,6 +12,7 @@ from diffusers import (
 from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
+from core.schedulers import get_scheduler
 
 class DiffusionPipelineManager:
     """Manages Stable Diffusion pipelines and extensions"""
@@ -94,6 +95,15 @@ class DiffusionPipelineManager:
         for ext in self.extensions:
             if ext.enabled:
                 params = ext.process_before_generation(self.txt2img_pipeline, params)
+
+        # Set sampler and schedule type if specified
+        sampler = params.get("sampler", "euler")
+        schedule_type = params.get("schedule_type", "uniform")
+        if sampler:
+            try:
+                self.txt2img_pipeline.scheduler = get_scheduler(self.txt2img_pipeline, sampler, schedule_type)
+            except Exception as e:
+                print(f"Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
 
         # Check if SDXL
         is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)

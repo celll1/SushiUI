@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
+import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
-import { generateTxt2Img, GenerationParams } from "@/utils/api";
+import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes } from "@/utils/api";
 
 export default function Txt2ImgPanel() {
   const [params, setParams] = useState<GenerationParams>({
@@ -15,7 +16,8 @@ export default function Txt2ImgPanel() {
     negative_prompt: "",
     steps: 20,
     cfg_scale: 7.0,
-    sampler: "euler_a",
+    sampler: "euler",
+    schedule_type: "uniform",
     seed: -1,
     width: 512,
     height: 512,
@@ -23,6 +25,31 @@ export default function Txt2ImgPanel() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
+  const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
+
+  useEffect(() => {
+    loadSamplers();
+    loadScheduleTypes();
+  }, []);
+
+  const loadSamplers = async () => {
+    try {
+      const data = await getSamplers();
+      setSamplers(data.samplers);
+    } catch (error) {
+      console.error("Failed to load samplers:", error);
+    }
+  };
+
+  const loadScheduleTypes = async () => {
+    try {
+      const data = await getScheduleTypes();
+      setScheduleTypes(data.schedule_types);
+    } catch (error) {
+      console.error("Failed to load schedule types:", error);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!params.prompt) {
@@ -67,38 +94,56 @@ export default function Txt2ImgPanel() {
 
         <Card title="Parameters">
           <div className="space-y-4">
-            <Slider
-              label="Steps"
-              min={1}
-              max={150}
-              step={1}
-              value={params.steps}
-              onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
-            />
-            <Slider
-              label="CFG Scale"
-              min={1}
-              max={30}
-              step={0.5}
-              value={params.cfg_scale}
-              onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
-            />
-            <Slider
-              label="Width"
-              min={64}
-              max={2048}
-              step={64}
-              value={params.width}
-              onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
-            />
-            <Slider
-              label="Height"
-              min={64}
-              max={2048}
-              step={64}
-              value={params.height}
-              onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
-            />
+            <div className="grid grid-cols-2 gap-4">
+              <Slider
+                label="Steps"
+                min={1}
+                max={150}
+                step={1}
+                value={params.steps}
+                onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
+              />
+              <Slider
+                label="CFG Scale"
+                min={1}
+                max={30}
+                step={0.5}
+                value={params.cfg_scale}
+                onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Slider
+                label="Width"
+                min={64}
+                max={2048}
+                step={64}
+                value={params.width}
+                onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+              />
+              <Slider
+                label="Height"
+                min={64}
+                max={2048}
+                step={64}
+                value={params.height}
+                onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="Sampler"
+                options={samplers.map(s => ({ value: s.id, label: s.name }))}
+                value={params.sampler}
+                onChange={(e) => setParams({ ...params, sampler: e.target.value })}
+              />
+              <Select
+                label="Schedule Type"
+                options={scheduleTypes.map(s => ({ value: s.id, label: s.name }))}
+                value={params.schedule_type}
+                onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
+              />
+            </div>
             <Input
               label="Seed"
               type="number"

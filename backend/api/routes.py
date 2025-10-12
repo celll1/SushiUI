@@ -9,6 +9,12 @@ import io
 from database import get_db
 from database.models import GeneratedImage
 from core.pipeline import pipeline_manager
+from core.schedulers import (
+    get_available_samplers,
+    get_sampler_display_names,
+    get_available_schedule_types,
+    get_schedule_type_display_names
+)
 from utils import save_image_with_metadata, create_thumbnail
 from config.settings import settings
 
@@ -20,7 +26,8 @@ class GenerationParams(BaseModel):
     negative_prompt: Optional[str] = ""
     steps: int = 20
     cfg_scale: float = 7.0
-    sampler: str = "euler_a"
+    sampler: str = "euler"
+    schedule_type: str = "uniform"
     seed: int = -1
     width: int = 512
     height: int = 512
@@ -56,7 +63,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             prompt=request.prompt,
             negative_prompt=request.negative_prompt,
             model_name=request.model,
-            sampler=request.sampler,
+            sampler=f"{request.sampler} ({request.schedule_type})",
             steps=request.steps,
             cfg_scale=request.cfg_scale,
             seed=request.seed,
@@ -270,3 +277,27 @@ async def get_current_model():
         }
     else:
         return {"loaded": False}
+
+@router.get("/samplers")
+async def get_samplers():
+    """Get available samplers"""
+    samplers = get_available_samplers()
+    display_names = get_sampler_display_names()
+    return {
+        "samplers": [
+            {"id": sampler_id, "name": display_names.get(sampler_id, sampler_id)}
+            for sampler_id in samplers
+        ]
+    }
+
+@router.get("/schedule-types")
+async def get_schedule_types():
+    """Get available schedule types"""
+    schedule_types = get_available_schedule_types()
+    display_names = get_schedule_type_display_names()
+    return {
+        "schedule_types": [
+            {"id": schedule_id, "name": display_names.get(schedule_id, schedule_id)}
+            for schedule_id in schedule_types
+        ]
+    }

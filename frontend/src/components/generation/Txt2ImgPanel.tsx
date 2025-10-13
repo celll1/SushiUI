@@ -29,6 +29,7 @@ export default function Txt2ImgPanel() {
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
@@ -152,6 +153,7 @@ export default function Txt2ImgPanel() {
     try {
       const result = await generateTxt2Img(params);
       setGeneratedImage(`/outputs/${result.image.filename}`);
+      setGeneratedImageSeed(result.image.seed);
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -284,6 +286,15 @@ export default function Txt2ImgPanel() {
                   title="Reset to random (-1)"
                 >
                   -1
+                </Button>
+                <Button
+                  onClick={() => generatedImageSeed !== null && setParams({ ...params, seed: generatedImageSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use seed from preview image"
+                  disabled={generatedImageSeed === null}
+                >
+                  ♻️
                 </Button>
               </div>
             </div>

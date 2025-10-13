@@ -44,6 +44,7 @@ export default function Img2ImgPanel() {
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [inputImage, setInputImage] = useState<File | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -219,6 +220,7 @@ export default function Img2ImgPanel() {
 
       const result = await generateImg2Img(params, imageSource);
       setGeneratedImage(`/outputs/${result.image.filename}`);
+      setGeneratedImageSeed(result.image.seed);
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -402,6 +404,15 @@ export default function Img2ImgPanel() {
                   title="Reset to random (-1)"
                 >
                   -1
+                </Button>
+                <Button
+                  onClick={() => generatedImageSeed !== null && setParams({ ...params, seed: generatedImageSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use seed from preview image"
+                  disabled={generatedImageSeed === null}
+                >
+                  ♻️
                 </Button>
               </div>
             </div>

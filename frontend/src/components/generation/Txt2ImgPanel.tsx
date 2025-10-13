@@ -138,12 +138,13 @@ export default function Txt2ImgPanel() {
 
     setIsGenerating(true);
     setProgress(0);
-    setTotalSteps(params.steps || 20);
+    const currentSteps = params.steps || 20;
+    setTotalSteps(currentSteps);
 
     // Simulate progress (since we don't have real-time updates from backend yet)
     const progressInterval = setInterval(() => {
       setProgress(prev => {
-        if (prev < totalSteps) {
+        if (prev < currentSteps) {
           return prev + 1;
         }
         return prev;
@@ -162,7 +163,7 @@ export default function Txt2ImgPanel() {
       alert("Generation failed. Please check console for details.");
     } finally {
       clearInterval(progressInterval);
-      setProgress(totalSteps);
+      setProgress(currentSteps);
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);

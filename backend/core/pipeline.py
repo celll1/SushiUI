@@ -544,10 +544,9 @@ class DiffusionPipelineManager:
         schedule_type = params.get("schedule_type", "uniform")
 
         self.inpaint_pipeline.scheduler = get_scheduler(
-            sampler_name=sampler_name,
-            schedule_type=schedule_type,
             pipeline=self.inpaint_pipeline,
-            num_inference_steps=params.get("steps", settings.default_steps)
+            sampler=sampler_name,
+            schedule_type=schedule_type
         )
 
         # Handle seed
@@ -566,13 +565,11 @@ class DiffusionPipelineManager:
         if mask_image.size != (target_width, target_height):
             mask_image = mask_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-        # Parse prompt weights using compel
-        from core.prompt_parser import encode_prompts
-        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encode_prompts(
-            pipeline=self.inpaint_pipeline,
+        # Parse prompt weights
+        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompts_with_weights(
             prompt=params["prompt"],
             negative_prompt=params.get("negative_prompt", ""),
-            device=self.device
+            pipeline=self.inpaint_pipeline
         )
 
         # Build generation parameters

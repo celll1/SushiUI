@@ -332,12 +332,27 @@ export default function InpaintPanel() {
                     className="w-full h-full object-contain"
                   />
                   {maskImage && (
-                    <img
-                      src={maskImage}
-                      alt="Mask overlay"
-                      className="absolute inset-0 w-full h-full object-contain opacity-50 mix-blend-screen"
+                    <div
+                      className="absolute inset-0 w-full h-full flex items-center justify-center"
                       style={{ pointerEvents: 'none' }}
-                    />
+                    >
+                      <div
+                        className="relative"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          backgroundColor: 'rgba(0, 255, 0, 0.4)',
+                          maskImage: `url(${maskImage})`,
+                          WebkitMaskImage: `url(${maskImage})`,
+                          maskSize: 'contain',
+                          WebkitMaskSize: 'contain',
+                          maskRepeat: 'no-repeat',
+                          WebkitMaskRepeat: 'no-repeat',
+                          maskPosition: 'center',
+                          WebkitMaskPosition: 'center'
+                        }}
+                      />
+                    </div>
                   )}
                 </>
               ) : (

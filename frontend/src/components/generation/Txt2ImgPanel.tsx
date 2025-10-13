@@ -168,6 +168,19 @@ export default function Txt2ImgPanel() {
     }
   };
 
+  // Handle Ctrl+Enter keyboard shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'Enter' && !isGenerating) {
+        e.preventDefault();
+        handleGenerate();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [params, isGenerating]);
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}

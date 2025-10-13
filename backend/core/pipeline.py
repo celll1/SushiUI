@@ -1,6 +1,9 @@
 from typing import Dict, Any, Optional, List
 from PIL import Image
 import torch
+import json
+import os
+from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
@@ -15,6 +18,8 @@ from core.model_loader import ModelLoader, ModelSource
 from core.schedulers import get_scheduler
 # Prompt parser imports are done locally in methods to avoid circular imports
 
+LAST_MODEL_CONFIG_FILE = Path("last_model.json")
+
 class DiffusionPipelineManager:
     """Manages Stable Diffusion pipelines and extensions"""
 
@@ -26,6 +31,9 @@ class DiffusionPipelineManager:
         self.current_model_info: Optional[Dict[str, str]] = None
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
+
+        # Auto-load last used model on startup
+        self._auto_load_last_model()
 
     def load_model(
         self,
@@ -80,8 +88,49 @@ class DiffusionPipelineManager:
                 "type": ModelLoader.detect_model_type(source) if source_type != "huggingface" else "unknown"
             }
 
+            # Save this model as the last loaded model
+            self._save_last_model(source_type, source, pipeline_type)
+
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
+
+    def _save_last_model(self, source_type: str, source: str, pipeline_type: str):
+        """Save the last loaded model configuration to file"""
+        try:
+            config = {
+                "source_type": source_type,
+                "source": source,
+                "pipeline_type": pipeline_type
+            }
+            with open(LAST_MODEL_CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to save last model config: {e}")
+
+    def _auto_load_last_model(self):
+        """Auto-load the last used model on startup"""
+        if not LAST_MODEL_CONFIG_FILE.exists():
+            print("No previous model to load")
+            return
+
+        try:
+            with open(LAST_MODEL_CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+
+            source_type = config.get("source_type")
+            source = config.get("source")
+            pipeline_type = config.get("pipeline_type", "txt2img")
+
+            if source_type and source:
+                print(f"Auto-loading last model: {source_type}:{source}")
+                self.load_model(
+                    source_type=source_type,
+                    source=source,
+                    pipeline_type=pipeline_type
+                )
+                print(f"Successfully loaded last model: {source}")
+        except Exception as e:
+            print(f"Warning: Failed to auto-load last model: {e}")
 
     def register_extension(self, extension: BaseExtension):
         """Register a new extension"""

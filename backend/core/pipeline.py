@@ -13,7 +13,7 @@ from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
 from core.schedulers import get_scheduler
-from core.prompt_parser import parse_prompt_attention, get_weighted_prompt_embeds
+# Prompt parser imports are done locally in methods to avoid circular imports
 
 class DiffusionPipelineManager:
     """Manages Stable Diffusion pipelines and extensions"""
@@ -140,8 +140,6 @@ class DiffusionPipelineManager:
         if has_pos_emphasis:
             prompt_embeds = apply_emphasis_to_embeds(prompt, prompt_embeds, pipeline.tokenizer if not is_sdxl else pipeline.tokenizer_2, device, dtype)
 
-        print(f"[DEBUG] Used pipeline encode_prompt, applied custom weights")
-
         # Encode negative prompt similarly
         if negative_prompt:
             parsed_neg = parse_prompt_attention(negative_prompt) if has_neg_emphasis else [(negative_prompt, 1.0)]
@@ -161,109 +159,6 @@ class DiffusionPipelineManager:
             # Apply weights if negative has emphasis
             if has_neg_emphasis:
                 negative_prompt_embeds = apply_emphasis_to_embeds(negative_prompt, negative_prompt_embeds, pipeline.tokenizer if not is_sdxl else pipeline.tokenizer_2, device, dtype)
-        else:
-            negative_prompt_embeds = None
-            negative_pooled_prompt_embeds = None
-
-        return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
-
-    def OLD_encode_prompt_with_weights_BACKUP(self, prompt: str, negative_prompt: str = "", pipeline=None):
-        """OLD VERSION - KEPT FOR REFERENCE"""
-        if False:  # Disabled
-            if is_sdxl:
-                # SDXL has two text encoders
-                tokenizer = pipeline.tokenizer
-                tokenizer_2 = pipeline.tokenizer_2
-                text_encoder = pipeline.text_encoder
-                text_encoder_2 = pipeline.text_encoder_2
-
-                # Encode with text_encoder (CLIP ViT-L, 768-dim)
-                negative_prompt_embeds_1 = get_weighted_prompt_embeds(
-                    negative_prompt, tokenizer, text_encoder, device, dtype, return_pooled=False
-                )
-
-                # Encode with text_encoder_2 (OpenCLIP ViT-bigG, 1280-dim) + pooled
-                negative_prompt_embeds_2, negative_pooled_prompt_embeds = get_weighted_prompt_embeds(
-                    negative_prompt, tokenizer_2, text_encoder_2, device, dtype, return_pooled=True
-                )
-
-                # Concatenate embeddings from both encoders (768 + 1280 = 2048)
-                negative_prompt_embeds = torch.cat([negative_prompt_embeds_1, negative_prompt_embeds_2], dim=-1)
-            else:
-                # SD1.5 - single text encoder
-                tokenizer = pipeline.tokenizer
-                text_encoder = pipeline.text_encoder
-                negative_prompt_embeds = get_weighted_prompt_embeds(
-                    negative_prompt, tokenizer, text_encoder, device, dtype, return_pooled=False
-                )
-                negative_pooled_prompt_embeds = None
-        elif negative_prompt and not has_neg_emphasis:
-            # No weights for negative prompt - use normal encoding
-            if is_sdxl:
-                tokenizer = pipeline.tokenizer
-                tokenizer_2 = pipeline.tokenizer_2
-                text_encoder = pipeline.text_encoder
-                text_encoder_2 = pipeline.text_encoder_2
-
-                # Encode with text_encoder (768-dim)
-                text_inputs = tokenizer(
-                    negative_prompt,
-                    padding="max_length",
-                    max_length=tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                text_input_ids = text_inputs.input_ids.to(device)
-
-                with torch.no_grad():
-                    encoder_output_1 = text_encoder(text_input_ids, return_dict=True)
-                    negative_prompt_embeds_1 = encoder_output_1.last_hidden_state
-
-                # Encode with text_encoder_2 (1280-dim) + pooled
-                text_inputs_2 = tokenizer_2(
-                    negative_prompt,
-                    padding="max_length",
-                    max_length=tokenizer_2.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                text_input_ids_2 = text_inputs_2.input_ids.to(device)
-
-                with torch.no_grad():
-                    encoder_output_2 = text_encoder_2(text_input_ids_2, return_dict=True)
-                    negative_prompt_embeds_2 = encoder_output_2.last_hidden_state
-
-                    # Get pooled output - handle different encoder types
-                    # CLIP ViT-L has 'pooler_output', OpenCLIP ViT-bigG has 'text_embeds'
-                    if hasattr(encoder_output_2, 'pooler_output') and encoder_output_2.pooler_output is not None:
-                        negative_pooled_prompt_embeds = encoder_output_2.pooler_output
-                    elif hasattr(encoder_output_2, 'text_embeds') and encoder_output_2.text_embeds is not None:
-                        negative_pooled_prompt_embeds = encoder_output_2.text_embeds
-                    else:
-                        raise ValueError(f"Cannot find pooled embeddings from text_encoder_2, type: {type(encoder_output_2)}")
-
-                # Concatenate
-                negative_prompt_embeds = torch.cat([negative_prompt_embeds_1, negative_prompt_embeds_2], dim=-1)
-                negative_prompt_embeds = negative_prompt_embeds.to(dtype=dtype)
-                negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(dtype=dtype)
-            else:
-                tokenizer = pipeline.tokenizer
-                text_encoder = pipeline.text_encoder
-
-                text_inputs = tokenizer(
-                    negative_prompt,
-                    padding="max_length",
-                    max_length=tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                text_input_ids = text_inputs.input_ids.to(device)
-
-                with torch.no_grad():
-                    negative_prompt_embeds = text_encoder(text_input_ids, return_dict=False)[0]
-                    negative_pooled_prompt_embeds = None
-
-                negative_prompt_embeds = negative_prompt_embeds.to(dtype=dtype)
         else:
             negative_prompt_embeds = None
             negative_pooled_prompt_embeds = None
@@ -302,38 +197,6 @@ class DiffusionPipelineManager:
             params.get("negative_prompt", ""),
             pipeline=self.txt2img_pipeline
         )
-
-        # DEBUG: Compare with pipeline's native encode_prompt for weight=1.0 case
-        # Use the PARSED text (without emphasis syntax) for fair comparison
-        if prompt_embeds is not None and hasattr(self.txt2img_pipeline, 'encode_prompt'):
-            try:
-                # Parse to remove emphasis syntax for comparison
-                from backend.core.prompt_parser import parse_prompt_attention
-                parsed_prompt = parse_prompt_attention(params["prompt"])
-                clean_prompt = "".join([text for text, _ in parsed_prompt])
-
-                print(f"[DEBUG] Comparing: Original='{params['prompt']}', Cleaned='{clean_prompt}'")
-
-                native_embeds = self.txt2img_pipeline.encode_prompt(
-                    prompt=clean_prompt,  # Use cleaned prompt for fair comparison
-                    device=self.device,
-                    num_images_per_prompt=1,
-                    do_classifier_free_guidance=True,
-                    negative_prompt=params.get("negative_prompt", "")
-                )
-                print(f"[DEBUG] Native encode_prompt returned {len(native_embeds)} values")
-                print(f"[DEBUG] Custom prompt_embeds: {prompt_embeds.shape} dtype={prompt_embeds.dtype}, Native: {native_embeds[0].shape} dtype={native_embeds[0].dtype}")
-                print(f"[DEBUG] Custom mean: {prompt_embeds.mean():.6f}, Native mean: {native_embeds[0].mean():.6f}")
-                print(f"[DEBUG] Custom std: {prompt_embeds.std():.6f}, Native std: {native_embeds[0].std():.6f}")
-                print(f"[DEBUG] Max diff: {(prompt_embeds - native_embeds[0]).abs().max():.6f}")
-                print(f"[DEBUG] Are prompt_embeds equal? {torch.allclose(prompt_embeds, native_embeds[0], atol=1e-3)}")
-                if len(native_embeds) > 2:
-                    print(f"[DEBUG] Custom pooled: {pooled_prompt_embeds.shape}, Native: {native_embeds[2].shape}")
-                    print(f"[DEBUG] Custom pooled mean: {pooled_prompt_embeds.mean():.6f}, Native: {native_embeds[2].mean():.6f}")
-                    print(f"[DEBUG] Pooled max diff: {(pooled_prompt_embeds - native_embeds[2]).abs().max():.6f}")
-                    print(f"[DEBUG] Are pooled_embeds equal? {torch.allclose(pooled_prompt_embeds, native_embeds[2], atol=1e-3)}")
-            except Exception as e:
-                print(f"[DEBUG] Could not compare with native encode_prompt: {e}")
 
         # Prepare generation parameters
         gen_params = {
@@ -383,25 +246,6 @@ class DiffusionPipelineManager:
 
         # Generate image
         try:
-            print(f"[DEBUG] Generation parameters keys: {list(gen_params.keys())}")
-            if "prompt_embeds" in gen_params:
-                print(f"[DEBUG] Using custom embeddings")
-                print(f"[DEBUG] prompt_embeds shape: {gen_params['prompt_embeds'].shape}")
-                if "negative_prompt_embeds" in gen_params:
-                    print(f"[DEBUG] negative_prompt_embeds shape: {gen_params['negative_prompt_embeds'].shape}")
-                else:
-                    print(f"[DEBUG] WARNING: negative_prompt_embeds is MISSING!")
-                if "pooled_prompt_embeds" in gen_params:
-                    print(f"[DEBUG] pooled_prompt_embeds shape: {gen_params['pooled_prompt_embeds'].shape}")
-                else:
-                    print(f"[DEBUG] WARNING: pooled_prompt_embeds is MISSING!")
-                if "negative_pooled_prompt_embeds" in gen_params:
-                    print(f"[DEBUG] negative_pooled_prompt_embeds shape: {gen_params['negative_pooled_prompt_embeds'].shape}")
-                else:
-                    print(f"[DEBUG] WARNING: negative_pooled_prompt_embeds is MISSING!")
-            else:
-                print(f"[DEBUG] Using text prompts: {gen_params.get('prompt', '')[:50]}")
-
             result = self.txt2img_pipeline(**gen_params)
             image = result.images[0]
         except Exception as e:

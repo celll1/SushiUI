@@ -1,4 +1,4 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useState, useEffect } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 interface CardProps {
@@ -8,6 +8,7 @@ interface CardProps {
   collapsible?: boolean;
   defaultCollapsed?: boolean;
   collapsedPreview?: ReactNode;
+  storageKey?: string;
 }
 
 export default function Card({
@@ -16,9 +17,29 @@ export default function Card({
   className = "",
   collapsible = false,
   defaultCollapsed = false,
-  collapsedPreview
+  collapsedPreview,
+  storageKey
 }: CardProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // Load collapsed state from localStorage
+  useEffect(() => {
+    setIsMounted(true);
+    if (storageKey && typeof window !== "undefined") {
+      const saved = localStorage.getItem(storageKey);
+      if (saved !== null) {
+        setCollapsed(saved === "true");
+      }
+    }
+  }, [storageKey]);
+
+  // Save collapsed state to localStorage
+  useEffect(() => {
+    if (isMounted && storageKey && typeof window !== "undefined") {
+      localStorage.setItem(storageKey, collapsed.toString());
+    }
+  }, [collapsed, storageKey, isMounted]);
 
   return (
     <section className={`space-y-2 px-4 pb-4 pt-2 bg-gray-900 rounded-lg ${className}`}>

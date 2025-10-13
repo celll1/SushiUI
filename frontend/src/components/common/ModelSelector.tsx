@@ -142,6 +142,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
       title="Model Selection"
       collapsible={true}
       defaultCollapsed={false}
+      storageKey="model_selection_collapsed"
       collapsedPreview={
         currentModel && (
           <div className="flex items-center justify-between text-sm py-1">

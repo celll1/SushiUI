@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getImages, GeneratedImage } from "@/utils/api";
 import Card from "../common/Card";
+import Button from "../common/Button";
 
 export default function ImageGrid() {
+  const router = useRouter();
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
@@ -22,6 +25,28 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const importToTxt2Img = (image: GeneratedImage) => {
+    console.log("Importing image parameters:", image);
+    console.log("Image parameters field:", image.parameters);
+
+    const params = {
+      prompt: image.prompt,
+      negative_prompt: image.negative_prompt,
+      steps: image.steps,
+      cfg_scale: image.cfg_scale,
+      sampler: image.parameters?.sampler || "euler",
+      schedule_type: image.parameters?.schedule_type || "uniform",
+      seed: image.seed,
+      width: image.width,
+      height: image.height,
+    };
+
+    console.log("Constructed params for import:", params);
+    localStorage.setItem("txt2img_params", JSON.stringify(params));
+    console.log("Saved to localStorage, navigating to generate page...");
+    router.push("/generate");
   };
 
   if (loading) {
@@ -64,6 +89,9 @@ export default function ImageGrid() {
                     <span className="text-gray-400">CFG Scale:</span> {selectedImage.cfg_scale}
                   </div>
                   <div>
+                    <span className="text-gray-400">Sampler:</span> {selectedImage.sampler}
+                  </div>
+                  <div>
                     <span className="text-gray-400">Seed:</span> {selectedImage.seed}
                   </div>
                   <div>
@@ -71,6 +99,12 @@ export default function ImageGrid() {
                   </div>
                 </div>
               </div>
+              <Button
+                onClick={() => importToTxt2Img(selectedImage)}
+                className="w-full"
+              >
+                Import to txt2img
+              </Button>
             </div>
           </Card>
         </div>

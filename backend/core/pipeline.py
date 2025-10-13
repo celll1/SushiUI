@@ -86,8 +86,12 @@ class DiffusionPipelineManager:
         """Register a new extension"""
         self.extensions.append(extension)
 
-    def generate_txt2img(self, params: Dict[str, Any]) -> Image.Image:
-        """Generate image from text"""
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from text
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -125,9 +129,21 @@ class DiffusionPipelineManager:
             gen_params["width"] = params.get("width", 1024)
             gen_params["height"] = params.get("height", 1024)
 
-        # Add generator if seed is specified
-        if params.get("seed", -1) >= 0:
-            gen_params["generator"] = torch.Generator(device=self.device).manual_seed(params["seed"])
+        # Create generator and get actual seed
+        seed = params.get("seed", -1)
+        if seed < 0:
+            # Generate random seed
+            import random
+            actual_seed = random.randint(0, 2**32 - 1)
+        else:
+            actual_seed = seed
+
+        gen_params["generator"] = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+        # Add progress callback if provided
+        if progress_callback:
+            gen_params["callback"] = progress_callback
+            gen_params["callback_steps"] = 1
 
         # Generate image
         try:
@@ -143,7 +159,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image
+        return image, actual_seed
 
     def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image) -> Image.Image:
         """Generate image from image"""

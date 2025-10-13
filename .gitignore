@@ -58,7 +58,7 @@ tmp/
 temp/
 .cache/
 
-# 要件定義書（非公開）
+# 要件定義
 sd-app-requirements.md
 
 # OS

@@ -48,7 +48,10 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         params = request.dict()
         print(f"Generation params: {params}")
 
-        image = pipeline_manager.generate_txt2img(params)
+        image, actual_seed = pipeline_manager.generate_txt2img(params)
+
+        # Update params with actual seed
+        params["seed"] = actual_seed
 
         # Save image with metadata
         filename = save_image_with_metadata(image, params, "txt2img")
@@ -66,7 +69,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             sampler=f"{request.sampler} ({request.schedule_type})",
             steps=request.steps,
             cfg_scale=request.cfg_scale,
-            seed=request.seed,
+            seed=actual_seed,
             width=request.width,
             height=request.height,
             generation_type="txt2img",
@@ -76,7 +79,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         db.commit()
         db.refresh(db_image)
 
-        return {"success": True, "image": db_image.to_dict()}
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
     except Exception as e:
         import traceback

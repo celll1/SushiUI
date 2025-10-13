@@ -37,11 +37,18 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const tempStrokeCanvasRef = useRef<HTMLCanvasElement | null>(null); // Temporary canvas for current stroke
 
   // Layer management state
-  const [layers, setLayers] = useState<LayerInfo[]>([
-    { id: "base", name: "Base", visible: true, opacity: 1, editable: false, deletable: false },
-    { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true, deletable: false }, // First layer not deletable
-  ]);
-  const [activeLayerId, setActiveLayerId] = useState<string>("layer1");
+  const [layers, setLayers] = useState<LayerInfo[]>(() => {
+    const baseLayers = [
+      { id: "base", name: "Base", visible: true, opacity: 1, editable: false, deletable: false },
+      { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true, deletable: false }, // First layer not deletable
+    ];
+    // Add inpaint mask layer in inpaint mode
+    if (mode === "inpaint") {
+      baseLayers.push({ id: "mask", name: "Inpaint Mask", visible: true, opacity: 0.5, editable: true, deletable: false });
+    }
+    return baseLayers;
+  });
+  const [activeLayerId, setActiveLayerId] = useState<string>(mode === "inpaint" ? "mask" : "layer1");
 
   const [tool, setTool] = useState<Tool>("pen");
   const [brushType, setBrushType] = useState<BrushType>("normal");
@@ -985,8 +992,37 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const composite = compositeCanvasRef.current;
     if (!composite) return;
 
-    // Save the composite (merged layers)
-    composite.toBlob((blob) => {
+    // In inpaint mode, save mask separately if onSaveMask is provided
+    if (mode === "inpaint" && onSaveMask) {
+      const maskCanvas = layerCanvasRefs.current.get("mask");
+      if (maskCanvas) {
+        maskCanvas.toBlob((blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          onSaveMask(url);
+        }, "image/png");
+      }
+    }
+
+    // Save the composite (merged layers excluding mask)
+    // Create temp composite without mask layer
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = composite.width;
+    tempCanvas.height = composite.height;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return;
+
+    // Draw all layers except mask
+    for (const layer of layers) {
+      if (layer.id === "mask" || !layer.visible) continue;
+      const layerCanvas = getLayerCanvas(layer.id);
+      if (!layerCanvas) continue;
+      tempCtx.globalAlpha = layer.opacity;
+      tempCtx.drawImage(layerCanvas, 0, 0);
+      tempCtx.globalAlpha = 1;
+    }
+
+    tempCanvas.toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       onSave(url);

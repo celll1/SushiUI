@@ -8,6 +8,7 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import ImageEditor from "../common/ImageEditor";
 import { getSamplers, getScheduleTypes } from "@/utils/api";
 
 interface InpaintParams {
@@ -60,6 +61,8 @@ export default function InpaintPanel() {
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [showImageEditor, setShowImageEditor] = useState(false);
+  const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -192,6 +195,29 @@ export default function InpaintPanel() {
     }
   };
 
+  const handleInputImageDoubleClick = () => {
+    if (inputImagePreview) {
+      setEditingImageUrl(inputImagePreview);
+      setShowImageEditor(true);
+    }
+  };
+
+  const handleEditorSave = (editedImageUrl: string) => {
+    setInputImagePreview(editedImageUrl);
+    if (isMounted) {
+      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
+    }
+    setShowImageEditor(false);
+  };
+
+  const handleEditorSaveMask = (maskUrl: string) => {
+    setMaskImage(maskUrl);
+  };
+
+  const handleEditorClose = () => {
+    setShowImageEditor(false);
+  };
+
   const handleGenerate = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -256,11 +282,15 @@ export default function InpaintPanel() {
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
+              onDoubleClick={handleInputImageDoubleClick}
               className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
                 isDragging
                   ? 'border-blue-500 bg-gray-700'
+                  : inputImagePreview
+                  ? 'border-gray-600 cursor-pointer hover:border-blue-500'
                   : 'border-gray-600'
               }`}
+              title={inputImagePreview ? 'Double-click to edit and add inpaint mask' : ''}
             >
               {inputImagePreview ? (
                 <img
@@ -506,6 +536,17 @@ export default function InpaintPanel() {
           </div>
         </Card>
       </div>
+
+      {/* Image Editor Modal */}
+      {showImageEditor && editingImageUrl && (
+        <ImageEditor
+          imageUrl={editingImageUrl}
+          onSave={handleEditorSave}
+          onClose={handleEditorClose}
+          onSaveMask={handleEditorSaveMask}
+          mode="inpaint"
+        />
+      )}
     </div>
   );
 }

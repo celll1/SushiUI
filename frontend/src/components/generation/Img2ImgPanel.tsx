@@ -291,6 +291,7 @@ export default function Img2ImgPanel() {
             rows={4}
             value={params.prompt}
             onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+            enableWeightControl={true}
           />
           <Textarea
             label="Negative Prompt"
@@ -298,6 +299,7 @@ export default function Img2ImgPanel() {
             rows={3}
             value={params.negative_prompt}
             onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+            enableWeightControl={true}
           />
         </Card>
 

@@ -167,22 +167,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       const layerCanvas = getLayerCanvas(layer.id);
       if (!layerCanvas) continue;
 
-      // Debug: Check if layer has content
-      if (layer.id !== 'base') {
-        const layerCtx = layerCanvas.getContext("2d");
-        if (layerCtx) {
-          const imageData = layerCtx.getImageData(0, 0, layerCanvas.width, layerCanvas.height);
-          let hasContent = false;
-          for (let i = 3; i < imageData.data.length; i += 4) {
-            if (imageData.data[i] > 0) {
-              hasContent = true;
-              break;
-            }
-          }
-          console.log(`[composeLayers] Layer ${layer.id} has content: ${hasContent}`);
-        }
-      }
-
       ctx.globalAlpha = layer.opacity;
       ctx.drawImage(layerCanvas, 0, 0);
       ctx.globalAlpha = 1;
@@ -196,7 +180,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
   // Load image and initialize layers
   useEffect(() => {
-    console.log('[useEffect] Image initialization triggered');
     const baseLayer = baseLayerRef.current;
     const composite = compositeCanvasRef.current;
     const container = containerRef.current;
@@ -205,7 +188,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      console.log('[useEffect] Image loaded, initializing layers');
       // Set canvas sizes
       const width = img.width;
       const height = img.height;
@@ -236,7 +218,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           if (ctx) {
             ctx.clearRect(0, 0, width, height);
           }
-          console.log(`[useEffect] Created new canvas for layer ${layer.id}`);
         } else {
           // Canvas already exists - check if resize is needed
           if (canvas.width !== width || canvas.height !== height) {
@@ -259,10 +240,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
             if (ctx && tempCtx) {
               ctx.drawImage(tempCanvas, 0, 0);
             }
-            console.log(`[useEffect] Resized canvas for layer ${layer.id}`);
-          } else {
-            console.log(`[useEffect] Canvas for layer ${layer.id} already exists with correct size, skipping initialization`);
           }
+          // Canvas already has correct size, no action needed
         }
       }
 
@@ -796,17 +775,35 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
 
+    const container = containerRef.current;
+    if (!container) return;
+
     if (e.shiftKey) {
       // Shift + Wheel: Rotate
       const delta = e.deltaY > 0 ? -1 : 1;
       setRotation((prev) => (prev + delta + 360) % 360);
     } else {
-      // Wheel: Zoom
+      // Wheel: Zoom centered on cursor position
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
+
+      // Get cursor position relative to container
+      const rect = container.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+
+      // Calculate the point under cursor in canvas coordinates (before zoom)
+      const canvasX = (cursorX - panOffset.x) / zoom;
+      const canvasY = (cursorY - panOffset.y) / zoom;
+
+      // Calculate new pan offset to keep the same point under cursor
+      const newPanX = cursorX - canvasX * newZoom;
+      const newPanY = cursorY - canvasY * newZoom;
+
       setZoom(newZoom);
+      setPanOffset({ x: newPanX, y: newPanY });
     }
-  }, [zoom]);
+  }, [zoom, panOffset]);
 
   const resetViewTransform = () => {
     const composite = compositeCanvasRef.current;
@@ -991,18 +988,18 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
             <input
               type="range"
               min="1"
-              max="50"
+              max="256"
               value={brushSize}
               onChange={(e) => setBrushSize(parseInt(e.target.value))}
               onWheel={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 const delta = e.deltaY < 0 ? 1 : -1;
-                setBrushSize(Math.max(1, Math.min(50, brushSize + delta)));
+                setBrushSize(Math.max(1, Math.min(256, brushSize + delta)));
               }}
               className="flex-1"
             />
-            <span className="text-sm text-gray-300 w-8">{brushSize}</span>
+            <span className="text-sm text-gray-300 w-12">{brushSize}</span>
           </div>
         </div>
 
@@ -1326,7 +1323,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         {/* Brush Preview Cursor - positioned relative to container */}
         {cursorPos && compositeCanvasRef.current && tool !== "pan" && (() => {
           const canvas = compositeCanvasRef.current;
-          const scaledSize = brushSize * 2 * zoom;
+          // brushSize is used as lineWidth, which represents diameter
+          // With average pressure of 0.5, actual size is brushSize * 0.5
+          const scaledSize = brushSize * 0.5 * zoom;
 
           return (
             <div
@@ -1387,6 +1386,29 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                 {/* Active Indicator */}
                 {activeLayerId === layer.id && layer.editable && (
                   <div className="w-2 h-2 bg-blue-400 rounded-full" />
+                )}
+
+                {/* Clear Layer Button (only for editable layers) */}
+                {layer.editable && (
+                  <button
+                    className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Clear all content on ${layer.name}?`)) {
+                        const canvas = getLayerCanvas(layer.id);
+                        const ctx = canvas?.getContext("2d");
+                        if (canvas && ctx) {
+                          ctx.clearRect(0, 0, canvas.width, canvas.height);
+                          composeLayers();
+                          // Save to history
+                          saveToHistory(layer.id, ctx);
+                        }
+                      }
+                    }}
+                    title="Clear layer"
+                  >
+                    🗑️
+                  </button>
                 )}
               </div>
             ))}

@@ -7,28 +7,40 @@ interface ImageEditorProps {
   imageUrl: string;
   onSave: (editedImageUrl: string) => void;
   onClose: () => void;
+  onSaveMask?: (maskUrl: string) => void; // Optional callback for mask export
+  mode?: "edit" | "inpaint"; // Editor mode (default: "edit")
 }
 
 type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "pan";
 type BrushType = "normal" | "pencil" | "gpen" | "fude";
 
-interface Layer {
+interface LayerInfo {
   id: string;
   name: string;
-  canvas: HTMLCanvasElement;
   visible: boolean;
   opacity: number;
+  editable: boolean; // Can this layer be drawn on?
 }
 
 interface HistoryState {
-  layerData: ImageData; // Store edit layer data only
+  layerId: string; // Which layer this history belongs to
+  layerData: ImageData;
 }
 
-export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorProps) {
-  const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer
-  const editLayerRef = useRef<HTMLCanvasElement>(null); // Edit layer (transparent)
+export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mode = "edit" }: ImageEditorProps) {
+  // Canvas refs - we'll use Map to store multiple layer canvases
+  const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer (not editable)
+  const layerCanvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map()); // Editable layers
   const compositeCanvasRef = useRef<HTMLCanvasElement>(null); // For display
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Layer management state
+  const [layers, setLayers] = useState<LayerInfo[]>([
+    { id: "base", name: "Base", visible: true, opacity: 1, editable: false },
+    { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true },
+  ]);
+  const [activeLayerId, setActiveLayerId] = useState<string>("layer1");
+
   const [tool, setTool] = useState<Tool>("pen");
   const [brushType, setBrushType] = useState<BrushType>("normal");
   const [brushSize, setBrushSize] = useState(5);
@@ -129,12 +141,18 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     setLightness(hsl.l);
   }, [rgb]);
 
+  // Helper function to get canvas for a layer
+  const getLayerCanvas = useCallback((layerId: string): HTMLCanvasElement | null => {
+    if (layerId === "base") {
+      return baseLayerRef.current;
+    }
+    return layerCanvasRefs.current.get(layerId) || null;
+  }, []);
+
   // Composite layers to display canvas
   const composeLayers = useCallback(() => {
-    const baseLayer = baseLayerRef.current;
-    const editLayer = editLayerRef.current;
     const composite = compositeCanvasRef.current;
-    if (!baseLayer || !editLayer || !composite) return;
+    if (!composite) return;
 
     const ctx = composite.getContext("2d");
     if (!ctx) return;
@@ -142,31 +160,57 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     // Clear composite
     ctx.clearRect(0, 0, composite.width, composite.height);
 
-    // Draw base layer (original image)
-    ctx.drawImage(baseLayer, 0, 0);
+    // Draw all visible layers in order
+    for (const layer of layers) {
+      if (!layer.visible) continue;
 
-    // Draw edit layer on top
-    ctx.drawImage(editLayer, 0, 0);
-  }, []);
+      const layerCanvas = getLayerCanvas(layer.id);
+      if (!layerCanvas) continue;
+
+      // Debug: Check if layer has content
+      if (layer.id !== 'base') {
+        const layerCtx = layerCanvas.getContext("2d");
+        if (layerCtx) {
+          const imageData = layerCtx.getImageData(0, 0, layerCanvas.width, layerCanvas.height);
+          let hasContent = false;
+          for (let i = 3; i < imageData.data.length; i += 4) {
+            if (imageData.data[i] > 0) {
+              hasContent = true;
+              break;
+            }
+          }
+          console.log(`[composeLayers] Layer ${layer.id} has content: ${hasContent}`);
+        }
+      }
+
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(layerCanvas, 0, 0);
+      ctx.globalAlpha = 1;
+    }
+  }, [layers, getLayerCanvas]);
+
+  // Re-composite when layer visibility or opacity changes
+  useEffect(() => {
+    composeLayers();
+  }, [layers, composeLayers]);
 
   // Load image and initialize layers
   useEffect(() => {
+    console.log('[useEffect] Image initialization triggered');
     const baseLayer = baseLayerRef.current;
-    const editLayer = editLayerRef.current;
     const composite = compositeCanvasRef.current;
     const container = containerRef.current;
-    if (!baseLayer || !editLayer || !composite || !container) return;
+    if (!baseLayer || !composite || !container) return;
 
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
+      console.log('[useEffect] Image loaded, initializing layers');
       // Set canvas sizes
       const width = img.width;
       const height = img.height;
       baseLayer.width = width;
       baseLayer.height = height;
-      editLayer.width = width;
-      editLayer.height = height;
       composite.width = width;
       composite.height = height;
 
@@ -176,10 +220,50 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         baseCtx.drawImage(img, 0, 0);
       }
 
-      // Initialize edit layer (transparent)
-      const editCtx = editLayer.getContext("2d");
-      if (editCtx) {
-        editCtx.clearRect(0, 0, width, height);
+      // Initialize editable layer canvases
+      const editableLayers = layers.filter(l => l.editable);
+      for (const layer of editableLayers) {
+        let canvas = layerCanvasRefs.current.get(layer.id);
+        if (!canvas) {
+          // Create new canvas only if it doesn't exist
+          canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          layerCanvasRefs.current.set(layer.id, canvas);
+
+          // Clear new canvas to transparent
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.clearRect(0, 0, width, height);
+          }
+          console.log(`[useEffect] Created new canvas for layer ${layer.id}`);
+        } else {
+          // Canvas already exists - check if resize is needed
+          if (canvas.width !== width || canvas.height !== height) {
+            // Only resize if dimensions actually changed
+            // Save existing content first
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempCtx = tempCanvas.getContext("2d");
+            if (tempCtx) {
+              tempCtx.drawImage(canvas, 0, 0);
+            }
+
+            // Resize canvas (this clears content)
+            canvas.width = width;
+            canvas.height = height;
+
+            // Restore content
+            const ctx = canvas.getContext("2d");
+            if (ctx && tempCtx) {
+              ctx.drawImage(tempCanvas, 0, 0);
+            }
+            console.log(`[useEffect] Resized canvas for layer ${layer.id}`);
+          } else {
+            console.log(`[useEffect] Canvas for layer ${layer.id} already exists with correct size, skipping initialization`);
+          }
+        }
       }
 
       // Composite layers
@@ -201,23 +285,31 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         y: (containerHeight - displayHeight) / 2,
       });
 
-      // Save initial state (empty edit layer)
-      if (editCtx) {
-        saveToHistory(editCtx);
+      // Save initial state for active layer
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      if (activeLayer && activeLayer.editable) {
+        const canvas = layerCanvasRefs.current.get(activeLayer.id);
+        const ctx = canvas?.getContext("2d");
+        if (canvas && ctx) {
+          const initialData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          setHistory([{ layerId: activeLayer.id, layerData: initialData }]);
+          setHistoryIndex(0);
+        }
       }
     };
     img.src = imageUrl;
-  }, [imageUrl, composeLayers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageUrl, layers.length, layers.map(l => l.id).join(','), composeLayers, activeLayerId]);
 
-  const saveToHistory = useCallback((ctx: CanvasRenderingContext2D) => {
-    const editLayer = editLayerRef.current;
-    if (!editLayer) return;
+  const saveToHistory = useCallback((layerId: string, ctx: CanvasRenderingContext2D) => {
+    const layerCanvas = getLayerCanvas(layerId);
+    if (!layerCanvas) return;
 
-    const layerData = ctx.getImageData(0, 0, editLayer.width, editLayer.height);
+    const layerData = ctx.getImageData(0, 0, layerCanvas.width, layerCanvas.height);
 
     // Remove any history after current index
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ layerData });
+    newHistory.push({ layerId, layerData });
 
     // Limit history to 50 states
     if (newHistory.length > 50) {
@@ -227,33 +319,37 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
 
     setHistory(newHistory);
-  }, [history, historyIndex]);
+  }, [history, historyIndex, getLayerCanvas]);
 
   const undo = useCallback(() => {
     if (historyIndex <= 0) return;
 
-    const editLayer = editLayerRef.current;
-    const ctx = editLayer?.getContext("2d");
-    if (!editLayer || !ctx) return;
-
     const newIndex = historyIndex - 1;
+    const historyState = history[newIndex];
+    const layerCanvas = getLayerCanvas(historyState.layerId);
+    const ctx = layerCanvas?.getContext("2d");
+
+    if (!layerCanvas || !ctx) return;
+
     setHistoryIndex(newIndex);
-    ctx.putImageData(history[newIndex].layerData, 0, 0);
+    ctx.putImageData(historyState.layerData, 0, 0);
     composeLayers();
-  }, [history, historyIndex, composeLayers]);
+  }, [history, historyIndex, composeLayers, getLayerCanvas]);
 
   const redo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
 
-    const editLayer = editLayerRef.current;
-    const ctx = editLayer?.getContext("2d");
-    if (!editLayer || !ctx) return;
-
     const newIndex = historyIndex + 1;
+    const historyState = history[newIndex];
+    const layerCanvas = getLayerCanvas(historyState.layerId);
+    const ctx = layerCanvas?.getContext("2d");
+
+    if (!layerCanvas || !ctx) return;
+
     setHistoryIndex(newIndex);
-    ctx.putImageData(history[newIndex].layerData, 0, 0);
+    ctx.putImageData(historyState.layerData, 0, 0);
     composeLayers();
-  }, [history, historyIndex, composeLayers]);
+  }, [history, historyIndex, composeLayers, getLayerCanvas]);
 
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>) => {
     const composite = compositeCanvasRef.current;
@@ -455,11 +551,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const editLayer = editLayerRef.current;
     const composite = compositeCanvasRef.current;
-    const editCtx = editLayer?.getContext("2d");
     const compositeCtx = composite?.getContext("2d");
-    if (!editLayer || !composite || !editCtx || !compositeCtx) return;
+    if (!composite || !compositeCtx) return;
+
+    // Get active editable layer
+    const activeLayer = layers.find(l => l.id === activeLayerId);
+    if (!activeLayer || !activeLayer.editable || !activeLayer.visible) return;
+
+    const layerCanvas = getLayerCanvas(activeLayerId);
+    const layerCtx = layerCanvas?.getContext("2d");
+    if (!layerCanvas || !layerCtx) return;
 
     // Capture the pointer
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -505,7 +607,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (tool === "pen") {
       // Draw initial point with brush
       drawWithBrush(
-        editCtx,
+        layerCtx,
         point.x,
         point.y,
         point.x,
@@ -519,25 +621,23 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       );
       composeLayers();
     } else if (tool === "eraser") {
-      // Eraser erases edit layer only (not the base image)
-      editCtx.globalCompositeOperation = "destination-out";
-      editCtx.strokeStyle = "rgba(0,0,0,1)";
-      editCtx.lineWidth = brushSize * pressure;
-      editCtx.lineCap = "round";
-      editCtx.lineJoin = "round";
-      editCtx.beginPath();
-      editCtx.moveTo(point.x, point.y);
+      // Eraser erases active layer only (not the base image)
+      layerCtx.globalCompositeOperation = "destination-out";
+      layerCtx.strokeStyle = "rgba(0,0,0,1)";
+      layerCtx.lineWidth = brushSize * pressure;
+      layerCtx.lineCap = "round";
+      layerCtx.lineJoin = "round";
+      layerCtx.beginPath();
+      layerCtx.moveTo(point.x, point.y);
     } else if (tool === "blur") {
-      applyBlur(editCtx, point.x, point.y, brushSize);
+      applyBlur(layerCtx, point.x, point.y, brushSize);
       composeLayers();
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const editLayer = editLayerRef.current;
     const container = containerRef.current;
-    const editCtx = editLayer?.getContext("2d");
-    if (!editLayer || !container || !editCtx) return;
+    if (!container) return;
 
     if (isPanning) {
       setPanOffset({
@@ -559,6 +659,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (isDrawing || isTapering) {
       const lastPoint = lastPointRef.current;
       if (!lastPoint) return;
+
+      // Get active layer
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      if (!activeLayer || !activeLayer.editable) return;
+
+      const layerCanvas = getLayerCanvas(activeLayerId);
+      const layerCtx = layerCanvas?.getContext("2d");
+      if (!layerCanvas || !layerCtx) return;
 
       const now = Date.now();
       const pressure = e.pressure > 0 ? e.pressure : 0.5;
@@ -586,7 +694,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         const currentPressure = isTapering ? Math.max(0.1, pressure * (1 - taperProgressRef.current)) : pressure;
 
         drawWithBrush(
-          editCtx,
+          layerCtx,
           lastPoint.x,
           lastPoint.y,
           point.x,
@@ -604,19 +712,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         if (taperProgressRef.current >= 1 && brushType !== "normal") {
           setIsDrawing(false);
           setIsTapering(false);
-          saveToHistory(editCtx);
+          saveToHistory(activeLayerId, layerCtx);
           return;
         }
       } else if (tool === "eraser") {
         if (isDrawing) {
-          editCtx.lineWidth = brushSize * pressure;
-          editCtx.lineTo(point.x, point.y);
-          editCtx.stroke();
+          layerCtx.lineWidth = brushSize * pressure;
+          layerCtx.lineTo(point.x, point.y);
+          layerCtx.stroke();
           composeLayers();
         }
       } else if (tool === "blur") {
         if (isDrawing) {
-          applyBlur(editCtx, point.x, point.y, brushSize);
+          applyBlur(layerCtx, point.x, point.y, brushSize);
           composeLayers();
         }
       }
@@ -628,15 +736,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   };
 
   const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
-    const editLayer = editLayerRef.current;
-    const editCtx = editLayer?.getContext("2d");
-    if (!editLayer || !editCtx) return;
-
     if (isPanning) {
       setIsPanning(false);
     }
 
     if (isDrawing) {
+      // Get active layer
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      if (!activeLayer || !activeLayer.editable) return;
+
+      const layerCanvas = getLayerCanvas(activeLayerId);
+      const layerCtx = layerCanvas?.getContext("2d");
+      if (!layerCanvas || !layerCtx) return;
+
       // For non-normal brushes, enter tapering mode instead of ending immediately
       if (tool === "pen" && brushType !== "normal") {
         setIsDrawing(false);
@@ -645,7 +757,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       } else {
         // Normal pen or other tools: end immediately
         setIsDrawing(false);
-        saveToHistory(editCtx);
+        saveToHistory(activeLayerId, layerCtx);
       }
     }
   };
@@ -655,11 +767,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     // If in tapering mode, complete the taper immediately
     if (isTapering) {
-      const editLayer = editLayerRef.current;
-      const editCtx = editLayer?.getContext("2d");
-      if (editCtx) {
-        setIsTapering(false);
-        saveToHistory(editCtx);
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      if (activeLayer && activeLayer.editable) {
+        const layerCanvas = getLayerCanvas(activeLayerId);
+        const layerCtx = layerCanvas?.getContext("2d");
+        if (layerCanvas && layerCtx) {
+          setIsTapering(false);
+          saveToHistory(activeLayerId, layerCtx);
+        }
       }
     } else {
       handlePointerUp();
@@ -1176,9 +1291,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         ref={containerRef}
         className="flex-1 bg-gray-800 relative overflow-hidden"
       >
-        {/* Hidden layers for internal use */}
+        {/* Hidden base layer canvas */}
         <canvas ref={baseLayerRef} className="hidden" />
-        <canvas ref={editLayerRef} className="hidden" />
+        {/* Editable layer canvases are created dynamically in memory */}
 
         <div
           className="absolute"
@@ -1211,7 +1326,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         {/* Brush Preview Cursor - positioned relative to container */}
         {cursorPos && compositeCanvasRef.current && tool !== "pan" && (() => {
           const canvas = compositeCanvasRef.current;
-          const scaledSize = brushSize * zoom;
+          const scaledSize = brushSize * 2 * zoom;
 
           return (
             <div
@@ -1228,6 +1343,55 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             />
           );
         })()}
+
+        {/* Layer Panel - Bottom Right */}
+        <div className="absolute bottom-4 right-4 bg-gray-900 bg-opacity-95 rounded-lg p-3 min-w-[200px] max-w-[300px]">
+          <div className="text-xs font-semibold text-gray-300 mb-2">Layers</div>
+          <div className="space-y-1">
+            {[...layers].reverse().map((layer) => (
+              <div
+                key={layer.id}
+                className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                  activeLayerId === layer.id
+                    ? 'bg-blue-600 bg-opacity-50'
+                    : 'bg-gray-800 hover:bg-gray-700'
+                }`}
+                onClick={() => layer.editable && setActiveLayerId(layer.id)}
+              >
+                {/* Visibility Toggle */}
+                <button
+                  className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-white"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLayers(prev => prev.map(l =>
+                      l.id === layer.id ? { ...l, visible: !l.visible } : l
+                    ));
+                  }}
+                >
+                  {layer.visible ? '👁️' : '👁️‍🗨️'}
+                </button>
+
+                {/* Layer Thumbnail */}
+                <div className="w-8 h-8 bg-gray-700 rounded flex items-center justify-center text-xs">
+                  {layer.id === 'base' ? '🖼️' : '📝'}
+                </div>
+
+                {/* Layer Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-white truncate">{layer.name}</div>
+                  {!layer.editable && (
+                    <div className="text-[10px] text-gray-500">Locked</div>
+                  )}
+                </div>
+
+                {/* Active Indicator */}
+                {activeLayerId === layer.id && layer.editable && (
+                  <div className="w-2 h-2 bg-blue-400 rounded-full" />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

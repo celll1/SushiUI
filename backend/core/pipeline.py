@@ -511,27 +511,99 @@ class DiffusionPipelineManager:
         self,
         params: Dict[str, Any],
         init_image: Image.Image,
-        mask_image: Image.Image
-    ) -> Image.Image:
-        """Generate inpainted image"""
+        mask_image: Image.Image,
+        progress_callback=None
+    ) -> tuple[Image.Image, int]:
+        """Generate inpainted image
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
-            raise RuntimeError("inpaint pipeline not loaded")
+            if not self.txt2img_pipeline:
+                raise RuntimeError("No model loaded. Please load a model first.")
+
+            # Check if current model is SDXL
+            is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
+
+            if is_sdxl:
+                self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**self.txt2img_pipeline.components)
+            else:
+                self.inpaint_pipeline = StableDiffusionInpaintPipeline(**self.txt2img_pipeline.components)
+
+            self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
 
         # Apply extensions before generation
         for ext in self.extensions:
             if ext.enabled:
                 params = ext.process_before_generation(self.inpaint_pipeline, params)
 
-        result = self.inpaint_pipeline(
-            prompt=params["prompt"],
-            negative_prompt=params.get("negative_prompt", ""),
-            image=init_image,
-            mask_image=mask_image,
-            num_inference_steps=params.get("steps", settings.default_steps),
-            guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
-            generator=torch.Generator(device=self.device).manual_seed(params.get("seed", -1)) if params.get("seed", -1) >= 0 else None,
+        # Set scheduler (sampler + schedule type)
+        sampler_name = params.get("sampler", "euler")
+        schedule_type = params.get("schedule_type", "uniform")
+
+        self.inpaint_pipeline.scheduler = get_scheduler(
+            sampler_name=sampler_name,
+            schedule_type=schedule_type,
+            pipeline=self.inpaint_pipeline,
+            num_inference_steps=params.get("steps", settings.default_steps)
         )
 
+        # Handle seed
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = torch.randint(0, 2**32 - 1, (1,)).item()
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        # Resize images if needed
+        target_width = params.get("width", settings.default_width)
+        target_height = params.get("height", settings.default_height)
+
+        if init_image.size != (target_width, target_height):
+            init_image = init_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+        if mask_image.size != (target_width, target_height):
+            mask_image = mask_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+        # Parse prompt weights using compel
+        from core.prompt_parser import encode_prompts
+        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encode_prompts(
+            pipeline=self.inpaint_pipeline,
+            prompt=params["prompt"],
+            negative_prompt=params.get("negative_prompt", ""),
+            device=self.device
+        )
+
+        # Build generation parameters
+        gen_params = {
+            "image": init_image,
+            "mask_image": mask_image,
+            "strength": params.get("denoising_strength", 0.75),
+            "num_inference_steps": params.get("steps", settings.default_steps),
+            "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
+            "generator": generator,
+        }
+
+        # Add prompt embeds
+        is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
+        if is_sdxl:
+            gen_params["prompt_embeds"] = prompt_embeds
+            gen_params["negative_prompt_embeds"] = negative_prompt_embeds
+            if pooled_prompt_embeds is not None:
+                gen_params["pooled_prompt_embeds"] = pooled_prompt_embeds
+            if negative_pooled_prompt_embeds is not None:
+                gen_params["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
+        else:
+            gen_params["prompt_embeds"] = prompt_embeds
+            gen_params["negative_prompt_embeds"] = negative_prompt_embeds
+
+        # Add progress callback if provided
+        if progress_callback:
+            gen_params["callback"] = progress_callback
+            gen_params["callback_steps"] = 1
+
+        result = self.inpaint_pipeline(**gen_params)
         image = result.images[0]
 
         # Apply extensions after generation
@@ -539,7 +611,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image
+        return image, seed
 
 # Global pipeline manager instance
 pipeline_manager = DiffusionPipelineManager()

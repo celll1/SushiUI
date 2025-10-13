@@ -166,6 +166,94 @@ async def generate_img2img(
         print(f"Error generating img2img: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/generate/inpaint")
+async def generate_inpaint(
+    prompt: str = Form(...),
+    negative_prompt: str = Form(""),
+    steps: int = Form(20),
+    cfg_scale: float = Form(7.0),
+    denoising_strength: float = Form(0.75),
+    sampler: str = Form("euler"),
+    schedule_type: str = Form("uniform"),
+    seed: int = Form(-1),
+    width: int = Form(1024),
+    height: int = Form(1024),
+    mask_blur: int = Form(4),
+    inpaint_full_res: bool = Form(False),
+    inpaint_full_res_padding: int = Form(32),
+    image: UploadFile = File(...),
+    mask: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Generate inpainted image"""
+    try:
+        # Load input image and mask
+        image_data = await image.read()
+        init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+
+        mask_data = await mask.read()
+        mask_image = Image.open(io.BytesIO(mask_data)).convert("L")
+
+        # Apply mask blur if specified
+        if mask_blur > 0:
+            from PIL import ImageFilter
+            mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+
+        # Generate image
+        params = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "denoising_strength": denoising_strength,
+            "sampler": sampler,
+            "schedule_type": schedule_type,
+            "seed": seed,
+            "width": width,
+            "height": height,
+            "mask_blur": mask_blur,
+            "inpaint_full_res": inpaint_full_res,
+            "inpaint_full_res_padding": inpaint_full_res_padding,
+        }
+        print(f"inpaint generation params: {params}")
+
+        result_image, actual_seed = pipeline_manager.generate_inpaint(params, init_image, mask_image)
+
+        # Update params with actual seed
+        params["seed"] = actual_seed
+
+        # Save image with metadata
+        filename = save_image_with_metadata(result_image, params, "inpaint")
+        image_path = os.path.join(settings.outputs_dir, filename)
+        create_thumbnail(image_path)
+
+        # Save to database
+        db_image = GeneratedImage(
+            filename=filename,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            model_name="",
+            sampler=f"{sampler} ({schedule_type})",
+            steps=steps,
+            cfg_scale=cfg_scale,
+            seed=actual_seed,
+            width=result_image.width,
+            height=result_image.height,
+            generation_type="inpaint",
+            parameters=params,
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
+
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"Error generating inpaint: {error_detail}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/images")
 async def get_images(
     skip: int = 0,

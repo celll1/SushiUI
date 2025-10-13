@@ -8,10 +8,9 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
-import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateImg2Img } from "@/utils/api";
+import { getSamplers, getScheduleTypes } from "@/utils/api";
 
-interface Img2ImgParams {
+interface InpaintParams {
   prompt: string;
   negative_prompt?: string;
   steps?: number;
@@ -22,9 +21,12 @@ interface Img2ImgParams {
   width?: number;
   height?: number;
   denoising_strength?: number;
+  mask_blur?: number;
+  inpaint_full_res?: boolean;
+  inpaint_full_res_padding?: number;
 }
 
-const DEFAULT_PARAMS: Img2ImgParams = {
+const DEFAULT_PARAMS: InpaintParams = {
   prompt: "",
   negative_prompt: "",
   steps: 20,
@@ -35,31 +37,29 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   width: 1024,
   height: 1024,
   denoising_strength: 0.75,
-  resize_mode: "image",
-  resampling_method: "lanczos",
+  mask_blur: 4,
+  inpaint_full_res: false,
+  inpaint_full_res_padding: 32,
 };
 
-const STORAGE_KEY = "img2img_params";
-const PREVIEW_STORAGE_KEY = "img2img_preview";
-const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
+const STORAGE_KEY = "inpaint_params";
+const PREVIEW_STORAGE_KEY = "inpaint_preview";
+const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 
-export default function Img2ImgPanel() {
-  const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
+export default function InpaintPanel() {
+  const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [inputImage, setInputImage] = useState<File | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
-  const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
-  const [sizeMode, setSizeMode] = useState<"absolute" | "scale">("absolute");
-  const [scale, setScale] = useState<number>(1.0);
+  const [maskImage, setMaskImage] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [isEditingImage, setIsEditingImage] = useState(false);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -87,35 +87,23 @@ export default function Img2ImgPanel() {
     const savedInputPreview = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
     if (savedInputPreview) {
       setInputImagePreview(savedInputPreview);
-      // Load image dimensions
-      const img = new Image();
-      img.onload = () => {
-        setInputImageSize({ width: img.width, height: img.height });
-      };
-      img.src = savedInputPreview;
     }
 
     loadSamplers();
     loadScheduleTypes();
 
-    // Listen for input image updates from txt2img or gallery
+    // Listen for input image updates from txt2img or img2img
     const handleInputUpdate = () => {
       const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       if (newInput) {
         setInputImagePreview(newInput);
-        // Load image dimensions
-        const img = new Image();
-        img.onload = () => {
-          setInputImageSize({ width: img.width, height: img.height });
-        };
-        img.src = newInput;
       }
     };
 
-    window.addEventListener("img2img_input_updated", handleInputUpdate);
+    window.addEventListener("inpaint_input_updated", handleInputUpdate);
 
     return () => {
-      window.removeEventListener("img2img_input_updated", handleInputUpdate);
+      window.removeEventListener("inpaint_input_updated", handleInputUpdate);
     };
   }, []);
 
@@ -170,19 +158,6 @@ export default function Img2ImgPanel() {
       if (isMounted) {
         localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
       }
-
-      // Load image to get dimensions
-      const img = new Image();
-      img.onload = () => {
-        setInputImageSize({ width: img.width, height: img.height });
-        // If in scale mode, update width/height based on scale
-        if (sizeMode === "scale") {
-          const scaledWidth = Math.round(img.width * scale / 64) * 64;
-          const scaledHeight = Math.round(img.height * scale / 64) * 64;
-          setParams({ ...params, width: scaledWidth, height: scaledHeight });
-        }
-      };
-      img.src = preview;
     };
     reader.readAsDataURL(file);
   };
@@ -217,69 +192,6 @@ export default function Img2ImgPanel() {
     }
   };
 
-  const handleScaleChange = (newScale: number) => {
-    setScale(newScale);
-    if (inputImageSize && sizeMode === "scale") {
-      const scaledWidth = Math.round(inputImageSize.width * newScale / 64) * 64;
-      const scaledHeight = Math.round(inputImageSize.height * newScale / 64) * 64;
-      setParams({ ...params, width: scaledWidth, height: scaledHeight });
-    }
-  };
-
-  const handleSizeModeChange = (newMode: "absolute" | "scale") => {
-    setSizeMode(newMode);
-    if (newMode === "scale" && inputImageSize) {
-      // Switch to scale mode - update dimensions based on current scale
-      const scaledWidth = Math.round(inputImageSize.width * scale / 64) * 64;
-      const scaledHeight = Math.round(inputImageSize.height * scale / 64) * 64;
-      setParams({ ...params, width: scaledWidth, height: scaledHeight });
-    }
-  };
-
-  const handleEditImage = () => {
-    if (inputImagePreview) {
-      setIsEditingImage(true);
-    }
-  };
-
-  const handleSaveEditedImage = (editedImageUrl: string) => {
-    setInputImagePreview(editedImageUrl);
-    if (isMounted) {
-      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
-    }
-
-    // Update image dimensions
-    const img = new Image();
-    img.onload = () => {
-      setInputImageSize({ width: img.width, height: img.height });
-    };
-    img.src = editedImageUrl;
-
-    setIsEditingImage(false);
-    setInputImage(null); // Clear File object, use data URL instead
-  };
-
-  const sendToImg2Img = () => {
-    if (!generatedImage) {
-      alert("No image to send");
-      return;
-    }
-    // Already in img2img, use generated image as input
-    localStorage.setItem("img2img_input_image", generatedImage);
-    window.dispatchEvent(new Event("img2img_input_updated"));
-    alert("Generated image set as new input image.");
-  };
-
-  const sendToInpaint = () => {
-    if (!generatedImage) {
-      alert("No image to send");
-      return;
-    }
-    localStorage.setItem("inpaint_input_image", generatedImage);
-    window.dispatchEvent(new Event("inpaint_input_updated"));
-    alert("Image sent to inpaint. Switch to inpaint tab to use it.");
-  };
-
   const handleGenerate = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -291,46 +203,20 @@ export default function Img2ImgPanel() {
       return;
     }
 
+    if (!maskImage) {
+      alert("Please draw a mask (mask editor to be implemented)");
+      return;
+    }
+
     setIsGenerating(true);
     setProgress(0);
     const currentSteps = params.steps || 20;
     setTotalSteps(currentSteps);
 
-    // Simulate progress
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev < currentSteps) {
-          return prev + 1;
-        }
-        return prev;
-      });
-    }, 200);
+    // TODO: Implement inpaint API call
+    alert("Inpaint generation to be implemented");
 
-    try {
-      // Use inputImage if available, otherwise use inputImagePreview (for images sent from gallery/txt2img)
-      const imageSource = inputImage || inputImagePreview;
-      if (!imageSource) {
-        alert("No input image available");
-        return;
-      }
-
-      const result = await generateImg2Img(params, imageSource);
-      setGeneratedImage(`/outputs/${result.image.filename}`);
-      setGeneratedImageSeed(result.image.seed);
-
-      // Don't update seed parameter to keep -1 for continuous random generation
-      // The actual seed is saved in the database/metadata
-    } catch (error) {
-      console.error("Generation failed:", error);
-      alert("Generation failed. Please check console for details.");
-    } finally {
-      clearInterval(progressInterval);
-      setProgress(currentSteps);
-      setTimeout(() => {
-        setIsGenerating(false);
-        setProgress(0);
-      }, 500);
-    }
+    setIsGenerating(false);
   };
 
   // Handle Ctrl+Enter keyboard shortcut
@@ -344,7 +230,7 @@ export default function Img2ImgPanel() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params, isGenerating, inputImage, inputImagePreview]);
+  }, [params, isGenerating, inputImage, inputImagePreview, maskImage]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -370,13 +256,11 @@ export default function Img2ImgPanel() {
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              onDoubleClick={handleEditImage}
               className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
                 isDragging
                   ? 'border-blue-500 bg-gray-700'
                   : 'border-gray-600'
-              } ${inputImagePreview ? 'cursor-pointer' : ''}`}
-              title={inputImagePreview ? "Double-click to edit image" : ""}
+              }`}
             >
               {inputImagePreview ? (
                 <img
@@ -395,9 +279,20 @@ export default function Img2ImgPanel() {
               )}
             </div>
             {inputImagePreview && (
-              <p className="text-xs text-gray-500 text-center">
-                💡 Double-click the image to edit with built-in paint tool
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500 text-center">
+                  💡 Mask editor to be implemented
+                </p>
+                {maskImage && (
+                  <div className="border-2 border-gray-600 rounded-lg overflow-hidden">
+                    <img
+                      src={maskImage}
+                      alt="Mask"
+                      className="w-full h-auto"
+                    />
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </Card>
@@ -431,28 +326,16 @@ export default function Img2ImgPanel() {
               value={params.denoising_strength}
               onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
             />
-            <div className="grid grid-cols-2 gap-4">
-              <Select
-                label="Resize Mode"
-                options={[
-                  { value: "image", label: "Resize Image" },
-                  { value: "latent", label: "Resize Latent" },
-                ]}
-                value={params.resize_mode}
-                onChange={(e) => setParams({ ...params, resize_mode: e.target.value })}
-              />
-              <Select
-                label="Resampling Method"
-                options={[
-                  { value: "lanczos", label: "Lanczos (High Quality)" },
-                  { value: "bicubic", label: "Bicubic" },
-                  { value: "bilinear", label: "Bilinear" },
-                  { value: "nearest", label: "Nearest (Pixelated)" },
-                ]}
-                value={params.resampling_method}
-                onChange={(e) => setParams({ ...params, resampling_method: e.target.value })}
-              />
-            </div>
+
+            <Slider
+              label="Mask Blur"
+              min={0}
+              max={64}
+              step={1}
+              value={params.mask_blur}
+              onChange={(e) => setParams({ ...params, mask_blur: parseInt(e.target.value) })}
+            />
+
             <div className="grid grid-cols-2 gap-4">
               <Slider
                 label="Steps"
@@ -471,68 +354,26 @@ export default function Img2ImgPanel() {
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
             </div>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm font-medium text-gray-300">
-                  Size Mode
-                </label>
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => handleSizeModeChange("absolute")}
-                    variant={sizeMode === "absolute" ? "primary" : "secondary"}
-                    size="sm"
-                  >
-                    Absolute
-                  </Button>
-                  <Button
-                    onClick={() => handleSizeModeChange("scale")}
-                    variant={sizeMode === "scale" ? "primary" : "secondary"}
-                    size="sm"
-                    disabled={!inputImageSize}
-                    title={!inputImageSize ? "Load an image first" : ""}
-                  >
-                    Scale
-                  </Button>
-                </div>
-              </div>
 
-              {sizeMode === "absolute" ? (
-                <div className="grid grid-cols-2 gap-4">
-                  <Slider
-                    label="Width"
-                    min={64}
-                    max={2048}
-                    step={64}
-                    value={params.width}
-                    onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
-                  />
-                  <Slider
-                    label="Height"
-                    min={64}
-                    max={2048}
-                    step={64}
-                    value={params.height}
-                    onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
-                  />
-                </div>
-              ) : (
-                <div>
-                  <Slider
-                    label={`Scale (${params.width}x${params.height})`}
-                    min={0.25}
-                    max={4.0}
-                    step={0.25}
-                    value={scale}
-                    onChange={(e) => handleScaleChange(parseFloat(e.target.value))}
-                  />
-                  {inputImageSize && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      Original: {inputImageSize.width}x{inputImageSize.height}
-                    </p>
-                  )}
-                </div>
-              )}
+            <div className="grid grid-cols-2 gap-4">
+              <Slider
+                label="Width"
+                min={64}
+                max={2048}
+                step={64}
+                value={params.width}
+                onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+              />
+              <Slider
+                label="Height"
+                min={64}
+                max={2048}
+                step={64}
+                value={params.height}
+                onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+              />
             </div>
+
             <div className="grid grid-cols-2 gap-4">
               <Select
                 label="Sampler"
@@ -547,6 +388,7 @@ export default function Img2ImgPanel() {
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Seed
@@ -585,6 +427,30 @@ export default function Img2ImgPanel() {
                 </Button>
               </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="inpaint_full_res"
+                checked={params.inpaint_full_res || false}
+                onChange={(e) => setParams({ ...params, inpaint_full_res: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="inpaint_full_res" className="text-sm">
+                Inpaint at full resolution
+              </label>
+            </div>
+
+            {params.inpaint_full_res && (
+              <Slider
+                label="Only masked padding"
+                min={0}
+                max={256}
+                step={4}
+                value={params.inpaint_full_res_padding}
+                onChange={(e) => setParams({ ...params, inpaint_full_res_padding: parseInt(e.target.value) })}
+              />
+            )}
           </div>
         </Card>
 
@@ -637,36 +503,9 @@ export default function Img2ImgPanel() {
                 <p className="text-gray-500">No image generated yet</p>
               )}
             </div>
-            {generatedImage && (
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  onClick={sendToImg2Img}
-                  variant="secondary"
-                  size="sm"
-                >
-                  Send to img2img
-                </Button>
-                <Button
-                  onClick={sendToInpaint}
-                  variant="secondary"
-                  size="sm"
-                >
-                  Send to inpaint
-                </Button>
-              </div>
-            )}
           </div>
         </Card>
       </div>
-
-      {/* Image Editor Overlay */}
-      {isEditingImage && inputImagePreview && (
-        <ImageEditor
-          imageUrl={inputImagePreview}
-          onSave={handleSaveEditedImage}
-          onClose={() => setIsEditingImage(false)}
-        />
-      )}
     </div>
   );
 }

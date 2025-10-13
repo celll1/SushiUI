@@ -5,15 +5,18 @@ import { useSearchParams } from "next/navigation";
 import Sidebar from "@/components/common/Sidebar";
 import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
+import InpaintPanel from "@/components/generation/InpaintPanel";
 
 export default function GeneratePage() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img">("txt2img");
+  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint">("txt2img");
 
   useEffect(() => {
     if (tabParam === "img2img") {
       setActiveTab("img2img");
+    } else if (tabParam === "inpaint") {
+      setActiveTab("inpaint");
     }
   }, [tabParam]);
 
@@ -45,11 +48,22 @@ export default function GeneratePage() {
           >
             img2img
           </button>
+          <button
+            onClick={() => setActiveTab("inpaint")}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === "inpaint"
+                ? "border-b-2 border-blue-500 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            inpaint
+          </button>
         </div>
 
         {/* Tab Content */}
         {activeTab === "txt2img" && <Txt2ImgPanel />}
         {activeTab === "img2img" && <Img2ImgPanel />}
+        {activeTab === "inpaint" && <InpaintPanel />}
       </main>
     </div>
   );

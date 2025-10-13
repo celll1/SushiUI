@@ -97,6 +97,18 @@ export default function Txt2ImgPanel() {
     alert("Image sent to img2img. Switch to img2img tab to use it.");
   };
 
+  const sendToInpaint = () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    // Save image to inpaint input storage
+    localStorage.setItem("inpaint_input_image", generatedImage);
+    // Trigger a custom event to notify inpaint tab
+    window.dispatchEvent(new Event("inpaint_input_updated"));
+    alert("Image sent to inpaint. Switch to inpaint tab to use it.");
+  };
+
   const importFromImage = (imageData: any) => {
     const imported: GenerationParams = {
       prompt: imageData.prompt || "",
@@ -352,13 +364,22 @@ export default function Txt2ImgPanel() {
               )}
             </div>
             {generatedImage && (
-              <Button
-                onClick={sendToImg2Img}
-                variant="secondary"
-                className="w-full"
-              >
-                Send to img2img
-              </Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  onClick={sendToImg2Img}
+                  variant="secondary"
+                  size="sm"
+                >
+                  Send to img2img
+                </Button>
+                <Button
+                  onClick={sendToInpaint}
+                  variant="secondary"
+                  size="sm"
+                >
+                  Send to inpaint
+                </Button>
+              </div>
             )}
           </div>
         </Card>

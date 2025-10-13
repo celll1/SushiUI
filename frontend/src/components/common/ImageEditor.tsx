@@ -191,7 +191,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     ctx.putImageData(history[newIndex].imageData, 0, 0);
   }, [history, historyIndex]);
 
-  const getCanvasPoint = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return { x: 0, y: 0 };
@@ -264,10 +264,13 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     ctx.putImageData(blurredImageData, Math.max(0, x - radius), Math.max(0, y - radius));
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
+
+    // Capture the pointer
+    e.currentTarget.setPointerCapture(e.pointerId);
 
     const point = getCanvasPoint(e);
 
@@ -315,7 +318,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     const ctx = canvas?.getContext("2d");
@@ -348,7 +351,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
   };
 
-  const handleMouseUp = () => {
+  const handlePointerUp = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
@@ -363,9 +366,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
   };
 
-  const handleMouseLeave = () => {
+  const handlePointerLeave = () => {
     setCursorPos(null);
-    handleMouseUp();
+    handlePointerUp();
   };
 
   const handleSave = () => {
@@ -854,15 +857,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           >
             <canvas
               ref={canvasRef}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseLeave}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerLeave={handlePointerLeave}
               className={tool === "pan" ? "cursor-grab" : "cursor-none"}
               style={{
                 imageRendering: "pixelated",
                 width: canvasRef.current ? `${canvasRef.current.width * zoom}px` : undefined,
                 height: canvasRef.current ? `${canvasRef.current.height * zoom}px` : undefined,
+                touchAction: "none", // Disable default touch behaviors
               }}
             />
           </div>

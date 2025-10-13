@@ -11,7 +11,7 @@ interface ImageEditorProps {
   mode?: "edit" | "inpaint"; // Editor mode (default: "edit")
 }
 
-type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "pan";
+type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "bucket" | "pan";
 type BrushType = "normal" | "pencil" | "gpen" | "fude";
 
 interface LayerInfo {
@@ -34,6 +34,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const layerCanvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map()); // Editable layers
   const compositeCanvasRef = useRef<HTMLCanvasElement>(null); // For display
   const containerRef = useRef<HTMLDivElement>(null);
+  const tempStrokeCanvasRef = useRef<HTMLCanvasElement | null>(null); // Temporary canvas for current stroke
 
   // Layer management state
   const [layers, setLayers] = useState<LayerInfo[]>([
@@ -46,6 +47,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [brushType, setBrushType] = useState<BrushType>("normal");
   const [brushSize, setBrushSize] = useState(5);
   const [rgb, setRgb] = useState({ r: 0, g: 0, b: 0 });
+  const [alpha, setAlpha] = useState(1); // 0-1
   const [hue, setHue] = useState(0);
   const [saturation, setSaturation] = useState(100);
   const [lightness, setLightness] = useState(0);
@@ -60,6 +62,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const updatingSourceRef = useRef<'rgb' | 'hsl' | null>(null);
+  const strokeSnapshotRef = useRef<ImageData | null>(null); // Snapshot before stroke starts
 
   // Brush stroke tracking
   const strokeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -67,15 +70,21 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const prevPointRef = useRef<{ x: number; y: number } | null>(null); // Point before last, for direction
   const strokeDistanceRef = useRef(0);
   const taperProgressRef = useRef(0); // 0 to 1, for gradual tapering
+  const strokePathRef = useRef<Array<{ x: number; y: number; pressure: number; velocity: number; distance: number; taperProgress: number }>>([]); // Store stroke path
 
-  // Calculate color from RGB
+  // Calculate color from RGB with alpha
   const getColorFromRGB = () => {
-    return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
   };
 
-  // Calculate color from HSL and lightness
+  // Calculate color from RGB with full opacity (for drawing preview)
+  const getColorFromRGBOpaque = () => {
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 1)`;
+  };
+
+  // Calculate color from HSL and lightness with alpha
   const getColorFromHSL = () => {
-    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    return `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`;
   };
 
   // Convert RGB to HSL
@@ -171,6 +180,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       ctx.globalAlpha = layer.opacity;
       ctx.drawImage(layerCanvas, 0, 0);
       ctx.globalAlpha = 1;
+    }
+
+    // Draw temporary stroke canvas on top (if drawing)
+    if (tempStrokeCanvasRef.current) {
+      ctx.drawImage(tempStrokeCanvasRef.current, 0, 0);
     }
   }, [layers, getLayerCanvas]);
 
@@ -404,6 +418,134 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     ctx.putImageData(blurredImageData, Math.max(0, x - radius), Math.max(0, y - radius));
   };
 
+  // Apply alpha to completed stroke
+  const applyAlphaToStroke = (ctx: CanvasRenderingContext2D) => {
+    if (!strokeSnapshotRef.current || alpha >= 1) {
+      // No need to apply alpha if it's 100%
+      strokeSnapshotRef.current = null;
+      return;
+    }
+
+    const canvas = ctx.canvas;
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Get current state (with stroke)
+    const currentData = ctx.getImageData(0, 0, width, height);
+    const current = currentData.data;
+    const snapshot = strokeSnapshotRef.current.data;
+
+    // Apply alpha only to the new pixels (difference from snapshot)
+    for (let i = 0; i < current.length; i += 4) {
+      // Check if pixel changed from snapshot
+      if (current[i] !== snapshot[i] ||
+          current[i+1] !== snapshot[i+1] ||
+          current[i+2] !== snapshot[i+2] ||
+          current[i+3] !== snapshot[i+3]) {
+
+        // This pixel is part of the new stroke
+        // Blend with snapshot using alpha
+        const newAlpha = current[i+3] / 255;
+        const finalAlpha = newAlpha * alpha;
+
+        current[i+3] = finalAlpha * 255;
+      }
+    }
+
+    ctx.putImageData(currentData, 0, 0);
+    strokeSnapshotRef.current = null;
+  };
+
+  // Flood fill algorithm for bucket tool with tolerance for anti-aliased edges
+  const floodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: string, tolerance: number = 10) => {
+    const canvas = ctx.canvas;
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Parse fill color to rgba values
+    const temp = document.createElement('canvas');
+    temp.width = 1;
+    temp.height = 1;
+    const tempCtx = temp.getContext('2d');
+    if (!tempCtx) return;
+
+    tempCtx.fillStyle = fillColor;
+    tempCtx.fillRect(0, 0, 1, 1);
+    const fillData = tempCtx.getImageData(0, 0, 1, 1).data;
+    const fillR = fillData[0];
+    const fillG = fillData[1];
+    const fillB = fillData[2];
+    const fillA = fillData[3];
+
+    // Get image data
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+
+    // Get target color at start position
+    const startIdx = (startY * width + startX) * 4;
+    const targetR = data[startIdx];
+    const targetG = data[startIdx + 1];
+    const targetB = data[startIdx + 2];
+    const targetA = data[startIdx + 3];
+
+    // If target color is same as fill color, no need to fill
+    if (Math.abs(targetR - fillR) <= tolerance &&
+        Math.abs(targetG - fillG) <= tolerance &&
+        Math.abs(targetB - fillB) <= tolerance &&
+        Math.abs(targetA - fillA) <= tolerance) {
+      return;
+    }
+
+    // Stack-based flood fill
+    const stack: Array<[number, number]> = [[startX, startY]];
+    const visited = new Set<number>();
+
+    const colorMatch = (x: number, y: number): boolean => {
+      const idx = (y * width + x) * 4;
+      // Use tolerance to match similar colors (for anti-aliased edges)
+      return (
+        Math.abs(data[idx] - targetR) <= tolerance &&
+        Math.abs(data[idx + 1] - targetG) <= tolerance &&
+        Math.abs(data[idx + 2] - targetB) <= tolerance &&
+        Math.abs(data[idx + 3] - targetA) <= tolerance
+      );
+    };
+
+    while (stack.length > 0) {
+      const pos = stack.pop();
+      if (!pos) break;
+
+      const [x, y] = pos;
+
+      // Check bounds
+      if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+      // Check if already visited
+      const key = y * width + x;
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      // Check if color matches
+      if (!colorMatch(x, y)) continue;
+
+      // Fill pixel
+      const idx = (y * width + x) * 4;
+      data[idx] = fillR;
+      data[idx + 1] = fillG;
+      data[idx + 2] = fillB;
+      data[idx + 3] = fillA;
+
+      // Add neighbors to stack
+      stack.push([x + 1, y]);
+      stack.push([x - 1, y]);
+      stack.push([x, y + 1]);
+      stack.push([x, y - 1]);
+    }
+
+    // Put modified data back
+    ctx.putImageData(imageData, 0, 0);
+  };
+
   // Draw with different brush types
   const drawWithBrush = (
     ctx: CanvasRenderingContext2D,
@@ -571,6 +713,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       return;
     }
 
+    if (tool === "bucket") {
+      // Bucket fill
+      const x = Math.floor(point.x);
+      const y = Math.floor(point.y);
+
+      if (x >= 0 && x < layerCanvas.width && y >= 0 && y < layerCanvas.height) {
+        floodFill(layerCtx, x, y, getColorFromRGB());
+        composeLayers();
+        saveToHistory(activeLayerId, layerCtx);
+      }
+      return;
+    }
+
     setIsDrawing(true);
 
     // Initialize stroke tracking
@@ -585,7 +740,20 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
     if (tool === "pen") {
-      // Draw initial point with brush
+      // Save layer state before starting stroke
+      strokeSnapshotRef.current = layerCtx.getImageData(0, 0, layerCanvas.width, layerCanvas.height);
+
+      // Initialize stroke path
+      strokePathRef.current = [{
+        x: point.x,
+        y: point.y,
+        pressure: pressure,
+        velocity: 0,
+        distance: 0,
+        taperProgress: 0
+      }];
+
+      // Draw initial point with full opacity (alpha will be applied at end)
       drawWithBrush(
         layerCtx,
         point.x,
@@ -593,7 +761,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         point.x,
         point.y,
         brushSize,
-        getColorFromRGB(),
+        getColorFromRGBOpaque(),
         pressure,
         0,
         0,
@@ -673,6 +841,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         // Calculate current pressure (reduce during tapering)
         const currentPressure = isTapering ? Math.max(0.1, pressure * (1 - taperProgressRef.current)) : pressure;
 
+        // Store point in stroke path
+        strokePathRef.current.push({
+          x: point.x,
+          y: point.y,
+          pressure: currentPressure,
+          velocity: velocity,
+          distance: strokeDistanceRef.current,
+          taperProgress: taperProgressRef.current
+        });
+
+        // Draw preview with full opacity (alpha will be applied at end)
         drawWithBrush(
           layerCtx,
           lastPoint.x,
@@ -680,19 +859,21 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           point.x,
           point.y,
           brushSize,
-          getColorFromRGB(),
+          getColorFromRGBOpaque(),
           currentPressure,
           velocity,
           strokeDistanceRef.current,
-          taperProgressRef.current // Use current taper progress
+          taperProgressRef.current
         );
         composeLayers();
 
-        // If taper is complete, end the stroke
+        // If taper is complete, apply alpha and end stroke
         if (taperProgressRef.current >= 1 && brushType !== "normal") {
+          applyAlphaToStroke(layerCtx);
           setIsDrawing(false);
           setIsTapering(false);
           saveToHistory(activeLayerId, layerCtx);
+          composeLayers();
           return;
         }
       } else if (tool === "eraser") {
@@ -735,7 +916,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         setIsTapering(true);
         // Don't save to history yet - will save when tapering completes
       } else {
-        // Normal pen or other tools: end immediately
+        // Normal pen or other tools: apply alpha and end immediately
+        if (tool === "pen") {
+          applyAlphaToStroke(layerCtx);
+          composeLayers();
+        }
         setIsDrawing(false);
         saveToHistory(activeLayerId, layerCtx);
       }
@@ -752,8 +937,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         const layerCanvas = getLayerCanvas(activeLayerId);
         const layerCtx = layerCanvas?.getContext("2d");
         if (layerCanvas && layerCtx) {
+          // Apply alpha to completed stroke
+          applyAlphaToStroke(layerCtx);
           setIsTapering(false);
           saveToHistory(activeLayerId, layerCtx);
+          composeLayers();
         }
       }
     } else {
@@ -959,43 +1147,61 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         {/* Tools */}
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-gray-300">Tools</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <Button
+          <div className="flex gap-1">
+            <button
               onClick={() => setTool("pen")}
-              variant={tool === "pen" ? "primary" : "secondary"}
-              size="sm"
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "pen" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Pen"
             >
-              ✏️ Pen
-            </Button>
-            <Button
+              ✏️
+            </button>
+            <button
               onClick={() => setTool("eraser")}
-              variant={tool === "eraser" ? "primary" : "secondary"}
-              size="sm"
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "eraser" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Eraser"
             >
-              🧹 Eraser
-            </Button>
-            <Button
+              🧹
+            </button>
+            <button
               onClick={() => setTool("blur")}
-              variant={tool === "blur" ? "primary" : "secondary"}
-              size="sm"
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "blur" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Blur"
             >
-              🌫️ Blur
-            </Button>
-            <Button
+              🌫️
+            </button>
+            <button
+              onClick={() => setTool("bucket")}
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "bucket" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Bucket Fill"
+            >
+              🪣
+            </button>
+            <button
               onClick={() => setTool("eyedropper")}
-              variant={tool === "eyedropper" ? "primary" : "secondary"}
-              size="sm"
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "eyedropper" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Eyedropper"
             >
-              💧 Eyedropper
-            </Button>
-            <Button
+              💧
+            </button>
+            <button
               onClick={() => setTool("pan")}
-              variant={tool === "pan" ? "primary" : "secondary"}
-              size="sm"
-              className="col-span-2"
+              className={`flex-1 py-2 px-1 text-xs rounded transition-colors ${
+                tool === "pan" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+              title="Pan (Space)"
             >
-              ✋ Pan (Space)
-            </Button>
+              ✋
+            </button>
           </div>
         </div>
 
@@ -1123,6 +1329,26 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                   className="flex-1"
                 />
                 <span className="text-xs text-gray-300 w-8">{rgb.b}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 w-6">A:</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round(alpha * 100)}
+                  onChange={(e) => {
+                    setAlpha(parseInt(e.target.value) / 100);
+                  }}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY < 0 ? 0.01 : -0.01;
+                    setAlpha(Math.max(0, Math.min(1, alpha + delta)));
+                  }}
+                  className="flex-1"
+                />
+                <span className="text-xs text-gray-300 w-8">{Math.round(alpha * 100)}%</span>
               </div>
             </div>
           </div>

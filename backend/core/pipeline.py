@@ -565,15 +565,10 @@ class DiffusionPipelineManager:
         if mask_image.size != (target_width, target_height):
             mask_image = mask_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-        # Parse prompt weights
-        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompts_with_weights(
-            prompt=params["prompt"],
-            negative_prompt=params.get("negative_prompt", ""),
-            pipeline=self.inpaint_pipeline
-        )
-
         # Build generation parameters
         gen_params = {
+            "prompt": params["prompt"],
+            "negative_prompt": params.get("negative_prompt", ""),
             "image": init_image,
             "mask_image": mask_image,
             "strength": params.get("denoising_strength", 0.75),
@@ -581,19 +576,6 @@ class DiffusionPipelineManager:
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
             "generator": generator,
         }
-
-        # Add prompt embeds
-        is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
-        if is_sdxl:
-            gen_params["prompt_embeds"] = prompt_embeds
-            gen_params["negative_prompt_embeds"] = negative_prompt_embeds
-            if pooled_prompt_embeds is not None:
-                gen_params["pooled_prompt_embeds"] = pooled_prompt_embeds
-            if negative_pooled_prompt_embeds is not None:
-                gen_params["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
-        else:
-            gen_params["prompt_embeds"] = prompt_embeds
-            gen_params["negative_prompt_embeds"] = negative_prompt_embeds
 
         # Add progress callback if provided
         if progress_callback:

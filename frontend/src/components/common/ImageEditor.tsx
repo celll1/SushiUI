@@ -9,7 +9,7 @@ interface ImageEditorProps {
   onClose: () => void;
 }
 
-type Tool = "pen" | "eraser" | "blur" | "select";
+type Tool = "pen" | "eraser" | "blur";
 
 interface HistoryState {
   imageData: ImageData;
@@ -19,15 +19,40 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tool, setTool] = useState<Tool>("pen");
   const [brushSize, setBrushSize] = useState(5);
-  const [color, setColor] = useState("#000000");
+  const [rgb, setRgb] = useState({ r: 0, g: 0, b: 0 });
+  const [hue, setHue] = useState(0);
+  const [saturation, setSaturation] = useState(100);
+  const [lightness, setLightness] = useState(0);
   const [isDrawing, setIsDrawing] = useState(false);
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
 
-  // Selection state
-  const [isSelecting, setIsSelecting] = useState(false);
-  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
+  // Calculate color from RGB
+  const getColorFromRGB = () => {
+    return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+  };
+
+  // Calculate color from HSL and lightness
+  const getColorFromHSL = () => {
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  };
+
+  // Update RGB when HSL changes
+  useEffect(() => {
+    const color = getColorFromHSL();
+    // Convert HSL to RGB for display
+    const temp = document.createElement('div');
+    temp.style.color = color;
+    document.body.appendChild(temp);
+    const computed = window.getComputedStyle(temp).color;
+    document.body.removeChild(temp);
+
+    const match = computed.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    if (match) {
+      setRgb({ r: parseInt(match[1]), g: parseInt(match[2]), b: parseInt(match[3]) });
+    }
+  }, [hue, saturation, lightness]);
 
   // Load image and initialize canvas
   useEffect(() => {
@@ -154,30 +179,24 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (!canvas || !ctx) return;
 
     const point = getCanvasPoint(e);
+    setIsDrawing(true);
 
-    if (tool === "select") {
-      setIsSelecting(true);
-      setSelectionStart(point);
-      setSelectionEnd(point);
-    } else {
-      setIsDrawing(true);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = brushSize;
 
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.lineWidth = brushSize;
-
-      if (tool === "pen") {
-        ctx.globalCompositeOperation = "source-over";
-        ctx.strokeStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(point.x, point.y);
-      } else if (tool === "eraser") {
-        ctx.globalCompositeOperation = "destination-out";
-        ctx.beginPath();
-        ctx.moveTo(point.x, point.y);
-      } else if (tool === "blur") {
-        applyBlur(ctx, point.x, point.y, brushSize);
-      }
+    if (tool === "pen") {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = getColorFromRGB();
+      ctx.beginPath();
+      ctx.moveTo(point.x, point.y);
+    } else if (tool === "eraser") {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "rgba(0,0,0,1)"; // Eraser needs a stroke style
+      ctx.beginPath();
+      ctx.moveTo(point.x, point.y);
+    } else if (tool === "blur") {
+      applyBlur(ctx, point.x, point.y, brushSize);
     }
   };
 
@@ -188,9 +207,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     const point = getCanvasPoint(e);
 
-    if (isSelecting && tool === "select") {
-      setSelectionEnd(point);
-    } else if (isDrawing) {
+    // Store screen coordinates for cursor preview
+    const rect = canvas.getBoundingClientRect();
+    setCursorPos({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
+
+    if (isDrawing) {
       if (tool === "pen" || tool === "eraser") {
         ctx.lineTo(point.x, point.y);
         ctx.stroke();
@@ -208,10 +232,12 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (isDrawing) {
       setIsDrawing(false);
       saveToHistory(ctx);
-    } else if (isSelecting) {
-      setIsSelecting(false);
-      // Selection is just visual for now
     }
+  };
+
+  const handleMouseLeave = () => {
+    setCursorPos(null);
+    handleMouseUp();
   };
 
   const handleSave = () => {
@@ -241,37 +267,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
-
-  // Draw selection rectangle
-  useEffect(() => {
-    if (!isSelecting || !selectionStart || !selectionEnd) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-
-    // Redraw from history to clear previous selection rectangle
-    if (history[historyIndex]) {
-      ctx.putImageData(history[historyIndex].imageData, 0, 0);
-    }
-
-    // Draw selection rectangle
-    ctx.strokeStyle = "#0000ff";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeRect(
-      selectionStart.x,
-      selectionStart.y,
-      selectionEnd.x - selectionStart.x,
-      selectionEnd.y - selectionStart.y
-    );
-    ctx.setLineDash([]);
-  }, [isSelecting, selectionStart, selectionEnd, history, historyIndex]);
-
-  const colors = [
-    "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF",
-    "#FFFF00", "#FF00FF", "#00FFFF", "#FFA500", "#800080"
-  ];
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
@@ -308,13 +303,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             >
               🌫️ Blur
             </Button>
-            <Button
-              onClick={() => setTool("select")}
-              variant={tool === "select" ? "primary" : "secondary"}
-              size="sm"
-            >
-              ▭ Select
-            </Button>
           </div>
 
           {/* Brush Size */}
@@ -331,25 +319,88 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             <span className="text-sm text-gray-300 w-8">{brushSize}</span>
           </div>
 
-          {/* Color Palette */}
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-300">Color:</label>
-            <div className="flex gap-1">
-              {colors.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setColor(c)}
-                  className={`w-8 h-8 rounded border-2 ${
-                    color === c ? "border-blue-500" : "border-gray-600"
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
+          {/* Color Picker */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded border-2 border-gray-600" style={{ backgroundColor: getColorFromRGB() }} />
+              <div className="flex-1 space-y-1">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-400 w-6">R:</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="255"
+                    value={rgb.r}
+                    onChange={(e) => setRgb({ ...rgb, r: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <span className="text-xs text-gray-300 w-8">{rgb.r}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-400 w-6">G:</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="255"
+                    value={rgb.g}
+                    onChange={(e) => setRgb({ ...rgb, g: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <span className="text-xs text-gray-300 w-8">{rgb.g}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-400 w-6">B:</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="255"
+                    value={rgb.b}
+                    onChange={(e) => setRgb({ ...rgb, b: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <span className="text-xs text-gray-300 w-8">{rgb.b}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Gradient Palette */}
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Hue:</label>
               <input
-                type="color"
-                value={color}
-                onChange={(e) => setColor(e.target.value)}
-                className="w-8 h-8 rounded border-2 border-gray-600"
+                type="range"
+                min="0"
+                max="360"
+                value={hue}
+                onChange={(e) => setHue(parseInt(e.target.value))}
+                className="w-full"
+                style={{
+                  background: `linear-gradient(to right,
+                    hsl(0, 100%, 50%),
+                    hsl(60, 100%, 50%),
+                    hsl(120, 100%, 50%),
+                    hsl(180, 100%, 50%),
+                    hsl(240, 100%, 50%),
+                    hsl(300, 100%, 50%),
+                    hsl(360, 100%, 50%))`
+                }}
+              />
+              <label className="text-xs text-gray-400 mb-1 block mt-2">Saturation:</label>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={saturation}
+                onChange={(e) => setSaturation(parseInt(e.target.value))}
+                className="w-full"
+              />
+              <label className="text-xs text-gray-400 mb-1 block mt-2">Lightness:</label>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={lightness}
+                onChange={(e) => setLightness(parseInt(e.target.value))}
+                className="w-full"
               />
             </div>
           </div>
@@ -376,16 +427,40 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         </div>
 
         {/* Canvas */}
-        <div className="bg-gray-800 p-4 rounded-lg mb-4 overflow-auto max-h-[60vh]">
-          <canvas
-            ref={canvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            className="max-w-full cursor-crosshair"
-            style={{ imageRendering: "pixelated" }}
-          />
+        <div className="bg-gray-800 p-4 rounded-lg mb-4 overflow-auto max-h-[60vh] relative">
+          <div className="relative inline-block">
+            <canvas
+              ref={canvasRef}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseLeave}
+              className="max-w-full cursor-none"
+              style={{ imageRendering: "pixelated" }}
+            />
+            {/* Brush Preview Cursor */}
+            {cursorPos && canvasRef.current && (() => {
+              const canvas = canvasRef.current;
+              const rect = canvas.getBoundingClientRect();
+              const scale = rect.width / canvas.width;
+              const scaledSize = brushSize * scale;
+
+              return (
+                <div
+                  className="absolute pointer-events-none rounded-full border-2"
+                  style={{
+                    left: `${cursorPos.x}px`,
+                    top: `${cursorPos.y}px`,
+                    width: `${scaledSize}px`,
+                    height: `${scaledSize}px`,
+                    transform: 'translate(-50%, -50%)',
+                    borderColor: tool === "eraser" ? "#ffffff" : getColorFromRGB(),
+                    backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.2)" : `${getColorFromRGB()}33`,
+                  }}
+                />
+              );
+            })()}
+          </div>
         </div>
 
         {/* Actions */}

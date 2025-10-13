@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
 import os
+import sys
+import subprocess
 from PIL import Image
 import io
 
@@ -94,7 +96,11 @@ async def generate_img2img(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     denoising_strength: float = Form(0.75),
+    sampler: str = Form("euler"),
+    schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
+    width: int = Form(1024),
+    height: int = Form(1024),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -104,6 +110,9 @@ async def generate_img2img(
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
 
+        # Resize input image to target dimensions
+        init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -111,11 +120,20 @@ async def generate_img2img(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "denoising_strength": denoising_strength,
+            "sampler": sampler,
+            "schedule_type": schedule_type,
             "seed": seed,
+            "width": width,
+            "height": height,
         }
-        result_image = pipeline_manager.generate_img2img(params, init_image)
+        print(f"img2img generation params: {params}")
 
-        # Save image
+        result_image, actual_seed = pipeline_manager.generate_img2img(params, init_image)
+
+        # Update params with actual seed
+        params["seed"] = actual_seed
+
+        # Save image with metadata
         filename = save_image_with_metadata(result_image, params, "img2img")
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
@@ -126,10 +144,10 @@ async def generate_img2img(
             prompt=prompt,
             negative_prompt=negative_prompt,
             model_name="",
-            sampler="",
+            sampler=f"{sampler} ({schedule_type})",
             steps=steps,
             cfg_scale=cfg_scale,
-            seed=seed,
+            seed=actual_seed,
             width=result_image.width,
             height=result_image.height,
             generation_type="img2img",
@@ -139,9 +157,12 @@ async def generate_img2img(
         db.commit()
         db.refresh(db_image)
 
-        return {"success": True, "image": db_image.to_dict()}
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
     except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"Error generating img2img: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/images")
@@ -304,3 +325,62 @@ async def get_schedule_types():
             for schedule_id in schedule_types
         ]
     }
+
+@router.post("/system/restart-backend")
+async def restart_backend():
+    """Restart the backend server"""
+    try:
+        import threading
+        import time
+        import signal
+
+        def do_restart():
+            try:
+                time.sleep(1)  # Wait for response to be sent
+
+                # On Windows, we need to use a different approach
+                if sys.platform == "win32":
+                    # Get the path to Python executable and main.py
+                    python_exe = sys.executable
+                    backend_dir = os.path.dirname(os.path.dirname(__file__))
+                    main_path = os.path.join(backend_dir, "main.py")
+
+                    print(f"Restarting backend: {python_exe} {main_path}")
+                    print(f"Working directory: {backend_dir}")
+
+                    # Start a new process
+                    subprocess.Popen([python_exe, main_path],
+                                   cwd=backend_dir,
+                                   creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+                    # Exit current process
+                    time.sleep(0.5)
+                    os._exit(0)
+                else:
+                    # Unix-like systems
+                    python_exe = sys.executable
+                    main_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "main.py")
+                    os.execv(python_exe, [python_exe, main_path])
+            except Exception as e:
+                import traceback
+                print(f"Error in do_restart: {str(e)}")
+                print(traceback.format_exc())
+
+        threading.Thread(target=do_restart, daemon=True).start()
+
+        return {"success": True, "message": "Backend restart scheduled"}
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"Restart backend error: {error_detail}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/system/restart-frontend")
+async def restart_frontend():
+    """Restart the frontend server (via npm)"""
+    try:
+        # This will send a signal to restart the frontend
+        # The frontend will need to handle this on its side
+        return {"success": True, "message": "Frontend restart signal sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

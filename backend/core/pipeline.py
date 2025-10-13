@@ -161,34 +161,84 @@ class DiffusionPipelineManager:
 
         return image, actual_seed
 
-    def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image) -> Image.Image:
-        """Generate image from image"""
+    def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from image
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
-            raise RuntimeError("img2img pipeline not loaded")
+            if not self.txt2img_pipeline:
+                raise RuntimeError("No model loaded. Please load a model first.")
+
+            print("Creating img2img pipeline from txt2img pipeline...")
+            # Check if SDXL
+            is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
+
+            # Create img2img pipeline from txt2img components
+            if is_sdxl:
+                self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**self.txt2img_pipeline.components)
+            else:
+                self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**self.txt2img_pipeline.components)
+
+            self.img2img_pipeline = self.img2img_pipeline.to(self.device)
+            print("img2img pipeline created successfully")
 
         # Apply extensions before generation
         for ext in self.extensions:
             if ext.enabled:
                 params = ext.process_before_generation(self.img2img_pipeline, params)
 
-        result = self.img2img_pipeline(
-            prompt=params["prompt"],
-            negative_prompt=params.get("negative_prompt", ""),
-            image=init_image,
-            strength=params.get("denoising_strength", 0.75),
-            num_inference_steps=params.get("steps", settings.default_steps),
-            guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
-            generator=torch.Generator(device=self.device).manual_seed(params.get("seed", -1)) if params.get("seed", -1) >= 0 else None,
-        )
+        # Set sampler and schedule type if specified
+        sampler = params.get("sampler", "euler")
+        schedule_type = params.get("schedule_type", "uniform")
+        if sampler:
+            try:
+                self.img2img_pipeline.scheduler = get_scheduler(self.img2img_pipeline, sampler, schedule_type)
+            except Exception as e:
+                print(f"Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
 
-        image = result.images[0]
+        # Create generator and get actual seed
+        seed = params.get("seed", -1)
+        if seed < 0:
+            # Generate random seed
+            import random
+            actual_seed = random.randint(0, 2**32 - 1)
+        else:
+            actual_seed = seed
+
+        # Prepare generation parameters
+        gen_params = {
+            "prompt": params["prompt"],
+            "negative_prompt": params.get("negative_prompt", ""),
+            "image": init_image,
+            "strength": params.get("denoising_strength", 0.75),
+            "num_inference_steps": params.get("steps", settings.default_steps),
+            "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
+            "generator": torch.Generator(device=self.device).manual_seed(actual_seed),
+        }
+
+        # Add progress callback if provided
+        if progress_callback:
+            gen_params["callback"] = progress_callback
+            gen_params["callback_steps"] = 1
+
+        # Generate image
+        try:
+            result = self.img2img_pipeline(**gen_params)
+            image = result.images[0]
+        except Exception as e:
+            print(f"Generation error: {e}")
+            print(f"Parameters used: {gen_params}")
+            raise
 
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image
+        return image, actual_seed
 
     def generate_inpaint(
         self,

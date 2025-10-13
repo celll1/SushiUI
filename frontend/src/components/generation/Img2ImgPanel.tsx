@@ -8,9 +8,22 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
-import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img } from "@/utils/api";
 
-const DEFAULT_PARAMS: GenerationParams = {
+interface Img2ImgParams {
+  prompt: string;
+  negative_prompt?: string;
+  steps?: number;
+  cfg_scale?: number;
+  sampler?: string;
+  schedule_type?: string;
+  seed?: number;
+  width?: number;
+  height?: number;
+  denoising_strength?: number;
+}
+
+const DEFAULT_PARAMS: Img2ImgParams = {
   prompt: "",
   negative_prompt: "",
   steps: 20,
@@ -20,20 +33,25 @@ const DEFAULT_PARAMS: GenerationParams = {
   seed: -1,
   width: 1024,
   height: 1024,
+  denoising_strength: 0.75,
 };
 
-const STORAGE_KEY = "txt2img_params";
-const PREVIEW_STORAGE_KEY = "txt2img_preview";
+const STORAGE_KEY = "img2img_params";
+const PREVIEW_STORAGE_KEY = "img2img_preview";
+const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
 
-export default function Txt2ImgPanel() {
-  const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
+export default function Img2ImgPanel() {
+  const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [inputImage, setInputImage] = useState<File | null>(null);
+  const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -41,13 +59,10 @@ export default function Txt2ImgPanel() {
 
     // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
-    console.log("Loading params from localStorage:", saved);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        console.log("Parsed params:", parsed);
         const merged = { ...DEFAULT_PARAMS, ...parsed };
-        console.log("Merged with defaults:", merged);
         setParams(merged);
       } catch (error) {
         console.error("Failed to load saved params:", error);
@@ -60,14 +75,33 @@ export default function Txt2ImgPanel() {
       setGeneratedImage(savedPreview);
     }
 
+    // Load input image preview
+    const savedInputPreview = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+    if (savedInputPreview) {
+      setInputImagePreview(savedInputPreview);
+    }
+
     loadSamplers();
     loadScheduleTypes();
+
+    // Listen for input image updates from txt2img or gallery
+    const handleInputUpdate = () => {
+      const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (newInput) {
+        setInputImagePreview(newInput);
+      }
+    };
+
+    window.addEventListener("img2img_input_updated", handleInputUpdate);
+
+    return () => {
+      window.removeEventListener("img2img_input_updated", handleInputUpdate);
+    };
   }, []);
 
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {
     if (isMounted) {
-      console.log("Saving params to localStorage:", params);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }
   }, [params, isMounted]);
@@ -82,33 +116,6 @@ export default function Txt2ImgPanel() {
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
     localStorage.removeItem(STORAGE_KEY);
-  };
-
-  const sendToImg2Img = () => {
-    if (!generatedImage) {
-      alert("No image to send");
-      return;
-    }
-    // Save image to img2img input storage
-    localStorage.setItem("img2img_input_image", generatedImage);
-    // Trigger a custom event to notify img2img tab
-    window.dispatchEvent(new Event("img2img_input_updated"));
-    alert("Image sent to img2img. Switch to img2img tab to use it.");
-  };
-
-  const importFromImage = (imageData: any) => {
-    const imported: GenerationParams = {
-      prompt: imageData.prompt || "",
-      negative_prompt: imageData.negative_prompt || "",
-      steps: imageData.steps || DEFAULT_PARAMS.steps,
-      cfg_scale: imageData.cfg_scale || DEFAULT_PARAMS.cfg_scale,
-      sampler: imageData.parameters?.sampler || DEFAULT_PARAMS.sampler,
-      schedule_type: imageData.parameters?.schedule_type || DEFAULT_PARAMS.schedule_type,
-      seed: imageData.seed || -1,
-      width: imageData.width || DEFAULT_PARAMS.width,
-      height: imageData.height || DEFAULT_PARAMS.height,
-    };
-    setParams(imported);
   };
 
   const loadSamplers = async () => {
@@ -129,9 +136,62 @@ export default function Txt2ImgPanel() {
     }
   };
 
+  const processImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload a valid image file');
+      return;
+    }
+
+    setInputImage(file);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const preview = event.target?.result as string;
+      setInputImagePreview(preview);
+      if (isMounted) {
+        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processImageFile(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processImageFile(file);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
+      return;
+    }
+
+    if (!inputImage && !inputImagePreview) {
+      alert("Please upload an input image");
       return;
     }
 
@@ -139,7 +199,7 @@ export default function Txt2ImgPanel() {
     setProgress(0);
     setTotalSteps(params.steps || 20);
 
-    // Simulate progress (since we don't have real-time updates from backend yet)
+    // Simulate progress
     const progressInterval = setInterval(() => {
       setProgress(prev => {
         if (prev < totalSteps) {
@@ -147,10 +207,17 @@ export default function Txt2ImgPanel() {
         }
         return prev;
       });
-    }, 200); // Rough estimation: 200ms per step
+    }, 200);
 
     try {
-      const result = await generateTxt2Img(params);
+      // Use inputImage if available, otherwise use inputImagePreview (for images sent from gallery/txt2img)
+      const imageSource = inputImage || inputImagePreview;
+      if (!imageSource) {
+        alert("No input image available");
+        return;
+      }
+
+      const result = await generateImg2Img(params, imageSource);
       setGeneratedImage(`/outputs/${result.image.filename}`);
 
       // Don't update seed parameter to keep -1 for continuous random generation
@@ -174,6 +241,49 @@ export default function Txt2ImgPanel() {
       <div className="space-y-4">
         <ModelSelector />
 
+        <Card title="Input Image">
+          <div className="space-y-4">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/webp"
+              onChange={handleImageUpload}
+              className="block w-full text-sm text-gray-400
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-lg file:border-0
+                file:text-sm file:font-medium
+                file:bg-blue-600 file:text-white
+                hover:file:bg-blue-700
+                file:cursor-pointer cursor-pointer"
+            />
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
+                isDragging
+                  ? 'border-blue-500 bg-gray-700'
+                  : 'border-gray-600'
+              }`}
+            >
+              {inputImagePreview ? (
+                <img
+                  src={inputImagePreview}
+                  alt="Input"
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <p className="text-gray-500 text-center px-4">
+                    {isDragging
+                      ? 'Drop image here'
+                      : 'Drag and drop an image here or use the file picker above'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+
         <Card title="Prompt">
           <Textarea
             label="Positive Prompt"
@@ -193,6 +303,14 @@ export default function Txt2ImgPanel() {
 
         <Card title="Parameters">
           <div className="space-y-4">
+            <Slider
+              label="Denoising Strength"
+              min={0}
+              max={1}
+              step={0.05}
+              value={params.denoising_strength}
+              onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
+            />
             <div className="grid grid-cols-2 gap-4">
               <Slider
                 label="Steps"
@@ -301,15 +419,6 @@ export default function Txt2ImgPanel() {
                 <p className="text-gray-500">No image generated yet</p>
               )}
             </div>
-            {generatedImage && (
-              <Button
-                onClick={sendToImg2Img}
-                variant="secondary"
-                className="w-full"
-              >
-                Send to img2img
-              </Button>
-            )}
           </div>
         </Card>
       </div>

@@ -49,6 +49,36 @@ export default function ImageGrid() {
     router.push("/generate");
   };
 
+  const sendToImg2Img = (image: GeneratedImage) => {
+    // Save image URL to img2img input storage
+    const imageUrl = `/outputs/${image.filename}`;
+    localStorage.setItem("img2img_input_image", imageUrl);
+
+    // Trigger event to notify img2img tab
+    window.dispatchEvent(new Event("img2img_input_updated"));
+
+    // Navigate to generate page with img2img tab
+    router.push("/generate?tab=img2img");
+  };
+
+  const importToImg2Img = (image: GeneratedImage) => {
+    const params = {
+      prompt: image.prompt,
+      negative_prompt: image.negative_prompt,
+      steps: image.steps,
+      cfg_scale: image.cfg_scale,
+      sampler: image.parameters?.sampler || "euler",
+      schedule_type: image.parameters?.schedule_type || "uniform",
+      seed: image.seed,
+      width: image.width,
+      height: image.height,
+      denoising_strength: 0.75,
+    };
+
+    localStorage.setItem("img2img_params", JSON.stringify(params));
+    router.push("/generate?tab=img2img");
+  };
+
   if (loading) {
     return <div className="text-center py-8">Loading images...</div>;
   }
@@ -99,11 +129,27 @@ export default function ImageGrid() {
                   </div>
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  onClick={() => importToTxt2Img(selectedImage)}
+                  className="w-full"
+                >
+                  Import to txt2img
+                </Button>
+                <Button
+                  onClick={() => sendToImg2Img(selectedImage)}
+                  variant="secondary"
+                  className="w-full"
+                >
+                  Send to img2img
+                </Button>
+              </div>
               <Button
-                onClick={() => importToTxt2Img(selectedImage)}
+                onClick={() => importToImg2Img(selectedImage)}
+                variant="secondary"
                 className="w-full"
               >
-                Import to txt2img
+                Import to img2img
               </Button>
             </div>
           </Card>

@@ -47,15 +47,29 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   return response.data;
 };
 
-export const generateImg2Img = async (params: Img2ImgParams, image: File) => {
+export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
   const formData = new FormData();
-  formData.append("image", image);
+
+  // Handle both File objects and data URLs
+  if (typeof image === 'string') {
+    // Convert data URL or URL to blob
+    const response = await fetch(image);
+    const blob = await response.blob();
+    formData.append("image", blob, "input.png");
+  } else {
+    formData.append("image", image);
+  }
+
   formData.append("prompt", params.prompt);
   formData.append("negative_prompt", params.negative_prompt || "");
   formData.append("steps", String(params.steps || 20));
   formData.append("cfg_scale", String(params.cfg_scale || 7.0));
   formData.append("denoising_strength", String(params.denoising_strength || 0.75));
+  formData.append("sampler", params.sampler || "euler");
+  formData.append("schedule_type", params.schedule_type || "uniform");
   formData.append("seed", String(params.seed || -1));
+  formData.append("width", String(params.width || 1024));
+  formData.append("height", String(params.height || 1024));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -125,6 +139,25 @@ export const getSamplers = async () => {
 export const getScheduleTypes = async () => {
   const response = await api.get("/schedule-types");
   return response.data;
+};
+
+export const restartBackend = async () => {
+  const response = await api.post("/system/restart-backend");
+  return response.data;
+};
+
+export const restartFrontend = async () => {
+  // Reload the page to restart the frontend
+  window.location.reload();
+};
+
+export const restartBoth = async () => {
+  // First restart backend
+  await api.post("/system/restart-backend");
+  // Then reload the page after a delay
+  setTimeout(() => {
+    window.location.reload();
+  }, 2000);
 };
 
 export default api;

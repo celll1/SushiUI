@@ -29,6 +29,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [rotation, setRotation] = useState(0);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
@@ -197,9 +198,28 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     const containerRect = container.getBoundingClientRect();
 
-    // Calculate canvas coordinates from screen coordinates
-    const x = (e.clientX - containerRect.left - panOffset.x) / zoom;
-    const y = (e.clientY - containerRect.top - panOffset.y) / zoom;
+    // Screen coordinates relative to container
+    const screenX = e.clientX - containerRect.left - panOffset.x;
+    const screenY = e.clientY - containerRect.top - panOffset.y;
+
+    // Center of the rotated canvas
+    const centerX = (canvas.width * zoom) / 2;
+    const centerY = (canvas.height * zoom) / 2;
+
+    // Apply inverse rotation
+    const rad = (-rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const relX = screenX - centerX;
+    const relY = screenY - centerY;
+
+    const rotatedX = relX * cos - relY * sin + centerX;
+    const rotatedY = relX * sin + relY * cos + centerY;
+
+    // Convert to canvas coordinates
+    const x = rotatedX / zoom;
+    const y = rotatedY / zoom;
 
     return { x, y };
   };
@@ -361,10 +381,43 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
-    setZoom(newZoom);
+
+    if (e.shiftKey) {
+      // Shift + Wheel: Rotate
+      const delta = e.deltaY > 0 ? -1 : 1;
+      setRotation((prev) => (prev + delta + 360) % 360);
+    } else {
+      // Wheel: Zoom
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
+      setZoom(newZoom);
+    }
   }, [zoom]);
+
+  const resetViewTransform = () => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    // Reset zoom to fit
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const scaleX = containerWidth / canvas.width;
+    const scaleY = containerHeight / canvas.height;
+    const initialZoom = Math.min(scaleX, scaleY, 1);
+    setZoom(initialZoom);
+
+    // Reset rotation
+    setRotation(0);
+
+    // Center the image
+    const displayWidth = canvas.width * initialZoom;
+    const displayHeight = canvas.height * initialZoom;
+    setPanOffset({
+      x: (containerWidth - displayWidth) / 2,
+      y: (containerHeight - displayHeight) / 2,
+    });
+  };
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     // Pan tool with spacebar
@@ -374,7 +427,13 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
 
     if (e.ctrlKey || e.metaKey) {
-      if (e.key === "z" && !e.shiftKey) {
+      // Ctrl+0: Reset view transform
+      if (e.key === "0") {
+        e.preventDefault();
+        resetViewTransform();
+      }
+      // Undo/Redo
+      else if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
       } else if (e.key === "z" && e.shiftKey || e.key === "y") {
@@ -690,10 +749,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           </div>
         </div>
 
-        {/* Zoom */}
+        {/* View Transform */}
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-gray-300">Zoom</h3>
+          <div className="flex justify-between items-center">
+            <h3 className="text-sm font-semibold text-gray-300">View</h3>
+            <Button onClick={resetViewTransform} variant="secondary" size="sm" className="text-xs">
+              Reset (Ctrl+0)
+            </Button>
+          </div>
+
           <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-300 w-12">Zoom:</label>
             <input
               type="range"
               min="0.1"
@@ -710,6 +776,26 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
               className="flex-1"
             />
             <span className="text-sm text-gray-300 w-12">{zoom.toFixed(1)}x</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-300 w-12">Rotate:</label>
+            <input
+              type="range"
+              min="0"
+              max="360"
+              step="1"
+              value={rotation}
+              onChange={(e) => setRotation(parseInt(e.target.value))}
+              onWheel={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const delta = e.deltaY < 0 ? 1 : -1;
+                setRotation((prev) => (prev + delta + 360) % 360);
+              }}
+              className="flex-1"
+            />
+            <span className="text-sm text-gray-300 w-12">{rotation}°</span>
           </div>
         </div>
 
@@ -760,19 +846,26 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
           }}
         >
-          <canvas
-            ref={canvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseLeave}
-            className={tool === "pan" ? "cursor-grab" : "cursor-none"}
+          <div
             style={{
-              imageRendering: "pixelated",
-              width: canvasRef.current ? `${canvasRef.current.width * zoom}px` : undefined,
-              height: canvasRef.current ? `${canvasRef.current.height * zoom}px` : undefined,
+              transform: `rotate(${rotation}deg)`,
+              transformOrigin: canvasRef.current ? `${canvasRef.current.width * zoom / 2}px ${canvasRef.current.height * zoom / 2}px` : 'center',
             }}
-          />
+          >
+            <canvas
+              ref={canvasRef}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseLeave}
+              className={tool === "pan" ? "cursor-grab" : "cursor-none"}
+              style={{
+                imageRendering: "pixelated",
+                width: canvasRef.current ? `${canvasRef.current.width * zoom}px` : undefined,
+                height: canvasRef.current ? `${canvasRef.current.height * zoom}px` : undefined,
+              }}
+            />
+          </div>
         </div>
         {/* Brush Preview Cursor - positioned relative to container */}
         {cursorPos && canvasRef.current && tool !== "pan" && (() => {

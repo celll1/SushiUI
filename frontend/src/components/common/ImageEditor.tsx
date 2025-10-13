@@ -378,44 +378,71 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     return { x, y };
   };
 
-  const applyBlur = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) => {
-    const imageData = ctx.getImageData(
-      Math.max(0, x - radius),
-      Math.max(0, y - radius),
-      radius * 2,
-      radius * 2
-    );
+  const applyBlur = (ctx: CanvasRenderingContext2D, centerX: number, centerY: number, brushSize: number) => {
+    const blurKernel = Math.max(1, Math.floor(brushSize / 8)); // Small kernel for subtle blur
+    const blurRadius = brushSize * 0.5; // brushSize is diameter, so radius is half
 
-    // Simple box blur
+    const startX = Math.max(0, Math.floor(centerX - blurRadius));
+    const startY = Math.max(0, Math.floor(centerY - blurRadius));
+    const regionWidth = Math.min(ctx.canvas.width - startX, Math.ceil(blurRadius * 2));
+    const regionHeight = Math.min(ctx.canvas.height - startY, Math.ceil(blurRadius * 2));
+
+    if (regionWidth <= 0 || regionHeight <= 0) return;
+
+    const imageData = ctx.getImageData(startX, startY, regionWidth, regionHeight);
     const pixels = imageData.data;
-    const width = imageData.width;
-    const height = imageData.height;
-    const blurred = new Uint8ClampedArray(pixels);
+    const width = regionWidth;
+    const height = regionHeight;
+    const original = new Uint8ClampedArray(pixels);
 
-    for (let y = 1; y < height - 1; y++) {
-      for (let x = 1; x < width - 1; x++) {
-        const idx = (y * width + x) * 4;
+    // Apply blur only within circular area matching brush size
+    for (let py = 0; py < height; py++) {
+      for (let px = 0; px < width; px++) {
+        // Calculate distance from center
+        const worldX = startX + px;
+        const worldY = startY + py;
+        const dist = Math.sqrt((worldX - centerX) ** 2 + (worldY - centerY) ** 2);
+
+        // Only blur within brush radius
+        if (dist > blurRadius) continue;
+
+        // Smooth falloff at edges
+        const edgeFalloff = 1 - Math.pow(dist / blurRadius, 2);
+        const blendFactor = edgeFalloff * 0.5; // Max 50% blur
+
+        const idx = (py * width + px) * 4;
 
         // Average surrounding pixels
-        let r = 0, g = 0, b = 0, count = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const nidx = ((y + dy) * width + (x + dx)) * 4;
-            r += pixels[nidx];
-            g += pixels[nidx + 1];
-            b += pixels[nidx + 2];
-            count++;
+        let r = 0, g = 0, b = 0, a = 0, count = 0;
+        for (let dy = -blurKernel; dy <= blurKernel; dy++) {
+          for (let dx = -blurKernel; dx <= blurKernel; dx++) {
+            const ny = py + dy;
+            const nx = px + dx;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const nidx = (ny * width + nx) * 4;
+              r += original[nidx];
+              g += original[nidx + 1];
+              b += original[nidx + 2];
+              a += original[nidx + 3];
+              count++;
+            }
           }
         }
 
-        blurred[idx] = r / count;
-        blurred[idx + 1] = g / count;
-        blurred[idx + 2] = b / count;
+        // Blend blurred with original
+        const blurredR = r / count;
+        const blurredG = g / count;
+        const blurredB = b / count;
+        const blurredA = a / count;
+
+        pixels[idx] = original[idx] * (1 - blendFactor) + blurredR * blendFactor;
+        pixels[idx + 1] = original[idx + 1] * (1 - blendFactor) + blurredG * blendFactor;
+        pixels[idx + 2] = original[idx + 2] * (1 - blendFactor) + blurredB * blendFactor;
+        pixels[idx + 3] = original[idx + 3] * (1 - blendFactor) + blurredA * blendFactor;
       }
     }
 
-    const blurredImageData = new ImageData(blurred, width, height);
-    ctx.putImageData(blurredImageData, Math.max(0, x - radius), Math.max(0, y - radius));
+    ctx.putImageData(imageData, startX, startY);
   };
 
   // Apply alpha to completed stroke
@@ -1026,12 +1053,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const container = containerRef.current;
     if (!container) return;
 
-    if (e.shiftKey) {
-      // Shift + Wheel: Rotate
-      const delta = e.deltaY > 0 ? -1 : 1;
-      setRotation((prev) => (prev + delta + 360) % 360);
-    } else {
-      // Wheel: Zoom centered on cursor position
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl + Wheel: Zoom centered on cursor position
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
 
@@ -1050,6 +1073,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
       setZoom(newZoom);
       setPanOffset({ x: newPanX, y: newPanY });
+    } else if (e.shiftKey) {
+      // Shift + Wheel: Rotate
+      const delta = e.deltaY > 0 ? -1 : 1;
+      setRotation((prev) => (prev + delta + 360) % 360);
+    } else {
+      // Wheel: Adjust brush size (larger steps for faster adjustment)
+      const delta = e.deltaY > 0 ? -3 : 3;
+      setBrushSize((prev) => Math.max(1, Math.min(256, prev + delta)));
     }
   }, [zoom, panOffset]);
 

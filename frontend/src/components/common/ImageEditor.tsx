@@ -367,10 +367,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           const y = fromY + (toY - fromY) * t;
 
           // Gradual exit tapering based on taperProgress
-          const exitFactor = 1 - taperProgress;
+          // taperProgress: 0 = normal, 1 = fully tapered
+          const exitFactor = Math.max(0.05, 1 - taperProgress * 0.95); // Taper to 5% size
 
-          const randomOpacity = Math.max(0, (0.3 + Math.random() * 0.4) * exitFactor);
-          const randomSize = Math.max(0.1, size * pressure * (0.8 + Math.random() * 0.4) * exitFactor);
+          const randomOpacity = Math.max(0.05, (0.3 + Math.random() * 0.4) * exitFactor);
+          const randomSize = Math.max(0.5, size * pressure * (0.8 + Math.random() * 0.4) * exitFactor);
 
           ctx.globalAlpha = randomOpacity;
           ctx.fillStyle = color;
@@ -384,15 +385,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       case "gpen":
         // G-pen - varies thickness based on velocity with gradual exit tapering
         const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
-        const taperFactor = 1 - taperProgress * 0.8; // Taper down to 20% size
+        // taperProgress: 0 = normal, 1 = fully tapered
+        const taperFactor = Math.max(0.1, 1 - taperProgress * 0.9); // Taper down to 10% size
         const gpenPressure = pressure * taperFactor;
 
-        const gpenSize = Math.max(0.1, size * gpenPressure * velocityFactor);
+        const gpenSize = Math.max(0.5, size * gpenPressure * velocityFactor);
         ctx.strokeStyle = color;
         ctx.lineWidth = gpenSize;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.globalAlpha = Math.max(0.1, 1 - taperProgress * 0.5);
+        ctx.globalAlpha = Math.max(0.1, 1 - taperProgress * 0.7);
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
         ctx.lineTo(toX, toY);
@@ -417,16 +419,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           }
 
           // Gradual exit tapering based on taperProgress
-          const exitTaper = 1 - taperProgress * 0.9; // Taper down to 10% size
+          // taperProgress: 0 = normal, 1 = fully tapered
+          const exitTaper = Math.max(0.05, 1 - taperProgress * 0.95); // Taper down to 5% size
           tapering *= exitTaper;
 
-          const currentSize = Math.max(0.1, size * pressure * tapering);
+          const currentSize = Math.max(0.5, size * pressure * tapering);
 
           // Draw soft brush with multiple layers for blur effect
           const layers = 4;
           for (let layer = 0; layer < layers; layer++) {
             const layerRatio = (layer + 1) / layers;
-            const layerSize = Math.max(0.1, currentSize * (0.4 + layerRatio * 0.6));
+            const layerSize = Math.max(0.5, currentSize * (0.4 + layerRatio * 0.6));
             const layerAlpha = (0.15 / layers) * (1 - layer / layers) * exitTaper;
 
             ctx.globalAlpha = Math.max(0, layerAlpha);
@@ -437,10 +440,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           }
 
           // Core solid part
-          ctx.globalAlpha = Math.max(0, 0.8 * tapering * exitTaper);
+          ctx.globalAlpha = Math.max(0.05, 0.8 * tapering * exitTaper);
           ctx.fillStyle = color;
           ctx.beginPath();
-          ctx.arc(x, y, Math.max(0.1, currentSize * 0.5), 0, Math.PI * 2);
+          ctx.arc(x, y, Math.max(0.5, currentSize * 0.5), 0, Math.PI * 2);
           ctx.fill();
         }
 
@@ -624,34 +627,34 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (isDrawing) {
       // Apply gradual exit tapering for pencil, gpen, and fude
       if (tool === "pen" && brushType !== "normal" && lastPointRef.current) {
-        const startPoint = lastPointRef.current;
+        let currentX = lastPointRef.current.x;
+        let currentY = lastPointRef.current.y;
 
         // Draw trailing taper strokes
-        const taperSteps = 8; // Number of steps for gradual taper
+        const taperSteps = 10; // Number of steps for gradual taper
         for (let i = 1; i <= taperSteps; i++) {
           const progress = i / taperSteps;
-          taperProgressRef.current = progress;
 
-          // Small movement for trailing effect
-          const trailX = startPoint.x + (Math.random() - 0.5) * 2;
-          const trailY = startPoint.y + (Math.random() - 0.5) * 2;
+          // Calculate next position with slight movement for natural trailing
+          const nextX = currentX + (Math.random() - 0.5) * brushSize * 0.3;
+          const nextY = currentY + (Math.random() - 0.5) * brushSize * 0.3;
 
           drawWithBrush(
             editCtx,
-            startPoint.x,
-            startPoint.y,
-            trailX,
-            trailY,
+            currentX,
+            currentY,
+            nextX,
+            nextY,
             brushSize,
             getColorFromRGB(),
-            0.5 * (1 - progress * 0.5), // Gradually reduce pressure
+            Math.max(0.1, 1 - progress * 0.9), // Gradually reduce pressure to near 0
             0,
-            strokeDistanceRef.current,
-            progress // Gradual taper progress
+            strokeDistanceRef.current + i,
+            progress // Gradual taper progress (0 to 1)
           );
 
-          startPoint.x = trailX;
-          startPoint.y = trailY;
+          currentX = nextX;
+          currentY = nextY;
         }
 
         composeLayers();

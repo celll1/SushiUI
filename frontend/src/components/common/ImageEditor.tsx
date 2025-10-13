@@ -20,6 +20,7 @@ interface LayerInfo {
   visible: boolean;
   opacity: number;
   editable: boolean; // Can this layer be drawn on?
+  deletable: boolean; // Can this layer be deleted?
 }
 
 interface HistoryState {
@@ -36,8 +37,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
   // Layer management state
   const [layers, setLayers] = useState<LayerInfo[]>([
-    { id: "base", name: "Base", visible: true, opacity: 1, editable: false },
-    { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true },
+    { id: "base", name: "Base", visible: true, opacity: 1, editable: false, deletable: false },
+    { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true, deletable: false }, // First layer not deletable
   ]);
   const [activeLayerId, setActiveLayerId] = useState<string>("layer1");
 
@@ -772,6 +773,60 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     }, "image/png");
   };
 
+  // Layer management functions
+  const addLayer = () => {
+    const editableLayers = layers.filter(l => l.editable);
+    if (editableLayers.length >= 3) {
+      alert("Maximum 3 editable layers allowed");
+      return;
+    }
+
+    // Find the smallest available layer number (1, 2, or 3)
+    const existingNumbers = layers
+      .filter(l => l.id.startsWith('layer'))
+      .map(l => parseInt(l.id.replace('layer', '')))
+      .filter(n => !isNaN(n));
+
+    let layerNumber = 1;
+    while (existingNumbers.includes(layerNumber) && layerNumber <= 3) {
+      layerNumber++;
+    }
+
+    const newLayerId = `layer${layerNumber}`;
+    const newLayer: LayerInfo = {
+      id: newLayerId,
+      name: `Layer ${layerNumber}`,
+      visible: true,
+      opacity: 1,
+      editable: true,
+      deletable: layerNumber > 1, // Layer 1 is not deletable
+    };
+
+    setLayers(prev => [...prev, newLayer]);
+    setActiveLayerId(newLayerId);
+  };
+
+  const deleteLayer = (layerId: string) => {
+    const layer = layers.find(l => l.id === layerId);
+    if (!layer || !layer.deletable) return;
+
+    if (!confirm(`Delete ${layer.name}?`)) return;
+
+    // Remove layer from state
+    setLayers(prev => prev.filter(l => l.id !== layerId));
+
+    // Remove canvas from map
+    layerCanvasRefs.current.delete(layerId);
+
+    // If deleting active layer, switch to another editable layer
+    if (activeLayerId === layerId) {
+      const remainingEditableLayers = layers.filter(l => l.editable && l.id !== layerId);
+      if (remainingEditableLayers.length > 0) {
+        setActiveLayerId(remainingEditableLayers[0].id);
+      }
+    }
+  };
+
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
 
@@ -1345,7 +1400,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
         {/* Layer Panel - Bottom Right */}
         <div className="absolute bottom-4 right-4 bg-gray-900 bg-opacity-95 rounded-lg p-3 min-w-[200px] max-w-[300px]">
-          <div className="text-xs font-semibold text-gray-300 mb-2">Layers</div>
+          <div className="flex justify-between items-center mb-2">
+            <div className="text-xs font-semibold text-gray-300">Layers</div>
+            <button
+              onClick={addLayer}
+              className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-white transition-colors"
+              title="Add new layer (max 3)"
+            >
+              + Add
+            </button>
+          </div>
           <div className="space-y-1">
             {[...layers].reverse().map((layer) => (
               <div
@@ -1388,27 +1452,44 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                   <div className="w-2 h-2 bg-blue-400 rounded-full" />
                 )}
 
-                {/* Clear Layer Button (only for editable layers) */}
+                {/* Layer Action Buttons */}
                 {layer.editable && (
-                  <button
-                    className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`Clear all content on ${layer.name}?`)) {
-                        const canvas = getLayerCanvas(layer.id);
-                        const ctx = canvas?.getContext("2d");
-                        if (canvas && ctx) {
-                          ctx.clearRect(0, 0, canvas.width, canvas.height);
-                          composeLayers();
-                          // Save to history
-                          saveToHistory(layer.id, ctx);
+                  <div className="flex gap-1">
+                    {/* Clear Layer Button */}
+                    <button
+                      className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-yellow-400 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(`Clear all content on ${layer.name}?`)) {
+                          const canvas = getLayerCanvas(layer.id);
+                          const ctx = canvas?.getContext("2d");
+                          if (canvas && ctx) {
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            composeLayers();
+                            // Save to history
+                            saveToHistory(layer.id, ctx);
+                          }
                         }
-                      }
-                    }}
-                    title="Clear layer"
-                  >
-                    🗑️
-                  </button>
+                      }}
+                      title="Clear layer"
+                    >
+                      🧹
+                    </button>
+
+                    {/* Delete Layer Button (only for deletable layers) */}
+                    {layer.deletable && (
+                      <button
+                        className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteLayer(layer.id);
+                        }}
+                        title="Delete layer"
+                      >
+                        ❌
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

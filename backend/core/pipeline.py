@@ -409,22 +409,47 @@ class DiffusionPipelineManager:
                 latent_height = target_height // 8
                 latent_width = target_width // 8
 
-                # Map resampling method to torch interpolation mode
-                torch_mode_map = {
-                    "nearest": "nearest",
-                    "bilinear": "bilinear",
-                    "bicubic": "bicubic",
-                    "lanczos": "bicubic",  # Lanczos not available in torch, use bicubic
-                }
-                torch_mode = torch_mode_map.get(resampling_method, "bicubic")
+                # Resize latent with selected resampling method
+                if resampling_method == "lanczos":
+                    # Use scipy for Lanczos (not available in PyTorch)
+                    from scipy.ndimage import zoom
+                    import numpy as np
 
-                # Resize latent
-                resized_latent = F.interpolate(
-                    latent,
-                    size=(latent_height, latent_width),
-                    mode=torch_mode,
-                    align_corners=False if torch_mode != "nearest" else None
-                )
+                    # Convert to numpy for scipy processing
+                    latent_np = latent.cpu().numpy()
+                    batch, channels, h, w = latent_np.shape
+
+                    # Calculate zoom factors
+                    zoom_h = latent_height / h
+                    zoom_w = latent_width / w
+
+                    # Apply Lanczos resampling (order=3 for Lanczos-3)
+                    resized_list = []
+                    for b in range(batch):
+                        resized_channels = []
+                        for c in range(channels):
+                            # zoom with Lanczos kernel (order=3)
+                            resized_channel = zoom(latent_np[b, c], (zoom_h, zoom_w), order=3, mode='reflect')
+                            resized_channels.append(resized_channel)
+                        resized_list.append(np.stack(resized_channels))
+
+                    resized_np = np.stack(resized_list)
+                    resized_latent = torch.from_numpy(resized_np).to(device=latent.device, dtype=latent.dtype)
+                else:
+                    # Use PyTorch's built-in interpolation
+                    torch_mode_map = {
+                        "nearest": "nearest",
+                        "bilinear": "bilinear",
+                        "bicubic": "bicubic",
+                    }
+                    torch_mode = torch_mode_map.get(resampling_method, "bicubic")
+
+                    resized_latent = F.interpolate(
+                        latent,
+                        size=(latent_height, latent_width),
+                        mode=torch_mode,
+                        align_corners=False if torch_mode != "nearest" else None
+                    )
 
                 # Decode latent back to image
                 with torch.no_grad():

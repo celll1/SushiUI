@@ -390,7 +390,7 @@ export default function Img2ImgPanel() {
               <Select
                 label="Resampling Method"
                 options={[
-                  { value: "lanczos", label: params.resize_mode === "latent" ? "Lanczos (→ Bicubic)" : "Lanczos (High Quality)" },
+                  { value: "lanczos", label: "Lanczos (High Quality)" },
                   { value: "bicubic", label: "Bicubic" },
                   { value: "bilinear", label: "Bilinear" },
                   { value: "nearest", label: "Nearest (Pixelated)" },

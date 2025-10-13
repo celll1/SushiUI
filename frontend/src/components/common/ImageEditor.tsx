@@ -457,7 +457,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   };
 
   // Flood fill algorithm for bucket tool with tolerance for anti-aliased edges
-  const floodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: string, tolerance: number = 10) => {
+  const floodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: string, tolerance: number = 100) => {
     const canvas = ctx.canvas;
     const width = canvas.width;
     const height = canvas.height;
@@ -488,27 +488,28 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const targetB = data[startIdx + 2];
     const targetA = data[startIdx + 3];
 
+    // Calculate color distance
+    const colorDistance = (r: number, g: number, b: number, a: number): number => {
+      const dr = r - targetR;
+      const dg = g - targetG;
+      const db = b - targetB;
+      const da = a - targetA;
+      return Math.sqrt(dr*dr + dg*dg + db*db + da*da);
+    };
+
     // If target color is same as fill color, no need to fill
-    if (Math.abs(targetR - fillR) <= tolerance &&
-        Math.abs(targetG - fillG) <= tolerance &&
-        Math.abs(targetB - fillB) <= tolerance &&
-        Math.abs(targetA - fillA) <= tolerance) {
+    if (colorDistance(fillR, fillG, fillB, fillA) <= tolerance * 2) {
       return;
     }
 
-    // Stack-based flood fill
+    // Stack-based flood fill with 8-directional search
     const stack: Array<[number, number]> = [[startX, startY]];
     const visited = new Set<number>();
 
     const colorMatch = (x: number, y: number): boolean => {
       const idx = (y * width + x) * 4;
-      // Use tolerance to match similar colors (for anti-aliased edges)
-      return (
-        Math.abs(data[idx] - targetR) <= tolerance &&
-        Math.abs(data[idx + 1] - targetG) <= tolerance &&
-        Math.abs(data[idx + 2] - targetB) <= tolerance &&
-        Math.abs(data[idx + 3] - targetA) <= tolerance
-      );
+      const distance = colorDistance(data[idx], data[idx + 1], data[idx + 2], data[idx + 3]);
+      return distance <= tolerance * 2; // Scale tolerance for distance metric
     };
 
     while (stack.length > 0) {
@@ -535,11 +536,15 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       data[idx + 2] = fillB;
       data[idx + 3] = fillA;
 
-      // Add neighbors to stack
-      stack.push([x + 1, y]);
-      stack.push([x - 1, y]);
-      stack.push([x, y + 1]);
-      stack.push([x, y - 1]);
+      // Add neighbors to stack (8-directional for better gap filling)
+      stack.push([x + 1, y]);     // right
+      stack.push([x - 1, y]);     // left
+      stack.push([x, y + 1]);     // down
+      stack.push([x, y - 1]);     // up
+      stack.push([x + 1, y + 1]); // bottom-right
+      stack.push([x + 1, y - 1]); // top-right
+      stack.push([x - 1, y + 1]); // bottom-left
+      stack.push([x - 1, y - 1]); // top-left
     }
 
     // Put modified data back

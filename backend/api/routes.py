@@ -101,6 +101,8 @@ async def generate_img2img(
     seed: int = Form(-1),
     width: int = Form(1024),
     height: int = Form(1024),
+    resize_mode: str = Form("image"),
+    resampling_method: str = Form("lanczos"),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -109,9 +111,6 @@ async def generate_img2img(
         # Load input image
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
-
-        # Resize input image to target dimensions
-        init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
 
         # Generate image
         params = {
@@ -125,6 +124,8 @@ async def generate_img2img(
             "seed": seed,
             "width": width,
             "height": height,
+            "resize_mode": resize_mode,
+            "resampling_method": resampling_method,
         }
         print(f"img2img generation params: {params}")
 

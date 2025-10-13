@@ -34,6 +34,8 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   width: 1024,
   height: 1024,
   denoising_strength: 0.75,
+  resize_mode: "image",
+  resampling_method: "lanczos",
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -375,6 +377,29 @@ export default function Img2ImgPanel() {
               value={params.denoising_strength}
               onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
             />
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="Resize Mode"
+                options={[
+                  { value: "image", label: "Resize Image" },
+                  { value: "latent", label: "Resize Latent" },
+                ]}
+                value={params.resize_mode}
+                onChange={(e) => setParams({ ...params, resize_mode: e.target.value })}
+              />
+              <Select
+                label="Resampling Method"
+                options={[
+                  { value: "lanczos", label: "Lanczos (High Quality)" },
+                  { value: "bicubic", label: "Bicubic" },
+                  { value: "bilinear", label: "Bilinear" },
+                  { value: "nearest", label: "Nearest (Pixelated)" },
+                ]}
+                value={params.resampling_method}
+                onChange={(e) => setParams({ ...params, resampling_method: e.target.value })}
+                disabled={params.resize_mode === "latent"}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <Slider
                 label="Steps"

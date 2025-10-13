@@ -359,14 +359,27 @@ class DiffusionPipelineManager:
         # Check if SDXL
         is_sdxl = isinstance(self.img2img_pipeline, StableDiffusionXLImg2ImgPipeline)
 
-        # Resize input image if width/height are specified
+        # Get resize parameters
         target_width = params.get("width")
         target_height = params.get("height")
-        if target_width and target_height:
+        resize_mode = params.get("resize_mode", "image")
+        resampling_method = params.get("resampling_method", "lanczos")
+
+        # Resize input image if width/height are specified and mode is "image"
+        if target_width and target_height and resize_mode == "image":
             if init_image.size != (target_width, target_height):
-                print(f"Resizing input image from {init_image.size} to {target_width}x{target_height}")
-                # Use LANCZOS for high-quality downsampling, or LANCZOS for upsampling
-                init_image = init_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                print(f"Resizing input image from {init_image.size} to {target_width}x{target_height} using {resampling_method}")
+
+                # Map resampling method name to PIL constant
+                resampling_map = {
+                    "lanczos": Image.Resampling.LANCZOS,
+                    "bicubic": Image.Resampling.BICUBIC,
+                    "bilinear": Image.Resampling.BILINEAR,
+                    "nearest": Image.Resampling.NEAREST,
+                }
+                resampling = resampling_map.get(resampling_method, Image.Resampling.LANCZOS)
+
+                init_image = init_image.resize((target_width, target_height), resampling)
 
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
@@ -383,6 +396,12 @@ class DiffusionPipelineManager:
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
             "generator": torch.Generator(device=self.device).manual_seed(actual_seed),
         }
+
+        # Add size parameters for latent resize mode
+        if resize_mode == "latent" and target_width and target_height:
+            print(f"Using latent resize mode: {target_width}x{target_height}")
+            gen_params["width"] = target_width
+            gen_params["height"] = target_height
 
         # Use embeds if weights are present, otherwise use text prompts
         if prompt_embeds is not None:

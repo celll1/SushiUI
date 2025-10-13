@@ -22,6 +22,8 @@ export interface GenerationParams {
 
 export interface Img2ImgParams extends GenerationParams {
   denoising_strength?: number;
+  resize_mode?: string;
+  resampling_method?: string;
 }
 
 export interface GeneratedImage {
@@ -70,6 +72,8 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("seed", String(params.seed || -1));
   formData.append("width", String(params.width || 1024));
   formData.append("height", String(params.height || 1024));
+  formData.append("resize_mode", params.resize_mode || "image");
+  formData.append("resampling_method", params.resampling_method || "lanczos");
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },

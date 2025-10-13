@@ -10,6 +10,7 @@ interface ImageEditorProps {
 }
 
 type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "pan";
+type BrushType = "normal" | "pencil" | "gpen" | "fude";
 
 interface Layer {
   id: string;
@@ -29,6 +30,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const compositeCanvasRef = useRef<HTMLCanvasElement>(null); // For display
   const containerRef = useRef<HTMLDivElement>(null);
   const [tool, setTool] = useState<Tool>("pen");
+  const [brushType, setBrushType] = useState<BrushType>("normal");
   const [brushSize, setBrushSize] = useState(5);
   const [rgb, setRgb] = useState({ r: 0, g: 0, b: 0 });
   const [hue, setHue] = useState(0);
@@ -44,6 +46,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const updatingSourceRef = useRef<'rgb' | 'hsl' | null>(null);
+
+  // Brush stroke tracking
+  const strokeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const lastPointRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const strokeDistanceRef = useRef(0);
 
   // Calculate color from RGB
   const getColorFromRGB = () => {
@@ -318,6 +325,97 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     ctx.putImageData(blurredImageData, Math.max(0, x - radius), Math.max(0, y - radius));
   };
 
+  // Draw with different brush types
+  const drawWithBrush = (
+    ctx: CanvasRenderingContext2D,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    size: number,
+    color: string,
+    pressure: number,
+    velocity: number,
+    strokeDistance: number
+  ) => {
+    switch (brushType) {
+      case "normal":
+        // Normal pen - solid, uniform stroke
+        ctx.globalCompositeOperation = "source-over";
+        ctx.strokeStyle = color;
+        ctx.lineWidth = size * pressure;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(fromX, fromY);
+        ctx.lineTo(toX, toY);
+        ctx.stroke();
+        break;
+
+      case "pencil":
+        // Pencil - textured, random opacity variations
+        ctx.globalCompositeOperation = "source-over";
+        const steps = Math.max(1, Math.floor(Math.hypot(toX - fromX, toY - fromY) / 2));
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const x = fromX + (toX - fromX) * t;
+          const y = fromY + (toY - fromY) * t;
+          const randomOpacity = 0.3 + Math.random() * 0.4;
+          const randomSize = size * pressure * (0.8 + Math.random() * 0.4);
+
+          ctx.globalAlpha = randomOpacity;
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(x, y, randomSize / 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        break;
+
+      case "gpen":
+        // G-pen - varies thickness based on velocity (faster = thinner)
+        ctx.globalCompositeOperation = "source-over";
+        const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
+        const gpenSize = size * pressure * velocityFactor;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = gpenSize;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(fromX, fromY);
+        ctx.lineTo(toX, toY);
+        ctx.stroke();
+        break;
+
+      case "fude":
+        // Fude/brush - tapers based on stroke distance
+        ctx.globalCompositeOperation = "source-over";
+        const maxTaperDistance = 100;
+        const taperStart = Math.min(strokeDistance, 30);
+        const taperEnd = strokeDistance > maxTaperDistance ? strokeDistance - maxTaperDistance : 0;
+
+        let tapering = 1;
+        if (strokeDistance < 30) {
+          // Entry taper
+          tapering = strokeDistance / 30;
+        } else if (strokeDistance > maxTaperDistance) {
+          // Exit taper
+          tapering = Math.max(0.2, 1 - (strokeDistance - maxTaperDistance) / 50);
+        }
+
+        const fudeSize = size * pressure * tapering;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = fudeSize;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(fromX, fromY);
+        ctx.lineTo(toX, toY);
+        ctx.stroke();
+        break;
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const editLayer = editLayerRef.current;
     const composite = compositeCanvasRef.current;
@@ -355,24 +453,42 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     setIsDrawing(true);
 
-    // All drawing operations happen on edit layer only
-    editCtx.lineCap = "round";
-    editCtx.lineJoin = "round";
-    editCtx.lineWidth = brushSize;
+    // Initialize stroke tracking
+    const now = Date.now();
+    strokeStartRef.current = { x: point.x, y: point.y, time: now };
+    lastPointRef.current = { x: point.x, y: point.y, time: now };
+    strokeDistanceRef.current = 0;
+
+    // Get pressure from pointer event (0.5 default for mouse, varies for pen/touch)
+    const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
     if (tool === "pen") {
-      editCtx.globalCompositeOperation = "source-over";
-      editCtx.strokeStyle = getColorFromRGB();
-      editCtx.beginPath();
-      editCtx.moveTo(point.x, point.y);
+      // Draw initial point with brush
+      drawWithBrush(
+        editCtx,
+        point.x,
+        point.y,
+        point.x,
+        point.y,
+        brushSize,
+        getColorFromRGB(),
+        pressure,
+        0,
+        0
+      );
+      composeLayers();
     } else if (tool === "eraser") {
       // Eraser erases edit layer only (not the base image)
       editCtx.globalCompositeOperation = "destination-out";
       editCtx.strokeStyle = "rgba(0,0,0,1)";
+      editCtx.lineWidth = brushSize * pressure;
+      editCtx.lineCap = "round";
+      editCtx.lineJoin = "round";
       editCtx.beginPath();
       editCtx.moveTo(point.x, point.y);
     } else if (tool === "blur") {
       applyBlur(editCtx, point.x, point.y, brushSize);
+      composeLayers();
     }
   };
 
@@ -400,15 +516,48 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     });
 
     if (isDrawing) {
-      if (tool === "pen" || tool === "eraser") {
+      const lastPoint = lastPointRef.current;
+      if (!lastPoint) return;
+
+      const now = Date.now();
+      const pressure = e.pressure > 0 ? e.pressure : 0.5;
+
+      // Calculate velocity (pixels per millisecond)
+      const dx = point.x - lastPoint.x;
+      const dy = point.y - lastPoint.y;
+      const distance = Math.hypot(dx, dy);
+      const timeDelta = now - lastPoint.time;
+      const velocity = timeDelta > 0 ? distance / timeDelta : 0;
+
+      // Update stroke distance
+      strokeDistanceRef.current += distance;
+
+      if (tool === "pen") {
+        drawWithBrush(
+          editCtx,
+          lastPoint.x,
+          lastPoint.y,
+          point.x,
+          point.y,
+          brushSize,
+          getColorFromRGB(),
+          pressure,
+          velocity,
+          strokeDistanceRef.current
+        );
+        composeLayers();
+      } else if (tool === "eraser") {
+        editCtx.lineWidth = brushSize * pressure;
         editCtx.lineTo(point.x, point.y);
         editCtx.stroke();
-        // Update composite display in real-time
         composeLayers();
       } else if (tool === "blur") {
         applyBlur(editCtx, point.x, point.y, brushSize);
         composeLayers();
       }
+
+      // Update last point
+      lastPointRef.current = { x: point.x, y: point.y, time: now };
     }
   };
 
@@ -597,6 +746,43 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             </Button>
           </div>
         </div>
+
+        {/* Brush Type - only show when pen tool is selected */}
+        {tool === "pen" && (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-gray-300">Brush Type</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                onClick={() => setBrushType("normal")}
+                variant={brushType === "normal" ? "primary" : "secondary"}
+                size="sm"
+              >
+                🖊️ Normal
+              </Button>
+              <Button
+                onClick={() => setBrushType("pencil")}
+                variant={brushType === "pencil" ? "primary" : "secondary"}
+                size="sm"
+              >
+                ✏️ Pencil
+              </Button>
+              <Button
+                onClick={() => setBrushType("gpen")}
+                variant={brushType === "gpen" ? "primary" : "secondary"}
+                size="sm"
+              >
+                🖋️ G-Pen
+              </Button>
+              <Button
+                onClick={() => setBrushType("fude")}
+                variant={brushType === "fude" ? "primary" : "secondary"}
+                size="sm"
+              >
+                🖌️ Fude
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Brush Size */}
         <div className="space-y-2">

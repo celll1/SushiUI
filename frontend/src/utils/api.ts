@@ -26,6 +26,13 @@ export interface Img2ImgParams extends GenerationParams {
   resampling_method?: string;
 }
 
+export interface InpaintParams extends GenerationParams {
+  denoising_strength?: number;
+  mask_blur?: number;
+  inpaint_full_res?: boolean;
+  inpaint_full_res_padding?: number;
+}
+
 export interface GeneratedImage {
   id: number;
   filename: string;
@@ -76,6 +83,47 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("resampling_method", params.resampling_method || "lanczos");
 
   const response = await api.post("/generate/img2img", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs for image
+  if (typeof image === 'string') {
+    const response = await fetch(image);
+    const blob = await response.blob();
+    formData.append("image", blob, "input.png");
+  } else {
+    formData.append("image", image);
+  }
+
+  // Handle both File objects and data URLs for mask
+  if (typeof mask === 'string') {
+    const response = await fetch(mask);
+    const blob = await response.blob();
+    formData.append("mask", blob, "mask.png");
+  } else {
+    formData.append("mask", mask);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("steps", String(params.steps || 20));
+  formData.append("cfg_scale", String(params.cfg_scale || 7.0));
+  formData.append("denoising_strength", String(params.denoising_strength || 0.75));
+  formData.append("mask_blur", String(params.mask_blur || 4));
+  formData.append("sampler", params.sampler || "euler");
+  formData.append("schedule_type", params.schedule_type || "uniform");
+  formData.append("seed", String(params.seed || -1));
+  formData.append("width", String(params.width || 1024));
+  formData.append("height", String(params.height || 1024));
+  formData.append("inpaint_full_res", String(params.inpaint_full_res || false));
+  formData.append("inpaint_full_res_padding", String(params.inpaint_full_res_padding || 32));
+
+  const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

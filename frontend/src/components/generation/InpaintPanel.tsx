@@ -9,7 +9,7 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams } from "@/utils/api";
 
 interface InpaintParams {
   prompt: string;
@@ -224,13 +224,13 @@ export default function InpaintPanel() {
       return;
     }
 
-    if (!inputImage && !inputImagePreview) {
+    if (!inputImagePreview) {
       alert("Please upload an input image");
       return;
     }
 
     if (!maskImage) {
-      alert("Please draw a mask (mask editor to be implemented)");
+      alert("Please draw a mask by double-clicking the input image");
       return;
     }
 
@@ -239,10 +239,42 @@ export default function InpaintPanel() {
     const currentSteps = params.steps || 20;
     setTotalSteps(currentSteps);
 
-    // TODO: Implement inpaint API call
-    alert("Inpaint generation to be implemented");
+    try {
+      const apiParams: ApiInpaintParams = {
+        prompt: params.prompt,
+        negative_prompt: params.negative_prompt,
+        steps: params.steps,
+        cfg_scale: params.cfg_scale,
+        sampler: params.sampler,
+        schedule_type: params.schedule_type,
+        seed: params.seed,
+        width: params.width,
+        height: params.height,
+        denoising_strength: params.denoising_strength,
+        mask_blur: params.mask_blur,
+        inpaint_full_res: params.inpaint_full_res,
+        inpaint_full_res_padding: params.inpaint_full_res_padding,
+      };
 
-    setIsGenerating(false);
+      const result = await generateInpaint(apiParams, inputImagePreview, maskImage);
+
+      if (result.success) {
+        const imageUrl = `/api/images/${result.image.id}/file`;
+        setGeneratedImage(imageUrl);
+        setGeneratedImageSeed(result.actual_seed);
+
+        if (isMounted) {
+          localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
+        }
+      } else {
+        alert("Generation failed");
+      }
+    } catch (error) {
+      console.error("Generation error:", error);
+      alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   // Handle Ctrl+Enter keyboard shortcut
@@ -283,7 +315,7 @@ export default function InpaintPanel() {
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               onDoubleClick={handleInputImageDoubleClick}
-              className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
+              className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
                 isDragging
                   ? 'border-blue-500 bg-gray-700'
                   : inputImagePreview
@@ -293,11 +325,21 @@ export default function InpaintPanel() {
               title={inputImagePreview ? 'Double-click to edit and add inpaint mask' : ''}
             >
               {inputImagePreview ? (
-                <img
-                  src={inputImagePreview}
-                  alt="Input"
-                  className="w-full h-full object-contain"
-                />
+                <>
+                  <img
+                    src={inputImagePreview}
+                    alt="Input"
+                    className="w-full h-full object-contain"
+                  />
+                  {maskImage && (
+                    <img
+                      src={maskImage}
+                      alt="Mask overlay"
+                      className="absolute inset-0 w-full h-full object-contain opacity-50 mix-blend-screen"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
+                </>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <p className="text-gray-500 text-center px-4">
@@ -309,20 +351,9 @@ export default function InpaintPanel() {
               )}
             </div>
             {inputImagePreview && (
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500 text-center">
-                  💡 Mask editor to be implemented
-                </p>
-                {maskImage && (
-                  <div className="border-2 border-gray-600 rounded-lg overflow-hidden">
-                    <img
-                      src={maskImage}
-                      alt="Mask"
-                      className="w-full h-auto"
-                    />
-                  </div>
-                )}
-              </div>
+              <p className="text-xs text-gray-500 text-center">
+                💡 Double-click image to edit and draw inpaint mask
+              </p>
             )}
           </div>
         </Card>

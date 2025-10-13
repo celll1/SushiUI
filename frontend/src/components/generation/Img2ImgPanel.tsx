@@ -390,14 +390,13 @@ export default function Img2ImgPanel() {
               <Select
                 label="Resampling Method"
                 options={[
-                  { value: "lanczos", label: "Lanczos (High Quality)" },
+                  { value: "lanczos", label: params.resize_mode === "latent" ? "Lanczos (→ Bicubic)" : "Lanczos (High Quality)" },
                   { value: "bicubic", label: "Bicubic" },
                   { value: "bilinear", label: "Bilinear" },
                   { value: "nearest", label: "Nearest (Pixelated)" },
                 ]}
                 value={params.resampling_method}
                 onChange={(e) => setParams({ ...params, resampling_method: e.target.value })}
-                disabled={params.resize_mode === "latent"}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">

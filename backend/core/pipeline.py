@@ -388,6 +388,55 @@ class DiffusionPipelineManager:
             pipeline=self.img2img_pipeline
         )
 
+        # Handle latent resize mode by encoding, resizing latent, then decoding
+        if resize_mode == "latent" and target_width and target_height:
+            if init_image.size != (target_width, target_height):
+                print(f"Using latent resize mode: {init_image.size} -> {target_width}x{target_height} with {resampling_method}")
+
+                # Encode image to latent space
+                import torch.nn.functional as F
+
+                # Prepare image for VAE encoding
+                image_tensor = self.img2img_pipeline.image_processor.preprocess(init_image)
+                image_tensor = image_tensor.to(device=self.device, dtype=self.img2img_pipeline.vae.dtype)
+
+                # Encode to latent
+                with torch.no_grad():
+                    latent = self.img2img_pipeline.vae.encode(image_tensor).latent_dist.sample()
+                    latent = latent * self.img2img_pipeline.vae.config.scaling_factor
+
+                # Calculate target latent size (VAE downsamples by 8x)
+                latent_height = target_height // 8
+                latent_width = target_width // 8
+
+                # Map resampling method to torch interpolation mode
+                torch_mode_map = {
+                    "nearest": "nearest",
+                    "bilinear": "bilinear",
+                    "bicubic": "bicubic",
+                    "lanczos": "bicubic",  # Lanczos not available in torch, use bicubic
+                }
+                torch_mode = torch_mode_map.get(resampling_method, "bicubic")
+
+                # Resize latent
+                resized_latent = F.interpolate(
+                    latent,
+                    size=(latent_height, latent_width),
+                    mode=torch_mode,
+                    align_corners=False if torch_mode != "nearest" else None
+                )
+
+                # Decode latent back to image
+                with torch.no_grad():
+                    resized_latent = resized_latent / self.img2img_pipeline.vae.config.scaling_factor
+                    decoded = self.img2img_pipeline.vae.decode(resized_latent).sample
+
+                # Convert back to PIL Image
+                decoded = (decoded / 2 + 0.5).clamp(0, 1)
+                decoded = decoded.cpu().permute(0, 2, 3, 1).float().numpy()
+                decoded = (decoded * 255).round().astype("uint8")
+                init_image = Image.fromarray(decoded[0])
+
         # Prepare generation parameters
         gen_params = {
             "image": init_image,
@@ -396,12 +445,6 @@ class DiffusionPipelineManager:
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
             "generator": torch.Generator(device=self.device).manual_seed(actual_seed),
         }
-
-        # Add size parameters for latent resize mode
-        if resize_mode == "latent" and target_width and target_height:
-            print(f"Using latent resize mode: {target_width}x{target_height}")
-            gen_params["width"] = target_width
-            gen_params["height"] = target_height
 
         # Use embeds if weights are present, otherwise use text prompts
         if prompt_embeds is not None:

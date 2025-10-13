@@ -50,6 +50,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   // Brush stroke tracking
   const strokeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const lastPointRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const prevPointRef = useRef<{ x: number; y: number } | null>(null); // Point before last, for direction
   const strokeDistanceRef = useRef(0);
   const taperProgressRef = useRef(0); // 0 to 1, for gradual tapering
 
@@ -493,6 +494,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     const now = Date.now();
     strokeStartRef.current = { x: point.x, y: point.y, time: now };
     lastPointRef.current = { x: point.x, y: point.y, time: now };
+    prevPointRef.current = { x: point.x, y: point.y }; // Initialize with same point
     strokeDistanceRef.current = 0;
     taperProgressRef.current = 0; // Reset taper progress
 
@@ -610,7 +612,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         composeLayers();
       }
 
-      // Update last point
+      // Update points for tracking direction
+      prevPointRef.current = lastPoint;
       lastPointRef.current = { x: point.x, y: point.y, time: now };
     }
   };
@@ -626,18 +629,40 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     if (isDrawing) {
       // Apply gradual exit tapering for pencil, gpen, and fude
-      if (tool === "pen" && brushType !== "normal" && lastPointRef.current) {
-        let currentX = lastPointRef.current.x;
-        let currentY = lastPointRef.current.y;
+      if (tool === "pen" && brushType !== "normal" && lastPointRef.current && prevPointRef.current) {
+        const lastPoint = lastPointRef.current;
+        const prevPoint = prevPointRef.current;
 
-        // Draw trailing taper strokes
-        const taperSteps = 10; // Number of steps for gradual taper
+        // Calculate stroke direction
+        const dx = lastPoint.x - prevPoint.x;
+        const dy = lastPoint.y - prevPoint.y;
+        const distance = Math.hypot(dx, dy);
+
+        // Normalize direction (or use small default if no movement)
+        let dirX = 0;
+        let dirY = 0;
+        if (distance > 0.1) {
+          dirX = dx / distance;
+          dirY = dy / distance;
+        } else {
+          // No clear direction, use slight downward angle
+          dirX = 0;
+          dirY = 1;
+        }
+
+        let currentX = lastPoint.x;
+        let currentY = lastPoint.y;
+
+        // Draw trailing taper strokes in the direction of movement
+        const taperSteps = 8; // Number of steps for gradual taper
+        const stepDistance = brushSize * 0.4; // Distance per step
+
         for (let i = 1; i <= taperSteps; i++) {
           const progress = i / taperSteps;
 
-          // Calculate next position with slight movement for natural trailing
-          const nextX = currentX + (Math.random() - 0.5) * brushSize * 0.3;
-          const nextY = currentY + (Math.random() - 0.5) * brushSize * 0.3;
+          // Move in the stroke direction with slight random variation
+          const nextX = currentX + dirX * stepDistance + (Math.random() - 0.5) * brushSize * 0.1;
+          const nextY = currentY + dirY * stepDistance + (Math.random() - 0.5) * brushSize * 0.1;
 
           drawWithBrush(
             editCtx,
@@ -649,7 +674,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             getColorFromRGB(),
             Math.max(0.1, 1 - progress * 0.9), // Gradually reduce pressure to near 0
             0,
-            strokeDistanceRef.current + i,
+            strokeDistanceRef.current + i * stepDistance,
             progress // Gradual taper progress (0 to 1)
           );
 

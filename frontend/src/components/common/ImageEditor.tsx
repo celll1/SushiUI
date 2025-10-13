@@ -37,6 +37,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const [saturation, setSaturation] = useState(100);
   const [lightness, setLightness] = useState(0);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isTapering, setIsTapering] = useState(false); // Tapering mode after pointer release
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
@@ -555,7 +556,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       y: e.clientY - containerRect.top
     });
 
-    if (isDrawing) {
+    if (isDrawing || isTapering) {
       const lastPoint = lastPointRef.current;
       if (!lastPoint) return;
 
@@ -576,10 +577,13 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       strokeDistanceRef.current += distance;
 
       if (tool === "pen") {
-        // Gradually increase taper when pressure is low (for non-normal brushes)
-        if (isLowPressure && brushType !== "normal") {
-          taperProgressRef.current = Math.min(1, taperProgressRef.current + 0.15);
+        // Gradually increase taper when in tapering mode or pressure is low
+        if (isTapering || (isLowPressure && brushType !== "normal")) {
+          taperProgressRef.current = Math.min(1, taperProgressRef.current + 0.08);
         }
+
+        // Calculate current pressure (reduce during tapering)
+        const currentPressure = isTapering ? Math.max(0.1, pressure * (1 - taperProgressRef.current)) : pressure;
 
         drawWithBrush(
           editCtx,
@@ -589,7 +593,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           point.y,
           brushSize,
           getColorFromRGB(),
-          pressure,
+          currentPressure,
           velocity,
           strokeDistanceRef.current,
           taperProgressRef.current // Use current taper progress
@@ -599,17 +603,22 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         // If taper is complete, end the stroke
         if (taperProgressRef.current >= 1 && brushType !== "normal") {
           setIsDrawing(false);
+          setIsTapering(false);
           saveToHistory(editCtx);
           return;
         }
       } else if (tool === "eraser") {
-        editCtx.lineWidth = brushSize * pressure;
-        editCtx.lineTo(point.x, point.y);
-        editCtx.stroke();
-        composeLayers();
+        if (isDrawing) {
+          editCtx.lineWidth = brushSize * pressure;
+          editCtx.lineTo(point.x, point.y);
+          editCtx.stroke();
+          composeLayers();
+        }
       } else if (tool === "blur") {
-        applyBlur(editCtx, point.x, point.y, brushSize);
-        composeLayers();
+        if (isDrawing) {
+          applyBlur(editCtx, point.x, point.y, brushSize);
+          composeLayers();
+        }
       }
 
       // Update points for tracking direction
@@ -628,71 +637,33 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
 
     if (isDrawing) {
-      // Apply gradual exit tapering for pencil, gpen, and fude
-      if (tool === "pen" && brushType !== "normal" && lastPointRef.current && prevPointRef.current) {
-        const lastPoint = lastPointRef.current;
-        const prevPoint = prevPointRef.current;
-
-        // Calculate stroke direction
-        const dx = lastPoint.x - prevPoint.x;
-        const dy = lastPoint.y - prevPoint.y;
-        const distance = Math.hypot(dx, dy);
-
-        // Normalize direction (or use small default if no movement)
-        let dirX = 0;
-        let dirY = 0;
-        if (distance > 0.1) {
-          dirX = dx / distance;
-          dirY = dy / distance;
-        } else {
-          // No clear direction, use slight downward angle
-          dirX = 0;
-          dirY = 1;
-        }
-
-        let currentX = lastPoint.x;
-        let currentY = lastPoint.y;
-
-        // Draw trailing taper strokes in the direction of movement
-        const taperSteps = 8; // Number of steps for gradual taper
-        const stepDistance = brushSize * 0.4; // Distance per step
-
-        for (let i = 1; i <= taperSteps; i++) {
-          const progress = i / taperSteps;
-
-          // Move in the stroke direction with slight random variation
-          const nextX = currentX + dirX * stepDistance + (Math.random() - 0.5) * brushSize * 0.1;
-          const nextY = currentY + dirY * stepDistance + (Math.random() - 0.5) * brushSize * 0.1;
-
-          drawWithBrush(
-            editCtx,
-            currentX,
-            currentY,
-            nextX,
-            nextY,
-            brushSize,
-            getColorFromRGB(),
-            Math.max(0.1, 1 - progress * 0.9), // Gradually reduce pressure to near 0
-            0,
-            strokeDistanceRef.current + i * stepDistance,
-            progress // Gradual taper progress (0 to 1)
-          );
-
-          currentX = nextX;
-          currentY = nextY;
-        }
-
-        composeLayers();
+      // For non-normal brushes, enter tapering mode instead of ending immediately
+      if (tool === "pen" && brushType !== "normal") {
+        setIsDrawing(false);
+        setIsTapering(true);
+        // Don't save to history yet - will save when tapering completes
+      } else {
+        // Normal pen or other tools: end immediately
+        setIsDrawing(false);
+        saveToHistory(editCtx);
       }
-
-      setIsDrawing(false);
-      saveToHistory(editCtx);
     }
   };
 
   const handlePointerLeave = () => {
     setCursorPos(null);
-    handlePointerUp();
+
+    // If in tapering mode, complete the taper immediately
+    if (isTapering) {
+      const editLayer = editLayerRef.current;
+      const editCtx = editLayer?.getContext("2d");
+      if (editCtx) {
+        setIsTapering(false);
+        saveToHistory(editCtx);
+      }
+    } else {
+      handlePointerUp();
+    }
   };
 
   const handleSave = () => {

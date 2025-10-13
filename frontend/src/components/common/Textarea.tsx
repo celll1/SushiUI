@@ -7,6 +7,66 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
 }
 
 /**
+ * Find the extent of an existing emphasis syntax at cursor position
+ * Returns null if cursor is not inside emphasis syntax
+ */
+function findEmphasisAtCursor(
+  text: string,
+  cursorPos: number
+): { start: number; end: number; innerText: string; weight: number } | null {
+  // Search backwards for opening parenthesis
+  let openParen = -1;
+  let depth = 0;
+
+  for (let i = cursorPos - 1; i >= 0; i--) {
+    if (text[i] === ')') {
+      depth++;
+    } else if (text[i] === '(') {
+      if (depth === 0) {
+        openParen = i;
+        break;
+      }
+      depth--;
+    }
+  }
+
+  if (openParen === -1) return null;
+
+  // Search forwards for closing parenthesis and weight
+  let closeParen = -1;
+  depth = 0;
+
+  for (let i = cursorPos; i < text.length; i++) {
+    if (text[i] === '(') {
+      depth++;
+    } else if (text[i] === ')') {
+      if (depth === 0) {
+        closeParen = i;
+        break;
+      }
+      depth--;
+    }
+  }
+
+  if (closeParen === -1) return null;
+
+  // Check if this matches emphasis syntax
+  const emphasisText = text.substring(openParen, closeParen + 1);
+  const weightMatch = emphasisText.match(/^\((.*?)(?::([0-9.]+))?\)$/);
+
+  if (weightMatch) {
+    return {
+      start: openParen,
+      end: closeParen + 1,
+      innerText: weightMatch[1],
+      weight: weightMatch[2] ? parseFloat(weightMatch[2]) : 1.1,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Adjust prompt weight using Ctrl+Up/Down
  * Supports A1111-style emphasis: (text:1.2)
  */
@@ -16,26 +76,50 @@ function adjustPromptWeight(
   selectionEnd: number,
   increment: number
 ): { newText: string; newStart: number; newEnd: number } {
-  // If nothing is selected, select the current word/phrase
+  let start = selectionStart;
+  let end = selectionEnd;
+  let selectedText: string;
+
+  // If nothing is selected, check if cursor is inside existing emphasis
   if (selectionStart === selectionEnd) {
-    // Find word boundaries
-    let start = selectionStart;
-    let end = selectionEnd;
+    const existingEmphasis = findEmphasisAtCursor(text, selectionStart);
 
-    while (start > 0 && text[start - 1] !== ' ' && text[start - 1] !== ',' && text[start - 1] !== '\n') {
-      start--;
-    }
-    while (end < text.length && text[end] !== ' ' && text[end] !== ',' && text[end] !== '\n') {
-      end++;
-    }
+    if (existingEmphasis) {
+      // Cursor is inside emphasis syntax - adjust the existing emphasis
+      start = existingEmphasis.start;
+      end = existingEmphasis.end;
+      selectedText = text.substring(start, end);
+    } else {
+      // Select the current tag (between commas)
+      start = selectionStart;
+      end = selectionEnd;
 
-    selectionStart = start;
-    selectionEnd = end;
+      // Find start of tag (search backwards for comma or start of string)
+      while (start > 0 && text[start - 1] !== ',') {
+        start--;
+      }
+      // Skip leading whitespace
+      while (start < text.length && (text[start] === ' ' || text[start] === '\n')) {
+        start++;
+      }
+
+      // Find end of tag (search forwards for comma or end of string)
+      while (end < text.length && text[end] !== ',') {
+        end++;
+      }
+      // Skip trailing whitespace
+      while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\n')) {
+        end--;
+      }
+
+      selectedText = text.substring(start, end);
+    }
+  } else {
+    // User has made a selection - use it faithfully
+    selectedText = text.substring(start, end);
   }
 
-  const selectedText = text.substring(selectionStart, selectionEnd);
-
-  // Check if already has weight syntax
+  // Check if selected text already has weight syntax
   const weightMatch = selectedText.match(/^\((.*?)(?::([0-9.]+))?\)$/);
 
   let newText: string;
@@ -43,7 +127,7 @@ function adjustPromptWeight(
   let currentWeight: number;
 
   if (weightMatch) {
-    // Already has weight syntax
+    // Already has weight syntax - adjust it
     innerText = weightMatch[1];
     currentWeight = weightMatch[2] ? parseFloat(weightMatch[2]) : 1.1;
     const newWeight = Math.max(0.1, Math.min(2.0, currentWeight + increment));
@@ -55,7 +139,7 @@ function adjustPromptWeight(
       newText = `(${innerText}:${newWeight.toFixed(2)})`;
     }
   } else {
-    // No weight syntax yet
+    // No weight syntax yet - add it
     innerText = selectedText;
     const newWeight = Math.max(0.1, Math.min(2.0, 1.0 + increment));
 
@@ -67,14 +151,14 @@ function adjustPromptWeight(
     }
   }
 
-  const before = text.substring(0, selectionStart);
-  const after = text.substring(selectionEnd);
+  const before = text.substring(0, start);
+  const after = text.substring(end);
   const fullText = before + newText + after;
 
   return {
     newText: fullText,
-    newStart: selectionStart,
-    newEnd: selectionStart + newText.length,
+    newStart: start,
+    newEnd: start + newText.length,
   };
 }
 

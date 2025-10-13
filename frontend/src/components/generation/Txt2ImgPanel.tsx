@@ -258,12 +258,35 @@ export default function Txt2ImgPanel() {
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
-            <Input
-              label="Seed"
-              type="number"
-              value={params.seed}
-              onChange={(e) => setParams({ ...params, seed: parseInt(e.target.value) })}
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Seed
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type="number"
+                  value={params.seed}
+                  onChange={(e) => setParams({ ...params, seed: parseInt(e.target.value) })}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Reset to random (-1)"
+                >
+                  -1
+                </Button>
+              </div>
+            </div>
           </div>
         </Card>
 

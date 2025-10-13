@@ -336,16 +336,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     color: string,
     pressure: number,
     velocity: number,
-    strokeDistance: number
+    strokeDistance: number,
+    isEnding: boolean = false
   ) => {
+    ctx.globalCompositeOperation = "source-over";
+
     switch (brushType) {
       case "normal":
-        // Normal pen - solid, uniform stroke
-        ctx.globalCompositeOperation = "source-over";
+        // Normal pen - solid, uniform stroke, no tapering
         ctx.strokeStyle = color;
         ctx.lineWidth = size * pressure;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+        ctx.globalAlpha = 1;
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
         ctx.lineTo(toX, toY);
@@ -353,15 +356,23 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         break;
 
       case "pencil":
-        // Pencil - textured, random opacity variations
-        ctx.globalCompositeOperation = "source-over";
-        const steps = Math.max(1, Math.floor(Math.hypot(toX - fromX, toY - fromY) / 2));
+        // Pencil - textured, random opacity variations with exit tapering
+        const distance = Math.hypot(toX - fromX, toY - fromY);
+        const steps = Math.max(1, Math.floor(distance / 2));
+
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
           const x = fromX + (toX - fromX) * t;
           const y = fromY + (toY - fromY) * t;
-          const randomOpacity = 0.3 + Math.random() * 0.4;
-          const randomSize = size * pressure * (0.8 + Math.random() * 0.4);
+
+          // Exit tapering when ending
+          let exitFactor = 1;
+          if (isEnding && i > steps * 0.7) {
+            exitFactor = 1 - ((i / steps - 0.7) / 0.3);
+          }
+
+          const randomOpacity = (0.3 + Math.random() * 0.4) * exitFactor;
+          const randomSize = size * pressure * (0.8 + Math.random() * 0.4) * exitFactor;
 
           ctx.globalAlpha = randomOpacity;
           ctx.fillStyle = color;
@@ -373,45 +384,77 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         break;
 
       case "gpen":
-        // G-pen - varies thickness based on velocity (faster = thinner)
-        ctx.globalCompositeOperation = "source-over";
+        // G-pen - varies thickness based on velocity with exit tapering
         const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
-        const gpenSize = size * pressure * velocityFactor;
+        let gpenPressure = pressure;
+
+        // Exit tapering when ending
+        if (isEnding) {
+          gpenPressure *= 0.3;
+        }
+
+        const gpenSize = size * gpenPressure * velocityFactor;
         ctx.strokeStyle = color;
         ctx.lineWidth = gpenSize;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+        ctx.globalAlpha = isEnding ? 0.5 : 1;
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
         ctx.lineTo(toX, toY);
         ctx.stroke();
+        ctx.globalAlpha = 1;
         break;
 
       case "fude":
-        // Fude/brush - tapers based on stroke distance
-        ctx.globalCompositeOperation = "source-over";
-        const maxTaperDistance = 100;
-        const taperStart = Math.min(strokeDistance, 30);
-        const taperEnd = strokeDistance > maxTaperDistance ? strokeDistance - maxTaperDistance : 0;
+        // Fude/brush - soft edges with blur, tapers at entry and exit with trailing fade
+        const segmentDistance = Math.hypot(toX - fromX, toY - fromY);
+        const segmentSteps = Math.max(1, Math.ceil(segmentDistance / 1));
 
-        let tapering = 1;
-        if (strokeDistance < 30) {
+        for (let i = 0; i <= segmentSteps; i++) {
+          const t = i / segmentSteps;
+          const x = fromX + (toX - fromX) * t;
+          const y = fromY + (toY - fromY) * t;
+
           // Entry taper
-          tapering = strokeDistance / 30;
-        } else if (strokeDistance > maxTaperDistance) {
-          // Exit taper
-          tapering = Math.max(0.2, 1 - (strokeDistance - maxTaperDistance) / 50);
+          let tapering = 1;
+          if (strokeDistance < 20) {
+            tapering = Math.pow(strokeDistance / 20, 0.7);
+          }
+
+          // Exit tapering when ending
+          if (isEnding) {
+            tapering *= 0.2 + (1 - t) * 0.3;
+          }
+
+          const currentSize = size * pressure * tapering;
+
+          // Draw soft brush with multiple layers for blur effect
+          const layers = 4;
+          for (let layer = 0; layer < layers; layer++) {
+            const layerRatio = (layer + 1) / layers;
+            const layerSize = currentSize * (0.4 + layerRatio * 0.6);
+            const layerAlpha = (0.15 / layers) * (1 - layer / layers);
+
+            // Additional fade for ending
+            const endingFade = isEnding ? (0.3 + (1 - t) * 0.7) : 1;
+
+            ctx.globalAlpha = layerAlpha * endingFade;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(x, y, layerSize, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Core solid part
+          ctx.globalAlpha = (isEnding ? (0.5 + (1 - t) * 0.5) : 0.8) * tapering;
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(x, y, currentSize * 0.5, 0, Math.PI * 2);
+          ctx.fill();
         }
 
-        const fudeSize = size * pressure * tapering;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = fudeSize;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        ctx.moveTo(fromX, fromY);
-        ctx.lineTo(toX, toY);
-        ctx.stroke();
+        ctx.globalAlpha = 1;
         break;
     }
   };
@@ -522,6 +565,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       const now = Date.now();
       const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
+      // Check for low pressure to trigger exit tapering (for pen tablets)
+      const isLowPressure = e.pressure > 0 && e.pressure < 0.1;
+
       // Calculate velocity (pixels per millisecond)
       const dx = point.x - lastPoint.x;
       const dy = point.y - lastPoint.y;
@@ -543,9 +589,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           getColorFromRGB(),
           pressure,
           velocity,
-          strokeDistanceRef.current
+          strokeDistanceRef.current,
+          isLowPressure && brushType !== "normal" // Apply ending taper if pressure is very low
         );
         composeLayers();
+
+        // If pressure is very low, end the stroke
+        if (isLowPressure && brushType !== "normal") {
+          setIsDrawing(false);
+          saveToHistory(editCtx);
+          return;
+        }
       } else if (tool === "eraser") {
         editCtx.lineWidth = brushSize * pressure;
         editCtx.lineTo(point.x, point.y);
@@ -561,7 +615,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
     const editLayer = editLayerRef.current;
     const editCtx = editLayer?.getContext("2d");
     if (!editLayer || !editCtx) return;
@@ -571,6 +625,28 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
 
     if (isDrawing) {
+      // Apply exit tapering for pencil, gpen, and fude
+      if (tool === "pen" && brushType !== "normal" && lastPointRef.current && e) {
+        const point = getCanvasPoint(e);
+        const pressure = e.pressure > 0 ? e.pressure : 0.5;
+
+        // Draw ending stroke with tapering
+        drawWithBrush(
+          editCtx,
+          lastPointRef.current.x,
+          lastPointRef.current.y,
+          point.x,
+          point.y,
+          brushSize,
+          getColorFromRGB(),
+          pressure,
+          0,
+          strokeDistanceRef.current,
+          true // isEnding flag
+        );
+        composeLayers();
+      }
+
       setIsDrawing(false);
       saveToHistory(editCtx);
     }

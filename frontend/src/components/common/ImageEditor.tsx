@@ -11,12 +11,22 @@ interface ImageEditorProps {
 
 type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "pan";
 
+interface Layer {
+  id: string;
+  name: string;
+  canvas: HTMLCanvasElement;
+  visible: boolean;
+  opacity: number;
+}
+
 interface HistoryState {
-  imageData: ImageData;
+  layerData: ImageData; // Store edit layer data only
 }
 
 export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer
+  const editLayerRef = useRef<HTMLCanvasElement>(null); // Edit layer (transparent)
+  const compositeCanvasRef = useRef<HTMLCanvasElement>(null); // For display
   const containerRef = useRef<HTMLDivElement>(null);
   const [tool, setTool] = useState<Tool>("pen");
   const [brushSize, setBrushSize] = useState(5);
@@ -109,53 +119,95 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     setLightness(hsl.l);
   }, [rgb]);
 
-  // Load image and initialize canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
+  // Composite layers to display canvas
+  const composeLayers = useCallback(() => {
+    const baseLayer = baseLayerRef.current;
+    const editLayer = editLayerRef.current;
+    const composite = compositeCanvasRef.current;
+    if (!baseLayer || !editLayer || !composite) return;
 
-    const ctx = canvas.getContext("2d");
+    const ctx = composite.getContext("2d");
     if (!ctx) return;
+
+    // Clear composite
+    ctx.clearRect(0, 0, composite.width, composite.height);
+
+    // Draw base layer (original image)
+    ctx.drawImage(baseLayer, 0, 0);
+
+    // Draw edit layer on top
+    ctx.drawImage(editLayer, 0, 0);
+  }, []);
+
+  // Load image and initialize layers
+  useEffect(() => {
+    const baseLayer = baseLayerRef.current;
+    const editLayer = editLayerRef.current;
+    const composite = compositeCanvasRef.current;
+    const container = containerRef.current;
+    if (!baseLayer || !editLayer || !composite || !container) return;
 
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
+      // Set canvas sizes
+      const width = img.width;
+      const height = img.height;
+      baseLayer.width = width;
+      baseLayer.height = height;
+      editLayer.width = width;
+      editLayer.height = height;
+      composite.width = width;
+      composite.height = height;
+
+      // Draw original image to base layer
+      const baseCtx = baseLayer.getContext("2d");
+      if (baseCtx) {
+        baseCtx.drawImage(img, 0, 0);
+      }
+
+      // Initialize edit layer (transparent)
+      const editCtx = editLayer.getContext("2d");
+      if (editCtx) {
+        editCtx.clearRect(0, 0, width, height);
+      }
+
+      // Composite layers
+      composeLayers();
 
       // Calculate initial zoom to fit canvas in container
       const containerWidth = container.clientWidth;
       const containerHeight = container.clientHeight;
-      const scaleX = containerWidth / img.width;
-      const scaleY = containerHeight / img.height;
+      const scaleX = containerWidth / width;
+      const scaleY = containerHeight / height;
       const initialZoom = Math.min(scaleX, scaleY, 1);
       setZoom(initialZoom);
 
       // Center the image
-      const displayWidth = img.width * initialZoom;
-      const displayHeight = img.height * initialZoom;
+      const displayWidth = width * initialZoom;
+      const displayHeight = height * initialZoom;
       setPanOffset({
         x: (containerWidth - displayWidth) / 2,
         y: (containerHeight - displayHeight) / 2,
       });
 
-      // Save initial state
-      saveToHistory(ctx);
+      // Save initial state (empty edit layer)
+      if (editCtx) {
+        saveToHistory(editCtx);
+      }
     };
     img.src = imageUrl;
-  }, [imageUrl]);
+  }, [imageUrl, composeLayers]);
 
   const saveToHistory = useCallback((ctx: CanvasRenderingContext2D) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const editLayer = editLayerRef.current;
+    if (!editLayer) return;
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const layerData = ctx.getImageData(0, 0, editLayer.width, editLayer.height);
 
     // Remove any history after current index
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ imageData });
+    newHistory.push({ layerData });
 
     // Limit history to 50 states
     if (newHistory.length > 50) {
@@ -170,31 +222,33 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const undo = useCallback(() => {
     if (historyIndex <= 0) return;
 
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    const editLayer = editLayerRef.current;
+    const ctx = editLayer?.getContext("2d");
+    if (!editLayer || !ctx) return;
 
     const newIndex = historyIndex - 1;
     setHistoryIndex(newIndex);
-    ctx.putImageData(history[newIndex].imageData, 0, 0);
-  }, [history, historyIndex]);
+    ctx.putImageData(history[newIndex].layerData, 0, 0);
+    composeLayers();
+  }, [history, historyIndex, composeLayers]);
 
   const redo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
 
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    const editLayer = editLayerRef.current;
+    const ctx = editLayer?.getContext("2d");
+    if (!editLayer || !ctx) return;
 
     const newIndex = historyIndex + 1;
     setHistoryIndex(newIndex);
-    ctx.putImageData(history[newIndex].imageData, 0, 0);
-  }, [history, historyIndex]);
+    ctx.putImageData(history[newIndex].layerData, 0, 0);
+    composeLayers();
+  }, [history, historyIndex, composeLayers]);
 
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
+    const composite = compositeCanvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return { x: 0, y: 0 };
+    if (!composite || !container) return { x: 0, y: 0 };
 
     const containerRect = container.getBoundingClientRect();
 
@@ -203,8 +257,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     const screenY = e.clientY - containerRect.top - panOffset.y;
 
     // Center of the rotated canvas
-    const centerX = (canvas.width * zoom) / 2;
-    const centerY = (canvas.height * zoom) / 2;
+    const centerX = (composite.width * zoom) / 2;
+    const centerY = (composite.height * zoom) / 2;
 
     // Apply inverse rotation
     const rad = (-rotation * Math.PI) / 180;
@@ -265,9 +319,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    const editLayer = editLayerRef.current;
+    const composite = compositeCanvasRef.current;
+    const editCtx = editLayer?.getContext("2d");
+    const compositeCtx = composite?.getContext("2d");
+    if (!editLayer || !composite || !editCtx || !compositeCtx) return;
 
     // Capture the pointer
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -281,13 +337,13 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
 
     if (tool === "eyedropper") {
-      // Pick color from canvas
+      // Pick color from composite (both layers)
       const x = Math.floor(point.x);
       const y = Math.floor(point.y);
 
       // Ensure coordinates are within canvas bounds
-      if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
-        const imageData = ctx.getImageData(x, y, 1, 1);
+      if (x >= 0 && x < composite.width && y >= 0 && y < composite.height) {
+        const imageData = compositeCtx.getImageData(x, y, 1, 1);
         const pixel = imageData.data;
         setRgb({ r: pixel[0], g: pixel[1], b: pixel[2] });
       }
@@ -299,30 +355,32 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     setIsDrawing(true);
 
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = brushSize;
+    // All drawing operations happen on edit layer only
+    editCtx.lineCap = "round";
+    editCtx.lineJoin = "round";
+    editCtx.lineWidth = brushSize;
 
     if (tool === "pen") {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.strokeStyle = getColorFromRGB();
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
+      editCtx.globalCompositeOperation = "source-over";
+      editCtx.strokeStyle = getColorFromRGB();
+      editCtx.beginPath();
+      editCtx.moveTo(point.x, point.y);
     } else if (tool === "eraser") {
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.strokeStyle = "rgba(0,0,0,1)"; // Eraser needs a stroke style
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
+      // Eraser erases edit layer only (not the base image)
+      editCtx.globalCompositeOperation = "destination-out";
+      editCtx.strokeStyle = "rgba(0,0,0,1)";
+      editCtx.beginPath();
+      editCtx.moveTo(point.x, point.y);
     } else if (tool === "blur") {
-      applyBlur(ctx, point.x, point.y, brushSize);
+      applyBlur(editCtx, point.x, point.y, brushSize);
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
+    const editLayer = editLayerRef.current;
     const container = containerRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !container || !ctx) return;
+    const editCtx = editLayer?.getContext("2d");
+    if (!editLayer || !container || !editCtx) return;
 
     if (isPanning) {
       setPanOffset({
@@ -343,18 +401,21 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     if (isDrawing) {
       if (tool === "pen" || tool === "eraser") {
-        ctx.lineTo(point.x, point.y);
-        ctx.stroke();
+        editCtx.lineTo(point.x, point.y);
+        editCtx.stroke();
+        // Update composite display in real-time
+        composeLayers();
       } else if (tool === "blur") {
-        applyBlur(ctx, point.x, point.y, brushSize);
+        applyBlur(editCtx, point.x, point.y, brushSize);
+        composeLayers();
       }
     }
   };
 
   const handlePointerUp = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    const editLayer = editLayerRef.current;
+    const editCtx = editLayer?.getContext("2d");
+    if (!editLayer || !editCtx) return;
 
     if (isPanning) {
       setIsPanning(false);
@@ -362,7 +423,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
     if (isDrawing) {
       setIsDrawing(false);
-      saveToHistory(ctx);
+      saveToHistory(editCtx);
     }
   };
 
@@ -372,10 +433,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   };
 
   const handleSave = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const composite = compositeCanvasRef.current;
+    if (!composite) return;
 
-    canvas.toBlob((blob) => {
+    // Save the composite (merged layers)
+    composite.toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       onSave(url);
@@ -398,15 +460,15 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   }, [zoom]);
 
   const resetViewTransform = () => {
-    const canvas = canvasRef.current;
+    const composite = compositeCanvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!composite || !container) return;
 
     // Reset zoom to fit
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
-    const scaleX = containerWidth / canvas.width;
-    const scaleY = containerHeight / canvas.height;
+    const scaleX = containerWidth / composite.width;
+    const scaleY = containerHeight / composite.height;
     const initialZoom = Math.min(scaleX, scaleY, 1);
     setZoom(initialZoom);
 
@@ -414,8 +476,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     setRotation(0);
 
     // Center the image
-    const displayWidth = canvas.width * initialZoom;
-    const displayHeight = canvas.height * initialZoom;
+    const displayWidth = composite.width * initialZoom;
+    const displayHeight = composite.height * initialZoom;
     setPanOffset({
       x: (containerWidth - displayWidth) / 2,
       y: (containerHeight - displayHeight) / 2,
@@ -843,6 +905,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         ref={containerRef}
         className="flex-1 bg-gray-800 relative overflow-hidden"
       >
+        {/* Hidden layers for internal use */}
+        <canvas ref={baseLayerRef} className="hidden" />
+        <canvas ref={editLayerRef} className="hidden" />
+
         <div
           className="absolute"
           style={{
@@ -852,11 +918,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           <div
             style={{
               transform: `rotate(${rotation}deg)`,
-              transformOrigin: canvasRef.current ? `${canvasRef.current.width * zoom / 2}px ${canvasRef.current.height * zoom / 2}px` : 'center',
+              transformOrigin: compositeCanvasRef.current ? `${compositeCanvasRef.current.width * zoom / 2}px ${compositeCanvasRef.current.height * zoom / 2}px` : 'center',
             }}
           >
             <canvas
-              ref={canvasRef}
+              ref={compositeCanvasRef}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
@@ -864,16 +930,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
               className={tool === "pan" ? "cursor-grab" : "cursor-none"}
               style={{
                 imageRendering: "pixelated",
-                width: canvasRef.current ? `${canvasRef.current.width * zoom}px` : undefined,
-                height: canvasRef.current ? `${canvasRef.current.height * zoom}px` : undefined,
+                width: compositeCanvasRef.current ? `${compositeCanvasRef.current.width * zoom}px` : undefined,
+                height: compositeCanvasRef.current ? `${compositeCanvasRef.current.height * zoom}px` : undefined,
                 touchAction: "none", // Disable default touch behaviors
               }}
             />
           </div>
         </div>
         {/* Brush Preview Cursor - positioned relative to container */}
-        {cursorPos && canvasRef.current && tool !== "pan" && (() => {
-          const canvas = canvasRef.current;
+        {cursorPos && compositeCanvasRef.current && tool !== "pan" && (() => {
+          const canvas = compositeCanvasRef.current;
           const scaledSize = brushSize * zoom;
 
           return (

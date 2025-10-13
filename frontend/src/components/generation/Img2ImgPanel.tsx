@@ -8,6 +8,7 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import ImageEditor from "../common/ImageEditor";
 import { getSamplers, getScheduleTypes, generateImg2Img } from "@/utils/api";
 
 interface Img2ImgParams {
@@ -58,6 +59,7 @@ export default function Img2ImgPanel() {
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isEditingImage, setIsEditingImage] = useState(false);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -234,6 +236,29 @@ export default function Img2ImgPanel() {
     }
   };
 
+  const handleEditImage = () => {
+    if (inputImagePreview) {
+      setIsEditingImage(true);
+    }
+  };
+
+  const handleSaveEditedImage = (editedImageUrl: string) => {
+    setInputImagePreview(editedImageUrl);
+    if (isMounted) {
+      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
+    }
+
+    // Update image dimensions
+    const img = new Image();
+    img.onload = () => {
+      setInputImageSize({ width: img.width, height: img.height });
+    };
+    img.src = editedImageUrl;
+
+    setIsEditingImage(false);
+    setInputImage(null); // Clear File object, use data URL instead
+  };
+
   const handleGenerate = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -324,11 +349,13 @@ export default function Img2ImgPanel() {
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
+              onDoubleClick={handleEditImage}
               className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
                 isDragging
                   ? 'border-blue-500 bg-gray-700'
                   : 'border-gray-600'
-              }`}
+              } ${inputImagePreview ? 'cursor-pointer' : ''}`}
+              title={inputImagePreview ? "Double-click to edit image" : ""}
             >
               {inputImagePreview ? (
                 <img
@@ -346,6 +373,11 @@ export default function Img2ImgPanel() {
                 </div>
               )}
             </div>
+            {inputImagePreview && (
+              <p className="text-xs text-gray-500 text-center">
+                💡 Double-click the image to edit with built-in paint tool
+              </p>
+            )}
           </div>
         </Card>
 
@@ -587,6 +619,15 @@ export default function Img2ImgPanel() {
           </div>
         </Card>
       </div>
+
+      {/* Image Editor Overlay */}
+      {isEditingImage && inputImagePreview && (
+        <ImageEditor
+          imageUrl={inputImagePreview}
+          onSave={handleSaveEditedImage}
+          onClose={() => setIsEditingImage(false)}
+        />
+      )}
     </div>
   );
 }

@@ -359,6 +359,15 @@ class DiffusionPipelineManager:
         # Check if SDXL
         is_sdxl = isinstance(self.img2img_pipeline, StableDiffusionXLImg2ImgPipeline)
 
+        # Resize input image if width/height are specified
+        target_width = params.get("width")
+        target_height = params.get("height")
+        if target_width and target_height:
+            if init_image.size != (target_width, target_height):
+                print(f"Resizing input image from {init_image.size} to {target_width}x{target_height}")
+                # Use LANCZOS for high-quality downsampling, or LANCZOS for upsampling
+                init_image = init_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             params["prompt"],

@@ -9,7 +9,7 @@ interface ImageEditorProps {
   onClose: () => void;
 }
 
-type Tool = "pen" | "eraser" | "blur";
+type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "pan";
 
 interface HistoryState {
   imageData: ImageData;
@@ -17,6 +17,7 @@ interface HistoryState {
 
 export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [tool, setTool] = useState<Tool>("pen");
   const [brushSize, setBrushSize] = useState(5);
   const [rgb, setRgb] = useState({ r: 0, g: 0, b: 0 });
@@ -27,6 +28,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const updatingSourceRef = useRef<'rgb' | 'hsl' | null>(null);
 
   // Calculate color from RGB
   const getColorFromRGB = () => {
@@ -38,8 +44,42 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
   };
 
+  // Convert RGB to HSL
+  const rgbToHsl = (r: number, g: number, b: number) => {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0, s = 0, l = (max + min) / 2;
+
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+
+    return {
+      h: Math.round(h * 360),
+      s: Math.round(s * 100),
+      l: Math.round(l * 100)
+    };
+  };
+
   // Update RGB when HSL changes
   useEffect(() => {
+    if (updatingSourceRef.current === 'rgb') {
+      updatingSourceRef.current = null;
+      return;
+    }
+
+    updatingSourceRef.current = 'hsl';
     const color = getColorFromHSL();
     // Convert HSL to RGB for display
     const temp = document.createElement('div');
@@ -54,10 +94,25 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }
   }, [hue, saturation, lightness]);
 
+  // Update HSL when RGB changes
+  useEffect(() => {
+    if (updatingSourceRef.current === 'hsl') {
+      updatingSourceRef.current = null;
+      return;
+    }
+
+    updatingSourceRef.current = 'rgb';
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    setHue(hsl.h);
+    setSaturation(hsl.s);
+    setLightness(hsl.l);
+  }, [rgb]);
+
   // Load image and initialize canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -68,6 +123,22 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
       canvas.width = img.width;
       canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
+
+      // Calculate initial zoom to fit canvas in container
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      const scaleX = containerWidth / img.width;
+      const scaleY = containerHeight / img.height;
+      const initialZoom = Math.min(scaleX, scaleY, 1);
+      setZoom(initialZoom);
+
+      // Center the image
+      const displayWidth = img.width * initialZoom;
+      const displayHeight = img.height * initialZoom;
+      setPanOffset({
+        x: (containerWidth - displayWidth) / 2,
+        y: (containerHeight - displayHeight) / 2,
+      });
 
       // Save initial state
       saveToHistory(ctx);
@@ -121,16 +192,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
   const getCanvasPoint = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
+    const container = containerRef.current;
+    if (!canvas || !container) return { x: 0, y: 0 };
 
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const containerRect = container.getBoundingClientRect();
 
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-    };
+    // Calculate canvas coordinates from screen coordinates
+    const x = (e.clientX - containerRect.left - panOffset.x) / zoom;
+    const y = (e.clientY - containerRect.top - panOffset.y) / zoom;
+
+    return { x, y };
   };
 
   const applyBlur = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) => {
@@ -179,6 +250,30 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     if (!canvas || !ctx) return;
 
     const point = getCanvasPoint(e);
+
+    if (tool === "pan") {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+      return;
+    }
+
+    if (tool === "eyedropper") {
+      // Pick color from canvas
+      const x = Math.floor(point.x);
+      const y = Math.floor(point.y);
+
+      // Ensure coordinates are within canvas bounds
+      if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+        const imageData = ctx.getImageData(x, y, 1, 1);
+        const pixel = imageData.data;
+        setRgb({ r: pixel[0], g: pixel[1], b: pixel[2] });
+      }
+
+      // Switch back to pen tool after picking
+      setTool("pen");
+      return;
+    }
+
     setIsDrawing(true);
 
     ctx.lineCap = "round";
@@ -202,16 +297,25 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
+    const container = containerRef.current;
     const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    if (!canvas || !container || !ctx) return;
+
+    if (isPanning) {
+      setPanOffset({
+        x: e.clientX - panStart.x,
+        y: e.clientY - panStart.y,
+      });
+      return;
+    }
 
     const point = getCanvasPoint(e);
 
-    // Store screen coordinates for cursor preview
-    const rect = canvas.getBoundingClientRect();
+    // Store screen coordinates for cursor preview (relative to container)
+    const containerRect = container.getBoundingClientRect();
     setCursorPos({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
+      x: e.clientX - containerRect.left,
+      y: e.clientY - containerRect.top
     });
 
     if (isDrawing) {
@@ -228,6 +332,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
+
+    if (isPanning) {
+      setIsPanning(false);
+    }
 
     if (isDrawing) {
       setIsDrawing(false);
@@ -251,7 +359,20 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
     }, "image/png");
   };
 
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
+    setZoom(newZoom);
+  }, [zoom]);
+
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // Pan tool with spacebar
+    if (e.code === "Space" && tool !== "pan") {
+      e.preventDefault();
+      setTool("pan");
+    }
+
     if (e.ctrlKey || e.metaKey) {
       if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -261,16 +382,48 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
         redo();
       }
     }
-  }, [undo, redo]);
+  }, [undo, redo, tool]);
+
+  const handleKeyUp = useCallback((e: KeyboardEvent) => {
+    // Release pan tool when spacebar is released
+    if (e.code === "Space" && tool === "pan") {
+      e.preventDefault();
+      setTool("pen");
+    }
+  }, [tool]);
 
   useEffect(() => {
+    const container = containerRef.current;
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+    window.addEventListener("keyup", handleKeyUp);
+    if (container) {
+      container.addEventListener("wheel", handleWheel, { passive: false });
+    }
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      if (container) {
+        container.removeEventListener("wheel", handleWheel);
+      }
+    };
+  }, [handleKeyDown, handleKeyUp, handleWheel]);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-      <div className="bg-gray-900 rounded-lg p-6 max-w-7xl max-h-[90vh] overflow-auto">
+    <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex">
+      {/* Left Toolbox */}
+      <div
+        className="bg-gray-900 w-80 h-screen overflow-y-auto p-4 space-y-4"
+        onWheel={(e) => {
+          const element = e.currentTarget;
+          const atTop = element.scrollTop === 0;
+          const atBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 1;
+
+          // If scrolling down at bottom, or scrolling up at top, prevent default
+          if ((e.deltaY > 0 && atBottom) || (e.deltaY < 0 && atTop)) {
+            e.preventDefault();
+          }
+        }}
+      >
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold text-white">Image Editor</h2>
           <Button onClick={onClose} variant="secondary" size="sm">
@@ -278,10 +431,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
           </Button>
         </div>
 
-        {/* Toolbar */}
-        <div className="mb-4 space-y-4">
-          {/* Tools */}
-          <div className="flex gap-2">
+        {/* Tools */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-300">Tools</h3>
+          <div className="grid grid-cols-2 gap-2">
             <Button
               onClick={() => setTool("pen")}
               variant={tool === "pen" ? "primary" : "secondary"}
@@ -303,76 +456,147 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
             >
               🌫️ Blur
             </Button>
+            <Button
+              onClick={() => setTool("eyedropper")}
+              variant={tool === "eyedropper" ? "primary" : "secondary"}
+              size="sm"
+            >
+              💧 Eyedropper
+            </Button>
+            <Button
+              onClick={() => setTool("pan")}
+              variant={tool === "pan" ? "primary" : "secondary"}
+              size="sm"
+              className="col-span-2"
+            >
+              ✋ Pan (Space)
+            </Button>
           </div>
+        </div>
 
-          {/* Brush Size */}
+        {/* Brush Size */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-300">Brush Size</h3>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-300">Size:</label>
             <input
               type="range"
               min="1"
               max="50"
               value={brushSize}
               onChange={(e) => setBrushSize(parseInt(e.target.value))}
+              onWheel={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const delta = e.deltaY < 0 ? 1 : -1;
+                setBrushSize(Math.max(1, Math.min(50, brushSize + delta)));
+              }}
               className="flex-1"
             />
             <span className="text-sm text-gray-300 w-8">{brushSize}</span>
           </div>
+        </div>
 
-          {/* Color Picker */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded border-2 border-gray-600" style={{ backgroundColor: getColorFromRGB() }} />
-              <div className="flex-1 space-y-1">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-400 w-6">R:</label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="255"
-                    value={rgb.r}
-                    onChange={(e) => setRgb({ ...rgb, r: parseInt(e.target.value) })}
-                    className="flex-1"
-                  />
-                  <span className="text-xs text-gray-300 w-8">{rgb.r}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-400 w-6">G:</label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="255"
-                    value={rgb.g}
-                    onChange={(e) => setRgb({ ...rgb, g: parseInt(e.target.value) })}
-                    className="flex-1"
-                  />
-                  <span className="text-xs text-gray-300 w-8">{rgb.g}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-400 w-6">B:</label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="255"
-                    value={rgb.b}
-                    onChange={(e) => setRgb({ ...rgb, b: parseInt(e.target.value) })}
-                    className="flex-1"
-                  />
-                  <span className="text-xs text-gray-300 w-8">{rgb.b}</span>
-                </div>
+        {/* Color Picker */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-300">Color</h3>
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded border-2 border-gray-600" style={{ backgroundColor: getColorFromRGB() }} />
+            <div className="flex-1 space-y-1">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 w-6">R:</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="255"
+                  value={rgb.r}
+                  onChange={(e) => {
+                    setRgb({ ...rgb, r: parseInt(e.target.value) });
+                  }}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY < 0 ? 1 : -1;
+                    setRgb({ ...rgb, r: Math.max(0, Math.min(255, rgb.r + delta)) });
+                  }}
+                  className="flex-1"
+                />
+                <span className="text-xs text-gray-300 w-8">{rgb.r}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 w-6">G:</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="255"
+                  value={rgb.g}
+                  onChange={(e) => {
+                    setRgb({ ...rgb, g: parseInt(e.target.value) });
+                  }}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY < 0 ? 1 : -1;
+                    setRgb({ ...rgb, g: Math.max(0, Math.min(255, rgb.g + delta)) });
+                  }}
+                  className="flex-1"
+                />
+                <span className="text-xs text-gray-300 w-8">{rgb.g}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400 w-6">B:</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="255"
+                  value={rgb.b}
+                  onChange={(e) => {
+                    setRgb({ ...rgb, b: parseInt(e.target.value) });
+                  }}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const delta = e.deltaY < 0 ? 1 : -1;
+                    setRgb({ ...rgb, b: Math.max(0, Math.min(255, rgb.b + delta)) });
+                  }}
+                  className="flex-1"
+                />
+                <span className="text-xs text-gray-300 w-8">{rgb.b}</span>
               </div>
             </div>
+          </div>
 
-            {/* Gradient Palette */}
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">Hue:</label>
+          {/* Gradient Palette */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 w-8">H:</label>
               <input
                 type="range"
                 min="0"
                 max="360"
                 value={hue}
                 onChange={(e) => setHue(parseInt(e.target.value))}
-                className="w-full"
+                onWheel={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.deltaY < 0 ? 1 : -1;
+                  setHue(Math.max(0, Math.min(360, hue + delta)));
+                }}
+                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                  [&::-webkit-slider-thumb]:appearance-none
+                  [&::-webkit-slider-thumb]:w-4
+                  [&::-webkit-slider-thumb]:h-4
+                  [&::-webkit-slider-thumb]:rounded-full
+                  [&::-webkit-slider-thumb]:bg-white
+                  [&::-webkit-slider-thumb]:border-2
+                  [&::-webkit-slider-thumb]:border-gray-800
+                  [&::-webkit-slider-thumb]:cursor-pointer
+                  [&::-moz-range-thumb]:w-4
+                  [&::-moz-range-thumb]:h-4
+                  [&::-moz-range-thumb]:rounded-full
+                  [&::-moz-range-thumb]:bg-white
+                  [&::-moz-range-thumb]:border-2
+                  [&::-moz-range-thumb]:border-gray-800
+                  [&::-moz-range-thumb]:cursor-pointer"
                 style={{
                   background: `linear-gradient(to right,
                     hsl(0, 100%, 50%),
@@ -384,94 +608,192 @@ export default function ImageEditor({ imageUrl, onSave, onClose }: ImageEditorPr
                     hsl(360, 100%, 50%))`
                 }}
               />
-              <label className="text-xs text-gray-400 mb-1 block mt-2">Saturation:</label>
+              <span className="text-xs text-gray-300 w-8">{hue}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 w-8">S:</label>
               <input
                 type="range"
                 min="0"
                 max="100"
                 value={saturation}
                 onChange={(e) => setSaturation(parseInt(e.target.value))}
-                className="w-full"
+                onWheel={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.deltaY < 0 ? 1 : -1;
+                  setSaturation(Math.max(0, Math.min(100, saturation + delta)));
+                }}
+                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                  [&::-webkit-slider-thumb]:appearance-none
+                  [&::-webkit-slider-thumb]:w-4
+                  [&::-webkit-slider-thumb]:h-4
+                  [&::-webkit-slider-thumb]:rounded-full
+                  [&::-webkit-slider-thumb]:bg-white
+                  [&::-webkit-slider-thumb]:border-2
+                  [&::-webkit-slider-thumb]:border-gray-800
+                  [&::-webkit-slider-thumb]:cursor-pointer
+                  [&::-moz-range-thumb]:w-4
+                  [&::-moz-range-thumb]:h-4
+                  [&::-moz-range-thumb]:rounded-full
+                  [&::-moz-range-thumb]:bg-white
+                  [&::-moz-range-thumb]:border-2
+                  [&::-moz-range-thumb]:border-gray-800
+                  [&::-moz-range-thumb]:cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right,
+                    hsl(${hue}, 0%, ${lightness}%),
+                    hsl(${hue}, 100%, ${lightness}%))`
+                }}
               />
-              <label className="text-xs text-gray-400 mb-1 block mt-2">Lightness:</label>
+              <span className="text-xs text-gray-300 w-8">{saturation}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 w-8">L:</label>
               <input
                 type="range"
                 min="0"
                 max="100"
                 value={lightness}
                 onChange={(e) => setLightness(parseInt(e.target.value))}
-                className="w-full"
+                onWheel={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.deltaY < 0 ? 1 : -1;
+                  setLightness(Math.max(0, Math.min(100, lightness + delta)));
+                }}
+                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer
+                  [&::-webkit-slider-thumb]:appearance-none
+                  [&::-webkit-slider-thumb]:w-4
+                  [&::-webkit-slider-thumb]:h-4
+                  [&::-webkit-slider-thumb]:rounded-full
+                  [&::-webkit-slider-thumb]:bg-white
+                  [&::-webkit-slider-thumb]:border-2
+                  [&::-webkit-slider-thumb]:border-gray-800
+                  [&::-webkit-slider-thumb]:cursor-pointer
+                  [&::-moz-range-thumb]:w-4
+                  [&::-moz-range-thumb]:h-4
+                  [&::-moz-range-thumb]:rounded-full
+                  [&::-moz-range-thumb]:bg-white
+                  [&::-moz-range-thumb]:border-2
+                  [&::-moz-range-thumb]:border-gray-800
+                  [&::-moz-range-thumb]:cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right,
+                    hsl(${hue}, ${saturation}%, 0%),
+                    hsl(${hue}, ${saturation}%, 50%),
+                    hsl(${hue}, ${saturation}%, 100%))`
+                }}
               />
+              <span className="text-xs text-gray-300 w-8">{lightness}</span>
             </div>
           </div>
+        </div>
 
-          {/* Undo/Redo */}
+        {/* Zoom */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-300">Zoom</h3>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min="0.1"
+              max="10"
+              step="0.1"
+              value={zoom}
+              onChange={(e) => setZoom(parseFloat(e.target.value))}
+              onWheel={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const delta = e.deltaY < 0 ? 0.1 : -0.1;
+                setZoom(Math.max(0.1, Math.min(10, zoom + delta)));
+              }}
+              className="flex-1"
+            />
+            <span className="text-sm text-gray-300 w-12">{zoom.toFixed(1)}x</span>
+          </div>
+        </div>
+
+        {/* Undo/Redo */}
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-300">History</h3>
           <div className="flex gap-2">
             <Button
               onClick={undo}
               disabled={historyIndex <= 0}
               variant="secondary"
               size="sm"
+              className="flex-1"
             >
-              ↶ Undo (Ctrl+Z)
+              ↶ Undo
             </Button>
             <Button
               onClick={redo}
               disabled={historyIndex >= history.length - 1}
               variant="secondary"
               size="sm"
+              className="flex-1"
             >
-              ↷ Redo (Ctrl+Shift+Z)
+              ↷ Redo
             </Button>
           </div>
         </div>
 
-        {/* Canvas */}
-        <div className="bg-gray-800 p-4 rounded-lg mb-4 overflow-auto max-h-[60vh] relative">
-          <div className="relative inline-block">
-            <canvas
-              ref={canvasRef}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseLeave}
-              className="max-w-full cursor-none"
-              style={{ imageRendering: "pixelated" }}
-            />
-            {/* Brush Preview Cursor */}
-            {cursorPos && canvasRef.current && (() => {
-              const canvas = canvasRef.current;
-              const rect = canvas.getBoundingClientRect();
-              const scale = rect.width / canvas.width;
-              const scaledSize = brushSize * scale;
-
-              return (
-                <div
-                  className="absolute pointer-events-none rounded-full border-2"
-                  style={{
-                    left: `${cursorPos.x}px`,
-                    top: `${cursorPos.y}px`,
-                    width: `${scaledSize}px`,
-                    height: `${scaledSize}px`,
-                    transform: 'translate(-50%, -50%)',
-                    borderColor: tool === "eraser" ? "#ffffff" : getColorFromRGB(),
-                    backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.2)" : `${getColorFromRGB()}33`,
-                  }}
-                />
-              );
-            })()}
-          </div>
-        </div>
-
         {/* Actions */}
-        <div className="flex gap-2 justify-end">
-          <Button onClick={onClose} variant="secondary">
+        <div className="flex gap-2 pt-4 border-t border-gray-700">
+          <Button onClick={onClose} variant="secondary" className="flex-1">
             Cancel
           </Button>
-          <Button onClick={handleSave} variant="primary">
+          <Button onClick={handleSave} variant="primary" className="flex-1">
             Save & Use
           </Button>
         </div>
+      </div>
+
+      {/* Canvas Area */}
+      <div
+        ref={containerRef}
+        className="flex-1 bg-gray-800 relative overflow-hidden"
+      >
+        <div
+          className="absolute"
+          style={{
+            transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+            className={tool === "pan" ? "cursor-grab" : "cursor-none"}
+            style={{
+              imageRendering: "pixelated",
+              width: canvasRef.current ? `${canvasRef.current.width * zoom}px` : undefined,
+              height: canvasRef.current ? `${canvasRef.current.height * zoom}px` : undefined,
+            }}
+          />
+        </div>
+        {/* Brush Preview Cursor - positioned relative to container */}
+        {cursorPos && canvasRef.current && tool !== "pan" && (() => {
+          const canvas = canvasRef.current;
+          const scaledSize = brushSize * zoom;
+
+          return (
+            <div
+              className="absolute pointer-events-none rounded-full border-2"
+              style={{
+                left: `${cursorPos.x}px`,
+                top: `${cursorPos.y}px`,
+                width: `${scaledSize}px`,
+                height: `${scaledSize}px`,
+                transform: 'translate(-50%, -50%)',
+                borderColor: tool === "eraser" ? "#ffffff" : getColorFromRGB(),
+                backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.2)" : `${getColorFromRGB()}33`,
+              }}
+            />
+          );
+        })()}
       </div>
     </div>
   );

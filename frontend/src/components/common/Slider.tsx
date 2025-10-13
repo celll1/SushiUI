@@ -19,6 +19,21 @@ export default function Slider({
   className = "",
   ...props
 }: SliderProps) {
+  const handleWheel = (e: React.WheelEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const delta = e.deltaY < 0 ? step : -step;
+    const newValue = Math.max(min, Math.min(max, value + delta));
+
+    // Create synthetic event for onChange
+    const syntheticEvent = {
+      target: { value: newValue.toString() },
+      currentTarget: { value: newValue.toString() }
+    } as React.ChangeEvent<HTMLInputElement>;
+
+    onChange(syntheticEvent);
+  };
+
   return (
     <div className={className}>
       {label && (
@@ -37,6 +52,7 @@ export default function Slider({
           step={step}
           value={value}
           onChange={onChange}
+          onWheel={handleWheel}
           className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer
             [&::-webkit-slider-thumb]:appearance-none
             [&::-webkit-slider-thumb]:w-4
@@ -61,6 +77,7 @@ export default function Slider({
           step={step}
           value={value}
           onChange={onChange}
+          onWheel={handleWheel}
           className="w-20 px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded-md text-white
             focus:outline-none focus:ring-2 focus:ring-blue-500"
           {...props}

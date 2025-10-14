@@ -25,7 +25,11 @@ const DEFAULT_PARAMS: GenerationParams = {
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
 
-export default function Txt2ImgPanel() {
+interface Txt2ImgPanelProps {
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
+}
+
+export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -35,6 +39,9 @@ export default function Txt2ImgPanel() {
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [sendImage, setSendImage] = useState(true);
+  const [sendPrompt, setSendPrompt] = useState(true);
+  const [sendParameters, setSendParameters] = useState(true);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -90,11 +97,38 @@ export default function Txt2ImgPanel() {
       alert("No image to send");
       return;
     }
-    // Save image to img2img input storage
-    localStorage.setItem("img2img_input_image", generatedImage);
-    // Trigger a custom event to notify img2img tab
-    window.dispatchEvent(new Event("img2img_input_updated"));
-    alert("Image sent to img2img. Switch to img2img tab to use it.");
+
+    // Send image if checked
+    if (sendImage) {
+      localStorage.setItem("img2img_input_image", generatedImage);
+      window.dispatchEvent(new Event("img2img_input_updated"));
+    }
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.prompt = params.prompt;
+      img2imgParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.steps = params.steps;
+      img2imgParams.cfg_scale = params.cfg_scale;
+      img2imgParams.sampler = params.sampler;
+      img2imgParams.schedule_type = params.schedule_type;
+      img2imgParams.seed = params.seed;
+      img2imgParams.width = params.width;
+      img2imgParams.height = params.height;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
+
+    // Navigate to img2img tab
+    if (onTabChange) {
+      onTabChange("img2img");
+    }
   };
 
   const sendToInpaint = () => {
@@ -102,11 +136,39 @@ export default function Txt2ImgPanel() {
       alert("No image to send");
       return;
     }
-    // Save image to inpaint input storage
-    localStorage.setItem("inpaint_input_image", generatedImage);
-    // Trigger a custom event to notify inpaint tab
-    window.dispatchEvent(new Event("inpaint_input_updated"));
-    alert("Image sent to inpaint. Switch to inpaint tab to use it.");
+
+    // Send image if checked
+    if (sendImage) {
+      localStorage.setItem("inpaint_input_image", generatedImage);
+      localStorage.removeItem("inpaint_mask_image");
+      window.dispatchEvent(new Event("inpaint_input_updated"));
+    }
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
+      inpaintParams.prompt = params.prompt;
+      inpaintParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
+      inpaintParams.steps = params.steps;
+      inpaintParams.cfg_scale = params.cfg_scale;
+      inpaintParams.sampler = params.sampler;
+      inpaintParams.schedule_type = params.schedule_type;
+      inpaintParams.seed = params.seed;
+      inpaintParams.width = params.width;
+      inpaintParams.height = params.height;
+      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+    }
+
+    // Navigate to inpaint tab
+    if (onTabChange) {
+      onTabChange("inpaint");
+    }
   };
 
   const importFromImage = (imageData: any) => {
@@ -364,21 +426,54 @@ export default function Txt2ImgPanel() {
               )}
             </div>
             {generatedImage && (
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  onClick={sendToImg2Img}
-                  variant="secondary"
-                  size="sm"
-                >
-                  Send to img2img
-                </Button>
-                <Button
-                  onClick={sendToInpaint}
-                  variant="secondary"
-                  size="sm"
-                >
-                  Send to inpaint
-                </Button>
+              <div className="space-y-3 mt-4">
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendImage}
+                      onChange={(e) => setSendImage(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send image</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendPrompt}
+                      onChange={(e) => setSendPrompt(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send prompt</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendParameters}
+                      onChange={(e) => setSendParameters(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send parameters</span>
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={sendToImg2Img}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to img2img
+                  </Button>
+                  <Button
+                    onClick={sendToInpaint}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to inpaint
+                  </Button>
+                </div>
               </div>
             )}
           </div>

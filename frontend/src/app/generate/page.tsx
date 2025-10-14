@@ -61,9 +61,9 @@ export default function GeneratePage() {
         </div>
 
         {/* Tab Content */}
-        {activeTab === "txt2img" && <Txt2ImgPanel />}
-        {activeTab === "img2img" && <Img2ImgPanel />}
-        {activeTab === "inpaint" && <InpaintPanel />}
+        {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} />}
+        {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} />}
+        {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} />}
       </main>
     </div>
   );

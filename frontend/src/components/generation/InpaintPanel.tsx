@@ -52,7 +52,11 @@ const PREVIEW_STORAGE_KEY = "inpaint_preview";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 
-export default function InpaintPanel() {
+interface InpaintPanelProps {
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
+}
+
+export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -71,6 +75,9 @@ export default function InpaintPanel() {
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
+  const [sendImage, setSendImage] = useState(true);
+  const [sendPrompt, setSendPrompt] = useState(true);
+  const [sendParameters, setSendParameters] = useState(true);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -305,6 +312,91 @@ export default function InpaintPanel() {
     setMaskImage(null);
     if (isMounted) {
       localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+    }
+  };
+
+  const sendToImg2Img = () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Send image if checked
+    if (sendImage) {
+      localStorage.setItem("img2img_input_image", generatedImage);
+      window.dispatchEvent(new Event("img2img_input_updated"));
+    }
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.prompt = params.prompt;
+      img2imgParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.steps = params.steps;
+      img2imgParams.cfg_scale = params.cfg_scale;
+      img2imgParams.sampler = params.sampler;
+      img2imgParams.schedule_type = params.schedule_type;
+      img2imgParams.seed = params.seed;
+      img2imgParams.width = params.width;
+      img2imgParams.height = params.height;
+      img2imgParams.denoising_strength = params.denoising_strength;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
+
+    // Navigate to img2img tab
+    if (onTabChange) {
+      onTabChange("img2img");
+    }
+  };
+
+  const sendToInpaint = () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Send image if checked (use generated image as new input, clear mask)
+    if (sendImage) {
+      localStorage.setItem("inpaint_input_image", generatedImage);
+      localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+      window.dispatchEvent(new Event("inpaint_input_updated"));
+    }
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      const inpaintParams = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      inpaintParams.prompt = params.prompt;
+      inpaintParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(inpaintParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const inpaintParams = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      inpaintParams.steps = params.steps;
+      inpaintParams.cfg_scale = params.cfg_scale;
+      inpaintParams.sampler = params.sampler;
+      inpaintParams.schedule_type = params.schedule_type;
+      inpaintParams.seed = params.seed;
+      inpaintParams.width = params.width;
+      inpaintParams.height = params.height;
+      inpaintParams.denoising_strength = params.denoising_strength;
+      inpaintParams.mask_blur = params.mask_blur;
+      inpaintParams.inpaint_full_res = params.inpaint_full_res;
+      inpaintParams.inpaint_full_res_padding = params.inpaint_full_res_padding;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(inpaintParams));
+    }
+
+    // Reload current panel to reflect changes if image was sent
+    if (sendImage) {
+      setInputImagePreview(generatedImage);
+      setMaskImage(null);
     }
   };
 
@@ -767,6 +859,57 @@ export default function InpaintPanel() {
                 <p className="text-gray-500">No image generated yet</p>
               )}
             </div>
+            {generatedImage && (
+              <div className="space-y-3 mt-4">
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendImage}
+                      onChange={(e) => setSendImage(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send image</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendPrompt}
+                      onChange={(e) => setSendPrompt(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send prompt</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendParameters}
+                      onChange={(e) => setSendParameters(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send parameters</span>
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={sendToImg2Img}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to img2img
+                  </Button>
+                  <Button
+                    onClick={sendToInpaint}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to inpaint
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       </div>

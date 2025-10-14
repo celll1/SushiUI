@@ -1,4 +1,4 @@
-# Stable Diffusion WebUI
+# 🍣 SushiUI
 
 Stable Diffusion 1.5/XL対応の画像生成Webアプリケーション
 

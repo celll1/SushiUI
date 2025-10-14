@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SD WebUI",
-  description: "Stable Diffusion Web Interface",
+  title: "SushiUI",
+  description: "Stable Diffusion Web Interface - SushiUI",
 };
 
 export default function RootLayout({

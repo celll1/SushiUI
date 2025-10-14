@@ -17,8 +17,8 @@ export default function Sidebar() {
   return (
     <div className="flex h-screen w-59 flex-col bg-gray-900 text-gray-100">
       <div className="flex items-center space-x-2 px-4 py-6">
-        <FileImage className="h-8 w-8" />
-        <h1 className="text-xl font-bold uppercase">SD WebUI</h1>
+        <span className="text-4xl">🍣</span>
+        <h1 className="text-xl font-bold">SushiUI</h1>
       </div>
 
       <nav className="flex-1 space-y-1 px-2">

@@ -64,6 +64,9 @@ last_model.json
 # 要件定義
 sd-app-requirements.md
 
+# Claude Code
+.claude/
+
 # OS
 Thumbs.db
 .DS_Store

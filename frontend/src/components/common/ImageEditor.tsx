@@ -9,6 +9,7 @@ interface ImageEditorProps {
   onClose: () => void;
   onSaveMask?: (maskUrl: string) => void; // Optional callback for mask export
   mode?: "edit" | "inpaint"; // Editor mode (default: "edit")
+  initialMaskUrl?: string; // Initial mask image to load (for inpaint mode)
 }
 
 type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "bucket" | "pan";
@@ -28,7 +29,7 @@ interface HistoryState {
   layerData: ImageData;
 }
 
-export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mode = "edit" }: ImageEditorProps) {
+export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mode = "edit", initialMaskUrl }: ImageEditorProps) {
   // Canvas refs - we'll use Map to store multiple layer canvases
   const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer (not editable)
   const layerCanvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map()); // Editable layers
@@ -44,7 +45,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     ];
     // Add inpaint mask layer in inpaint mode
     if (mode === "inpaint") {
-      baseLayers.push({ id: "mask", name: "Inpaint Mask", visible: true, opacity: 0.5, editable: true, deletable: false });
+      baseLayers.push({ id: "mask", name: "Inpaint Mask", visible: true, opacity: 1, editable: true, deletable: false });
     }
     return baseLayers;
   });
@@ -53,11 +54,12 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [tool, setTool] = useState<Tool>("pen");
   const [brushType, setBrushType] = useState<BrushType>("normal");
   const [brushSize, setBrushSize] = useState(5);
-  const [rgb, setRgb] = useState({ r: 0, g: 0, b: 0 });
+  // In inpaint mode, always draw with white (255,255,255)
+  const [rgb, setRgb] = useState(mode === "inpaint" ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 });
   const [alpha, setAlpha] = useState(1); // 0-1
-  const [hue, setHue] = useState(0);
-  const [saturation, setSaturation] = useState(100);
-  const [lightness, setLightness] = useState(0);
+  const [hue, setHue] = useState(mode === "inpaint" ? 0 : 0);
+  const [saturation, setSaturation] = useState(mode === "inpaint" ? 0 : 100);
+  const [lightness, setLightness] = useState(mode === "inpaint" ? 100 : 0);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isTapering, setIsTapering] = useState(false); // Tapering mode after pointer release
   const [history, setHistory] = useState<HistoryState[]>([]);
@@ -184,9 +186,18 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       const layerCanvas = getLayerCanvas(layer.id);
       if (!layerCanvas) continue;
 
-      ctx.globalAlpha = layer.opacity;
-      ctx.drawImage(layerCanvas, 0, 0);
-      ctx.globalAlpha = 1;
+      // Special handling for mask layer - use screen blend mode for semi-transparent white overlay
+      if (layer.id === "mask" && mode === "inpaint") {
+        ctx.globalAlpha = 0.5;
+        ctx.globalCompositeOperation = "screen";
+        ctx.drawImage(layerCanvas, 0, 0);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.globalAlpha = layer.opacity;
+        ctx.drawImage(layerCanvas, 0, 0);
+        ctx.globalAlpha = 1;
+      }
     }
 
     // Draw temporary stroke canvas on top (if drawing)
@@ -267,6 +278,25 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         }
       }
 
+      // Load initial mask if provided (must be done before compositing)
+      if (mode === "inpaint" && initialMaskUrl) {
+        const maskCanvas = layerCanvasRefs.current.get("mask");
+        if (maskCanvas) {
+          const maskImg = new Image();
+          maskImg.crossOrigin = "anonymous";
+          maskImg.onload = () => {
+            const ctx = maskCanvas.getContext("2d");
+            if (ctx) {
+              // Draw mask image to canvas
+              ctx.drawImage(maskImg, 0, 0, maskCanvas.width, maskCanvas.height);
+              // Re-composite after mask is loaded
+              composeLayers();
+            }
+          };
+          maskImg.src = initialMaskUrl;
+        }
+      }
+
       // Composite layers
       composeLayers();
 
@@ -300,7 +330,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     };
     img.src = imageUrl;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageUrl, layers.length, layers.map(l => l.id).join(','), composeLayers, activeLayerId]);
+  }, [imageUrl, layers.length, layers.map(l => l.id).join(','), composeLayers, activeLayerId, initialMaskUrl]);
 
   const saveToHistory = useCallback((layerId: string, ctx: CanvasRenderingContext2D) => {
     const layerCanvas = getLayerCanvas(layerId);
@@ -996,11 +1026,86 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     if (mode === "inpaint" && onSaveMask) {
       const maskCanvas = layerCanvasRefs.current.get("mask");
       if (maskCanvas) {
-        maskCanvas.toBlob((blob) => {
-          if (!blob) return;
-          const url = URL.createObjectURL(blob);
-          onSaveMask(url);
-        }, "image/png");
+        console.log(`Saving mask canvas: ${maskCanvas.width}x${maskCanvas.height}`);
+
+        // Get mask canvas context
+        const maskCtx = maskCanvas.getContext('2d');
+        if (!maskCtx) return;
+
+        // Get the mask image data directly from mask canvas
+        const maskImageData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+        const maskData = maskImageData.data;
+
+        // Debug: Check what's in the mask canvas
+        let drawnPixelCount = 0;
+        let whitePixelCount = 0;
+        let blackPixelCount = 0;
+        const samplePixels: Array<{r: number, g: number, b: number, a: number}> = [];
+
+        for (let i = 0; i < maskData.length; i += 4) {
+          if (i < 20) {
+            samplePixels.push({
+              r: maskData[i],
+              g: maskData[i+1],
+              b: maskData[i+2],
+              a: maskData[i+3]
+            });
+          }
+
+          const a = maskData[i + 3];
+          if (a > 0) {
+            drawnPixelCount++;
+            const r = maskData[i];
+            if (r > 128) whitePixelCount++;
+            else blackPixelCount++;
+          }
+        }
+
+        console.log(`Mask canvas stats:`, {
+          total: maskData.length / 4,
+          drawnPixels: drawnPixelCount,
+          whitePixels: whitePixelCount,
+          blackPixels: blackPixelCount,
+          samplePixels: samplePixels.slice(0, 5)
+        });
+
+        // Create a new canvas for the grayscale mask
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = maskCanvas.width;
+        tempCanvas.height = maskCanvas.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (!tempCtx) return;
+
+        const tempImageData = tempCtx.createImageData(tempCanvas.width, tempCanvas.height);
+        const tempData = tempImageData.data;
+
+        // Convert: alpha channel -> grayscale, where white = area to inpaint
+        for (let i = 0; i < maskData.length; i += 4) {
+          const a = maskData[i + 3];
+          if (a > 0) {
+            // Drawn pixel: use RGB value as grayscale (should be white 255)
+            const gray = maskData[i]; // R channel
+            tempData[i] = gray;
+            tempData[i + 1] = gray;
+            tempData[i + 2] = gray;
+            tempData[i + 3] = 255;
+          } else {
+            // Transparent pixel: black in mask (area NOT to inpaint)
+            tempData[i] = 0;
+            tempData[i + 1] = 0;
+            tempData[i + 2] = 0;
+            tempData[i + 3] = 255;
+          }
+        }
+
+        tempCtx.putImageData(tempImageData, 0, 0);
+
+        // Convert to data URL instead of blob URL for persistence
+        const maskDataUrl = tempCanvas.toDataURL("image/png");
+        console.log(`Mask data URL created, length: ${maskDataUrl.length} bytes`);
+        onSaveMask(maskDataUrl);
+      } else {
+        console.error('Mask canvas not found in layerCanvasRefs');
       }
     }
 
@@ -1022,11 +1127,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       tempCtx.globalAlpha = 1;
     }
 
-    tempCanvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      onSave(url);
-    }, "image/png");
+    // Convert to data URL instead of blob URL for persistence across page reloads
+    const dataUrl = tempCanvas.toDataURL("image/png");
+    onSave(dataUrl);
   };
 
   // Layer management functions

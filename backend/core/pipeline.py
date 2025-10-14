@@ -571,6 +571,8 @@ class DiffusionPipelineManager:
             "negative_prompt": params.get("negative_prompt", ""),
             "image": init_image,
             "mask_image": mask_image,
+            "width": target_width,
+            "height": target_height,
             "strength": params.get("denoising_strength", 0.75),
             "num_inference_steps": params.get("steps", settings.default_steps),
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),

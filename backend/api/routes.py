@@ -194,6 +194,12 @@ async def generate_inpaint(
         mask_data = await mask.read()
         mask_image = Image.open(io.BytesIO(mask_data)).convert("L")
 
+        # Debug: Check mask statistics
+        import numpy as np
+        mask_array = np.array(mask_image)
+        print(f"Mask stats - min: {mask_array.min()}, max: {mask_array.max()}, mean: {mask_array.mean():.2f}")
+        print(f"Mask shape: {mask_array.shape}, non-zero pixels: {np.count_nonzero(mask_array)}, white pixels (>200): {np.count_nonzero(mask_array > 200)}")
+
         # Apply mask blur if specified
         if mask_blur > 0:
             from PIL import ImageFilter

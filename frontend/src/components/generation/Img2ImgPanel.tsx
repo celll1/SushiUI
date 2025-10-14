@@ -242,6 +242,15 @@ export default function Img2ImgPanel() {
     }
   };
 
+  const handleClearInputImage = () => {
+    setInputImage(null);
+    setInputImagePreview(null);
+    setInputImageSize(null);
+    if (isMounted) {
+      localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+    }
+  };
+
   const handleSaveEditedImage = (editedImageUrl: string) => {
     setInputImagePreview(editedImageUrl);
     if (isMounted) {
@@ -354,18 +363,30 @@ export default function Img2ImgPanel() {
 
         <Card title="Input Image">
           <div className="space-y-4">
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/jpg,image/webp"
-              onChange={handleImageUpload}
-              className="block w-full text-sm text-gray-400
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-lg file:border-0
-                file:text-sm file:font-medium
-                file:bg-blue-600 file:text-white
-                hover:file:bg-blue-700
-                file:cursor-pointer cursor-pointer"
-            />
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                onChange={handleImageUpload}
+                className="flex-1 block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {inputImagePreview && (
+                <Button
+                  onClick={handleClearInputImage}
+                  variant="secondary"
+                  size="sm"
+                  title="Clear input image"
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
             <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}

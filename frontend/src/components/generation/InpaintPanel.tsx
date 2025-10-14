@@ -25,6 +25,8 @@ interface InpaintParams {
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
+  resize_mode?: string;
+  resampling_method?: string;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -41,11 +43,14 @@ const DEFAULT_PARAMS: InpaintParams = {
   mask_blur: 4,
   inpaint_full_res: false,
   inpaint_full_res_padding: 32,
+  resize_mode: "image",
+  resampling_method: "lanczos",
 };
 
 const STORAGE_KEY = "inpaint_params";
 const PREVIEW_STORAGE_KEY = "inpaint_preview";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
+const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 
 export default function InpaintPanel() {
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
@@ -54,6 +59,9 @@ export default function InpaintPanel() {
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [inputImage, setInputImage] = useState<File | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
+  const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [sizeMode, setSizeMode] = useState<"absolute" | "scale">("absolute");
+  const [scale, setScale] = useState<number>(1.0);
   const [maskImage, setMaskImage] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
@@ -92,6 +100,12 @@ export default function InpaintPanel() {
       setInputImagePreview(savedInputPreview);
     }
 
+    // Load mask image preview
+    const savedMaskPreview = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+    if (savedMaskPreview) {
+      setMaskImage(savedMaskPreview);
+    }
+
     loadSamplers();
     loadScheduleTypes();
 
@@ -109,6 +123,23 @@ export default function InpaintPanel() {
       window.removeEventListener("inpaint_input_updated", handleInputUpdate);
     };
   }, []);
+
+  // Load image dimensions when inputImagePreview changes
+  useEffect(() => {
+    if (inputImagePreview) {
+      const img = new Image();
+      img.onload = () => {
+        setInputImageSize({ width: img.width, height: img.height });
+        // If in scale mode, update width/height based on scale
+        if (sizeMode === "scale") {
+          const scaledWidth = Math.round(img.width * scale / 64) * 64;
+          const scaledHeight = Math.round(img.height * scale / 64) * 64;
+          setParams((prev) => ({ ...prev, width: scaledWidth, height: scaledHeight }));
+        }
+      };
+      img.src = inputImagePreview;
+    }
+  }, [inputImagePreview]);
 
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {
@@ -154,6 +185,12 @@ export default function InpaintPanel() {
     }
 
     setInputImage(file);
+    // Clear mask when new image is loaded
+    setMaskImage(null);
+    if (isMounted) {
+      localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const preview = event.target?.result as string;
@@ -161,6 +198,19 @@ export default function InpaintPanel() {
       if (isMounted) {
         localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
       }
+
+      // Load image to get dimensions
+      const img = new Image();
+      img.onload = () => {
+        setInputImageSize({ width: img.width, height: img.height });
+        // If in scale mode, update width/height based on scale
+        if (sizeMode === "scale") {
+          const scaledWidth = Math.round(img.width * scale / 64) * 64;
+          const scaledHeight = Math.round(img.height * scale / 64) * 64;
+          setParams({ ...params, width: scaledWidth, height: scaledHeight });
+        }
+      };
+      img.src = preview;
     };
     reader.readAsDataURL(file);
   };
@@ -212,10 +262,50 @@ export default function InpaintPanel() {
 
   const handleEditorSaveMask = (maskUrl: string) => {
     setMaskImage(maskUrl);
+    if (isMounted) {
+      localStorage.setItem(MASK_IMAGE_STORAGE_KEY, maskUrl);
+    }
   };
 
   const handleEditorClose = () => {
     setShowImageEditor(false);
+  };
+
+  const handleScaleChange = (newScale: number) => {
+    setScale(newScale);
+    if (inputImageSize && sizeMode === "scale") {
+      const scaledWidth = Math.round(inputImageSize.width * newScale / 64) * 64;
+      const scaledHeight = Math.round(inputImageSize.height * newScale / 64) * 64;
+      setParams({ ...params, width: scaledWidth, height: scaledHeight });
+    }
+  };
+
+  const handleSizeModeChange = (newMode: "absolute" | "scale") => {
+    setSizeMode(newMode);
+    if (newMode === "scale" && inputImageSize) {
+      // Switch to scale mode - update dimensions based on current scale
+      const scaledWidth = Math.round(inputImageSize.width * scale / 64) * 64;
+      const scaledHeight = Math.round(inputImageSize.height * scale / 64) * 64;
+      setParams({ ...params, width: scaledWidth, height: scaledHeight });
+    }
+  };
+
+  const handleClearInputImage = () => {
+    setInputImage(null);
+    setInputImagePreview(null);
+    setInputImageSize(null);
+    setMaskImage(null);
+    if (isMounted) {
+      localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+      localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+    }
+  };
+
+  const handleClearMask = () => {
+    setMaskImage(null);
+    if (isMounted) {
+      localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+    }
   };
 
   const handleGenerate = async () => {
@@ -239,6 +329,16 @@ export default function InpaintPanel() {
     const currentSteps = params.steps || 20;
     setTotalSteps(currentSteps);
 
+    // Simulate progress
+    const progressInterval = setInterval(() => {
+      setProgress(prev => {
+        if (prev < currentSteps) {
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, 100);
+
     try {
       const apiParams: ApiInpaintParams = {
         prompt: params.prompt,
@@ -254,12 +354,14 @@ export default function InpaintPanel() {
         mask_blur: params.mask_blur,
         inpaint_full_res: params.inpaint_full_res,
         inpaint_full_res_padding: params.inpaint_full_res_padding,
+        resize_mode: params.resize_mode,
+        resampling_method: params.resampling_method,
       };
 
       const result = await generateInpaint(apiParams, inputImagePreview, maskImage);
 
       if (result.success) {
-        const imageUrl = `/api/images/${result.image.id}/file`;
+        const imageUrl = `/outputs/${result.image.filename}`;
         setGeneratedImage(imageUrl);
         setGeneratedImageSeed(result.actual_seed);
 
@@ -273,7 +375,12 @@ export default function InpaintPanel() {
       console.error("Generation error:", error);
       alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
     } finally {
-      setIsGenerating(false);
+      clearInterval(progressInterval);
+      setProgress(currentSteps);
+      setTimeout(() => {
+        setIsGenerating(false);
+        setProgress(0);
+      }, 500);
     }
   };
 
@@ -298,18 +405,42 @@ export default function InpaintPanel() {
 
         <Card title="Input Image">
           <div className="space-y-4">
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/jpg,image/webp"
-              onChange={handleImageUpload}
-              className="block w-full text-sm text-gray-400
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-lg file:border-0
-                file:text-sm file:font-medium
-                file:bg-blue-600 file:text-white
-                hover:file:bg-blue-700
-                file:cursor-pointer cursor-pointer"
-            />
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                onChange={handleImageUpload}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {inputImagePreview && (
+                <>
+                  <Button
+                    onClick={handleClearInputImage}
+                    variant="secondary"
+                    size="sm"
+                    title="Clear input image and mask"
+                  >
+                    Clear
+                  </Button>
+                  {maskImage && (
+                    <Button
+                      onClick={handleClearMask}
+                      variant="secondary"
+                      size="sm"
+                      title="Clear mask only"
+                    >
+                      Clear Mask
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
             <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -332,27 +463,17 @@ export default function InpaintPanel() {
                     className="w-full h-full object-contain"
                   />
                   {maskImage && (
-                    <div
-                      className="absolute inset-0 w-full h-full flex items-center justify-center"
-                      style={{ pointerEvents: 'none' }}
-                    >
-                      <div
-                        className="relative"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          backgroundColor: 'rgba(0, 255, 0, 0.4)',
-                          maskImage: `url(${maskImage})`,
-                          WebkitMaskImage: `url(${maskImage})`,
-                          maskSize: 'contain',
-                          WebkitMaskSize: 'contain',
-                          maskRepeat: 'no-repeat',
-                          WebkitMaskRepeat: 'no-repeat',
-                          maskPosition: 'center',
-                          WebkitMaskPosition: 'center'
-                        }}
-                      />
-                    </div>
+                    <img
+                      src={maskImage}
+                      alt="Mask overlay"
+                      className="absolute inset-0 w-full h-full object-contain"
+                      style={{
+                        pointerEvents: 'none',
+                        mixBlendMode: 'screen',
+                        opacity: 0.5
+                      }}
+                      title="Mask overlay - highlighted areas will be inpainted"
+                    />
                   )}
                 </>
               ) : (
@@ -431,22 +552,89 @@ export default function InpaintPanel() {
               />
             </div>
 
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-300">
+                  Size Mode
+                </label>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => handleSizeModeChange("absolute")}
+                    variant={sizeMode === "absolute" ? "primary" : "secondary"}
+                    size="sm"
+                  >
+                    Absolute
+                  </Button>
+                  <Button
+                    onClick={() => handleSizeModeChange("scale")}
+                    variant={sizeMode === "scale" ? "primary" : "secondary"}
+                    size="sm"
+                    disabled={!inputImageSize}
+                    title={!inputImageSize ? "Load an image first" : ""}
+                  >
+                    Scale
+                  </Button>
+                </div>
+              </div>
+
+              {sizeMode === "absolute" ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <Slider
+                    label="Width"
+                    min={64}
+                    max={2048}
+                    step={64}
+                    value={params.width}
+                    onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                  />
+                  <Slider
+                    label="Height"
+                    min={64}
+                    max={2048}
+                    step={64}
+                    value={params.height}
+                    onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <Slider
+                    label={`Scale (${params.width}x${params.height})`}
+                    min={0.25}
+                    max={4.0}
+                    step={0.25}
+                    value={scale}
+                    onChange={(e) => handleScaleChange(parseFloat(e.target.value))}
+                  />
+                  {inputImageSize && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Original: {inputImageSize.width}x{inputImageSize.height}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
-              <Slider
-                label="Width"
-                min={64}
-                max={2048}
-                step={64}
-                value={params.width}
-                onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+              <Select
+                label="Resize Mode"
+                options={[
+                  { value: "image", label: "Resize Image" },
+                  { value: "latent", label: "Resize Latent" },
+                ]}
+                value={params.resize_mode}
+                onChange={(e) => setParams({ ...params, resize_mode: e.target.value })}
               />
-              <Slider
-                label="Height"
-                min={64}
-                max={2048}
-                step={64}
-                value={params.height}
-                onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+              <Select
+                label="Resampling Method"
+                options={[
+                  { value: "lanczos", label: "Lanczos (High Quality)" },
+                  { value: "bicubic", label: "Bicubic" },
+                  { value: "bilinear", label: "Bilinear" },
+                  { value: "nearest", label: "Nearest (Pixelated)" },
+                ]}
+                value={params.resampling_method}
+                onChange={(e) => setParams({ ...params, resampling_method: e.target.value })}
               />
             </div>
 
@@ -591,6 +779,7 @@ export default function InpaintPanel() {
           onClose={handleEditorClose}
           onSaveMask={handleEditorSaveMask}
           mode="inpaint"
+          initialMaskUrl={maskImage || undefined}
         />
       )}
     </div>

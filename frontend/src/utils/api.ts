@@ -31,6 +31,8 @@ export interface InpaintParams extends GenerationParams {
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
+  resize_mode?: string;
+  resampling_method?: string;
 }
 
 export interface GeneratedImage {
@@ -122,6 +124,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("height", String(params.height || 1024));
   formData.append("inpaint_full_res", String(params.inpaint_full_res || false));
   formData.append("inpaint_full_res_padding", String(params.inpaint_full_res_padding || 32));
+  formData.append("resize_mode", params.resize_mode || "image");
+  formData.append("resampling_method", params.resampling_method || "lanczos");
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

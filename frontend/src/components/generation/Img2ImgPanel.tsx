@@ -275,6 +275,41 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     setInputImage(null); // Clear File object, use data URL instead
   };
 
+  const sendToTxt2Img = () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Note: Send image is not applicable for txt2img (no input image)
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.prompt = params.prompt;
+      txt2imgParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.steps = params.steps;
+      txt2imgParams.cfg_scale = params.cfg_scale;
+      txt2imgParams.sampler = params.sampler;
+      txt2imgParams.schedule_type = params.schedule_type;
+      txt2imgParams.seed = params.seed;
+      txt2imgParams.width = params.width;
+      txt2imgParams.height = params.height;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
+
+    // Navigate to txt2img tab
+    if (onTabChange) {
+      onTabChange("txt2img");
+    }
+  };
+
   const sendToImg2Img = () => {
     if (!generatedImage) {
       alert("No image to send");
@@ -756,7 +791,16 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="flex gap-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <Button
+                    onClick={sendToTxt2Img}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendPrompt && !sendParameters}
+                    title="Send image not applicable for txt2img"
+                  >
+                    Send to txt2img
+                  </Button>
                   <Button
                     onClick={sendToImg2Img}
                     variant="secondary"

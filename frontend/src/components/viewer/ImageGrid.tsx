@@ -11,6 +11,9 @@ export default function ImageGrid() {
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
+  const [sendImage, setSendImage] = useState(true);
+  const [sendPrompt, setSendPrompt] = useState(true);
+  const [sendParameters, setSendParameters] = useState(true);
 
   useEffect(() => {
     loadImages();
@@ -27,56 +30,98 @@ export default function ImageGrid() {
     }
   };
 
-  const importToTxt2Img = (image: GeneratedImage) => {
-    console.log("Importing image parameters:", image);
-    console.log("Image parameters field:", image.parameters);
+  const sendToTxt2Img = (image: GeneratedImage) => {
+    // Note: Send image is not applicable for txt2img (no input image)
 
-    const params = {
-      prompt: image.prompt,
-      negative_prompt: image.negative_prompt,
-      steps: image.steps,
-      cfg_scale: image.cfg_scale,
-      sampler: image.parameters?.sampler || "euler",
-      schedule_type: image.parameters?.schedule_type || "uniform",
-      seed: image.seed,
-      width: image.width,
-      height: image.height,
-    };
+    // Send prompt if checked
+    if (sendPrompt) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.prompt = image.prompt;
+      txt2imgParams.negative_prompt = image.negative_prompt;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
 
-    console.log("Constructed params for import:", params);
-    localStorage.setItem("txt2img_params", JSON.stringify(params));
-    console.log("Saved to localStorage, navigating to generate page...");
+    // Send parameters if checked
+    if (sendParameters) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.steps = image.steps;
+      txt2imgParams.cfg_scale = image.cfg_scale;
+      txt2imgParams.sampler = image.parameters?.sampler || "euler";
+      txt2imgParams.schedule_type = image.parameters?.schedule_type || "uniform";
+      txt2imgParams.seed = image.seed;
+      txt2imgParams.width = image.width;
+      txt2imgParams.height = image.height;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
+
     router.push("/generate");
   };
 
   const sendToImg2Img = (image: GeneratedImage) => {
-    // Save image URL to img2img input storage
-    const imageUrl = `/outputs/${image.filename}`;
-    localStorage.setItem("img2img_input_image", imageUrl);
+    // Send image if checked
+    if (sendImage) {
+      const imageUrl = `/outputs/${image.filename}`;
+      localStorage.setItem("img2img_input_image", imageUrl);
+      window.dispatchEvent(new Event("img2img_input_updated"));
+    }
 
-    // Trigger event to notify img2img tab
-    window.dispatchEvent(new Event("img2img_input_updated"));
+    // Send prompt if checked
+    if (sendPrompt) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.prompt = image.prompt;
+      img2imgParams.negative_prompt = image.negative_prompt;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
 
-    // Navigate to generate page with img2img tab
+    // Send parameters if checked
+    if (sendParameters) {
+      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+      img2imgParams.steps = image.steps;
+      img2imgParams.cfg_scale = image.cfg_scale;
+      img2imgParams.sampler = image.parameters?.sampler || "euler";
+      img2imgParams.schedule_type = image.parameters?.schedule_type || "uniform";
+      img2imgParams.seed = image.seed;
+      img2imgParams.width = image.width;
+      img2imgParams.height = image.height;
+      img2imgParams.denoising_strength = 0.75;
+      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+    }
+
     router.push("/generate?tab=img2img");
   };
 
-  const importToImg2Img = (image: GeneratedImage) => {
-    const params = {
-      prompt: image.prompt,
-      negative_prompt: image.negative_prompt,
-      steps: image.steps,
-      cfg_scale: image.cfg_scale,
-      sampler: image.parameters?.sampler || "euler",
-      schedule_type: image.parameters?.schedule_type || "uniform",
-      seed: image.seed,
-      width: image.width,
-      height: image.height,
-      denoising_strength: 0.75,
-    };
+  const sendToInpaint = (image: GeneratedImage) => {
+    // Send image if checked
+    if (sendImage) {
+      const imageUrl = `/outputs/${image.filename}`;
+      localStorage.setItem("inpaint_input_image", imageUrl);
+      localStorage.removeItem("inpaint_mask_image");
+      window.dispatchEvent(new Event("inpaint_input_updated"));
+    }
 
-    localStorage.setItem("img2img_params", JSON.stringify(params));
-    router.push("/generate?tab=img2img");
+    // Send prompt if checked
+    if (sendPrompt) {
+      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
+      inpaintParams.prompt = image.prompt;
+      inpaintParams.negative_prompt = image.negative_prompt;
+      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
+      inpaintParams.steps = image.steps;
+      inpaintParams.cfg_scale = image.cfg_scale;
+      inpaintParams.sampler = image.parameters?.sampler || "euler";
+      inpaintParams.schedule_type = image.parameters?.schedule_type || "uniform";
+      inpaintParams.seed = image.seed;
+      inpaintParams.width = image.width;
+      inpaintParams.height = image.height;
+      inpaintParams.denoising_strength = 0.75;
+      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+    }
+
+    router.push("/generate?tab=inpaint");
   };
 
   if (loading) {
@@ -129,28 +174,64 @@ export default function ImageGrid() {
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  onClick={() => importToTxt2Img(selectedImage)}
-                  className="w-full"
-                >
-                  Import to txt2img
-                </Button>
-                <Button
-                  onClick={() => sendToImg2Img(selectedImage)}
-                  variant="secondary"
-                  className="w-full"
-                >
-                  Send to img2img
-                </Button>
+              <div className="space-y-3 mt-4">
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendImage}
+                      onChange={(e) => setSendImage(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send image</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendPrompt}
+                      onChange={(e) => setSendPrompt(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send prompt</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendParameters}
+                      onChange={(e) => setSendParameters(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300">Send parameters</span>
+                  </label>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button
+                    onClick={() => sendToTxt2Img(selectedImage)}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendPrompt && !sendParameters}
+                    title="Send image not applicable for txt2img"
+                  >
+                    Send to txt2img
+                  </Button>
+                  <Button
+                    onClick={() => sendToImg2Img(selectedImage)}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to img2img
+                  </Button>
+                  <Button
+                    onClick={() => sendToInpaint(selectedImage)}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to inpaint
+                  </Button>
+                </div>
               </div>
-              <Button
-                onClick={() => importToImg2Img(selectedImage)}
-                variant="secondary"
-                className="w-full"
-              >
-                Import to img2img
-              </Button>
             </div>
           </Card>
         </div>

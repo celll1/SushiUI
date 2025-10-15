@@ -33,9 +33,11 @@ export default function ImageGrid() {
   const [searchInNegative, setSearchInNegative] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const [excludeRareTags, setExcludeRareTags] = useState(true);
 
   // UI states
   const [gridColumns, setGridColumns] = useState(6);
+  const [showFullSizeImage, setShowFullSizeImage] = useState(false);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -122,7 +124,7 @@ export default function ImageGrid() {
     if (!tagSearchInput || tagSearchInput.length < 2) return [];
 
     const searchLower = tagSearchInput.toLowerCase();
-    const tagSet = new Set<string>();
+    const tagCount = new Map<string, number>();
 
     images.forEach((image) => {
       const promptText = searchInNegative ? image.negative_prompt : image.prompt;
@@ -133,28 +135,35 @@ export default function ImageGrid() {
 
       tags.forEach(tag => {
         if (tag.toLowerCase().includes(searchLower)) {
-          tagSet.add(tag);
+          tagCount.set(tag, (tagCount.get(tag) || 0) + 1);
         }
       });
     });
 
-    return Array.from(tagSet).slice(0, 10); // Limit to 10 suggestions
+    // Filter out tags that appear only once if option is enabled
+    const filteredTags = Array.from(tagCount.entries())
+      .filter(([_, count]) => !excludeRareTags || count > 1)
+      .map(([tag, _]) => tag)
+      .slice(0, 10); // Limit to 10 suggestions
+
+    return filteredTags;
   };
 
   const tagSuggestions = getTagSuggestions();
 
-  // Client-side tag filtering (only apply committed search) - AND search
+  // Client-side tag filtering (only apply committed search) - AND search with exact match
   const filteredImages = images.filter((image) => {
     if (tagSearchCommitted.length === 0) return true;
 
     const searchField = searchInNegative ? image.negative_prompt : image.prompt;
     if (!searchField) return false;
 
-    const searchFieldLower = searchField.toLowerCase();
+    // Split tags by comma and trim
+    const imageTags = searchField.split(/[,\n]+/).map(t => t.trim().toLowerCase());
 
-    // AND search: all tags must be present
-    return tagSearchCommitted.every(tag =>
-      searchFieldLower.includes(tag.toLowerCase())
+    // AND search: all committed tags must exist as exact matches
+    return tagSearchCommitted.every(searchTag =>
+      imageTags.includes(searchTag.toLowerCase())
     );
   });
 
@@ -308,55 +317,61 @@ export default function ImageGrid() {
   return (
     <div>
       {selectedImage ? (
-        <div className="space-y-4">
+        <div className="h-full">
           <button
             onClick={() => setSelectedImage(null)}
-            className="text-blue-400 hover:text-blue-300"
+            className="text-blue-400 hover:text-blue-300 mb-4 block"
           >
             ← Back to gallery
           </button>
-          <Card title="Image Details">
-            <div className="space-y-4">
-              <img
-                src={`/outputs/${selectedImage.filename}`}
-                alt="Generated"
-                className="w-full rounded-lg"
-              />
-              <div className="space-y-2 text-sm">
-                <div>
-                  <span className="text-gray-400">Prompt:</span>
-                  <p className="text-gray-100">{selectedImage.prompt}</p>
-                </div>
+          <div className="flex gap-4 h-[calc(100vh-12rem)]">
+            {/* Left Sidebar - Details */}
+            <div className="w-80 flex-shrink-0 overflow-y-auto">
+              <Card title="Image Details">
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <span className="text-gray-400">Prompt:</span>
+                    <p className="text-gray-100">{selectedImage.prompt}</p>
+                  </div>
                 {selectedImage.negative_prompt && (
                   <div>
                     <span className="text-gray-400">Negative Prompt:</span>
                     <p className="text-gray-100">{selectedImage.negative_prompt}</p>
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-2">
                   <div>
                     <span className="text-gray-400">Type:</span> {selectedImage.generation_type}
                   </div>
                   <div>
                     <span className="text-gray-400">Created:</span> {new Date(selectedImage.created_at).toLocaleString()}
                   </div>
-                  <div>
-                    <span className="text-gray-400">Steps:</span> {selectedImage.steps}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-gray-400">Steps:</span> {selectedImage.steps}
+                    </div>
+                    <div>
+                      <span className="text-gray-400">CFG Scale:</span> {selectedImage.cfg_scale}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-gray-400">CFG Scale:</span> {selectedImage.cfg_scale}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-gray-400">Sampler:</span> {selectedImage.parameters?.sampler || selectedImage.sampler}
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Scheduler:</span> {selectedImage.parameters?.schedule_type || 'uniform'}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Sampler:</span> {selectedImage.sampler}
-                  </div>
-                  <div>
-                    <span className="text-gray-400">Seed:</span> {selectedImage.seed}
-                  </div>
-                  <div>
-                    <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Seed:</span> {selectedImage.seed}
+                    </div>
                   </div>
                   {selectedImage.lora_names && (
-                    <div className="col-span-2">
+                    <div>
                       <span className="text-gray-400">LoRA:</span> {selectedImage.lora_names}
                     </div>
                   )}
@@ -364,7 +379,9 @@ export default function ImageGrid() {
                 {selectedImage.image_hash && (
                   <div>
                     <span className="text-gray-400">Image Hash: </span>
-                    <span className="text-xs text-gray-100 font-mono break-all">{selectedImage.image_hash}</span>
+                    <span className="text-xs text-gray-100 font-mono" title={selectedImage.image_hash}>
+                      {selectedImage.image_hash.substring(0, 16)}...
+                    </span>
                   </div>
                 )}
                 {selectedImage.source_image_hash && (
@@ -372,16 +389,16 @@ export default function ImageGrid() {
                     <span className="text-gray-400">Source Image Hash: </span>
                     <button
                       onClick={() => handleSourceImageClick(selectedImage.source_image_hash!)}
-                      className="text-xs text-blue-400 hover:text-blue-300 font-mono break-all underline"
-                      title="Click to view source image"
+                      className="text-xs text-blue-400 hover:text-blue-300 font-mono underline"
+                      title={`Click to view source image\n${selectedImage.source_image_hash}`}
                     >
-                      {selectedImage.source_image_hash}
+                      {selectedImage.source_image_hash.substring(0, 16)}...
                     </button>
                   </div>
                 )}
               </div>
               <div className="space-y-3 mt-4">
-                <div className="flex flex-wrap gap-2 text-sm">
+                <div className="space-y-2 text-sm">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -438,8 +455,43 @@ export default function ImageGrid() {
                   </Button>
                 </div>
               </div>
+              </Card>
             </div>
-          </Card>
+
+            {/* Right Area - Image Display */}
+            <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden">
+              <img
+                src={`/outputs/${selectedImage.filename}`}
+                alt="Generated"
+                className="max-w-full max-h-full object-contain cursor-pointer"
+                onDoubleClick={() => setShowFullSizeImage(true)}
+                title="Double-click to view full size"
+              />
+            </div>
+          </div>
+
+          {/* Full-size image popup */}
+          {showFullSizeImage && (
+            <div
+              className="fixed inset-0 z-50 bg-black bg-opacity-90 flex items-center justify-center p-4"
+              onClick={() => setShowFullSizeImage(false)}
+            >
+              <div className="relative max-w-full max-h-full">
+                <button
+                  onClick={() => setShowFullSizeImage(false)}
+                  className="absolute top-4 right-4 text-white text-2xl bg-black bg-opacity-50 rounded-full w-10 h-10 flex items-center justify-center hover:bg-opacity-75"
+                >
+                  ×
+                </button>
+                <img
+                  src={`/outputs/${selectedImage.filename}`}
+                  alt="Generated - Full Size"
+                  className="max-w-full max-h-[90vh] object-contain"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex gap-4">
@@ -483,17 +535,28 @@ export default function ImageGrid() {
 
                 {/* Tag Search Filter */}
                 <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-300">Tag Search</label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={searchInNegative}
-                      onChange={(e) => setSearchInNegative(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-xs text-gray-400">Search in negative prompt</span>
-                  </label>
+                <div className="mb-2">
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Tag Search</label>
+                  <div className="flex flex-col gap-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={searchInNegative}
+                        onChange={(e) => setSearchInNegative(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-xs text-gray-400">Search in negative prompt</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={excludeRareTags}
+                        onChange={(e) => setExcludeRareTags(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-xs text-gray-400">Exclude tags appearing only once</span>
+                    </label>
+                  </div>
                 </div>
                 <div className="relative">
                   <div className="flex gap-2">
@@ -575,47 +638,53 @@ export default function ImageGrid() {
               {/* Date Range Filter */}
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Date Range</label>
-                <div className="space-y-2">
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    placeholder="From"
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
-                  />
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    placeholder="To"
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
-                  />
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">From</label>
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => setDateFrom(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">To</label>
+                    <input
+                      type="date"
+                      value={dateTo}
+                      onChange={(e) => setDateTo(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                    />
+                  </div>
                 </div>
               </div>
 
               {/* Size Range Filters */}
-              <div>
-                <RangeSlider
-                  label="Width Range"
-                  min={0}
-                  max={2048}
-                  step={64}
-                  value={widthRange}
-                  onChange={setWidthRange}
-                  onCommit={setCommittedWidthRange}
-                />
-              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <RangeSlider
+                    label="Width Range"
+                    min={0}
+                    max={2048}
+                    step={64}
+                    value={widthRange}
+                    onChange={setWidthRange}
+                    onCommit={setCommittedWidthRange}
+                  />
+                </div>
 
-              <div>
-                <RangeSlider
-                  label="Height Range"
-                  min={0}
-                  max={2048}
-                  step={64}
-                  value={heightRange}
-                  onChange={setHeightRange}
-                  onCommit={setCommittedHeightRange}
-                />
+                <div>
+                  <RangeSlider
+                    label="Height Range"
+                    min={0}
+                    max={2048}
+                    step={64}
+                    value={heightRange}
+                    onChange={setHeightRange}
+                    onCommit={setCommittedHeightRange}
+                  />
+                </div>
               </div>
 
               {/* Grid Layout Control */}

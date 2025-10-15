@@ -109,7 +109,7 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
               max={2}
               step={0.05}
               value={lora.strength}
-              onChange={(strength) => updateLora(index, { strength })}
+              onChange={(e) => updateLora(index, { strength: parseFloat(e.target.value) })}
               disabled={disabled}
             />
 
@@ -151,9 +151,9 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
                   max={2}
                   step={0.1}
                   value={lora.unet_layer_weights.down}
-                  onChange={(down) =>
+                  onChange={(e) =>
                     updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, down },
+                      unet_layer_weights: { ...lora.unet_layer_weights, down: parseFloat(e.target.value) },
                     })
                   }
                   disabled={disabled}
@@ -164,9 +164,9 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
                   max={2}
                   step={0.1}
                   value={lora.unet_layer_weights.mid}
-                  onChange={(mid) =>
+                  onChange={(e) =>
                     updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, mid },
+                      unet_layer_weights: { ...lora.unet_layer_weights, mid: parseFloat(e.target.value) },
                     })
                   }
                   disabled={disabled}
@@ -177,9 +177,9 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
                   max={2}
                   step={0.1}
                   value={lora.unet_layer_weights.up}
-                  onChange={(up) =>
+                  onChange={(e) =>
                     updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, up },
+                      unet_layer_weights: { ...lora.unet_layer_weights, up: parseFloat(e.target.value) },
                     })
                   }
                   disabled={disabled}

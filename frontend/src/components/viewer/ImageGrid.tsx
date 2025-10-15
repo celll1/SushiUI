@@ -35,11 +35,42 @@ export default function ImageGrid() {
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
 
   // UI states
-  const [gridColumns, setGridColumns] = useState(4);
+  const [gridColumns, setGridColumns] = useState(6);
+
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalImages, setTotalImages] = useState(0);
+  const imagesPerPage = 100;
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   useEffect(() => {
     loadImages();
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange, currentPage]);
+
+  // Keyboard navigation for pagination
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only handle if not in an input field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if (e.key === 'ArrowLeft' && currentPage > 1 && !loading) {
+        e.preventDefault();
+        setCurrentPage(currentPage - 1);
+      } else if (e.key === 'ArrowRight' && currentPage * imagesPerPage < totalImages && !loading) {
+        e.preventDefault();
+        setCurrentPage(currentPage + 1);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentPage, totalImages, loading, imagesPerPage]);
 
   const loadImages = async () => {
     try {
@@ -52,6 +83,8 @@ export default function ImageGrid() {
       if (filterInpaint) types.push("inpaint");
 
       const filters: ImageFilters = {
+        skip: (currentPage - 1) * imagesPerPage,
+        limit: imagesPerPage,
         generation_types: types.length > 0 ? types.join(",") : undefined,
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
@@ -63,6 +96,7 @@ export default function ImageGrid() {
 
       const result = await getImages(filters);
       setImages(result.images);
+      setTotalImages(result.total || 0);
     } catch (error) {
       console.error("Failed to load images:", error);
     } finally {
@@ -594,6 +628,45 @@ export default function ImageGrid() {
                   value={gridColumns}
                   onChange={(e) => setGridColumns(Number(e.target.value))}
                 />
+              </div>
+
+              {/* Pagination */}
+              <div className="border-t border-gray-700 pt-3 mt-3">
+                <div className="flex items-center justify-between text-xs text-gray-400 mb-2">
+                  <span>
+                    {totalImages > 0 ? (
+                      <>
+                        {(currentPage - 1) * imagesPerPage + 1}-
+                        {Math.min(currentPage * imagesPerPage, totalImages)} of {totalImages}
+                      </>
+                    ) : (
+                      "No images"
+                    )}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1 || loading}
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    onClick={() => setCurrentPage(currentPage + 1)}
+                    disabled={currentPage * imagesPerPage >= totalImages || loading}
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                  >
+                    Next
+                  </Button>
+                </div>
+                <div className="text-center mt-2 text-xs text-gray-500">
+                  Page {currentPage} of {Math.max(1, Math.ceil(totalImages / imagesPerPage))}
+                </div>
               </div>
             </div>
           </Card>

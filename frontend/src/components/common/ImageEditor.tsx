@@ -80,6 +80,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const prevPointRef = useRef<{ x: number; y: number } | null>(null); // Point before last, for direction
   const strokeDistanceRef = useRef(0);
   const taperProgressRef = useRef(0); // 0 to 1, for gradual tapering
+  const exitVelocityRef = useRef(0); // Velocity when entering taper mode
+  const taperDistanceRef = useRef(0); // Distance traveled during taper mode
   const strokePathRef = useRef<Array<{ x: number; y: number; pressure: number; velocity: number; distance: number; taperProgress: number }>>([]); // Store stroke path
 
   // Calculate color from RGB with alpha
@@ -647,7 +649,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         break;
 
       case "pencil":
-        // Pencil - textured, random opacity variations with gradual exit tapering
+        // Pencil - textured, random opacity variations with entry and exit tapering
         const distance = Math.hypot(toX - fromX, toY - fromY);
         const steps = Math.max(1, Math.floor(distance / 2));
 
@@ -656,12 +658,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           const x = fromX + (toX - fromX) * t;
           const y = fromY + (toY - fromY) * t;
 
+          // Entry taper for pencil (faster than fude, reaches full size at 30px)
+          let entryFactor = 1;
+          if (strokeDistance < 30) {
+            entryFactor = Math.max(0.1, Math.pow(strokeDistance / 30, 0.4));
+          }
+
           // Gradual exit tapering based on taperProgress
           // taperProgress: 0 = normal, 1 = fully tapered
           const exitFactor = Math.max(0.05, 1 - taperProgress * 0.95); // Taper to 5% size
 
-          const randomOpacity = Math.max(0.05, (0.3 + Math.random() * 0.4) * exitFactor);
-          const randomSize = Math.max(0.5, size * pressure * (0.8 + Math.random() * 0.4) * exitFactor);
+          const combinedFactor = entryFactor * exitFactor;
+          const randomOpacity = Math.max(0.05, (0.3 + Math.random() * 0.4) * combinedFactor);
+          const randomSize = Math.max(0.5, size * pressure * (0.8 + Math.random() * 0.4) * combinedFactor);
 
           ctx.globalAlpha = randomOpacity;
           ctx.fillStyle = color;
@@ -673,18 +682,24 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         break;
 
       case "gpen":
-        // G-pen - varies thickness based on velocity with gradual exit tapering
+        // G-pen - varies thickness based on velocity with entry and exit tapering
+        // Entry taper for G-pen (medium speed, reaches full size at 40px)
+        let gpenEntryFactor = 1;
+        if (strokeDistance < 40) {
+          gpenEntryFactor = Math.max(0.15, Math.pow(strokeDistance / 40, 0.5));
+        }
+
         const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
         // taperProgress: 0 = normal, 1 = fully tapered
         const taperFactor = Math.max(0.1, 1 - taperProgress * 0.9); // Taper down to 10% size
-        const gpenPressure = pressure * taperFactor;
+        const gpenPressure = pressure * taperFactor * gpenEntryFactor;
 
         const gpenSize = Math.max(0.5, size * gpenPressure * velocityFactor);
         ctx.strokeStyle = color;
         ctx.lineWidth = gpenSize;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.globalAlpha = Math.max(0.1, 1 - taperProgress * 0.7);
+        ctx.globalAlpha = Math.max(0.1, (1 - taperProgress * 0.7) * gpenEntryFactor);
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
         ctx.lineTo(toX, toY);
@@ -702,10 +717,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           const x = fromX + (toX - fromX) * t;
           const y = fromY + (toY - fromY) * t;
 
-          // Entry taper
+          // Entry taper (slowest, most gradual, reaches full size at 50px)
           let tapering = 1;
-          if (strokeDistance < 20) {
-            tapering = Math.pow(strokeDistance / 20, 0.7);
+          if (strokeDistance < 50) {
+            tapering = Math.max(0.05, Math.pow(strokeDistance / 50, 0.6));
           }
 
           // Gradual exit tapering based on taperProgress
@@ -805,6 +820,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     prevPointRef.current = { x: point.x, y: point.y }; // Initialize with same point
     strokeDistanceRef.current = 0;
     taperProgressRef.current = 0; // Reset taper progress
+    exitVelocityRef.current = 0; // Reset exit velocity
 
     // Get pressure from pointer event (0.5 default for mouse, varies for pen/touch)
     const pressure = e.pressure > 0 ? e.pressure : 0.5;
@@ -965,7 +981,13 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       if (tool === "pen") {
         // Gradually increase taper when in tapering mode or pressure is low
         if (isTapering || (isLowPressure && brushType !== "normal")) {
-          taperProgressRef.current = Math.min(1, taperProgressRef.current + 0.08);
+          // Adjust taper speed based on exit velocity (averaged over last 8 points)
+          // Slower exit velocity (< 0.5) -> slower taper rate (gentler taper)
+          // Faster exit velocity (> 1.0) -> faster taper rate (quicker taper)
+          const baseRate = 0.08;
+          const velocityFactor = Math.max(0.3, Math.min(2.0, exitVelocityRef.current / 0.5));
+          const taperRate = baseRate * velocityFactor;
+          taperProgressRef.current = Math.min(1, taperProgressRef.current + taperRate);
         }
 
         // Calculate current pressure (reduce during tapering)
@@ -1042,9 +1064,28 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
       // For non-normal brushes, enter tapering mode instead of ending immediately
       if (tool === "pen" && brushType !== "normal") {
-        setIsDrawing(false);
-        setIsTapering(true);
-        // Don't save to history yet - will save when tapering completes
+        // Calculate average velocity from last several points to avoid spikes from direction changes
+        let avgVelocity = 0;
+        if (strokePathRef.current.length > 0) {
+          const numPointsToAverage = Math.min(8, strokePathRef.current.length);
+          const recentPoints = strokePathRef.current.slice(-numPointsToAverage);
+          avgVelocity = recentPoints.reduce((sum, p) => sum + p.velocity, 0) / numPointsToAverage;
+        }
+
+        // If nearly stopped (like calligraphy "tome"), end immediately without tapering
+        if (avgVelocity < 0.2) {
+          applyAlphaToStroke(layerCtx);
+          composeLayers();
+          setIsDrawing(false);
+          saveToHistory(activeLayerId, layerCtx);
+        } else {
+          // Moving: enter tapering mode for "nuki"
+          exitVelocityRef.current = avgVelocity;
+          taperDistanceRef.current = 0;
+          setIsDrawing(false);
+          setIsTapering(true);
+          // Don't save to history yet - will save when tapering completes
+        }
       } else {
         // Normal pen or other tools: apply alpha and end immediately
         if (tool === "pen") {

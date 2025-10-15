@@ -65,6 +65,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const [cursorBorderColor, setCursorBorderColor] = useState<string>("white");
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -872,6 +873,66 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       x: e.clientX - containerRect.left,
       y: e.clientY - containerRect.top
     });
+
+    // Sample background color on circle perimeter to determine border color
+    const canvas = compositeCanvasRef.current;
+    if (canvas && point) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        try {
+          // Sample pixels on and around the circle perimeter
+          const radius = Math.max(5, brushSize * 0.5);
+          const perimeterWidth = 3; // Sample 3 pixels outward from circle edge
+
+          // Calculate luminance for each pixel and bin into windows (0-255 -> 0-15)
+          const luminanceHistogram = new Array(16).fill(0);
+
+          // Sample points around the circle perimeter
+          const numSamples = Math.max(16, Math.ceil(radius * 2)); // More samples for larger brushes
+          for (let i = 0; i < numSamples; i++) {
+            const angle = (i / numSamples) * Math.PI * 2;
+
+            // Sample multiple pixels from edge to a few pixels outside
+            for (let d = 0; d <= perimeterWidth; d++) {
+              const sampleRadius = radius + d;
+              const x = Math.round(point.x + Math.cos(angle) * sampleRadius);
+              const y = Math.round(point.y + Math.sin(angle) * sampleRadius);
+
+              // Check bounds
+              if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+                const imageData = ctx.getImageData(x, y, 1, 1);
+                const r = imageData.data[0];
+                const g = imageData.data[1];
+                const b = imageData.data[2];
+
+                // Calculate relative luminance (ITU-R BT.709)
+                const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                const bin = Math.floor(luminance / 16);
+                luminanceHistogram[Math.min(bin, 15)]++;
+              }
+            }
+          }
+
+          // Find the most frequent luminance bin
+          let maxCount = 0;
+          let maxBin = 0;
+          for (let i = 0; i < luminanceHistogram.length; i++) {
+            if (luminanceHistogram[i] > maxCount) {
+              maxCount = luminanceHistogram[i];
+              maxBin = i;
+            }
+          }
+
+          // Convert bin back to luminance value (use middle of bin)
+          const avgLuminance = maxBin * 16 + 8;
+          // Use white border on dark backgrounds, black border on light backgrounds
+          setCursorBorderColor(avgLuminance < 128 ? "white" : "black");
+        } catch (e) {
+          // If getImageData fails (e.g., out of bounds), use white as default
+          setCursorBorderColor("white");
+        }
+      }
+    }
 
     if (isDrawing || isTapering) {
       const lastPoint = lastPointRef.current;
@@ -1792,11 +1853,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                 width: `${scaledSize}px`,
                 height: `${scaledSize}px`,
                 transform: 'translate(-50%, -50%)',
-                // Double border for visibility on any background: black outer + white inner
-                boxShadow: tool === "eraser"
-                  ? '0 0 0 1.5px white, 0 0 0 3px black, 0 0 0 4.5px rgba(255,255,255,0.5) inset'
-                  : `0 0 0 1.5px white, 0 0 0 3px black, 0 0 0 4.5px ${getColorFromRGB()} inset`,
-                backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.1)" : `${getColorFromRGB()}20`,
+                // Adaptive border color based on background luminance
+                border: `2px solid ${cursorBorderColor}`,
+                backgroundColor: tool === "eraser"
+                  ? "rgba(255,255,255,0.4)"
+                  : `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.6)`,
               }}
             />
           );

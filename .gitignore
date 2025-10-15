@@ -16,6 +16,7 @@ build/
 # 出力ファイル
 outputs/
 models/
+lora/
 *.safetensors
 *.ckpt
 *.pt

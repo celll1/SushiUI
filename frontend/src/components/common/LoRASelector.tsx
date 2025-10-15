@@ -212,7 +212,7 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
 
         {availableLoras.length === 0 && (
           <div className="text-xs text-gray-500 text-center">
-            No LoRA files found in models/lora directory
+            No LoRA files found in lora directory
           </div>
         )}
       </div>

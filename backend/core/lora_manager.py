@@ -59,7 +59,7 @@ class LoRAConfig:
 class LoRAManager:
     """Manages multiple LoRAs for Stable Diffusion pipelines"""
 
-    def __init__(self, lora_dir: str = "models/lora"):
+    def __init__(self, lora_dir: str = "lora"):
         self.lora_dir = Path(lora_dir)
         self.loaded_loras: List[LoRAConfig] = []
 

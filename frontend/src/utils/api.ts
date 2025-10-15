@@ -13,11 +13,17 @@ export interface LoRAConfig {
   apply_to_text_encoder: boolean;
   apply_to_unet: boolean;
   unet_layer_weights: {
-    down: number;
-    mid: number;
-    up: number;
+    [layerName: string]: number;
   };
   step_range: [number, number];
+}
+
+export interface LoRAInfo {
+  name: string;
+  path: string;
+  size: number;
+  exists: boolean;
+  layers: string[];
 }
 
 export interface GenerationParams {

@@ -5,7 +5,8 @@ import Card from "./Card";
 import Button from "./Button";
 import Slider from "./Slider";
 import RangeSlider from "./RangeSlider";
-import { LoRAConfig, getLoras } from "@/utils/api";
+import LayerWeightGraph from "./LayerWeightGraph";
+import { LoRAConfig, LoRAInfo, getLoras, getLoraInfo } from "@/utils/api";
 
 interface LoRASelectorProps {
   value: LoRAConfig[];
@@ -13,8 +14,65 @@ interface LoRASelectorProps {
   disabled?: boolean;
 }
 
+interface LoRALayerWeightsProps {
+  loraPath: string;
+  weights: { [layerName: string]: number };
+  onChange: (weights: { [layerName: string]: number }) => void;
+  disabled?: boolean;
+  loadLoraInfo: (loraPath: string) => Promise<LoRAInfo | null>;
+}
+
+function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo }: LoRALayerWeightsProps) {
+  const [layers, setLayers] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    loadLayers();
+  }, [loraPath]);
+
+  const loadLayers = async () => {
+    setIsLoading(true);
+    try {
+      const info = await loadLoraInfo(loraPath);
+      if (info && info.layers) {
+        setLayers(info.layers);
+      }
+    } catch (error) {
+      console.error("Failed to load layers:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="p-4 bg-gray-800 rounded text-gray-400 text-center text-sm">
+        Loading layer information...
+      </div>
+    );
+  }
+
+  if (layers.length === 0) {
+    return (
+      <div className="p-4 bg-gray-800 rounded text-gray-400 text-center text-sm">
+        No layer information available
+      </div>
+    );
+  }
+
+  return (
+    <LayerWeightGraph
+      layers={layers}
+      weights={weights}
+      onChange={onChange}
+      disabled={disabled}
+    />
+  );
+}
+
 export default function LoRASelector({ value, onChange, disabled = false }: LoRASelectorProps) {
   const [availableLoras, setAvailableLoras] = useState<Array<{ path: string; name: string }>>([]);
+  const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
   const [isExpanded, setIsExpanded] = useState(false);
 
   useEffect(() => {
@@ -30,6 +88,22 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
     }
   };
 
+  const loadLoraInfo = async (loraPath: string): Promise<LoRAInfo | null> => {
+    // Check cache first
+    if (loraInfoCache.has(loraPath)) {
+      return loraInfoCache.get(loraPath)!;
+    }
+
+    try {
+      const info = await getLoraInfo(loraPath);
+      setLoraInfoCache((prev) => new Map(prev).set(loraPath, info));
+      return info;
+    } catch (error) {
+      console.error("Failed to load LoRA info:", error);
+      return null;
+    }
+  };
+
   const addLoRA = () => {
     if (availableLoras.length === 0) return;
 
@@ -38,11 +112,7 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
       strength: 1.0,
       apply_to_text_encoder: true,
       apply_to_unet: true,
-      unet_layer_weights: {
-        down: 1.0,
-        mid: 1.0,
-        up: 1.0,
-      },
+      unet_layer_weights: {},
       step_range: [0, 1000],
     };
 
@@ -77,9 +147,9 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
     >
       <div className="space-y-4">
         {value.map((lora, index) => (
-          <div key={index} className="p-3 bg-gray-800 rounded-lg space-y-3">
+          <div key={index} className="p-3 bg-gray-800 rounded-lg">
             {/* LoRA Selection */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 mb-3">
               <select
                 value={lora.path}
                 onChange={(e) => updateLora(index, { path: e.target.value })}
@@ -102,101 +172,74 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
               </Button>
             </div>
 
-            {/* Strength Slider */}
-            <Slider
-              label="Strength"
-              min={-2}
-              max={2}
-              step={0.05}
-              value={lora.strength}
-              onChange={(e) => updateLora(index, { strength: parseFloat(e.target.value) })}
-              disabled={disabled}
-            />
+            {/* 2-Column Layout: Settings on left, Graph on right */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* Left Column: Settings */}
+              <div className="space-y-3">
+                {/* Strength Slider */}
+                <Slider
+                  label="Strength"
+                  min={-2}
+                  max={2}
+                  step={0.05}
+                  value={lora.strength}
+                  onChange={(e) => updateLora(index, { strength: parseFloat(e.target.value) })}
+                  disabled={disabled}
+                />
 
-            {/* Text Encoder / U-Net Toggles */}
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={lora.apply_to_text_encoder}
-                  onChange={(e) =>
-                    updateLora(index, { apply_to_text_encoder: e.target.checked })
-                  }
-                  disabled={disabled}
-                  className="w-4 h-4"
-                />
-                <span className="text-gray-300">Text Encoder</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={lora.apply_to_unet}
-                  onChange={(e) =>
-                    updateLora(index, { apply_to_unet: e.target.checked })
-                  }
-                  disabled={disabled}
-                  className="w-4 h-4"
-                />
-                <span className="text-gray-300">U-Net</span>
-              </label>
-            </div>
+                {/* Text Encoder / U-Net Toggles */}
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={lora.apply_to_text_encoder}
+                      onChange={(e) =>
+                        updateLora(index, { apply_to_text_encoder: e.target.checked })
+                      }
+                      disabled={disabled}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-gray-300">Text Encoder</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={lora.apply_to_unet}
+                      onChange={(e) =>
+                        updateLora(index, { apply_to_unet: e.target.checked })
+                      }
+                      disabled={disabled}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-gray-300">U-Net</span>
+                  </label>
+                </div>
 
-            {/* U-Net Layer Weights */}
-            {lora.apply_to_unet && (
-              <div className="space-y-2 pl-4 border-l-2 border-gray-700">
-                <div className="text-xs text-gray-400 mb-2">U-Net Layer Weights</div>
-                <Slider
-                  label="Down Blocks"
+                {/* Step Range */}
+                <RangeSlider
+                  label="Step Range"
                   min={0}
-                  max={2}
-                  step={0.1}
-                  value={lora.unet_layer_weights.down}
-                  onChange={(e) =>
-                    updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, down: parseFloat(e.target.value) },
-                    })
-                  }
-                  disabled={disabled}
-                />
-                <Slider
-                  label="Mid Block"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={lora.unet_layer_weights.mid}
-                  onChange={(e) =>
-                    updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, mid: parseFloat(e.target.value) },
-                    })
-                  }
-                  disabled={disabled}
-                />
-                <Slider
-                  label="Up Blocks"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={lora.unet_layer_weights.up}
-                  onChange={(e) =>
-                    updateLora(index, {
-                      unet_layer_weights: { ...lora.unet_layer_weights, up: parseFloat(e.target.value) },
-                    })
-                  }
+                  max={1000}
+                  step={10}
+                  value={lora.step_range}
+                  onChange={(step_range) => updateLora(index, { step_range })}
                   disabled={disabled}
                 />
               </div>
-            )}
 
-            {/* Step Range */}
-            <RangeSlider
-              label="Step Range"
-              min={0}
-              max={1000}
-              step={10}
-              value={lora.step_range}
-              onChange={(step_range) => updateLora(index, { step_range })}
-              disabled={disabled}
-            />
+              {/* Right Column: Block Weights Graph */}
+              <div>
+                {lora.apply_to_unet && (
+                  <LoRALayerWeights
+                    loraPath={lora.path}
+                    weights={lora.unet_layer_weights}
+                    onChange={(unet_layer_weights) => updateLora(index, { unet_layer_weights })}
+                    disabled={disabled}
+                    loadLoraInfo={loadLoraInfo}
+                  />
+                )}
+              </div>
+            </div>
           </div>
         ))}
 

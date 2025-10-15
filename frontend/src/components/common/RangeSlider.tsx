@@ -8,6 +8,7 @@ interface RangeSliderProps {
   step?: number;
   value?: [number, number];
   onChange?: (value: [number, number]) => void;
+  onCommit?: (value: [number, number]) => void;
   label?: string;
   disabled?: boolean;
   className?: string;
@@ -19,6 +20,7 @@ export default function RangeSlider({
   step = 1,
   value = [0, 100],
   onChange,
+  onCommit,
   label,
   disabled = false,
   className = "",
@@ -44,6 +46,10 @@ export default function RangeSlider({
     const newMax = Math.max(Number(e.target.value), minValue + step);
     setMaxValue(newMax);
     onChange?.([minValue, newMax]);
+  };
+
+  const handleCommit = () => {
+    onCommit?.([minValue, maxValue]);
   };
 
   const getPercentage = (value: number) => {
@@ -83,6 +89,8 @@ export default function RangeSlider({
           step={step}
           value={minValue}
           onChange={handleMinChange}
+          onMouseUp={handleCommit}
+          onTouchEnd={handleCommit}
           disabled={disabled}
           className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
           style={{ zIndex: minValue > max - (max - min) / 2 ? 5 : 3 }}
@@ -97,6 +105,8 @@ export default function RangeSlider({
           step={step}
           value={maxValue}
           onChange={handleMaxChange}
+          onMouseUp={handleCommit}
+          onTouchEnd={handleCommit}
           disabled={disabled}
           className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
           style={{ zIndex: 4 }}

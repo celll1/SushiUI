@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getImages, GeneratedImage } from "@/utils/api";
+import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
+import RangeSlider from "../common/RangeSlider";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -15,18 +16,61 @@ export default function ImageGrid() {
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
 
+  // Filter states
+  const [filterTxt2Img, setFilterTxt2Img] = useState(true);
+  const [filterImg2Img, setFilterImg2Img] = useState(true);
+  const [filterInpaint, setFilterInpaint] = useState(true);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [widthRange, setWidthRange] = useState<[number, number]>([0, 2048]);
+  const [heightRange, setHeightRange] = useState<[number, number]>([0, 2048]);
+  // Committed range values (only updated after drag ends)
+  const [committedWidthRange, setCommittedWidthRange] = useState<[number, number]>([0, 2048]);
+  const [committedHeightRange, setCommittedHeightRange] = useState<[number, number]>([0, 2048]);
+
   useEffect(() => {
     loadImages();
-  }, []);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   const loadImages = async () => {
     try {
-      const result = await getImages();
+      setLoading(true);
+
+      // Build generation types filter
+      const types: string[] = [];
+      if (filterTxt2Img) types.push("txt2img");
+      if (filterImg2Img) types.push("img2img");
+      if (filterInpaint) types.push("inpaint");
+
+      const filters: ImageFilters = {
+        generation_types: types.length > 0 ? types.join(",") : undefined,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        width_min: committedWidthRange[0] > 0 ? committedWidthRange[0] : undefined,
+        width_max: committedWidthRange[1] < 2048 ? committedWidthRange[1] : undefined,
+        height_min: committedHeightRange[0] > 0 ? committedHeightRange[0] : undefined,
+        height_max: committedHeightRange[1] < 2048 ? committedHeightRange[1] : undefined,
+      };
+
+      const result = await getImages(filters);
       setImages(result.images);
     } catch (error) {
       console.error("Failed to load images:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const findImageByHash = (hash: string): GeneratedImage | undefined => {
+    return images.find((img) => img.image_hash === hash);
+  };
+
+  const handleSourceImageClick = (sourceHash: string) => {
+    const sourceImage = findImageByHash(sourceHash);
+    if (sourceImage) {
+      setSelectedImage(sourceImage);
+    } else {
+      alert("Source image not found in current gallery view. Try adjusting filters.");
     }
   };
 
@@ -158,6 +202,12 @@ export default function ImageGrid() {
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
+                    <span className="text-gray-400">Type:</span> {selectedImage.generation_type}
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Created:</span> {new Date(selectedImage.created_at).toLocaleString()}
+                  </div>
+                  <div>
                     <span className="text-gray-400">Steps:</span> {selectedImage.steps}
                   </div>
                   <div>
@@ -172,7 +222,30 @@ export default function ImageGrid() {
                   <div>
                     <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
                   </div>
+                  {selectedImage.lora_names && (
+                    <div className="col-span-2">
+                      <span className="text-gray-400">LoRA:</span> {selectedImage.lora_names}
+                    </div>
+                  )}
                 </div>
+                {selectedImage.image_hash && (
+                  <div>
+                    <span className="text-gray-400">Image Hash: </span>
+                    <span className="text-xs text-gray-100 font-mono break-all">{selectedImage.image_hash}</span>
+                  </div>
+                )}
+                {selectedImage.source_image_hash && (
+                  <div>
+                    <span className="text-gray-400">Source Image Hash: </span>
+                    <button
+                      onClick={() => handleSourceImageClick(selectedImage.source_image_hash!)}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-mono break-all underline"
+                      title="Click to view source image"
+                    >
+                      {selectedImage.source_image_hash}
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="space-y-3 mt-4">
                 <div className="flex flex-wrap gap-2 text-sm">
@@ -236,23 +309,109 @@ export default function ImageGrid() {
           </Card>
         </div>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {images.map((image) => (
-            <div
-              key={image.id}
-              onClick={() => setSelectedImage(image)}
-              className="cursor-pointer group"
-            >
-              <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
-                <img
-                  src={`/thumbnails/${image.filename}`}
-                  alt={image.prompt}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+        <div className="space-y-4">
+          {/* Filter Panel */}
+          <Card title="Filters" defaultCollapsed={false} storageKey="gallery_filters_collapsed">
+            <div className="space-y-4">
+              {/* Generation Type Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Generation Type</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterTxt2Img}
+                      onChange={(e) => setFilterTxt2Img(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-sm text-gray-300">txt2img</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterImg2Img}
+                      onChange={(e) => setFilterImg2Img(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-sm text-gray-300">img2img</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterInpaint}
+                      onChange={(e) => setFilterInpaint(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="text-sm text-gray-300">inpaint</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Date Range Filter */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Date From</label>
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Date To</label>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                  />
+                </div>
+              </div>
+
+              {/* Size Range Filters */}
+              <div className="grid grid-cols-2 gap-4">
+                <RangeSlider
+                  label="Width Range"
+                  min={0}
+                  max={2048}
+                  step={64}
+                  value={widthRange}
+                  onChange={setWidthRange}
+                  onCommit={setCommittedWidthRange}
+                />
+                <RangeSlider
+                  label="Height Range"
+                  min={0}
+                  max={2048}
+                  step={64}
+                  value={heightRange}
+                  onChange={setHeightRange}
+                  onCommit={setCommittedHeightRange}
                 />
               </div>
-              <p className="mt-2 text-xs text-gray-400 truncate">{image.prompt}</p>
             </div>
-          ))}
+          </Card>
+
+          {/* Image Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {images.map((image) => (
+              <div
+                key={image.id}
+                onClick={() => setSelectedImage(image)}
+                className="cursor-pointer group"
+              >
+                <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
+                  <img
+                    src={`/thumbnails/${image.filename}`}
+                    alt={image.prompt}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-gray-400 truncate">{image.prompt}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

@@ -493,16 +493,62 @@ async def get_images(
     skip: int = 0,
     limit: int = 50,
     search: Optional[str] = None,
+    generation_types: Optional[str] = None,  # Comma-separated: txt2img,img2img,inpaint
+    date_from: Optional[str] = None,  # ISO format date
+    date_to: Optional[str] = None,  # ISO format date
+    width_min: Optional[int] = None,
+    width_max: Optional[int] = None,
+    height_min: Optional[int] = None,
+    height_max: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
-    """Get list of generated images"""
+    """Get list of generated images with filtering"""
     query = db.query(GeneratedImage)
 
+    # Text search in prompt
     if search:
         query = query.filter(GeneratedImage.prompt.contains(search))
 
+    # Filter by generation type
+    if generation_types:
+        types = [t.strip() for t in generation_types.split(',')]
+        query = query.filter(GeneratedImage.generation_type.in_(types))
+
+    # Filter by date range
+    if date_from:
+        from datetime import datetime
+        date_from_dt = datetime.fromisoformat(date_from)
+        query = query.filter(GeneratedImage.created_at >= date_from_dt)
+
+    if date_to:
+        from datetime import datetime
+        date_to_dt = datetime.fromisoformat(date_to)
+        query = query.filter(GeneratedImage.created_at <= date_to_dt)
+
+    # Filter by width range
+    if width_min is not None:
+        query = query.filter(GeneratedImage.width >= width_min)
+    if width_max is not None:
+        query = query.filter(GeneratedImage.width <= width_max)
+
+    # Filter by height range
+    if height_min is not None:
+        query = query.filter(GeneratedImage.height >= height_min)
+    if height_max is not None:
+        query = query.filter(GeneratedImage.height <= height_max)
+
+    # Get total count for pagination
+    total_count = query.count()
+
+    # Order by created_at descending and apply pagination
     images = query.order_by(GeneratedImage.created_at.desc()).offset(skip).limit(limit).all()
-    return {"images": [img.to_dict() for img in images]}
+
+    return {
+        "images": [img.to_dict() for img in images],
+        "total": total_count,
+        "skip": skip,
+        "limit": limit
+    }
 
 @router.get("/images/{image_id}")
 async def get_image(image_id: int, db: Session = Depends(get_db)):

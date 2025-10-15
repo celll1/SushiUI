@@ -71,6 +71,10 @@ export interface GeneratedImage {
   parameters: any;
   created_at: string;
   is_favorite: boolean;
+  image_hash?: string;
+  source_image_hash?: string;
+  mask_data?: string;
+  lora_names?: string;
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {
@@ -155,11 +159,31 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   return response.data;
 };
 
-export const getImages = async (skip = 0, limit = 50, search?: string) => {
+export interface ImageFilters {
+  skip?: number;
+  limit?: number;
+  search?: string;
+  generation_types?: string;  // Comma-separated: txt2img,img2img,inpaint
+  date_from?: string;  // ISO format
+  date_to?: string;  // ISO format
+  width_min?: number;
+  width_max?: number;
+  height_min?: number;
+  height_max?: number;
+}
+
+export const getImages = async (filters: ImageFilters = {}) => {
   const params = new URLSearchParams();
-  params.append("skip", String(skip));
-  params.append("limit", String(limit));
-  if (search) params.append("search", search);
+  params.append("skip", String(filters.skip || 0));
+  params.append("limit", String(filters.limit || 50));
+  if (filters.search) params.append("search", filters.search);
+  if (filters.generation_types) params.append("generation_types", filters.generation_types);
+  if (filters.date_from) params.append("date_from", filters.date_from);
+  if (filters.date_to) params.append("date_to", filters.date_to);
+  if (filters.width_min !== undefined) params.append("width_min", String(filters.width_min));
+  if (filters.width_max !== undefined) params.append("width_max", String(filters.width_max));
+  if (filters.height_min !== undefined) params.append("height_min", String(filters.height_min));
+  if (filters.height_max !== undefined) params.append("height_max", String(filters.height_max));
 
   const response = await api.get(`/images?${params.toString()}`);
   return response.data;

@@ -1785,15 +1785,18 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
           return (
             <div
-              className="absolute pointer-events-none rounded-full border-2"
+              className="absolute pointer-events-none rounded-full"
               style={{
                 left: `${cursorPos.x}px`,
                 top: `${cursorPos.y}px`,
                 width: `${scaledSize}px`,
                 height: `${scaledSize}px`,
                 transform: 'translate(-50%, -50%)',
-                borderColor: tool === "eraser" ? "#ffffff" : getColorFromRGB(),
-                backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.2)" : `${getColorFromRGB()}33`,
+                // Double border for visibility on any background: black outer + white inner
+                boxShadow: tool === "eraser"
+                  ? '0 0 0 1.5px white, 0 0 0 3px black, 0 0 0 4.5px rgba(255,255,255,0.5) inset'
+                  : `0 0 0 1.5px white, 0 0 0 3px black, 0 0 0 4.5px ${getColorFromRGB()} inset`,
+                backgroundColor: tool === "eraser" ? "rgba(255,255,255,0.1)" : `${getColorFromRGB()}20`,
               }}
             />
           );

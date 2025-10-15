@@ -1,6 +1,9 @@
 from PIL import Image, PngImagePlugin
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
+import hashlib
+import base64
+from io import BytesIO
 from datetime import datetime
 from config.settings import settings
 
@@ -75,3 +78,36 @@ def extract_metadata_from_image(image_path: str) -> Dict[str, Any]:
             metadata[key] = value
 
     return metadata
+
+def calculate_image_hash(image: Image.Image) -> str:
+    """Calculate SHA256 hash of image"""
+    # Convert image to bytes
+    buffer = BytesIO()
+    image.save(buffer, format='PNG')
+    image_bytes = buffer.getvalue()
+
+    # Calculate hash
+    sha256_hash = hashlib.sha256(image_bytes).hexdigest()
+    return sha256_hash
+
+def encode_mask_to_base64(mask_image: Image.Image) -> str:
+    """Encode mask image to base64 string"""
+    buffer = BytesIO()
+    mask_image.save(buffer, format='PNG')
+    mask_bytes = buffer.getvalue()
+    return base64.b64encode(mask_bytes).decode('utf-8')
+
+def extract_lora_names(lora_configs: list) -> str:
+    """Extract comma-separated LoRA filenames from configs"""
+    if not lora_configs:
+        return ""
+
+    lora_names = []
+    for lora in lora_configs:
+        path = lora.get('path', '')
+        if path:
+            # Extract filename without extension
+            filename = os.path.basename(path)
+            lora_names.append(filename)
+
+    return ", ".join(lora_names)

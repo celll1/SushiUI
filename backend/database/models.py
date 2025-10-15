@@ -20,8 +20,14 @@ class GeneratedImage(Base):
     height = Column(Integer)
     generation_type = Column(String)  # txt2img, img2img, inpaint
     parameters = Column(JSON)  # Full generation parameters
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     is_favorite = Column(Boolean, default=False)
+
+    # New metadata fields
+    image_hash = Column(String, nullable=True, index=True)  # SHA256 hash of generated image
+    source_image_hash = Column(String, nullable=True)  # Hash of source image for img2img/inpaint
+    mask_data = Column(String, nullable=True)  # Base64 encoded mask for inpaint
+    lora_names = Column(String, nullable=True)  # Comma-separated LoRA filenames
 
     def to_dict(self):
         return {
@@ -38,6 +44,10 @@ class GeneratedImage(Base):
             "height": self.height,
             "generation_type": self.generation_type,
             "parameters": self.parameters,
-            "created_at": self.created_at.isoformat(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
             "is_favorite": self.is_favorite,
+            "image_hash": self.image_hash,
+            "source_image_hash": self.source_image_hash,
+            "mask_data": self.mask_data,
+            "lora_names": self.lora_names,
         }

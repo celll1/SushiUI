@@ -21,7 +21,7 @@ from core.schedulers import (
     get_available_schedule_types,
     get_schedule_type_display_names
 )
-from utils import save_image_with_metadata, create_thumbnail
+from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names
 from config.settings import settings
 from api.websocket import manager
 
@@ -134,6 +134,10 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
+        # Calculate metadata
+        image_hash = calculate_image_hash(image)
+        lora_names = extract_lora_names(lora_configs)
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -148,6 +152,8 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             height=request.height,
             generation_type="txt2img",
             parameters=params,
+            image_hash=image_hash,
+            lora_names=lora_names if lora_names else None,
         )
         db.add(db_image)
         db.commit()
@@ -275,6 +281,11 @@ async def generate_img2img(
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
+        # Calculate metadata
+        image_hash = calculate_image_hash(result_image)
+        source_image_hash = calculate_image_hash(init_image)
+        lora_names = extract_lora_names(lora_configs)
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -289,6 +300,9 @@ async def generate_img2img(
             height=result_image.height,
             generation_type="img2img",
             parameters=params,
+            image_hash=image_hash,
+            source_image_hash=source_image_hash,
+            lora_names=lora_names if lora_names else None,
         )
         db.add(db_image)
         db.commit()
@@ -433,6 +447,12 @@ async def generate_inpaint(
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
+        # Calculate metadata
+        image_hash = calculate_image_hash(result_image)
+        source_image_hash = calculate_image_hash(init_image)
+        mask_data_base64 = encode_mask_to_base64(mask_image)
+        lora_names = extract_lora_names(lora_configs)
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -447,6 +467,10 @@ async def generate_inpaint(
             height=result_image.height,
             generation_type="inpaint",
             parameters=params,
+            image_hash=image_hash,
+            source_image_hash=source_image_hash,
+            mask_data=mask_data_base64,
+            lora_names=lora_names if lora_names else None,
         )
         db.add(db_image)
         db.commit()

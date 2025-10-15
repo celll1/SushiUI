@@ -618,6 +618,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     ctx.putImageData(imageData, 0, 0);
   };
 
+  // Catmull-Rom spline interpolation for smooth curves
+  // Given 4 control points (p0, p1, p2, p3) and t (0-1), returns interpolated point between p1 and p2
+  const catmullRomSpline = (p0: number, p1: number, p2: number, p3: number, t: number): number => {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return 0.5 * (
+      (2 * p1) +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+    );
+  };
+
   // Draw with different brush types
   const drawWithBrush = (
     ctx: CanvasRenderingContext2D,
@@ -630,33 +643,73 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     pressure: number,
     velocity: number,
     strokeDistance: number,
-    taperProgress: number = 0 // 0 = no taper, 1 = full taper
+    taperProgress: number = 0, // 0 = no taper, 1 = full taper
+    prevX: number | null = null, // Previous point for spline interpolation
+    prevY: number | null = null,
+    nextX: number | null = null, // Next point for spline interpolation (usually current point)
+    nextY: number | null = null
   ) => {
     ctx.globalCompositeOperation = "source-over";
 
     switch (brushType) {
       case "normal":
-        // Normal pen - solid, uniform stroke, no tapering
+        // Normal pen - solid, uniform stroke with Catmull-Rom spline for smoother curves
+        const normalDistance = Math.hypot(toX - fromX, toY - fromY);
+        const normalSteps = Math.max(1, Math.ceil(normalDistance / 0.5)); // Interpolate every 0.5px
+
         ctx.strokeStyle = color;
         ctx.lineWidth = size * pressure;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.globalAlpha = 1;
         ctx.beginPath();
-        ctx.moveTo(fromX, fromY);
-        ctx.lineTo(toX, toY);
+
+        // If we have previous point, use spline interpolation
+        if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
+          for (let i = 0; i <= normalSteps; i++) {
+            const t = i / normalSteps;
+            const x = catmullRomSpline(prevX, fromX, toX, nextX, t);
+            const y = catmullRomSpline(prevY, fromY, toY, nextY, t);
+
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+        } else {
+          // Fallback to linear interpolation
+          for (let i = 0; i <= normalSteps; i++) {
+            const t = i / normalSteps;
+            const x = fromX + (toX - fromX) * t;
+            const y = fromY + (toY - fromY) * t;
+
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+        }
         ctx.stroke();
         break;
 
       case "pencil":
         // Pencil - textured, random opacity variations with entry and exit tapering
         const distance = Math.hypot(toX - fromX, toY - fromY);
-        const steps = Math.max(1, Math.floor(distance / 2));
+        const steps = Math.max(1, Math.ceil(distance / 0.5)); // Interpolate every 0.5px
 
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
-          const x = fromX + (toX - fromX) * t;
-          const y = fromY + (toY - fromY) * t;
+          // Use spline interpolation if previous points available
+          let x, y;
+          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
+            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
+            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
+          } else {
+            x = fromX + (toX - fromX) * t;
+            y = fromY + (toY - fromY) * t;
+          }
 
           // Entry taper for pencil (faster than fude, reaches full size at 30px)
           let entryFactor = 1;
@@ -683,26 +736,47 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
       case "gpen":
         // G-pen - varies thickness based on velocity with entry and exit tapering
-        // Entry taper for G-pen (medium speed, reaches full size at 40px)
-        let gpenEntryFactor = 1;
-        if (strokeDistance < 40) {
-          gpenEntryFactor = Math.max(0.15, Math.pow(strokeDistance / 40, 0.5));
+        const gpenDistance = Math.hypot(toX - fromX, toY - fromY);
+        const gpenSteps = Math.max(1, Math.ceil(gpenDistance / 0.5)); // Interpolate every 0.5px
+
+        for (let i = 0; i <= gpenSteps; i++) {
+          const t = i / gpenSteps;
+          // Use spline interpolation if previous points available
+          let x, y;
+          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
+            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
+            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
+          } else {
+            x = fromX + (toX - fromX) * t;
+            y = fromY + (toY - fromY) * t;
+          }
+          const localStrokeDistance = strokeDistance + (gpenDistance * t);
+
+          // Entry taper for G-pen (medium speed, reaches full size at 40px)
+          let gpenEntryFactor = 1;
+          if (localStrokeDistance < 40) {
+            gpenEntryFactor = Math.max(0.15, Math.pow(localStrokeDistance / 40, 0.5));
+          }
+
+          const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
+          // taperProgress: 0 = normal, 1 = fully tapered
+          const taperFactor = Math.max(0.1, 1 - taperProgress * 0.9); // Taper down to 10% size
+          const gpenPressure = pressure * taperFactor * gpenEntryFactor;
+
+          const gpenSize = Math.max(0.5, size * gpenPressure * velocityFactor);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = gpenSize;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.globalAlpha = Math.max(0.1, (1 - taperProgress * 0.7) * gpenEntryFactor);
+
+          if (i === 0) {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
         }
-
-        const velocityFactor = Math.max(0.3, 1 - velocity * 0.01);
-        // taperProgress: 0 = normal, 1 = fully tapered
-        const taperFactor = Math.max(0.1, 1 - taperProgress * 0.9); // Taper down to 10% size
-        const gpenPressure = pressure * taperFactor * gpenEntryFactor;
-
-        const gpenSize = Math.max(0.5, size * gpenPressure * velocityFactor);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = gpenSize;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.globalAlpha = Math.max(0.1, (1 - taperProgress * 0.7) * gpenEntryFactor);
-        ctx.beginPath();
-        ctx.moveTo(fromX, fromY);
-        ctx.lineTo(toX, toY);
         ctx.stroke();
         ctx.globalAlpha = 1;
         break;
@@ -710,12 +784,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       case "fude":
         // Fude/brush - soft edges with blur, tapers at entry and gradual exit with trailing fade
         const segmentDistance = Math.hypot(toX - fromX, toY - fromY);
-        const segmentSteps = Math.max(1, Math.ceil(segmentDistance / 1));
+        const segmentSteps = Math.max(1, Math.ceil(segmentDistance / 0.5)); // Interpolate every 0.5px
 
         for (let i = 0; i <= segmentSteps; i++) {
           const t = i / segmentSteps;
-          const x = fromX + (toX - fromX) * t;
-          const y = fromY + (toY - fromY) * t;
+          // Use spline interpolation if previous points available
+          let x, y;
+          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
+            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
+            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
+          } else {
+            x = fromX + (toX - fromX) * t;
+            y = fromY + (toY - fromY) * t;
+          }
 
           // Entry taper (slowest, most gradual, reaches full size at 50px)
           let tapering = 1;
@@ -1004,6 +1085,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         });
 
         // Draw preview with full opacity (alpha will be applied at end)
+        // Use previous points for spline interpolation
+        const prevPoint = prevPointRef.current;
         drawWithBrush(
           layerCtx,
           lastPoint.x,
@@ -1015,7 +1098,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           currentPressure,
           velocity,
           strokeDistanceRef.current,
-          taperProgressRef.current
+          taperProgressRef.current,
+          prevPoint ? prevPoint.x : null,
+          prevPoint ? prevPoint.y : null,
+          point.x, // next point is current point
+          point.y
         );
         composeLayers();
 

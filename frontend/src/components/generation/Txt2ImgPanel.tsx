@@ -316,6 +316,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           value={params.loras || []}
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
+          storageKey="txt2img_lora_collapsed"
         />
 
         <Card title="Prompt">

@@ -485,6 +485,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           value={params.loras || []}
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
+          storageKey="img2img_lora_collapsed"
         />
 
         <Card

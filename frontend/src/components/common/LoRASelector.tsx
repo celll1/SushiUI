@@ -12,6 +12,7 @@ interface LoRASelectorProps {
   value: LoRAConfig[];
   onChange: (loras: LoRAConfig[]) => void;
   disabled?: boolean;
+  storageKey?: string;
 }
 
 interface LoRALayerWeightsProps {
@@ -70,10 +71,9 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
   );
 }
 
-export default function LoRASelector({ value, onChange, disabled = false }: LoRASelectorProps) {
+export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed" }: LoRASelectorProps) {
   const [availableLoras, setAvailableLoras] = useState<Array<{ path: string; name: string }>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
-  const [isExpanded, setIsExpanded] = useState(false);
 
   useEffect(() => {
     loadAvailableLoras();
@@ -135,9 +135,9 @@ export default function LoRASelector({ value, onChange, disabled = false }: LoRA
     <Card
       title={`LoRA (${value.length})`}
       collapsible={true}
-      collapsed={!isExpanded}
-      onToggle={() => setIsExpanded(!isExpanded)}
-      preview={
+      defaultCollapsed={false}
+      storageKey={storageKey}
+      collapsedPreview={
         value.length > 0 ? (
           <div className="text-xs text-gray-400 truncate">
             {value.map((l) => l.path.split("/").pop()).join(", ")}

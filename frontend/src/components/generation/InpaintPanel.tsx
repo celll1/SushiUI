@@ -552,6 +552,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           value={params.loras || []}
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
+          storageKey="inpaint_lora_collapsed"
         />
 
         <Card

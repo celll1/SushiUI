@@ -5,6 +5,7 @@ Handles loading and applying multiple LoRAs with fine-grained control
 from typing import Dict, List, Optional, Any
 import os
 from pathlib import Path
+from config.settings import settings
 
 
 class LoRAConfig:
@@ -59,22 +60,33 @@ class LoRAConfig:
 class LoRAManager:
     """Manages multiple LoRAs for Stable Diffusion pipelines"""
 
-    def __init__(self, lora_dir: str = "lora"):
+    def __init__(self, lora_dir: Optional[str] = None):
+        if lora_dir is None:
+            lora_dir = settings.lora_dir
         self.lora_dir = Path(lora_dir)
         self.loaded_loras: List[LoRAConfig] = []
+        print(f"[LoRAManager] LoRA directory: {self.lora_dir}")
 
     def get_available_loras(self) -> List[str]:
         """Get list of available LoRA files"""
+        print(f"[LoRAManager] Checking directory: {self.lora_dir}")
+        print(f"[LoRAManager] Directory exists: {self.lora_dir.exists()}")
+
         if not self.lora_dir.exists():
+            print(f"[LoRAManager] Creating directory: {self.lora_dir}")
             self.lora_dir.mkdir(parents=True, exist_ok=True)
             return []
 
         lora_files = []
         for ext in [".safetensors", ".pt", ".bin"]:
+            found = list(self.lora_dir.rglob(f"*{ext}"))
+            print(f"[LoRAManager] Found {len(found)} files with extension {ext}")
             lora_files.extend([
                 str(f.relative_to(self.lora_dir))
-                for f in self.lora_dir.rglob(f"*{ext}")
+                for f in found
             ])
+
+        print(f"[LoRAManager] Total LoRA files found: {len(lora_files)}")
         return sorted(lora_files)
 
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:

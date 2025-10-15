@@ -7,6 +7,19 @@ const api = axios.create({
   },
 });
 
+export interface LoRAConfig {
+  path: string;
+  strength: number;
+  apply_to_text_encoder: boolean;
+  apply_to_unet: boolean;
+  unet_layer_weights: {
+    down: number;
+    mid: number;
+    up: number;
+  };
+  step_range: [number, number];
+}
+
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
@@ -18,6 +31,7 @@ export interface GenerationParams {
   width?: number;
   height?: number;
   model?: string;
+  loras?: LoRAConfig[];
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -83,6 +97,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("height", String(params.height || 1024));
   formData.append("resize_mode", params.resize_mode || "image");
   formData.append("resampling_method", params.resampling_method || "lanczos");
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -126,6 +141,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("inpaint_full_res_padding", String(params.inpaint_full_res_padding || 32));
   formData.append("resize_mode", params.resize_mode || "image");
   formData.append("resampling_method", params.resampling_method || "lanczos");
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -194,6 +210,16 @@ export const getSamplers = async () => {
 
 export const getScheduleTypes = async () => {
   const response = await api.get("/schedule-types");
+  return response.data;
+};
+
+export const getLoras = async (): Promise<{ loras: Array<{ path: string; name: string }> }> => {
+  const response = await api.get("/loras");
+  return response.data;
+};
+
+export const getLoraInfo = async (loraName: string) => {
+  const response = await api.get(`/loras/${loraName}`);
   return response.data;
 };
 

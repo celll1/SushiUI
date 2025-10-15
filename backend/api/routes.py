@@ -14,6 +14,7 @@ from database import get_db
 from database.models import GeneratedImage
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
+from core.lora_manager import lora_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -30,6 +31,14 @@ router = APIRouter()
 executor = ThreadPoolExecutor(max_workers=1)
 
 # Pydantic models for requests
+class LoRAConfig(BaseModel):
+    path: str
+    strength: float = 1.0
+    apply_to_text_encoder: bool = True
+    apply_to_unet: bool = True
+    unet_layer_weights: Optional[dict] = {"down": 1.0, "mid": 1.0, "up": 1.0}
+    step_range: Optional[List[int]] = [0, 1000]
+
 class GenerationParams(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = ""
@@ -41,6 +50,7 @@ class GenerationParams(BaseModel):
     width: int = 512
     height: int = 512
     model: str = ""
+    loras: Optional[List[LoRAConfig]] = []
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -56,6 +66,15 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         # Generate image
         params = request.dict()
         print(f"Generation params: {params}")
+
+        # Load LoRAs if specified
+        lora_configs = params.get("loras", [])
+        if lora_configs and pipeline_manager.txt2img_pipeline:
+            print(f"Loading {len(lora_configs)} LoRA(s)...")
+            pipeline_manager.txt2img_pipeline = lora_manager.load_loras(
+                pipeline_manager.txt2img_pipeline,
+                lora_configs
+            )
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
@@ -125,6 +144,10 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error generating image: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Unload LoRAs after generation
+        if lora_configs and pipeline_manager.txt2img_pipeline:
+            pipeline_manager.txt2img_pipeline = lora_manager.unload_loras(pipeline_manager.txt2img_pipeline)
 
 @router.post("/generate/img2img")
 async def generate_img2img(
@@ -140,6 +163,7 @@ async def generate_img2img(
     height: int = Form(1024),
     resize_mode: str = Form("image"),
     resampling_method: str = Form("lanczos"),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -148,6 +172,10 @@ async def generate_img2img(
         # Load input image
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+
+        # Parse LoRA configs
+        import json
+        lora_configs = json.loads(loras) if loras else []
 
         # Generate image
         params = {
@@ -165,6 +193,14 @@ async def generate_img2img(
             "resampling_method": resampling_method,
         }
         print(f"img2img generation params: {params}")
+
+        # Load LoRAs if specified
+        if lora_configs and pipeline_manager.img2img_pipeline:
+            print(f"Loading {len(lora_configs)} LoRA(s)...")
+            pipeline_manager.img2img_pipeline = lora_manager.load_loras(
+                pipeline_manager.img2img_pipeline,
+                lora_configs
+            )
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.img2img_pipeline is not None and \
@@ -232,6 +268,10 @@ async def generate_img2img(
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error generating img2img: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Unload LoRAs after generation
+        if lora_configs and pipeline_manager.img2img_pipeline:
+            pipeline_manager.img2img_pipeline = lora_manager.unload_loras(pipeline_manager.img2img_pipeline)
 
 @router.post("/generate/inpaint")
 async def generate_inpaint(
@@ -248,6 +288,7 @@ async def generate_inpaint(
     mask_blur: int = Form(4),
     inpaint_full_res: bool = Form(False),
     inpaint_full_res_padding: int = Form(32),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -272,6 +313,10 @@ async def generate_inpaint(
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
 
+        # Parse LoRA configs
+        import json
+        lora_configs = json.loads(loras) if loras else []
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -289,6 +334,14 @@ async def generate_inpaint(
             "inpaint_full_res_padding": inpaint_full_res_padding,
         }
         print(f"inpaint generation params: {params}")
+
+        # Load LoRAs if specified
+        if lora_configs and pipeline_manager.inpaint_pipeline:
+            print(f"Loading {len(lora_configs)} LoRA(s)...")
+            pipeline_manager.inpaint_pipeline = lora_manager.load_loras(
+                pipeline_manager.inpaint_pipeline,
+                lora_configs
+            )
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
@@ -356,6 +409,10 @@ async def generate_inpaint(
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error generating inpaint: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Unload LoRAs after generation
+        if lora_configs and pipeline_manager.inpaint_pipeline:
+            pipeline_manager.inpaint_pipeline = lora_manager.unload_loras(pipeline_manager.inpaint_pipeline)
 
 @router.get("/images")
 async def get_images(
@@ -517,6 +574,25 @@ async def get_schedule_types():
             for schedule_id in schedule_types
         ]
     }
+
+@router.get("/loras")
+async def get_loras():
+    """Get available LoRA files"""
+    loras = lora_manager.get_available_loras()
+    return {
+        "loras": [
+            {"path": lora, "name": os.path.basename(lora)}
+            for lora in loras
+        ]
+    }
+
+@router.get("/loras/{lora_name:path}")
+async def get_lora_info(lora_name: str):
+    """Get information about a specific LoRA"""
+    info = lora_manager.get_lora_info(lora_name)
+    if not info:
+        raise HTTPException(status_code=404, detail="LoRA not found")
+    return info
 
 @router.post("/system/restart-backend")
 async def restart_backend():

@@ -12,6 +12,7 @@ transformers>=4.36.0
 accelerate>=0.25.0
 safetensors>=0.4.1
 omegaconf>=2.3.0
+peft>=0.7.0  # Required for LoRA support
 
 # Image Processing
 Pillow>=10.2.0

@@ -2,10 +2,14 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import List
 import asyncio
 import json
+import queue
+import threading
 
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.message_queue = queue.Queue()
+        self.sender_task = None
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -25,6 +29,34 @@ class ConnectionManager:
         }
         await self.broadcast(json.dumps(data))
 
+    def send_progress_sync(self, step: int, total_steps: int, message: str = ""):
+        """Send progress synchronously from callback thread - uses queue"""
+        data = {
+            "type": "progress",
+            "step": step,
+            "total_steps": total_steps,
+            "progress": (step / total_steps) * 100,
+            "message": message
+        }
+        # Put message in queue (thread-safe)
+        self.message_queue.put(data)
+
+    async def start_sender(self):
+        """Background task to send queued messages"""
+        while True:
+            try:
+                # Check queue every 10ms
+                await asyncio.sleep(0.01)
+                while not self.message_queue.empty():
+                    try:
+                        data = self.message_queue.get_nowait()
+                        message_str = json.dumps(data)
+                        await self.broadcast(message_str)
+                    except queue.Empty:
+                        break
+            except Exception as e:
+                print(f"WebSocket sender error: {e}")
+
     async def broadcast(self, message: str):
         for connection in self.active_connections:
             try:
@@ -35,7 +67,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    # Accept connection regardless of origin (bypass CORS)
+    await websocket.accept()
+    manager.active_connections.append(websocket)
     try:
         while True:
             data = await websocket.receive_text()

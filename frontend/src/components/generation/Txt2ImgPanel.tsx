@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -9,6 +9,7 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes } from "@/utils/api";
+import { wsClient } from "@/utils/websocket";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -42,6 +43,24 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
+
+  // WebSocket progress callback
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string) => {
+    if (isGenerating) {
+      setProgress(step);
+      setTotalSteps(totalSteps);
+    }
+  }, [isGenerating]);
+
+  // Setup WebSocket connection
+  useEffect(() => {
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+
+    return () => {
+      wsClient.unsubscribe(handleProgress);
+    };
+  }, [handleProgress]);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -245,18 +264,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     setIsGenerating(true);
     setProgress(0);
-    const currentSteps = params.steps || 20;
-    setTotalSteps(currentSteps);
-
-    // Simulate progress (since we don't have real-time updates from backend yet)
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev < currentSteps) {
-          return prev + 1;
-        }
-        return prev;
-      });
-    }, 200); // Rough estimation: 200ms per step
+    setTotalSteps(params.steps || 20);
 
     try {
       const result = await generateTxt2Img(params);
@@ -269,8 +277,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       console.error("Generation failed:", error);
       alert("Generation failed. Please check console for details.");
     } finally {
-      clearInterval(progressInterval);
-      setProgress(currentSteps);
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);

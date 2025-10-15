@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import os
 
 from api import router, websocket_endpoint
@@ -18,11 +19,23 @@ init_db()
 # Create FastAPI app
 app = FastAPI(title="Stable Diffusion WebUI API", version="0.1.0")
 
+# Start WebSocket message sender on startup
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    from api.websocket import manager
+    asyncio.create_task(manager.start_sender())
+
+# WebSocket endpoint BEFORE middleware (to bypass CORS)
+@app.websocket("/ws/progress")
+async def websocket_route(websocket: WebSocket):
+    await websocket_endpoint(websocket)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,11 +43,6 @@ app.add_middleware(
 # Include routers
 app.include_router(router, prefix="/api")
 app.include_router(logs_router, prefix="/api")
-
-# WebSocket endpoint
-@app.websocket("/ws/progress")
-async def websocket_route(websocket):
-    await websocket_endpoint(websocket)
 
 # Serve static files
 if os.path.exists(settings.outputs_dir):

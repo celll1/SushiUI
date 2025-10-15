@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -10,6 +10,7 @@ import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import ImageEditor from "../common/ImageEditor";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams } from "@/utils/api";
+import { wsClient } from "@/utils/websocket";
 
 interface InpaintParams {
   prompt: string;
@@ -78,6 +79,24 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
+
+  // WebSocket progress callback
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string) => {
+    if (isGenerating) {
+      setProgress(step);
+      setTotalSteps(totalSteps);
+    }
+  }, [isGenerating]);
+
+  // Setup WebSocket connection
+  useEffect(() => {
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+
+    return () => {
+      wsClient.unsubscribe(handleProgress);
+    };
+  }, [handleProgress]);
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
@@ -453,18 +472,9 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
     setIsGenerating(true);
     setProgress(0);
-    const currentSteps = params.steps || 20;
-    setTotalSteps(currentSteps);
-
-    // Simulate progress
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev < currentSteps) {
-          return prev + 1;
-        }
-        return prev;
-      });
-    }, 100);
+    const denoisingStrength = params.denoising_strength || 0.75;
+    const actualSteps = Math.ceil((params.steps || 20) * denoisingStrength);
+    setTotalSteps(actualSteps);
 
     try {
       const apiParams: ApiInpaintParams = {
@@ -502,8 +512,6 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       console.error("Generation error:", error);
       alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
     } finally {
-      clearInterval(progressInterval);
-      setProgress(currentSteps);
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);
@@ -530,7 +538,22 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       <div className="space-y-4">
         <ModelSelector />
 
-        <Card title="Input Image">
+        <Card
+          title="Input Image"
+          collapsible={true}
+          defaultCollapsed={true}
+          storageKey="inpaint_input_collapsed"
+          collapsedPreview={
+            inputImagePreview ? (
+              <span className="flex items-center gap-2 text-sm">
+                <span className="text-green-400">✓ Image loaded</span>
+                {maskImage && <span className="text-blue-400">| Mask set</span>}
+              </span>
+            ) : (
+              <span className="text-gray-500 text-sm">No image</span>
+            )
+          }
+        >
           <div className="space-y-4">
             <div className="flex gap-2">
               <input

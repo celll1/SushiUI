@@ -7,6 +7,8 @@ import sys
 import subprocess
 from PIL import Image
 import io
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from database import get_db
 from database.models import GeneratedImage
@@ -19,8 +21,12 @@ from core.schedulers import (
 )
 from utils import save_image_with_metadata, create_thumbnail
 from config.settings import settings
+from api.websocket import manager
 
 router = APIRouter()
+
+# Thread pool for running blocking operations
+executor = ThreadPoolExecutor(max_workers=1)
 
 # Pydantic models for requests
 class GenerationParams(BaseModel):
@@ -50,7 +56,18 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         params = request.dict()
         print(f"Generation params: {params}")
 
-        image, actual_seed = pipeline_manager.generate_txt2img(params)
+        # Progress callback to send updates via WebSocket
+        def progress_callback(step, timestep, latents):
+            total_steps = params.get("steps", 20)
+            # Send synchronously from callback thread
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}")
+
+        # Run generation in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        image, actual_seed = await loop.run_in_executor(
+            executor,
+            lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback)
+        )
 
         # Update params with actual seed
         params["seed"] = actual_seed
@@ -129,7 +146,18 @@ async def generate_img2img(
         }
         print(f"img2img generation params: {params}")
 
-        result_image, actual_seed = pipeline_manager.generate_img2img(params, init_image)
+        # Progress callback to send updates via WebSocket
+        def progress_callback(step, timestep, latents):
+            # Calculate actual steps based on denoising strength
+            actual_steps = int(steps * denoising_strength)
+            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}")
+
+        # Run generation in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        result_image, actual_seed = await loop.run_in_executor(
+            executor,
+            lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback)
+        )
 
         # Update params with actual seed
         params["seed"] = actual_seed
@@ -223,7 +251,18 @@ async def generate_inpaint(
         }
         print(f"inpaint generation params: {params}")
 
-        result_image, actual_seed = pipeline_manager.generate_inpaint(params, init_image, mask_image)
+        # Progress callback to send updates via WebSocket
+        def progress_callback(step, timestep, latents):
+            # Calculate actual steps based on denoising strength
+            actual_steps = int(steps * denoising_strength)
+            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}")
+
+        # Run generation in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        result_image, actual_seed = await loop.run_in_executor(
+            executor,
+            lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback)
+        )
 
         # Update params with actual seed
         params["seed"] = actual_seed

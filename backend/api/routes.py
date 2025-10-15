@@ -69,11 +69,17 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
 
         # Load LoRAs if specified
         lora_configs = params.get("loras", [])
+        has_step_range_loras = False
         if lora_configs and pipeline_manager.txt2img_pipeline:
             print(f"Loading {len(lora_configs)} LoRA(s)...")
             pipeline_manager.txt2img_pipeline = lora_manager.load_loras(
                 pipeline_manager.txt2img_pipeline,
                 lora_configs
+            )
+            # Check if any LoRA has non-default step range
+            has_step_range_loras = any(
+                lora.get("step_range", [0, 1000]) != [0, 1000]
+                for lora in lora_configs
             )
 
         # Detect if SDXL
@@ -101,11 +107,21 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             # Send synchronously from callback thread
             manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
 
+        # Create step callback for LoRA step range if needed
+        step_callback = None
+        if has_step_range_loras:
+            total_steps = params.get("steps", 20)
+            step_callback = lora_manager.create_step_callback(
+                pipeline_manager.txt2img_pipeline,
+                total_steps,
+                original_callback=None
+            )
+
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
         image, actual_seed = await loop.run_in_executor(
             executor,
-            lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback)
+            lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
         )
 
         # Update params with actual seed

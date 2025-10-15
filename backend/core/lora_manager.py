@@ -220,24 +220,42 @@ class LoRAManager:
             import traceback
             traceback.print_exc()
 
-    def create_step_callback(self, original_callback=None):
+    def create_step_callback(self, pipeline: Any, total_steps: int, original_callback=None):
         """
         Create a callback that handles step-based LoRA activation
 
         Args:
+            pipeline: The diffusion pipeline
+            total_steps: Total number of generation steps
             original_callback: Original progress callback to chain
 
         Returns:
             Callback function for step-based LoRA control
         """
-        def callback(step: int, timestep: float, latents):
-            # TODO: Implement step-based LoRA weight adjustment
-            # This would require modifying adapter weights at each step
-            # which is not directly supported by diffusers yet
+        def callback(pipe, step: int, timestep: float, callback_kwargs: dict):
+            # Check which LoRAs should be active at this step
+            active_adapters = []
+            adapter_weights = []
+
+            for i, lora_config in enumerate(self.loaded_loras):
+                if lora_config.is_active_at_step(step, total_steps):
+                    adapter_name = f"lora_{i}"
+                    active_adapters.append(adapter_name)
+                    adapter_weights.append(lora_config.strength)
+
+            # Update active adapters for this step
+            if hasattr(pipeline, 'set_adapters'):
+                if active_adapters:
+                    pipeline.set_adapters(active_adapters, adapter_weights=adapter_weights)
+                else:
+                    # Disable all LoRAs if none are active
+                    pipeline.disable_lora()
 
             # Call original callback if provided
             if original_callback:
-                return original_callback(step, timestep, latents)
+                return original_callback(pipe, step, timestep, callback_kwargs)
+
+            return callback_kwargs
 
         return callback
 

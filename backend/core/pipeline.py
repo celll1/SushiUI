@@ -214,8 +214,13 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
-    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None) -> tuple[Image.Image, int]:
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text
+
+        Args:
+            params: Generation parameters
+            progress_callback: Legacy callback for progress (step, timestep, latents)
+            step_callback: New style callback for step-based control (pipe, step, timestep, callback_kwargs)
 
         Returns:
             tuple: (image, actual_seed)
@@ -293,6 +298,10 @@ class DiffusionPipelineManager:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
 
+        # Add step callback for LoRA step range if provided
+        if step_callback:
+            gen_params["callback_on_step_end"] = step_callback
+
         # Generate image
         try:
             result = self.txt2img_pipeline(**gen_params)
@@ -309,7 +318,7 @@ class DiffusionPipelineManager:
 
         return image, actual_seed
 
-    def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None) -> tuple[Image.Image, int]:
+    def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image
 
         Returns:
@@ -491,6 +500,10 @@ class DiffusionPipelineManager:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
 
+        # Add step callback for LoRA step range if provided
+        if step_callback:
+            gen_params["callback_on_step_end"] = step_callback
+
         # Generate image
         try:
             result = self.img2img_pipeline(**gen_params)
@@ -512,7 +525,8 @@ class DiffusionPipelineManager:
         params: Dict[str, Any],
         init_image: Image.Image,
         mask_image: Image.Image,
-        progress_callback=None
+        progress_callback=None,
+        step_callback=None
     ) -> tuple[Image.Image, int]:
         """Generate inpainted image
 
@@ -583,6 +597,10 @@ class DiffusionPipelineManager:
         if progress_callback:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
+
+        # Add step callback for LoRA step range if provided
+        if step_callback:
+            gen_params["callback_on_step_end"] = step_callback
 
         result = self.inpaint_pipeline(**gen_params)
         image = result.images[0]

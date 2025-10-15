@@ -8,6 +8,7 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import LoRASelector from "../common/LoRASelector";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
@@ -21,6 +22,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   seed: -1,
   width: 1024,
   height: 1024,
+  loras: [],
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -309,6 +311,12 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       {/* Parameters Panel */}
       <div className="space-y-4">
         <ModelSelector />
+
+        <LoRASelector
+          value={params.loras || []}
+          onChange={(loras) => setParams({ ...params, loras })}
+          disabled={isGenerating}
+        />
 
         <Card title="Prompt">
           <Textarea

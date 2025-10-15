@@ -8,8 +8,9 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import LoRASelector from "../common/LoRASelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateImg2Img } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface Img2ImgParams {
@@ -23,6 +24,7 @@ interface Img2ImgParams {
   width?: number;
   height?: number;
   denoising_strength?: number;
+  loras?: LoRAConfig[];
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -38,6 +40,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   denoising_strength: 0.75,
   resize_mode: "image",
   resampling_method: "lanczos",
+  loras: [],
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -477,6 +480,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       {/* Parameters Panel */}
       <div className="space-y-4">
         <ModelSelector />
+
+        <LoRASelector
+          value={params.loras || []}
+          onChange={(loras) => setParams({ ...params, loras })}
+          disabled={isGenerating}
+        />
 
         <Card
           title="Input Image"

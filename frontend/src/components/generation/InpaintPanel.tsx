@@ -8,8 +8,9 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import LoRASelector from "../common/LoRASelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface InpaintParams {
@@ -28,6 +29,7 @@ interface InpaintParams {
   inpaint_full_res_padding?: number;
   resize_mode?: string;
   resampling_method?: string;
+  loras?: LoRAConfig[];
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -46,6 +48,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   inpaint_full_res_padding: 32,
   resize_mode: "image",
   resampling_method: "lanczos",
+  loras: [],
 };
 
 const STORAGE_KEY = "inpaint_params";
@@ -544,6 +547,12 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       {/* Parameters Panel */}
       <div className="space-y-4">
         <ModelSelector />
+
+        <LoRASelector
+          value={params.loras || []}
+          onChange={(loras) => setParams({ ...params, loras })}
+          disabled={isGenerating}
+        />
 
         <Card
           title="Input Image"

@@ -100,40 +100,52 @@ class LoRAManager:
         Returns:
             Modified pipeline with LoRAs loaded
         """
+        print(f"[LoRAManager] load_loras called with {len(lora_configs) if lora_configs else 0} configs")
+        print(f"[LoRAManager] lora_configs: {lora_configs}")
+
         if not lora_configs:
+            print("[LoRAManager] No LoRA configs provided, skipping")
             return pipeline
 
         # Parse configs
         self.loaded_loras = [LoRAConfig.from_dict(cfg) for cfg in lora_configs]
+        print(f"[LoRAManager] Parsed {len(self.loaded_loras)} LoRA configs")
 
         # Load LoRAs using diffusers' native support
         try:
             for i, lora_config in enumerate(self.loaded_loras):
                 lora_path = self.lora_dir / lora_config.path
+                print(f"[LoRAManager] Attempting to load LoRA from: {lora_path}")
+                print(f"[LoRAManager] LoRA config: strength={lora_config.strength}, apply_to_text_encoder={lora_config.apply_to_text_encoder}, apply_to_unet={lora_config.apply_to_unet}")
 
                 if not lora_path.exists():
-                    print(f"Warning: LoRA file not found: {lora_path}")
+                    print(f"[LoRAManager] WARNING: LoRA file not found: {lora_path}")
                     continue
 
-                print(f"Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
+                print(f"[LoRAManager] Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
 
                 # Load LoRA weights
                 adapter_name = f"lora_{i}"
+                print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
                 pipeline.load_lora_weights(
                     str(lora_path.parent),
                     weight_name=lora_path.name,
                     adapter_name=adapter_name
                 )
+                print(f"[LoRAManager] Successfully loaded LoRA weights")
 
                 # Set adapter with strength
                 # Note: Layer-specific weights and step ranges will be handled in callback
                 if hasattr(pipeline, 'set_adapters'):
+                    print(f"[LoRAManager] Setting adapter with strength={lora_config.strength}")
                     pipeline.set_adapters(adapter_name, adapter_weights=lora_config.strength)
+                else:
+                    print(f"[LoRAManager] WARNING: Pipeline does not have set_adapters method")
 
-            print(f"Successfully loaded {len(self.loaded_loras)} LoRA(s)")
+            print(f"[LoRAManager] Successfully loaded {len(self.loaded_loras)} LoRA(s)")
 
         except Exception as e:
-            print(f"Error loading LoRAs: {e}")
+            print(f"[LoRAManager] ERROR loading LoRAs: {e}")
             import traceback
             traceback.print_exc()
 

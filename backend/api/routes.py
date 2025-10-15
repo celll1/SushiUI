@@ -211,11 +211,17 @@ async def generate_img2img(
         print(f"img2img generation params: {params}")
 
         # Load LoRAs if specified
+        has_step_range_loras = False
         if lora_configs and pipeline_manager.img2img_pipeline:
             print(f"Loading {len(lora_configs)} LoRA(s)...")
             pipeline_manager.img2img_pipeline = lora_manager.load_loras(
                 pipeline_manager.img2img_pipeline,
                 lora_configs
+            )
+            # Check if any LoRA has non-default step range
+            has_step_range_loras = any(
+                lora.get("step_range", [0, 1000]) != [0, 1000]
+                for lora in lora_configs
             )
 
         # Detect if SDXL
@@ -243,11 +249,22 @@ async def generate_img2img(
 
             manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
 
+        # Create step callback for LoRA step range if needed
+        step_callback = None
+        if has_step_range_loras:
+            # Calculate actual steps based on denoising strength
+            actual_steps = int(steps * denoising_strength)
+            step_callback = lora_manager.create_step_callback(
+                pipeline_manager.img2img_pipeline,
+                actual_steps,
+                original_callback=None
+            )
+
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
         result_image, actual_seed = await loop.run_in_executor(
             executor,
-            lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback)
+            lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
         # Update params with actual seed
@@ -352,11 +369,17 @@ async def generate_inpaint(
         print(f"inpaint generation params: {params}")
 
         # Load LoRAs if specified
+        has_step_range_loras = False
         if lora_configs and pipeline_manager.inpaint_pipeline:
             print(f"Loading {len(lora_configs)} LoRA(s)...")
             pipeline_manager.inpaint_pipeline = lora_manager.load_loras(
                 pipeline_manager.inpaint_pipeline,
                 lora_configs
+            )
+            # Check if any LoRA has non-default step range
+            has_step_range_loras = any(
+                lora.get("step_range", [0, 1000]) != [0, 1000]
+                for lora in lora_configs
             )
 
         # Detect if SDXL
@@ -384,11 +407,22 @@ async def generate_inpaint(
 
             manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
 
+        # Create step callback for LoRA step range if needed
+        step_callback = None
+        if has_step_range_loras:
+            # Calculate actual steps based on denoising strength
+            actual_steps = int(steps * denoising_strength)
+            step_callback = lora_manager.create_step_callback(
+                pipeline_manager.inpaint_pipeline,
+                actual_steps,
+                original_callback=None
+            )
+
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
         result_image, actual_seed = await loop.run_in_executor(
             executor,
-            lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback)
+            lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
         # Update params with actual seed

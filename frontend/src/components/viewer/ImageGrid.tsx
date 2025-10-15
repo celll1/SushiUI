@@ -6,6 +6,7 @@ import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
 import RangeSlider from "../common/RangeSlider";
+import Slider from "../common/Slider";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -27,6 +28,14 @@ export default function ImageGrid() {
   // Committed range values (only updated after drag ends)
   const [committedWidthRange, setCommittedWidthRange] = useState<[number, number]>([0, 2048]);
   const [committedHeightRange, setCommittedHeightRange] = useState<[number, number]>([0, 2048]);
+  const [tagSearchInput, setTagSearchInput] = useState("");
+  const [tagSearchCommitted, setTagSearchCommitted] = useState<string[]>([]);
+  const [searchInNegative, setSearchInNegative] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+
+  // UI states
+  const [gridColumns, setGridColumns] = useState(4);
 
   useEffect(() => {
     loadImages();
@@ -72,6 +81,96 @@ export default function ImageGrid() {
     } else {
       alert("Source image not found in current gallery view. Try adjusting filters.");
     }
+  };
+
+  // Extract unique tags from all prompts for autocomplete
+  const getTagSuggestions = (): string[] => {
+    if (!tagSearchInput || tagSearchInput.length < 2) return [];
+
+    const searchLower = tagSearchInput.toLowerCase();
+    const tagSet = new Set<string>();
+
+    images.forEach((image) => {
+      const promptText = searchInNegative ? image.negative_prompt : image.prompt;
+      if (!promptText) return;
+
+      // Split by common delimiters (comma, space, etc.)
+      const tags = promptText.split(/[,\n]+/).map(t => t.trim()).filter(t => t.length > 0);
+
+      tags.forEach(tag => {
+        if (tag.toLowerCase().includes(searchLower)) {
+          tagSet.add(tag);
+        }
+      });
+    });
+
+    return Array.from(tagSet).slice(0, 10); // Limit to 10 suggestions
+  };
+
+  const tagSuggestions = getTagSuggestions();
+
+  // Client-side tag filtering (only apply committed search) - AND search
+  const filteredImages = images.filter((image) => {
+    if (tagSearchCommitted.length === 0) return true;
+
+    const searchField = searchInNegative ? image.negative_prompt : image.prompt;
+    if (!searchField) return false;
+
+    const searchFieldLower = searchField.toLowerCase();
+
+    // AND search: all tags must be present
+    return tagSearchCommitted.every(tag =>
+      searchFieldLower.includes(tag.toLowerCase())
+    );
+  });
+
+  const handleTagSearchSubmit = () => {
+    if (tagSearchInput.trim() && !tagSearchCommitted.includes(tagSearchInput.trim())) {
+      setTagSearchCommitted([...tagSearchCommitted, tagSearchInput.trim()]);
+      setTagSearchInput("");
+    }
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setTagSearchCommitted(tagSearchCommitted.filter(tag => tag !== tagToRemove));
+  };
+
+  const clearAllTags = () => {
+    setTagSearchCommitted([]);
+    setTagSearchInput("");
+  };
+
+  const handleTagSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < tagSuggestions.length) {
+        handleSuggestionClick(tagSuggestions[selectedSuggestionIndex]);
+      } else {
+        handleTagSearchSubmit();
+      }
+      e.preventDefault();
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+      setSelectedSuggestionIndex(-1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedSuggestionIndex(prev =>
+        prev < tagSuggestions.length - 1 ? prev + 1 : prev
+      );
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    if (!tagSearchCommitted.includes(suggestion)) {
+      setTagSearchCommitted([...tagSearchCommitted, suggestion]);
+    }
+    setTagSearchInput("");
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
   };
 
   const sendToTxt2Img = (image: GeneratedImage) => {
@@ -309,68 +408,159 @@ export default function ImageGrid() {
           </Card>
         </div>
       ) : (
-        <div className="space-y-4">
-          {/* Filter Panel */}
-          <Card title="Filters" defaultCollapsed={false} storageKey="gallery_filters_collapsed">
-            <div className="space-y-4">
-              {/* Generation Type Filter */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Generation Type</label>
-                <div className="flex gap-4">
+        <div className="flex gap-4">
+          {/* Left Sidebar - Filters */}
+          <div className="w-80 flex-shrink-0">
+            <Card title="Filters" defaultCollapsed={false} storageKey="gallery_filters_collapsed">
+              <div className="space-y-3">
+                {/* Generation Type Filter */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Generation Type</label>
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterTxt2Img}
+                        onChange={(e) => setFilterTxt2Img(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-gray-300">txt2img</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterImg2Img}
+                        onChange={(e) => setFilterImg2Img(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-gray-300">img2img</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterInpaint}
+                        onChange={(e) => setFilterInpaint(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-gray-300">inpaint</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Tag Search Filter */}
+                <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-300">Tag Search</label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={filterTxt2Img}
-                      onChange={(e) => setFilterTxt2Img(e.target.checked)}
+                      checked={searchInNegative}
+                      onChange={(e) => setSearchInNegative(e.target.checked)}
                       className="rounded"
                     />
-                    <span className="text-sm text-gray-300">txt2img</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filterImg2Img}
-                      onChange={(e) => setFilterImg2Img(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-sm text-gray-300">img2img</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filterInpaint}
-                      onChange={(e) => setFilterInpaint(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-sm text-gray-300">inpaint</span>
+                    <span className="text-xs text-gray-400">Search in negative prompt</span>
                   </label>
                 </div>
+                <div className="relative">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={tagSearchInput}
+                      onChange={(e) => {
+                        setTagSearchInput(e.target.value);
+                        setShowSuggestions(e.target.value.length >= 2);
+                        setSelectedSuggestionIndex(-1);
+                      }}
+                      onKeyDown={handleTagSearchKeyDown}
+                      onFocus={() => setShowSuggestions(tagSearchInput.length >= 2)}
+                      onBlur={() => setTimeout(() => {
+                        setShowSuggestions(false);
+                        setSelectedSuggestionIndex(-1);
+                      }, 200)}
+                      placeholder="Enter tag (press Enter to search)"
+                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    />
+                    <Button
+                      onClick={handleTagSearchSubmit}
+                      variant="primary"
+                      size="sm"
+                    >
+                      Search
+                    </Button>
+                  </div>
+
+                  {/* Autocomplete suggestions */}
+                  {showSuggestions && tagSuggestions.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {tagSuggestions.map((suggestion, index) => (
+                        <button
+                          key={index}
+                          onClick={() => handleSuggestionClick(suggestion)}
+                          className={`w-full px-3 py-2 text-left text-sm text-gray-100 hover:bg-gray-700 focus:outline-none ${
+                            index === selectedSuggestionIndex ? 'bg-gray-700' : ''
+                          }`}
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {tagSearchCommitted.length > 0 && (
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-400">Searching for (AND):</span>
+                      <button
+                        onClick={clearAllTags}
+                        className="text-xs text-red-400 hover:text-red-300"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {tagSearchCommitted.map((tag, index) => (
+                        <div
+                          key={index}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded border border-blue-500"
+                        >
+                          <span>{tag}</span>
+                          <button
+                            onClick={() => removeTag(tag)}
+                            className="hover:text-red-300 focus:outline-none"
+                            title="Remove tag"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Date Range Filter */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Date From</label>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Date Range</label>
+                <div className="space-y-2">
                   <input
                     type="date"
                     value={dateFrom}
                     onChange={(e) => setDateFrom(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                    placeholder="From"
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                   />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Date To</label>
                   <input
                     type="date"
                     value={dateTo}
                     onChange={(e) => setDateTo(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                    placeholder="To"
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                   />
                 </div>
               </div>
 
               {/* Size Range Filters */}
-              <div className="grid grid-cols-2 gap-4">
+              <div>
                 <RangeSlider
                   label="Width Range"
                   min={0}
@@ -380,6 +570,9 @@ export default function ImageGrid() {
                   onChange={setWidthRange}
                   onCommit={setCommittedWidthRange}
                 />
+              </div>
+
+              <div>
                 <RangeSlider
                   label="Height Range"
                   min={0}
@@ -390,12 +583,31 @@ export default function ImageGrid() {
                   onCommit={setCommittedHeightRange}
                 />
               </div>
+
+              {/* Grid Layout Control */}
+              <div>
+                <Slider
+                  label="Images per Row"
+                  min={2}
+                  max={8}
+                  step={1}
+                  value={gridColumns}
+                  onChange={(e) => setGridColumns(Number(e.target.value))}
+                />
+              </div>
             </div>
           </Card>
+          </div>
 
-          {/* Image Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {images.map((image) => (
+          {/* Right Area - Image Grid */}
+          <div className="flex-1">
+          <div
+            className="grid gap-4"
+            style={{
+              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`
+            }}
+          >
+            {filteredImages.map((image) => (
               <div
                 key={image.id}
                 onClick={() => setSelectedImage(image)}
@@ -411,6 +623,7 @@ export default function ImageGrid() {
                 <p className="mt-2 text-xs text-gray-400 truncate">{image.prompt}</p>
               </div>
             ))}
+          </div>
           </div>
         </div>
       )}

@@ -68,12 +68,16 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   // WebSocket progress callback
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string) => {
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string) => {
     if (isGenerating) {
       setProgress(step);
       setTotalSteps(totalSteps);
+      if (preview) {
+        setPreviewImage(preview);
+      }
     }
   }, [isGenerating]);
 
@@ -426,6 +430,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     const denoisingStrength = params.denoising_strength || 0.75;
     const actualSteps = Math.ceil((params.steps || 20) * denoisingStrength);
     setTotalSteps(actualSteps);
+    setPreviewImage(null);
+    setGeneratedImage(null);
 
     try {
       // Use inputImage if available, otherwise use inputImagePreview (for images sent from gallery/txt2img)
@@ -448,6 +454,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);
+        setPreviewImage(null);
       }, 500);
     }
   };
@@ -775,6 +782,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
                   src={generatedImage}
                   alt="Generated"
                   className="max-w-full max-h-full rounded-lg"
+                />
+              ) : previewImage ? (
+                <img
+                  src={`data:image/jpeg;base64,${previewImage}`}
+                  alt="Preview"
+                  className="max-w-full max-h-full rounded-lg opacity-80"
                 />
               ) : (
                 <p className="text-gray-500">No image generated yet</p>

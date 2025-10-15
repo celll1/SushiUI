@@ -1,4 +1,4 @@
-type ProgressCallback = (step: number, totalSteps: number, message: string) => void;
+type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string) => void;
 
 class WebSocketClient {
   private ws: WebSocket | null = null;
@@ -22,7 +22,7 @@ class WebSocketClient {
         const data = JSON.parse(event.data);
         if (data.type === "progress") {
           this.callbacks.forEach((callback) => {
-            callback(data.step, data.total_steps, data.message);
+            callback(data.step, data.total_steps, data.message, data.preview_image);
           });
         }
       } catch (error) {

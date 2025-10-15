@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from database import get_db
 from database.models import GeneratedImage
 from core.pipeline import pipeline_manager
+from core.taesd import taesd_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -56,11 +57,30 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         params = request.dict()
         print(f"Generation params: {params}")
 
+        # Detect if SDXL
+        is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
+                  "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
+
         # Progress callback to send updates via WebSocket
         def progress_callback(step, timestep, latents):
             total_steps = params.get("steps", 20)
+
+            # Generate preview image from latent (every 5 steps to reduce overhead)
+            preview_image = None
+            if step % 5 == 0 or step == total_steps - 1:
+                try:
+                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
+                    if preview_pil:
+                        import base64
+                        from io import BytesIO
+                        buffered = BytesIO()
+                        preview_pil.save(buffered, format="JPEG", quality=85)
+                        preview_image = base64.b64encode(buffered.getvalue()).decode()
+                except Exception as e:
+                    print(f"Preview generation error: {e}")
+
             # Send synchronously from callback thread
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}")
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
@@ -146,11 +166,30 @@ async def generate_img2img(
         }
         print(f"img2img generation params: {params}")
 
+        # Detect if SDXL
+        is_sdxl = pipeline_manager.img2img_pipeline is not None and \
+                  "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
+
         # Progress callback to send updates via WebSocket
         def progress_callback(step, timestep, latents):
             # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
-            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}")
+
+            # Generate preview image from latent
+            preview_image = None
+            if step % 5 == 0 or step == actual_steps - 1:
+                try:
+                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
+                    if preview_pil:
+                        import base64
+                        from io import BytesIO
+                        buffered = BytesIO()
+                        preview_pil.save(buffered, format="JPEG", quality=85)
+                        preview_image = base64.b64encode(buffered.getvalue()).decode()
+                except Exception as e:
+                    print(f"Preview generation error: {e}")
+
+            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
@@ -251,11 +290,30 @@ async def generate_inpaint(
         }
         print(f"inpaint generation params: {params}")
 
+        # Detect if SDXL
+        is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
+                  "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
+
         # Progress callback to send updates via WebSocket
         def progress_callback(step, timestep, latents):
             # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
-            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}")
+
+            # Generate preview image from latent (every 5 steps to reduce overhead)
+            preview_image = None
+            if step % 5 == 0 or step == actual_steps - 1:
+                try:
+                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
+                    if preview_pil:
+                        import base64
+                        from io import BytesIO
+                        buffered = BytesIO()
+                        preview_pil.save(buffered, format="JPEG", quality=85)
+                        preview_image = base64.b64encode(buffered.getvalue()).decode()
+                except Exception as e:
+                    print(f"Preview generation error: {e}")
+
+            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()

@@ -376,6 +376,61 @@ export default function ImageGrid() {
                     </div>
                   )}
                 </div>
+
+                {/* ControlNet Information */}
+                {selectedImage.parameters?.controlnet_images && selectedImage.parameters.controlnet_images.length > 0 && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">ControlNet ({selectedImage.parameters.controlnet_images.length}):</span>
+                    <div className="mt-2 space-y-3">
+                      {selectedImage.parameters.controlnet_images.map((cn: any, index: number) => (
+                        <div key={index} className="bg-gray-800 rounded p-2 text-xs space-y-1 break-words">
+                          <div className="break-words">
+                            <span className="text-gray-500">Model:</span>{' '}
+                            <span className="text-gray-200 break-all">{cn.model_path}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="text-gray-500">Strength:</span> {cn.strength}
+                            </div>
+                            <div>
+                              <span className="text-gray-500">LLLite:</span> {cn.is_lllite ? 'Yes' : 'No'}
+                            </div>
+                          </div>
+                          {(cn.start_step !== 0 || cn.end_step !== 1.0) && (
+                            <div>
+                              <span className="text-gray-500">Step Range:</span> {(cn.start_step * 100).toFixed(0)}% - {(cn.end_step * 100).toFixed(0)}%
+                            </div>
+                          )}
+                          {cn.layer_weights && (cn.layer_weights.down !== 1.0 || cn.layer_weights.mid !== 1.0 || cn.layer_weights.up !== 1.0) && (
+                            <div className="break-words">
+                              <span className="text-gray-500">Layer Weights:</span>{' '}
+                              Down: {cn.layer_weights.down}, Mid: {cn.layer_weights.mid}, Up: {cn.layer_weights.up}
+                            </div>
+                          )}
+                          {cn.image && (
+                            <div className="break-words">
+                              <span className="text-gray-500">Image Hash:</span>{' '}
+                              <button
+                                onClick={() => handleSourceImageClick(cn.image)}
+                                className="text-blue-400 hover:text-blue-300 font-mono underline break-all"
+                                title={`Click to view image\n${cn.image}`}
+                              >
+                                {typeof cn.image === 'string' ? cn.image.substring(0, 16) : 'N/A'}...
+                              </button>
+                            </div>
+                          )}
+                          {cn.prompt && (
+                            <div className="break-words">
+                              <span className="text-gray-500">Prompt:</span>{' '}
+                              <span className="text-gray-300">{cn.prompt}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {selectedImage.image_hash && (
                   <div>
                     <span className="text-gray-400">Image Hash: </span>

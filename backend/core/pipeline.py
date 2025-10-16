@@ -10,7 +10,10 @@ from diffusers import (
     StableDiffusionInpaintPipeline,
     StableDiffusionXLPipeline,
     StableDiffusionXLImg2ImgPipeline,
-    StableDiffusionXLInpaintPipeline
+    StableDiffusionXLInpaintPipeline,
+    StableDiffusionControlNetPipeline,
+    StableDiffusionXLControlNetPipeline,
+    ControlNetModel
 )
 from config.settings import settings
 from extensions.base_extension import BaseExtension
@@ -281,6 +284,108 @@ class DiffusionPipelineManager:
             return None
 
         return torch.tensor(token_weights, device=device, dtype=dtype)
+
+    def _apply_controlnets(self, pipeline, controlnet_images, width, height, is_sdxl):
+        """Apply ControlNets to the pipeline"""
+        from core.controlnet_manager import controlnet_manager
+
+        if not controlnet_images:
+            return pipeline
+
+        try:
+            # Load ControlNet models
+            controlnets = []
+            control_images = []
+
+            for cn_config in controlnet_images:
+                # Load ControlNet model
+                controlnet = controlnet_manager.load_controlnet(
+                    cn_config["model_path"],
+                    device=self.device,
+                    dtype=pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16,
+                    is_lllite=cn_config.get("is_lllite", False)
+                )
+
+                if controlnet is None:
+                    print(f"Warning: Could not load ControlNet {cn_config['model_path']}")
+                    continue
+
+                controlnets.append(controlnet)
+
+                # Prepare control image
+                control_image = controlnet_manager.prepare_controlnet_image(
+                    cn_config["image"],
+                    width,
+                    height
+                )
+                control_images.append(control_image)
+
+            if not controlnets:
+                print("No ControlNets loaded, using original pipeline")
+                return pipeline
+
+            # Create ControlNet pipeline
+            if is_sdxl:
+                if len(controlnets) == 1:
+                    cn_pipeline = StableDiffusionXLControlNetPipeline(
+                        vae=pipeline.vae,
+                        text_encoder=pipeline.text_encoder,
+                        text_encoder_2=pipeline.text_encoder_2,
+                        tokenizer=pipeline.tokenizer,
+                        tokenizer_2=pipeline.tokenizer_2,
+                        unet=pipeline.unet,
+                        controlnet=controlnets[0],
+                        scheduler=pipeline.scheduler,
+                    )
+                else:
+                    # Multiple ControlNets
+                    cn_pipeline = StableDiffusionXLControlNetPipeline(
+                        vae=pipeline.vae,
+                        text_encoder=pipeline.text_encoder,
+                        text_encoder_2=pipeline.text_encoder_2,
+                        tokenizer=pipeline.tokenizer,
+                        tokenizer_2=pipeline.tokenizer_2,
+                        unet=pipeline.unet,
+                        controlnet=controlnets,  # Pass list for multi-controlnet
+                        scheduler=pipeline.scheduler,
+                    )
+            else:
+                if len(controlnets) == 1:
+                    cn_pipeline = StableDiffusionControlNetPipeline(
+                        vae=pipeline.vae,
+                        text_encoder=pipeline.text_encoder,
+                        tokenizer=pipeline.tokenizer,
+                        unet=pipeline.unet,
+                        controlnet=controlnets[0],
+                        scheduler=pipeline.scheduler,
+                        safety_checker=getattr(pipeline, 'safety_checker', None),
+                        feature_extractor=getattr(pipeline, 'feature_extractor', None),
+                    )
+                else:
+                    # Multiple ControlNets
+                    cn_pipeline = StableDiffusionControlNetPipeline(
+                        vae=pipeline.vae,
+                        text_encoder=pipeline.text_encoder,
+                        tokenizer=pipeline.tokenizer,
+                        unet=pipeline.unet,
+                        controlnet=controlnets,  # Pass list for multi-controlnet
+                        scheduler=pipeline.scheduler,
+                        safety_checker=getattr(pipeline, 'safety_checker', None),
+                        feature_extractor=getattr(pipeline, 'feature_extractor', None),
+                    )
+
+            # Store control images for later use
+            cn_pipeline.control_images = control_images
+            cn_pipeline.controlnet_configs = controlnet_images
+
+            print(f"ControlNet pipeline created with {len(controlnets)} ControlNet(s)")
+            return cn_pipeline
+
+        except Exception as e:
+            print(f"Error applying ControlNets: {e}")
+            import traceback
+            traceback.print_exc()
+            return pipeline
 
     def _encode_prompt_chunked(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
@@ -638,6 +743,20 @@ class DiffusionPipelineManager:
         # Manage text encoder offload (move to CPU if auto mode)
         self._manage_text_encoder_offload(self.txt2img_pipeline, "after")
 
+        # Handle ControlNet if specified
+        controlnet_images = params.get("controlnet_images", [])
+        pipeline_to_use = self.txt2img_pipeline
+
+        if controlnet_images:
+            print(f"Applying {len(controlnet_images)} ControlNet(s)")
+            pipeline_to_use = self._apply_controlnets(
+                self.txt2img_pipeline,
+                controlnet_images,
+                params.get("width", settings.default_width),
+                params.get("height", settings.default_height),
+                is_sdxl
+            )
+
         # Prepare generation parameters
         gen_params = {
             "num_inference_steps": params.get("steps", settings.default_steps),
@@ -679,6 +798,16 @@ class DiffusionPipelineManager:
 
         gen_params["generator"] = torch.Generator(device=self.device).manual_seed(actual_seed)
 
+        # Add ControlNet images if using ControlNet pipeline
+        if hasattr(pipeline_to_use, 'control_images'):
+            gen_params["image"] = pipeline_to_use.control_images
+            # Add controlnet_conditioning_scale for strength control
+            controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
+            if len(controlnet_scales) == 1:
+                gen_params["controlnet_conditioning_scale"] = controlnet_scales[0]
+            else:
+                gen_params["controlnet_conditioning_scale"] = controlnet_scales
+
         # Add progress callback if provided
         if progress_callback:
             gen_params["callback"] = progress_callback
@@ -690,7 +819,7 @@ class DiffusionPipelineManager:
 
         # Generate image
         try:
-            result = self.txt2img_pipeline(**gen_params)
+            result = pipeline_to_use(**gen_params)
             image = result.images[0]
         except Exception as e:
             print(f"Generation error: {e}")

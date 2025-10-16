@@ -24,6 +24,7 @@ def encode_prompt_chunked(
     chunking_mode: ChunkingMode = "a1111",
     max_length: int = 75,
     emphasis_weights: Optional[torch.Tensor] = None,
+    use_penultimate_hidden_state: bool = False,
 ) -> torch.Tensor:
     """
     Encode a prompt with support for lengths beyond the model's max token limit.
@@ -71,7 +72,13 @@ def encode_prompt_chunked(
         input_ids = encoded.input_ids.to(device)
 
         with torch.no_grad():
-            embeddings = text_encoder(input_ids)[0]
+            if use_penultimate_hidden_state:
+                # For SDXL text_encoder_2, use penultimate hidden state
+                encoder_output = text_encoder(input_ids, output_hidden_states=True)
+                embeddings = encoder_output.hidden_states[-2]
+            else:
+                # Standard: use last hidden state
+                embeddings = text_encoder(input_ids)[0]
 
         # Apply emphasis weights if provided
         if emphasis_weights is not None:
@@ -123,7 +130,11 @@ def encode_prompt_chunked(
 
             # Encode this chunk
             with torch.no_grad():
-                chunk_emb = text_encoder(chunk_with_tokens.unsqueeze(0))[0]
+                if use_penultimate_hidden_state:
+                    encoder_output = text_encoder(chunk_with_tokens.unsqueeze(0), output_hidden_states=True)
+                    chunk_emb = encoder_output.hidden_states[-2]
+                else:
+                    chunk_emb = text_encoder(chunk_with_tokens.unsqueeze(0))[0]
 
             # Apply emphasis weights to this chunk if provided
             if emphasis_weights is not None:
@@ -180,7 +191,11 @@ def encode_prompt_chunked(
 
             # Encode
             with torch.no_grad():
-                chunk_emb = text_encoder(chunk.unsqueeze(0))[0]
+                if use_penultimate_hidden_state:
+                    encoder_output = text_encoder(chunk.unsqueeze(0), output_hidden_states=True)
+                    chunk_emb = encoder_output.hidden_states[-2]
+                else:
+                    chunk_emb = text_encoder(chunk.unsqueeze(0))[0]
 
             # Apply emphasis weights if provided
             if emphasis_weights is not None:
@@ -227,7 +242,11 @@ def encode_prompt_chunked(
 
             # Encode
             with torch.no_grad():
-                chunk_emb = text_encoder(chunk.unsqueeze(0))[0]
+                if use_penultimate_hidden_state:
+                    encoder_output = text_encoder(chunk.unsqueeze(0), output_hidden_states=True)
+                    chunk_emb = encoder_output.hidden_states[-2]
+                else:
+                    chunk_emb = text_encoder(chunk.unsqueeze(0))[0]
 
             # Apply emphasis weights if provided
             if emphasis_weights is not None:
@@ -319,8 +338,7 @@ def encode_prompt_chunked_sdxl(
             prompt_embeds_2 = prompt_embeds_2 * emphasis_weights_2.unsqueeze(0).unsqueeze(-1)
     else:
         # Multi-chunk encoding for second encoder
-        # Note: For SDXL's second encoder, we use hidden_states[-2] instead of last hidden state
-        # This requires special handling
+        # For SDXL's text_encoder_2, we use hidden_states[-2] for prompt embeddings
         prompt_embeds_2 = encode_prompt_chunked(
             tokenizer=tokenizer_2,
             text_encoder=text_encoder_2,
@@ -330,20 +348,21 @@ def encode_prompt_chunked_sdxl(
             chunking_mode=chunking_mode,
             max_length=max_length,
             emphasis_weights=emphasis_weights_2,
+            use_penultimate_hidden_state=True,  # Use hidden_states[-2] for TE2
         )
 
-        # For pooled embeddings, use the last chunk's pooled output
-        # (This is a simplification; ideally we'd pool the entire sequence)
-        last_chunk_tokens = tokenizer_2(
-            prompt[-max_length:],  # Last portion of prompt
+        # For pooled embeddings, use the FIRST chunk's pooler output [0]
+        # SDXL only uses the first 75 tokens for pooling
+        first_chunk_tokens = tokenizer_2(
+            prompt,
             padding="max_length",
             max_length=max_length + 2,
-            truncation=True,
+            truncation=True,  # This truncates to first 75 tokens
             return_tensors="pt",
         ).input_ids.to(device)
 
         with torch.no_grad():
-            pooled_prompt_embeds = text_encoder_2(last_chunk_tokens)[0]
+            pooled_prompt_embeds = text_encoder_2(first_chunk_tokens)[0]
 
     # Concatenate embeddings from both encoders
     # SDXL expects concatenated embeddings: [TE1_embeds, TE2_embeds]

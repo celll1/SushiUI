@@ -711,7 +711,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       case "pencil":
         // Pencil - textured, random opacity variations with entry and exit tapering
         const distance = Math.hypot(toX - fromX, toY - fromY);
-        const steps = Math.max(1, Math.ceil(distance / 0.5)); // Interpolate every 0.5px
+        // Use smaller step size for smoother curves (0.3px instead of 0.5px)
+        const steps = Math.max(1, Math.ceil(distance / 0.3));
 
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
@@ -745,7 +746,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       case "gpen":
         // G-pen - varies thickness based on velocity with entry and exit tapering
         const gpenDistance = Math.hypot(toX - fromX, toY - fromY);
-        const gpenSteps = Math.max(1, Math.ceil(gpenDistance / 0.5)); // Interpolate every 0.5px
+        // Use smaller step size for smoother curves (0.3px instead of 0.5px)
+        const gpenSteps = Math.max(1, Math.ceil(gpenDistance / 0.3));
 
         for (let i = 0; i <= gpenSteps; i++) {
           const t = i / gpenSteps;
@@ -786,7 +788,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       case "fude":
         // Fude/brush - soft edges with blur, tapers at entry and gradual exit with trailing fade
         const segmentDistance = Math.hypot(toX - fromX, toY - fromY);
-        const segmentSteps = Math.max(1, Math.ceil(segmentDistance / 0.5)); // Interpolate every 0.5px
+        // Use smaller step size for smoother curves (0.3px instead of 0.5px)
+        const segmentSteps = Math.max(1, Math.ceil(segmentDistance / 0.3));
 
         for (let i = 0; i <= segmentSteps; i++) {
           const t = i / segmentSteps;

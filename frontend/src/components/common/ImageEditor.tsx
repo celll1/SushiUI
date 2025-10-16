@@ -68,6 +68,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [cursorBorderColor, setCursorBorderColor] = useState<string>("white");
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [zoomWheelSpeed, setZoomWheelSpeed] = useState(0.1); // Zoom change per wheel tick
+  const [rotationWheelSpeed, setRotationWheelSpeed] = useState(1); // Rotation degrees per wheel tick
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
@@ -1380,7 +1382,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
     if (e.ctrlKey || e.metaKey) {
       // Ctrl + Wheel: Zoom centered on cursor position
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      const delta = e.deltaY > 0 ? (1 - zoomWheelSpeed) : (1 + zoomWheelSpeed);
       const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
 
       // Get cursor position relative to container
@@ -1400,14 +1402,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       setPanOffset({ x: newPanX, y: newPanY });
     } else if (e.shiftKey) {
       // Shift + Wheel: Rotate
-      const delta = e.deltaY > 0 ? -1 : 1;
+      const delta = e.deltaY > 0 ? -rotationWheelSpeed : rotationWheelSpeed;
       setRotation((prev) => (prev + delta + 360) % 360);
     } else {
       // Wheel: Adjust brush size (larger steps for faster adjustment)
       const delta = e.deltaY > 0 ? -3 : 3;
       setBrushSize((prev) => Math.max(1, Math.min(256, prev + delta)));
     }
-  }, [zoom, panOffset]);
+  }, [zoom, panOffset, zoomWheelSpeed, rotationWheelSpeed]);
 
   const resetViewTransform = () => {
     const composite = compositeCanvasRef.current;
@@ -1860,7 +1862,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
               onWheel={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const delta = e.deltaY < 0 ? 0.1 : -0.1;
+                const delta = e.deltaY < 0 ? zoomWheelSpeed : -zoomWheelSpeed;
                 setZoom(Math.max(0.1, Math.min(10, zoom + delta)));
               }}
               className="flex-1"
@@ -1880,12 +1882,57 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
               onWheel={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const delta = e.deltaY < 0 ? 1 : -1;
+                const delta = e.deltaY < 0 ? rotationWheelSpeed : -rotationWheelSpeed;
                 setRotation((prev) => (prev + delta + 360) % 360);
               }}
               className="flex-1"
             />
             <span className="text-sm text-gray-300 w-12">{rotation}°</span>
+          </div>
+
+          {/* Wheel Speed Controls */}
+          <div className="space-y-2 mt-4 pt-4 border-t border-gray-700">
+            <h4 className="text-xs font-semibold text-gray-400">Wheel Speed</h4>
+
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-300 w-20">Zoom:</label>
+              <input
+                type="range"
+                min="0.01"
+                max="0.5"
+                step="0.01"
+                value={zoomWheelSpeed}
+                onChange={(e) => setZoomWheelSpeed(parseFloat(e.target.value))}
+                onWheel={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.deltaY < 0 ? 0.01 : -0.01;
+                  setZoomWheelSpeed(Math.max(0.01, Math.min(0.5, zoomWheelSpeed + delta)));
+                }}
+                className="flex-1"
+              />
+              <span className="text-xs text-gray-300 w-12">{zoomWheelSpeed.toFixed(2)}</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-300 w-20">Rotation:</label>
+              <input
+                type="range"
+                min="0.5"
+                max="15"
+                step="0.5"
+                value={rotationWheelSpeed}
+                onChange={(e) => setRotationWheelSpeed(parseFloat(e.target.value))}
+                onWheel={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.deltaY < 0 ? 0.5 : -0.5;
+                  setRotationWheelSpeed(Math.max(0.5, Math.min(15, rotationWheelSpeed + delta)));
+                }}
+                className="flex-1"
+              />
+              <span className="text-xs text-gray-300 w-12">{rotationWheelSpeed.toFixed(1)}°</span>
+            </div>
           </div>
         </div>
 

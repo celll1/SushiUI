@@ -15,6 +15,7 @@ from database.models import GeneratedImage
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
+from core.controlnet_manager import controlnet_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -39,6 +40,17 @@ class LoRAConfig(BaseModel):
     unet_layer_weights: Optional[dict] = {"down": 1.0, "mid": 1.0, "up": 1.0}
     step_range: Optional[List[int]] = [0, 1000]
 
+class ControlNetConfig(BaseModel):
+    model_path: str
+    image_base64: Optional[str] = None  # Base64 encoded image
+    strength: float = 1.0
+    start_step: float = 0.0  # 0.0-1.0, fraction of total steps
+    end_step: float = 1.0    # 0.0-1.0, fraction of total steps
+    layer_weights: Optional[dict] = {"down": 1.0, "mid": 1.0, "up": 1.0}
+    prompt: Optional[str] = None  # Optional separate prompt
+    is_lllite: bool = False
+    use_input_image: bool = False  # For img2img/inpaint: use input image as control
+
 class GenerationParams(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = ""
@@ -51,6 +63,7 @@ class GenerationParams(BaseModel):
     height: int = 512
     model: str = ""
     loras: Optional[List[LoRAConfig]] = []
+    controlnets: Optional[List[ControlNetConfig]] = []
     prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
@@ -89,6 +102,33 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                 lora.get("step_range", [0, 1000]) != [0, 1000]
                 for lora in lora_configs
             )
+
+        # Load ControlNets if specified
+        controlnet_configs = params.get("controlnets", [])
+        controlnet_images = []
+        if controlnet_configs:
+            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
+            import base64
+            from io import BytesIO
+
+            for cn_config in controlnet_configs:
+                # Decode base64 image
+                if cn_config.get("image_base64"):
+                    image_data = base64.b64decode(cn_config["image_base64"])
+                    image = Image.open(BytesIO(image_data))
+                    controlnet_images.append({
+                        "model_path": cn_config["model_path"],
+                        "image": image,
+                        "strength": cn_config.get("strength", 1.0),
+                        "start_step": cn_config.get("start_step", 0.0),
+                        "end_step": cn_config.get("end_step", 1.0),
+                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "prompt": cn_config.get("prompt"),
+                        "is_lllite": cn_config.get("is_lllite", False),
+                    })
+
+        # Pass ControlNet images to params
+        params["controlnet_images"] = controlnet_images
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
@@ -756,6 +796,17 @@ async def tokenize_prompt(prompt: str = Form(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/controlnets")
+async def get_controlnets():
+    """Get available ControlNet models"""
+    controlnets = controlnet_manager.get_available_controlnets()
+    return {
+        "controlnets": [
+            {"path": cn, "name": os.path.basename(cn)}
+            for cn in controlnets
+        ]
+    }
 
 @router.post("/system/restart-backend")
 async def restart_backend():

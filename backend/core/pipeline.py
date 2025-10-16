@@ -38,6 +38,7 @@ class DiffusionPipelineManager:
 
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, comfyui, nobos
+        self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
         # Auto-load last used model on startup
         self._auto_load_last_model()
@@ -284,14 +285,13 @@ class DiffusionPipelineManager:
     def _encode_prompt_chunked(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
         Encode prompts with chunking support for long prompts (>75 tokens).
-        Also supports A1111-style emphasis syntax.
+        Uses pipeline.encode_prompt() for each chunk to ensure correct encoding.
 
         Returns:
             For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
             For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
         """
-        from .prompt_chunking import encode_prompt_chunked, encode_prompt_chunked_sdxl
-        from .prompt_parser import parse_prompt_attention
+        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
         # Use provided pipeline or default to txt2img_pipeline
         if pipeline is None:
@@ -310,91 +310,174 @@ class DiffusionPipelineManager:
         has_pos_emphasis = '(' in prompt or '[' in prompt
         has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
 
-        # Build emphasis weights for positive prompt
-        emphasis_weights = None
-        emphasis_weights_2 = None
+        # Get clean prompts
         clean_prompt = prompt
         if has_pos_emphasis:
             parsed = parse_prompt_attention(prompt)
             clean_prompt = "".join([text for text, _ in parsed])
 
-            # Build token weight array
-            tokenizer = pipeline.tokenizer if not is_sdxl else pipeline.tokenizer
-            emphasis_weights = self._build_token_weights(clean_prompt, parsed, tokenizer, device, dtype)
-
-            if is_sdxl:
-                # Build weights for second tokenizer too
-                emphasis_weights_2 = self._build_token_weights(clean_prompt, parsed, pipeline.tokenizer_2, device, dtype)
-
-        # Encode positive prompt
-        if is_sdxl:
-            prompt_embeds, pooled_prompt_embeds = encode_prompt_chunked_sdxl(
-                tokenizer=pipeline.tokenizer,
-                tokenizer_2=pipeline.tokenizer_2,
-                text_encoder=pipeline.text_encoder,
-                text_encoder_2=pipeline.text_encoder_2,
-                prompt=clean_prompt,
-                device=device,
-                dtype=dtype,
-                chunking_mode=self.prompt_chunking_mode,
-                emphasis_weights=emphasis_weights,
-                emphasis_weights_2=emphasis_weights_2,
-            )
-        else:
-            prompt_embeds = encode_prompt_chunked(
-                tokenizer=pipeline.tokenizer,
-                text_encoder=pipeline.text_encoder,
-                prompt=clean_prompt,
-                device=device,
-                dtype=dtype,
-                chunking_mode=self.prompt_chunking_mode,
-                emphasis_weights=emphasis_weights,
-            )
-            pooled_prompt_embeds = None
-
-        # Build emphasis weights for negative prompt
-        neg_emphasis_weights = None
-        neg_emphasis_weights_2 = None
         clean_neg_prompt = negative_prompt
         if negative_prompt and has_neg_emphasis:
             parsed_neg = parse_prompt_attention(negative_prompt)
             clean_neg_prompt = "".join([text for text, _ in parsed_neg])
 
-            tokenizer = pipeline.tokenizer if not is_sdxl else pipeline.tokenizer
-            neg_emphasis_weights = self._build_token_weights(clean_neg_prompt, parsed_neg, tokenizer, device, dtype)
+        # Tokenize to split into chunks
+        tokenizer = pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer
+        tokens = tokenizer(clean_prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
 
-            if is_sdxl:
-                neg_emphasis_weights_2 = self._build_token_weights(clean_neg_prompt, parsed_neg, pipeline.tokenizer_2, device, dtype)
+        # Split tokens into 75-token chunks
+        chunk_size = 75
+        chunks = []
+        for i in range(0, len(tokens), chunk_size):
+            chunk_tokens = tokens[i:i + chunk_size]
+            chunks.append(chunk_tokens)
 
-        # Encode negative prompt
+        # Limit chunks if max_chunks is set
+        if self.max_prompt_chunks > 0 and len(chunks) > self.max_prompt_chunks:
+            chunks = chunks[:self.max_prompt_chunks]
+
+        # Encode each chunk using pipeline.encode_prompt
+        chunk_embeds_list = []
+        pooled_prompt_embeds = None
+
+        for idx, chunk_tokens in enumerate(chunks):
+            # Decode tokens back to text
+            chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+
+            # Encode using pipeline.encode_prompt
+            embeds = pipeline.encode_prompt(
+                prompt=chunk_text,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
+
+            # For SDXL, use pooled embeds from first chunk only
+            if is_sdxl and idx == 0:
+                pooled_prompt_embeds = embeds[2]
+
+            chunk_embeds_list.append(embeds[0])
+
+        # Concatenate chunk embeddings based on mode
+        if self.prompt_chunking_mode == "a1111":
+            # A1111 mode: concatenate all chunks
+            prompt_embeds = torch.cat(chunk_embeds_list, dim=1)
+        elif self.prompt_chunking_mode == "comfyui":
+            # ComfyUI mode: strip BOS/EOS between chunks
+            # First chunk: keep all, middle chunks: strip BOS/EOS, last chunk: keep all
+            processed_chunks = []
+            for idx, chunk_emb in enumerate(chunk_embeds_list):
+                if len(chunk_embeds_list) == 1:
+                    processed_chunks.append(chunk_emb)
+                elif idx == 0:
+                    # First chunk: remove EOS (last token before padding)
+                    processed_chunks.append(chunk_emb[:, :-1, :])
+                elif idx == len(chunk_embeds_list) - 1:
+                    # Last chunk: remove BOS (first token)
+                    processed_chunks.append(chunk_emb[:, 1:, :])
+                else:
+                    # Middle chunks: remove both BOS and EOS
+                    processed_chunks.append(chunk_emb[:, 1:-1, :])
+            prompt_embeds = torch.cat(processed_chunks, dim=1)
+        else:  # nobos
+            # NoBOS mode: strip all BOS/EOS tokens
+            processed_chunks = []
+            for chunk_emb in chunk_embeds_list:
+                # Remove first (BOS) and last (EOS) tokens
+                processed_chunks.append(chunk_emb[:, 1:-1, :])
+            prompt_embeds = torch.cat(processed_chunks, dim=1)
+
+        # Apply emphasis weights if present
+        if has_pos_emphasis:
+            prompt_embeds = apply_emphasis_to_embeds(
+                prompt, prompt_embeds,
+                tokenizer,
+                device, dtype
+            )
+
+        # Encode negative prompt similarly
         if negative_prompt:
-            if is_sdxl:
-                negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_chunked_sdxl(
-                    tokenizer=pipeline.tokenizer,
-                    tokenizer_2=pipeline.tokenizer_2,
-                    text_encoder=pipeline.text_encoder,
-                    text_encoder_2=pipeline.text_encoder_2,
-                    prompt=clean_neg_prompt,
+            neg_tokens = tokenizer(clean_neg_prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+            neg_chunks = []
+            for i in range(0, len(neg_tokens), chunk_size):
+                neg_chunk_tokens = neg_tokens[i:i + chunk_size]
+                neg_chunks.append(neg_chunk_tokens)
+
+            if self.max_prompt_chunks > 0 and len(neg_chunks) > self.max_prompt_chunks:
+                neg_chunks = neg_chunks[:self.max_prompt_chunks]
+
+            neg_chunk_embeds_list = []
+            negative_pooled_prompt_embeds = None
+
+            for idx, neg_chunk_tokens in enumerate(neg_chunks):
+                neg_chunk_text = tokenizer.decode(neg_chunk_tokens, skip_special_tokens=True)
+
+                neg_embeds = pipeline.encode_prompt(
+                    prompt=neg_chunk_text,
                     device=device,
-                    dtype=dtype,
-                    chunking_mode=self.prompt_chunking_mode,
-                    emphasis_weights=neg_emphasis_weights,
-                    emphasis_weights_2=neg_emphasis_weights_2,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False
                 )
-            else:
-                negative_prompt_embeds = encode_prompt_chunked(
-                    tokenizer=pipeline.tokenizer,
-                    text_encoder=pipeline.text_encoder,
-                    prompt=clean_neg_prompt,
-                    device=device,
-                    dtype=dtype,
-                    chunking_mode=self.prompt_chunking_mode,
-                    emphasis_weights=neg_emphasis_weights,
+
+                if is_sdxl and idx == 0:
+                    negative_pooled_prompt_embeds = neg_embeds[2]
+
+                neg_chunk_embeds_list.append(neg_embeds[0])
+
+            # Concatenate based on mode
+            if self.prompt_chunking_mode == "a1111":
+                negative_prompt_embeds = torch.cat(neg_chunk_embeds_list, dim=1)
+            elif self.prompt_chunking_mode == "comfyui":
+                processed_chunks = []
+                for idx, chunk_emb in enumerate(neg_chunk_embeds_list):
+                    if len(neg_chunk_embeds_list) == 1:
+                        processed_chunks.append(chunk_emb)
+                    elif idx == 0:
+                        processed_chunks.append(chunk_emb[:, :-1, :])
+                    elif idx == len(neg_chunk_embeds_list) - 1:
+                        processed_chunks.append(chunk_emb[:, 1:, :])
+                    else:
+                        processed_chunks.append(chunk_emb[:, 1:-1, :])
+                negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
+            else:  # nobos
+                processed_chunks = []
+                for chunk_emb in neg_chunk_embeds_list:
+                    processed_chunks.append(chunk_emb[:, 1:-1, :])
+                negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
+
+            # Apply emphasis weights
+            if has_neg_emphasis:
+                negative_prompt_embeds = apply_emphasis_to_embeds(
+                    negative_prompt, negative_prompt_embeds,
+                    tokenizer,
+                    device, dtype
                 )
-                negative_pooled_prompt_embeds = None
         else:
             negative_prompt_embeds = None
             negative_pooled_prompt_embeds = None
+
+        # Ensure prompt_embeds and negative_prompt_embeds have the same shape
+        if prompt_embeds is not None and negative_prompt_embeds is not None:
+            if prompt_embeds.size(1) != negative_prompt_embeds.size(1):
+                max_len = max(prompt_embeds.size(1), negative_prompt_embeds.size(1))
+
+                if prompt_embeds.size(1) < max_len:
+                    pad_size = max_len - prompt_embeds.size(1)
+                    padding = torch.zeros(
+                        (prompt_embeds.size(0), pad_size, prompt_embeds.size(2)),
+                        device=device,
+                        dtype=dtype
+                    )
+                    prompt_embeds = torch.cat([prompt_embeds, padding], dim=1)
+
+                if negative_prompt_embeds.size(1) < max_len:
+                    pad_size = max_len - negative_prompt_embeds.size(1)
+                    padding = torch.zeros(
+                        (negative_prompt_embeds.size(0), pad_size, negative_prompt_embeds.size(2)),
+                        device=device,
+                        dtype=dtype
+                    )
+                    negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
@@ -420,18 +503,86 @@ class DiffusionPipelineManager:
         # Tokenize to check length
         tokenizer = pipeline.tokenizer if hasattr(pipeline, 'tokenizer') else None
         if tokenizer:
-            prompt_tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+            from .prompt_parser import parse_prompt_attention
+
+            # Get clean prompt for length check
+            clean_prompt = prompt
+            if has_pos_emphasis:
+                parsed = parse_prompt_attention(prompt)
+                clean_prompt = "".join([text for text, _ in parsed])
+
+            prompt_tokens = tokenizer(clean_prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
             needs_chunking = len(prompt_tokens) > 75
         else:
             needs_chunking = False
 
-        # ALWAYS use chunked encoding if prompt is long OR has emphasis
-        # The chunked encoder handles both cases properly
-        if needs_chunking or has_pos_emphasis or has_neg_emphasis:
+        # Use chunked encoding for long prompts
+        if needs_chunking:
             return self._encode_prompt_chunked(prompt, negative_prompt, pipeline)
 
-        # For short prompts without emphasis, use default pipeline encoding
-        return None, None, None, None
+        # For short prompts (<=75 tokens), use pipeline.encode_prompt for correct encoding
+        # Then apply emphasis weights if needed
+        if not has_pos_emphasis and not has_neg_emphasis:
+            # No emphasis - use default pipeline encoding
+            return None, None, None, None
+
+        # Has emphasis but fits in single chunk - use pipeline.encode_prompt then apply weights
+        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
+
+        device = self.device
+        dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
+        is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline) or isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
+
+        # Parse to get clean text
+        parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]
+        clean_prompt = "".join([text for text, _ in parsed_pos])
+
+        # Use pipeline's encode_prompt for correct embeddings
+        base_embeds = pipeline.encode_prompt(
+            prompt=clean_prompt,
+            device=device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False
+        )
+
+        # Extract embeddings
+        prompt_embeds = base_embeds[0]
+        pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
+
+        # Apply emphasis weights
+        if has_pos_emphasis:
+            prompt_embeds = apply_emphasis_to_embeds(
+                prompt, prompt_embeds,
+                pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
+                device, dtype
+            )
+
+        # Encode negative prompt
+        if negative_prompt:
+            parsed_neg = parse_prompt_attention(negative_prompt) if has_neg_emphasis else [(negative_prompt, 1.0)]
+            clean_neg_prompt = "".join([text for text, _ in parsed_neg])
+
+            neg_embeds = pipeline.encode_prompt(
+                prompt=clean_neg_prompt,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
+
+            negative_prompt_embeds = neg_embeds[0]
+            negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
+
+            if has_neg_emphasis:
+                negative_prompt_embeds = apply_emphasis_to_embeds(
+                    negative_prompt, negative_prompt_embeds,
+                    pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
+                    device, dtype
+                )
+        else:
+            negative_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+
+        return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text

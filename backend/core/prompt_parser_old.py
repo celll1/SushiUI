@@ -105,11 +105,10 @@ def parse_prompt_attention(text: str) -> List[Tuple[str, float]]:
 def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtype):
     """
     Apply A1111-style emphasis weights to already-encoded prompt embeddings.
-    Supports both single-chunk (77 tokens) and multi-chunk embeddings (77*N tokens).
 
     Args:
         prompt: Original prompt with emphasis syntax
-        prompt_embeds: Already encoded embeddings (shape: [1, seq_len, dim])
+        prompt_embeds: Already encoded embeddings (shape: [1, 77, dim])
         tokenizer: Tokenizer used for the prompt
         device: torch device
         dtype: torch dtype
@@ -128,11 +127,10 @@ def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtyp
     # Reconstruct the full text without emphasis syntax
     full_text = "".join([text for text, _ in parsed])
 
-    # Get actual embeddings length (may be 77, 154, 231, etc. for chunked prompts)
-    embed_seq_len = prompt_embeds.size(1)
-
-    # Build token weight multipliers for the actual embeddings length
-    token_weights = torch.ones(embed_seq_len, dtype=dtype, device=device)
+    # Build token weight multipliers
+    # 1. For each fragment, tokenize it in context with what comes before
+    # 2. This ensures token boundaries match the actual full tokenization
+    token_weights = torch.ones(tokenizer.model_max_length, dtype=dtype, device=device)
 
     # Build the multiplier array by tokenizing progressively
     current_text = ""
@@ -154,28 +152,14 @@ def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtyp
         current_token_count = current_tokens.input_ids.shape[1]
 
         # Apply weight to the NEW tokens
-        # For chunked embeddings, we need to account for BOS tokens at the start of each chunk
-        # In A1111 mode: <BOS>75tokens<EOS><BOS>75tokens<EOS>...
-        # Each chunk is 77 tokens, so BOS appears at positions 0, 77, 154, etc.
-
-        # Map token index to embedding position
-        # Token 0-74 -> positions 1-75 (after first BOS)
-        # Token 75-149 -> positions 78-152 (after second BOS)
-        # etc.
-        for token_idx in range(previous_token_count, current_token_count):
-            # Calculate which chunk this token belongs to
-            chunk_idx = token_idx // 75
-            token_in_chunk = token_idx % 75
-
-            # Position in embeddings: chunk_idx * 77 + 1 (skip BOS) + token_in_chunk
-            embed_pos = chunk_idx * 77 + 1 + token_in_chunk
-
-            if embed_pos < embed_seq_len:
-                token_weights[embed_pos] = weight
+        start_idx = previous_token_count + 1  # +1 to skip BOS token
+        end_idx = min(current_token_count + 1, tokenizer.model_max_length)
+        token_weights[start_idx:end_idx] = weight
 
         previous_token_count = current_token_count
 
     # Apply weights to embeddings
+    # Shape: (1, 77, dim) * (1, 77, 1) = (1, 77, dim)
     weighted_embeds = prompt_embeds * token_weights.unsqueeze(0).unsqueeze(-1)
 
     return weighted_embeds.to(dtype=dtype)

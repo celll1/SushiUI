@@ -39,6 +39,7 @@ export interface GenerationParams {
   model?: string;
   loras?: LoRAConfig[];
   prompt_chunking_mode?: string;
+  max_prompt_chunks?: number;
 }
 
 export interface Img2ImgParams extends GenerationParams {

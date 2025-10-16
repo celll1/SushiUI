@@ -24,6 +24,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   height: 1024,
   loras: [],
   prompt_chunking_mode: "a1111",
+  max_prompt_chunks: 0,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -400,6 +401,18 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
               ]}
               value={params.prompt_chunking_mode || "a1111"}
               onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+            />
+            <Select
+              label="Max Chunks"
+              options={[
+                { value: "0", label: "Unlimited" },
+                { value: "1", label: "1 chunk (75 tokens)" },
+                { value: "2", label: "2 chunks (150 tokens)" },
+                { value: "3", label: "3 chunks (225 tokens)" },
+                { value: "4", label: "4 chunks (300 tokens)" },
+              ]}
+              value={params.max_prompt_chunks?.toString() || "0"}
+              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
             />
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">

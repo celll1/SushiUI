@@ -25,6 +25,7 @@ def encode_prompt_chunked(
     max_length: int = 75,
     emphasis_weights: Optional[torch.Tensor] = None,
     use_penultimate_hidden_state: bool = False,
+    max_chunks: int = 0,
 ) -> torch.Tensor:
     """
     Encode a prompt with support for lengths beyond the model's max token limit.
@@ -82,16 +83,18 @@ def encode_prompt_chunked(
 
         # Apply emphasis weights if provided
         if emphasis_weights is not None:
-            # Ensure weights match embedding length
-            if emphasis_weights.size(0) < embeddings.size(1):
-                # Pad weights
-                pad_size = embeddings.size(1) - emphasis_weights.size(0)
-                emphasis_weights = torch.cat([
-                    emphasis_weights,
-                    torch.ones(pad_size, device=device, dtype=dtype)
-                ])
-            emphasis_weights = emphasis_weights[:embeddings.size(1)]
-            embeddings = embeddings * emphasis_weights.unsqueeze(0).unsqueeze(-1)
+            # Build weight tensor for all positions
+            # Position 0: BOS token (weight 1.0)
+            # Positions 1 to len(emphasis_weights): actual tokens (use emphasis_weights)
+            # Remaining positions: EOS and padding (weight 1.0)
+            full_weights = torch.ones(embeddings.size(1), device=device, dtype=dtype)
+
+            # Apply emphasis weights to token positions (skip BOS at position 0)
+            num_tokens = min(len(emphasis_weights), embeddings.size(1) - 1)
+            if num_tokens > 0:
+                full_weights[1:1+num_tokens] = emphasis_weights[:num_tokens].to(dtype=dtype)
+
+            embeddings = embeddings * full_weights.unsqueeze(0).unsqueeze(-1)
 
         return embeddings.to(dtype=dtype)
 
@@ -102,6 +105,10 @@ def encode_prompt_chunked(
     for i in range(0, len(full_tokens), chunk_size):
         chunk = full_tokens[i:i + chunk_size]
         chunks.append(chunk)
+
+    # Limit number of chunks if max_chunks is specified
+    if max_chunks > 0 and len(chunks) > max_chunks:
+        chunks = chunks[:max_chunks]
 
     # Encode chunks based on mode
     chunk_embeddings = []
@@ -282,6 +289,7 @@ def encode_prompt_chunked_sdxl(
     max_length: int = 75,
     emphasis_weights: Optional[torch.Tensor] = None,
     emphasis_weights_2: Optional[torch.Tensor] = None,
+    max_chunks: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Encode a prompt for SDXL with dual text encoders.
@@ -299,6 +307,7 @@ def encode_prompt_chunked_sdxl(
         chunking_mode=chunking_mode,
         max_length=max_length,
         emphasis_weights=emphasis_weights,
+        max_chunks=max_chunks,
     )
 
     # Encode with second text encoder (OpenCLIP ViT-G)
@@ -328,14 +337,18 @@ def encode_prompt_chunked_sdxl(
 
         # Apply emphasis weights if provided
         if emphasis_weights_2 is not None:
-            if emphasis_weights_2.size(0) < prompt_embeds_2.size(1):
-                pad_size = prompt_embeds_2.size(1) - emphasis_weights_2.size(0)
-                emphasis_weights_2 = torch.cat([
-                    emphasis_weights_2,
-                    torch.ones(pad_size, device=device, dtype=dtype)
-                ])
-            emphasis_weights_2 = emphasis_weights_2[:prompt_embeds_2.size(1)]
-            prompt_embeds_2 = prompt_embeds_2 * emphasis_weights_2.unsqueeze(0).unsqueeze(-1)
+            # Build weight tensor for all positions
+            # Position 0: BOS token (weight 1.0)
+            # Positions 1 to len(emphasis_weights_2): actual tokens (use emphasis_weights_2)
+            # Remaining positions: EOS and padding (weight 1.0)
+            full_weights = torch.ones(prompt_embeds_2.size(1), device=device, dtype=dtype)
+
+            # Apply emphasis weights to token positions (skip BOS at position 0)
+            num_tokens = min(len(emphasis_weights_2), prompt_embeds_2.size(1) - 1)
+            if num_tokens > 0:
+                full_weights[1:1+num_tokens] = emphasis_weights_2[:num_tokens].to(dtype=dtype)
+
+            prompt_embeds_2 = prompt_embeds_2 * full_weights.unsqueeze(0).unsqueeze(-1)
     else:
         # Multi-chunk encoding for second encoder
         # For SDXL's text_encoder_2, we use hidden_states[-2] for prompt embeddings
@@ -349,6 +362,7 @@ def encode_prompt_chunked_sdxl(
             max_length=max_length,
             emphasis_weights=emphasis_weights_2,
             use_penultimate_hidden_state=True,  # Use hidden_states[-2] for TE2
+            max_chunks=max_chunks,
         )
 
         # For pooled embeddings, use the FIRST chunk's pooler output [0]

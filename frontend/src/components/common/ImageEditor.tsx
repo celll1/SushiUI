@@ -618,17 +618,44 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     ctx.putImageData(imageData, 0, 0);
   };
 
-  // Catmull-Rom spline interpolation for smooth curves
-  // Given 4 control points (p0, p1, p2, p3) and t (0-1), returns interpolated point between p1 and p2
-  const catmullRomSpline = (p0: number, p1: number, p2: number, p3: number, t: number): number => {
-    const t2 = t * t;
-    const t3 = t2 * t;
-    return 0.5 * (
-      (2 * p1) +
-      (-p0 + p2) * t +
-      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-      (-p0 + 3 * p1 - 3 * p2 + p3) * t3
-    );
+  // Quadratic Bezier curve for smooth interpolation
+  // Given start point (p0), end point (p2), and control point (p1), returns interpolated point at t (0-1)
+  const quadraticBezier = (p0: number, p1: number, p2: number, t: number): number => {
+    const oneMinusT = 1 - t;
+    return oneMinusT * oneMinusT * p0 + 2 * oneMinusT * t * p1 + t * t * p2;
+  };
+
+  // Calculate smooth curve point using midpoint-based quadratic Bezier
+  // Returns {x, y} for a point at parameter t along the curve
+  const getSmoothCurvePoint = (
+    prevX: number | null,
+    prevY: number | null,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    t: number
+  ): { x: number; y: number } => {
+    if (prevX === null || prevY === null) {
+      // No previous point - use linear interpolation
+      return {
+        x: fromX + (toX - fromX) * t,
+        y: fromY + (toY - fromY) * t
+      };
+    }
+
+    // Start from midpoint between prev and from
+    const startX = (prevX + fromX) / 2;
+    const startY = (prevY + fromY) / 2;
+    // End at midpoint between from and to
+    const endX = (fromX + toX) / 2;
+    const endY = (fromY + toY) / 2;
+    // Control point is fromX, fromY (actual pointer position)
+
+    return {
+      x: quadraticBezier(startX, fromX, endX, t),
+      y: quadraticBezier(startY, fromY, endY, t)
+    };
   };
 
   // Draw with different brush types
@@ -644,54 +671,41 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     velocity: number,
     strokeDistance: number,
     taperProgress: number = 0, // 0 = no taper, 1 = full taper
-    prevX: number | null = null, // Previous point for spline interpolation
-    prevY: number | null = null,
-    nextX: number | null = null, // Next point for spline interpolation (usually current point)
-    nextY: number | null = null
+    prevX: number | null = null, // Previous point for curve interpolation
+    prevY: number | null = null
   ) => {
     ctx.globalCompositeOperation = "source-over";
 
     switch (brushType) {
       case "normal":
-        // Normal pen - solid, uniform stroke with Catmull-Rom spline for smoother curves
-        const normalDistance = Math.hypot(toX - fromX, toY - fromY);
-        const normalSteps = Math.max(1, Math.ceil(normalDistance / 0.5)); // Interpolate every 0.5px
-
+        // Normal pen - solid, uniform stroke with quadratic Bezier for smoother curves
         ctx.strokeStyle = color;
         ctx.lineWidth = size * pressure;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.globalAlpha = 1;
-        ctx.beginPath();
 
-        // If we have previous point, use spline interpolation
-        if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
-          for (let i = 0; i <= normalSteps; i++) {
-            const t = i / normalSteps;
-            const x = catmullRomSpline(prevX, fromX, toX, nextX, t);
-            const y = catmullRomSpline(prevY, fromY, toY, nextY, t);
+        // If we have previous point, use quadratic Bezier curve
+        if (prevX !== null && prevY !== null) {
+          // Start from midpoint between prev and from
+          const startX = (prevX + fromX) / 2;
+          const startY = (prevY + fromY) / 2;
+          // End at midpoint between from and to
+          const endX = (fromX + toX) / 2;
+          const endY = (fromY + toY) / 2;
 
-            if (i === 0) {
-              ctx.moveTo(x, y);
-            } else {
-              ctx.lineTo(x, y);
-            }
-          }
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          // Control point is fromX, fromY (actual pointer position)
+          ctx.quadraticCurveTo(fromX, fromY, endX, endY);
+          ctx.stroke();
         } else {
-          // Fallback to linear interpolation
-          for (let i = 0; i <= normalSteps; i++) {
-            const t = i / normalSteps;
-            const x = fromX + (toX - fromX) * t;
-            const y = fromY + (toY - fromY) * t;
-
-            if (i === 0) {
-              ctx.moveTo(x, y);
-            } else {
-              ctx.lineTo(x, y);
-            }
-          }
+          // First segment - just draw straight line
+          ctx.beginPath();
+          ctx.moveTo(fromX, fromY);
+          ctx.lineTo(toX, toY);
+          ctx.stroke();
         }
-        ctx.stroke();
         break;
 
       case "pencil":
@@ -701,15 +715,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
-          // Use spline interpolation if previous points available
-          let x, y;
-          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
-            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
-            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
-          } else {
-            x = fromX + (toX - fromX) * t;
-            y = fromY + (toY - fromY) * t;
-          }
+          const point = getSmoothCurvePoint(prevX, prevY, fromX, fromY, toX, toY, t);
+          const x = point.x;
+          const y = point.y;
 
           // Entry taper for pencil (faster than fude, reaches full size at 30px)
           let entryFactor = 1;
@@ -741,15 +749,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
         for (let i = 0; i <= gpenSteps; i++) {
           const t = i / gpenSteps;
-          // Use spline interpolation if previous points available
-          let x, y;
-          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
-            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
-            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
-          } else {
-            x = fromX + (toX - fromX) * t;
-            y = fromY + (toY - fromY) * t;
-          }
+          const point = getSmoothCurvePoint(prevX, prevY, fromX, fromY, toX, toY, t);
+          const x = point.x;
+          const y = point.y;
           const localStrokeDistance = strokeDistance + (gpenDistance * t);
 
           // Entry taper for G-pen (medium speed, reaches full size at 40px)
@@ -788,15 +790,9 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
         for (let i = 0; i <= segmentSteps; i++) {
           const t = i / segmentSteps;
-          // Use spline interpolation if previous points available
-          let x, y;
-          if (prevX !== null && prevY !== null && nextX !== null && nextY !== null) {
-            x = catmullRomSpline(prevX, fromX, toX, nextX, t);
-            y = catmullRomSpline(prevY, fromY, toY, nextY, t);
-          } else {
-            x = fromX + (toX - fromX) * t;
-            y = fromY + (toY - fromY) * t;
-          }
+          const point = getSmoothCurvePoint(prevX, prevY, fromX, fromY, toX, toY, t);
+          const x = point.x;
+          const y = point.y;
 
           // Entry taper (slowest, most gradual, reaches full size at 50px)
           let tapering = 1;
@@ -1085,7 +1081,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         });
 
         // Draw preview with full opacity (alpha will be applied at end)
-        // Use previous points for spline interpolation
+        // Use previous points for curve interpolation
         const prevPoint = prevPointRef.current;
         drawWithBrush(
           layerCtx,
@@ -1100,9 +1096,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           strokeDistanceRef.current,
           taperProgressRef.current,
           prevPoint ? prevPoint.x : null,
-          prevPoint ? prevPoint.y : null,
-          point.x, // next point is current point
-          point.y
+          prevPoint ? prevPoint.y : null
         );
         composeLayers();
 

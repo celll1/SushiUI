@@ -9,8 +9,9 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
+import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface Img2ImgParams {
@@ -25,6 +26,7 @@ interface Img2ImgParams {
   height?: number;
   denoising_strength?: number;
   loras?: LoRAConfig[];
+  controlnets?: ControlNetConfig[];
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -41,6 +43,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   resize_mode: "image",
   resampling_method: "lanczos",
   loras: [],
+  controlnets: [],
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -486,6 +489,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
           storageKey="img2img_lora_collapsed"
+        />
+
+        <ControlNetSelector
+          value={params.controlnets || []}
+          onChange={(controlnets) => setParams({ ...params, controlnets })}
+          disabled={isGenerating}
         />
 
         <Card

@@ -9,8 +9,9 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
+import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface InpaintParams {
@@ -30,6 +31,7 @@ interface InpaintParams {
   resize_mode?: string;
   resampling_method?: string;
   loras?: LoRAConfig[];
+  controlnets?: ControlNetConfig[];
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -49,6 +51,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   resize_mode: "image",
   resampling_method: "lanczos",
   loras: [],
+  controlnets: [],
 };
 
 const STORAGE_KEY = "inpaint_params";
@@ -553,6 +556,12 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
           storageKey="inpaint_lora_collapsed"
+        />
+
+        <ControlNetSelector
+          value={params.controlnets || []}
+          onChange={(controlnets) => setParams({ ...params, controlnets })}
+          disabled={isGenerating}
         />
 
         <Card

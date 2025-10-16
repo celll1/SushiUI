@@ -43,6 +43,8 @@ export default function ControlNetSelector({ value, onChange, disabled }: Contro
   };
 
   const addControlNet = () => {
+    if (availableControlNets.length === 0) return;
+
     const newControlNet: ControlNetConfig = {
       model_path: availableControlNets[0]?.path || "",
       strength: 1.0,
@@ -78,10 +80,6 @@ export default function ControlNetSelector({ value, onChange, disabled }: Contro
     reader.readAsDataURL(file);
   };
 
-  if (availableControlNets.length === 0) {
-    return null;
-  }
-
   return (
     <Card
       title={`ControlNet (${value.length})`}
@@ -90,6 +88,11 @@ export default function ControlNetSelector({ value, onChange, disabled }: Contro
       onToggle={() => setCollapsed(!collapsed)}
     >
       <div className="space-y-4">
+        {availableControlNets.length === 0 && (
+          <div className="text-sm text-gray-400 p-2">
+            No ControlNet models found in the controlnet directory.
+          </div>
+        )}
         {value.map((cn, index) => (
           <div key={index} className="p-3 bg-gray-800 rounded-lg space-y-3">
             <div className="flex justify-between items-center">
@@ -182,7 +185,7 @@ export default function ControlNetSelector({ value, onChange, disabled }: Contro
         <Button
           onClick={addControlNet}
           variant="primary"
-          disabled={disabled}
+          disabled={disabled || availableControlNets.length === 0}
         >
           Add ControlNet
         </Button>

@@ -51,6 +51,7 @@ class GenerationParams(BaseModel):
     height: int = 512
     model: str = ""
     loras: Optional[List[LoRAConfig]] = []
+    prompt_chunking_mode: str = "a1111"  # Options: a1111, comfyui, nobos
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -66,6 +67,10 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         # Generate image
         params = request.dict()
         print(f"Generation params: {params}")
+
+        # Set prompt chunking mode
+        prompt_chunking_mode = params.get("prompt_chunking_mode", "a1111")
+        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
 
         # Load LoRAs if specified
         lora_configs = params.get("loras", [])

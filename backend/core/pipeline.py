@@ -36,6 +36,9 @@ class DiffusionPipelineManager:
         self.text_encoder_offload_mode: str = "auto"
         self.vae_offload_mode: str = "auto"
 
+        # Prompt chunking settings
+        self.prompt_chunking_mode: str = "a1111"  # Options: a1111, comfyui, nobos
+
         # Auto-load last used model on startup
         self._auto_load_last_model()
 
@@ -244,6 +247,157 @@ class DiffusionPipelineManager:
         """Register a new extension"""
         self.extensions.append(extension)
 
+    def _build_token_weights(self, clean_text: str, parsed_fragments, tokenizer, device, dtype):
+        """Build per-token weight array from parsed emphasis fragments"""
+        # Build token weight array
+        token_weights = []
+        current_text = ""
+        previous_token_count = 0
+
+        for text, weight in parsed_fragments:
+            if not text:
+                continue
+
+            # Add this fragment to accumulated text
+            current_text += text
+
+            # Tokenize accumulated text
+            current_tokens = tokenizer(
+                current_text,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            current_token_count = current_tokens.input_ids.shape[1]
+
+            # Add weights for the NEW tokens
+            num_new_tokens = current_token_count - previous_token_count
+            token_weights.extend([weight] * num_new_tokens)
+
+            previous_token_count = current_token_count
+
+        # Convert to tensor
+        if len(token_weights) == 0:
+            return None
+
+        return torch.tensor(token_weights, device=device, dtype=dtype)
+
+    def _encode_prompt_chunked(self, prompt: str, negative_prompt: str = "", pipeline=None):
+        """
+        Encode prompts with chunking support for long prompts (>75 tokens).
+        Also supports A1111-style emphasis syntax.
+
+        Returns:
+            For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
+            For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
+        """
+        from .prompt_chunking import encode_prompt_chunked, encode_prompt_chunked_sdxl
+        from .prompt_parser import parse_prompt_attention
+
+        # Use provided pipeline or default to txt2img_pipeline
+        if pipeline is None:
+            pipeline = self.txt2img_pipeline
+
+        if pipeline is None:
+            return None, None, None, None
+
+        # Check if SDXL
+        is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline) or isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
+
+        device = self.device
+        dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
+
+        # Parse prompts for emphasis syntax
+        has_pos_emphasis = '(' in prompt or '[' in prompt
+        has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
+
+        # Build emphasis weights for positive prompt
+        emphasis_weights = None
+        emphasis_weights_2 = None
+        clean_prompt = prompt
+        if has_pos_emphasis:
+            parsed = parse_prompt_attention(prompt)
+            clean_prompt = "".join([text for text, _ in parsed])
+
+            # Build token weight array
+            tokenizer = pipeline.tokenizer if not is_sdxl else pipeline.tokenizer
+            emphasis_weights = self._build_token_weights(clean_prompt, parsed, tokenizer, device, dtype)
+
+            if is_sdxl:
+                # Build weights for second tokenizer too
+                emphasis_weights_2 = self._build_token_weights(clean_prompt, parsed, pipeline.tokenizer_2, device, dtype)
+
+        # Encode positive prompt
+        if is_sdxl:
+            prompt_embeds, pooled_prompt_embeds = encode_prompt_chunked_sdxl(
+                tokenizer=pipeline.tokenizer,
+                tokenizer_2=pipeline.tokenizer_2,
+                text_encoder=pipeline.text_encoder,
+                text_encoder_2=pipeline.text_encoder_2,
+                prompt=clean_prompt,
+                device=device,
+                dtype=dtype,
+                chunking_mode=self.prompt_chunking_mode,
+                emphasis_weights=emphasis_weights,
+                emphasis_weights_2=emphasis_weights_2,
+            )
+        else:
+            prompt_embeds = encode_prompt_chunked(
+                tokenizer=pipeline.tokenizer,
+                text_encoder=pipeline.text_encoder,
+                prompt=clean_prompt,
+                device=device,
+                dtype=dtype,
+                chunking_mode=self.prompt_chunking_mode,
+                emphasis_weights=emphasis_weights,
+            )
+            pooled_prompt_embeds = None
+
+        # Build emphasis weights for negative prompt
+        neg_emphasis_weights = None
+        neg_emphasis_weights_2 = None
+        clean_neg_prompt = negative_prompt
+        if negative_prompt and has_neg_emphasis:
+            parsed_neg = parse_prompt_attention(negative_prompt)
+            clean_neg_prompt = "".join([text for text, _ in parsed_neg])
+
+            tokenizer = pipeline.tokenizer if not is_sdxl else pipeline.tokenizer
+            neg_emphasis_weights = self._build_token_weights(clean_neg_prompt, parsed_neg, tokenizer, device, dtype)
+
+            if is_sdxl:
+                neg_emphasis_weights_2 = self._build_token_weights(clean_neg_prompt, parsed_neg, pipeline.tokenizer_2, device, dtype)
+
+        # Encode negative prompt
+        if negative_prompt:
+            if is_sdxl:
+                negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_chunked_sdxl(
+                    tokenizer=pipeline.tokenizer,
+                    tokenizer_2=pipeline.tokenizer_2,
+                    text_encoder=pipeline.text_encoder,
+                    text_encoder_2=pipeline.text_encoder_2,
+                    prompt=clean_neg_prompt,
+                    device=device,
+                    dtype=dtype,
+                    chunking_mode=self.prompt_chunking_mode,
+                    emphasis_weights=neg_emphasis_weights,
+                    emphasis_weights_2=neg_emphasis_weights_2,
+                )
+            else:
+                negative_prompt_embeds = encode_prompt_chunked(
+                    tokenizer=pipeline.tokenizer,
+                    text_encoder=pipeline.text_encoder,
+                    prompt=clean_neg_prompt,
+                    device=device,
+                    dtype=dtype,
+                    chunking_mode=self.prompt_chunking_mode,
+                    emphasis_weights=neg_emphasis_weights,
+                )
+                negative_pooled_prompt_embeds = None
+        else:
+            negative_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+
+        return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
+
     def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
         Encode prompts with A1111-style emphasis weights.
@@ -256,8 +410,27 @@ class DiffusionPipelineManager:
         has_pos_emphasis = '(' in prompt or '[' in prompt
         has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
 
+        # Check if prompts are long (need chunking)
+        if pipeline is None:
+            pipeline = self.txt2img_pipeline
+
+        if pipeline is None:
+            return None, None, None, None
+
+        # Tokenize to check length
+        tokenizer = pipeline.tokenizer if hasattr(pipeline, 'tokenizer') else None
+        if tokenizer:
+            prompt_tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+            needs_chunking = len(prompt_tokens) > 75
+        else:
+            needs_chunking = False
+
+        # If chunking is needed but no emphasis, use chunked encoding
+        if needs_chunking and not has_pos_emphasis and not has_neg_emphasis:
+            return self._encode_prompt_chunked(prompt, negative_prompt, pipeline)
+
+        # If no emphasis and no chunking needed, use default pipeline encoding
         if not has_pos_emphasis and not has_neg_emphasis:
-            # No emphasis - use normal prompt encoding
             return None, None, None, None
 
         # Use provided pipeline or default to txt2img_pipeline

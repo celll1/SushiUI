@@ -23,6 +23,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   width: 1024,
   height: 1024,
   loras: [],
+  prompt_chunking_mode: "a1111",
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -390,6 +391,16 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
+            <Select
+              label="Prompt Chunking Mode"
+              options={[
+                { value: "a1111", label: "A1111 (Separate chunks)" },
+                { value: "comfyui", label: "ComfyUI (Single BOS/EOS)" },
+                { value: "nobos", label: "No BOS/EOS" },
+              ]}
+              value={params.prompt_chunking_mode || "a1111"}
+              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+            />
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Seed

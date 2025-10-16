@@ -51,15 +51,16 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
 
-  const tokenizeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Tokenize prompts using backend tokenizer (debounced)
   useEffect(() => {
-    if (tokenizeTimeoutRef.current) {
-      clearTimeout(tokenizeTimeoutRef.current);
+    if (tokenizePromptTimeoutRef.current) {
+      clearTimeout(tokenizePromptTimeoutRef.current);
     }
 
-    tokenizeTimeoutRef.current = setTimeout(async () => {
+    tokenizePromptTimeoutRef.current = setTimeout(async () => {
       try {
         if (params.prompt) {
           const result = await tokenizePrompt(params.prompt);
@@ -69,22 +70,23 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         }
       } catch (error) {
         // Silently fail, keep previous count
+        console.error("Failed to tokenize prompt:", error);
       }
     }, 300);
 
     return () => {
-      if (tokenizeTimeoutRef.current) {
-        clearTimeout(tokenizeTimeoutRef.current);
+      if (tokenizePromptTimeoutRef.current) {
+        clearTimeout(tokenizePromptTimeoutRef.current);
       }
     };
   }, [params.prompt]);
 
   useEffect(() => {
-    if (tokenizeTimeoutRef.current) {
-      clearTimeout(tokenizeTimeoutRef.current);
+    if (tokenizeNegativeTimeoutRef.current) {
+      clearTimeout(tokenizeNegativeTimeoutRef.current);
     }
 
-    tokenizeTimeoutRef.current = setTimeout(async () => {
+    tokenizeNegativeTimeoutRef.current = setTimeout(async () => {
       try {
         if (params.negative_prompt) {
           const result = await tokenizePrompt(params.negative_prompt);
@@ -94,12 +96,13 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         }
       } catch (error) {
         // Silently fail, keep previous count
+        console.error("Failed to tokenize negative prompt:", error);
       }
     }, 300);
 
     return () => {
-      if (tokenizeTimeoutRef.current) {
-        clearTimeout(tokenizeTimeoutRef.current);
+      if (tokenizeNegativeTimeoutRef.current) {
+        clearTimeout(tokenizeNegativeTimeoutRef.current);
       }
     };
   }, [params.negative_prompt]);
@@ -457,28 +460,30 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
-            <Select
-              label="Prompt Chunking Mode"
-              options={[
-                { value: "a1111", label: "A1111 (Separate chunks)" },
-                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
-                { value: "nobos", label: "No BOS/EOS" },
-              ]}
-              value={params.prompt_chunking_mode || "a1111"}
-              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
-            />
-            <Select
-              label="Max Chunks"
-              options={[
-                { value: "0", label: "Unlimited" },
-                { value: "1", label: "1 chunk (75 tokens)" },
-                { value: "2", label: "2 chunks (150 tokens)" },
-                { value: "3", label: "3 chunks (225 tokens)" },
-                { value: "4", label: "4 chunks (300 tokens)" },
-              ]}
-              value={params.max_prompt_chunks?.toString() || "0"}
-              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
-            />
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="Prompt Chunking Mode"
+                options={[
+                  { value: "a1111", label: "A1111 (Separate chunks)" },
+                  { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+                  { value: "nobos", label: "No BOS/EOS" },
+                ]}
+                value={params.prompt_chunking_mode || "a1111"}
+                onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+              />
+              <Select
+                label="Max Chunks"
+                options={[
+                  { value: "0", label: "Unlimited" },
+                  { value: "1", label: "1 chunk (75 tokens)" },
+                  { value: "2", label: "2 chunks (150 tokens)" },
+                  { value: "3", label: "3 chunks (225 tokens)" },
+                  { value: "4", label: "4 chunks (300 tokens)" },
+                ]}
+                value={params.max_prompt_chunks?.toString() || "0"}
+                onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+              />
+            </div>
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Seed

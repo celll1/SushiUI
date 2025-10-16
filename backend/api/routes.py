@@ -234,6 +234,7 @@ async def generate_img2img(
     resize_mode: str = Form("image"),
     resampling_method: str = Form("lanczos"),
     loras: str = Form("[]"),  # JSON string of LoRA configs
+    controlnets: str = Form("[]"),  # JSON string of ControlNet configs
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -246,6 +247,30 @@ async def generate_img2img(
         # Parse LoRA configs
         import json
         lora_configs = json.loads(loras) if loras else []
+
+        # Parse ControlNet configs
+        controlnet_configs = json.loads(controlnets) if controlnets else []
+        controlnet_images = []
+        if controlnet_configs:
+            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
+            import base64
+            from io import BytesIO
+
+            for cn_config in controlnet_configs:
+                # Decode base64 image
+                if cn_config.get("image_base64"):
+                    image_data = base64.b64decode(cn_config["image_base64"])
+                    cn_image = Image.open(BytesIO(image_data))
+                    controlnet_images.append({
+                        "model_path": cn_config["model_path"],
+                        "image": cn_image,
+                        "strength": cn_config.get("strength", 1.0),
+                        "start_step": cn_config.get("start_step", 0.0),
+                        "end_step": cn_config.get("end_step", 1.0),
+                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "prompt": cn_config.get("prompt"),
+                        "is_lllite": cn_config.get("is_lllite", False),
+                    })
 
         # Generate image
         params = {
@@ -261,6 +286,7 @@ async def generate_img2img(
             "height": height,
             "resize_mode": resize_mode,
             "resampling_method": resampling_method,
+            "controlnet_images": controlnet_images,
         }
         print(f"img2img generation params: {params}")
 
@@ -384,6 +410,7 @@ async def generate_inpaint(
     inpaint_full_res: bool = Form(False),
     inpaint_full_res_padding: int = Form(32),
     loras: str = Form("[]"),  # JSON string of LoRA configs
+    controlnets: str = Form("[]"),  # JSON string of ControlNet configs
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -412,6 +439,30 @@ async def generate_inpaint(
         import json
         lora_configs = json.loads(loras) if loras else []
 
+        # Parse ControlNet configs
+        controlnet_configs = json.loads(controlnets) if controlnets else []
+        controlnet_images = []
+        if controlnet_configs:
+            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
+            import base64
+            from io import BytesIO
+
+            for cn_config in controlnet_configs:
+                # Decode base64 image
+                if cn_config.get("image_base64"):
+                    image_data = base64.b64decode(cn_config["image_base64"])
+                    cn_image = Image.open(BytesIO(image_data))
+                    controlnet_images.append({
+                        "model_path": cn_config["model_path"],
+                        "image": cn_image,
+                        "strength": cn_config.get("strength", 1.0),
+                        "start_step": cn_config.get("start_step", 0.0),
+                        "end_step": cn_config.get("end_step", 1.0),
+                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "prompt": cn_config.get("prompt"),
+                        "is_lllite": cn_config.get("is_lllite", False),
+                    })
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -427,6 +478,7 @@ async def generate_inpaint(
             "mask_blur": mask_blur,
             "inpaint_full_res": inpaint_full_res,
             "inpaint_full_res_padding": inpaint_full_res_padding,
+            "controlnet_images": controlnet_images,
         }
         print(f"inpaint generation params: {params}")
 

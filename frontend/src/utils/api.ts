@@ -123,6 +123,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("resize_mode", params.resize_mode || "image");
   formData.append("resampling_method", params.resampling_method || "lanczos");
   formData.append("loras", JSON.stringify(params.loras || []));
+  formData.append("controlnets", JSON.stringify(params.controlnets || []));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -167,6 +168,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("resize_mode", params.resize_mode || "image");
   formData.append("resampling_method", params.resampling_method || "lanczos");
   formData.append("loras", JSON.stringify(params.loras || []));
+  formData.append("controlnets", JSON.stringify(params.controlnets || []));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

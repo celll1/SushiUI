@@ -400,22 +400,22 @@ class DiffusionPipelineManager:
 
     def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
-        Encode prompts with A1111-style emphasis weights.
+        Encode prompts with A1111-style emphasis weights and/or chunking.
 
         Returns:
             For SD1.5: (prompt_embeds, negative_prompt_embeds)
             For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
         """
-        # Check if prompt or negative prompt contains emphasis syntax
-        has_pos_emphasis = '(' in prompt or '[' in prompt
-        has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
-
-        # Check if prompts are long (need chunking)
+        # Use provided pipeline or default to txt2img_pipeline
         if pipeline is None:
             pipeline = self.txt2img_pipeline
 
         if pipeline is None:
             return None, None, None, None
+
+        # Check if prompt or negative prompt contains emphasis syntax
+        has_pos_emphasis = '(' in prompt or '[' in prompt
+        has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
 
         # Tokenize to check length
         tokenizer = pipeline.tokenizer if hasattr(pipeline, 'tokenizer') else None
@@ -425,75 +425,13 @@ class DiffusionPipelineManager:
         else:
             needs_chunking = False
 
-        # If chunking is needed but no emphasis, use chunked encoding
-        if needs_chunking and not has_pos_emphasis and not has_neg_emphasis:
+        # ALWAYS use chunked encoding if prompt is long OR has emphasis
+        # The chunked encoder handles both cases properly
+        if needs_chunking or has_pos_emphasis or has_neg_emphasis:
             return self._encode_prompt_chunked(prompt, negative_prompt, pipeline)
 
-        # If no emphasis and no chunking needed, use default pipeline encoding
-        if not has_pos_emphasis and not has_neg_emphasis:
-            return None, None, None, None
-
-        # Use provided pipeline or default to txt2img_pipeline
-        if pipeline is None:
-            pipeline = self.txt2img_pipeline
-
-        if pipeline is None:
-            return None, None, None, None
-
-        # Check if SDXL
-        is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline) or isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
-
-        device = self.device
-        dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
-
-        # NEW APPROACH: Use pipeline's encode_prompt, then apply weights
-        # This ensures our embeddings match exactly what the pipeline would generate
-        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
-
-        # Parse to get clean text and weights
-        parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]
-        clean_prompt = "".join([text for text, _ in parsed_pos])
-
-        # Use pipeline's native encode_prompt to get correct embeddings
-        base_embeds = pipeline.encode_prompt(
-            prompt=clean_prompt,
-            device=device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=False  # We'll handle negative separately
-        )
-
-        # Extract embeddings (format depends on pipeline type)
-        prompt_embeds = base_embeds[0]  # prompt_embeds
-        pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
-
-        # Apply weights to prompt_embeds
-        if has_pos_emphasis:
-            prompt_embeds = apply_emphasis_to_embeds(prompt, prompt_embeds, pipeline.tokenizer if not is_sdxl else pipeline.tokenizer_2, device, dtype)
-
-        # Encode negative prompt similarly
-        if negative_prompt:
-            parsed_neg = parse_prompt_attention(negative_prompt) if has_neg_emphasis else [(negative_prompt, 1.0)]
-            clean_neg_prompt = "".join([text for text, _ in parsed_neg])
-
-            # Use pipeline's encode_prompt for negative
-            neg_embeds = pipeline.encode_prompt(
-                prompt=clean_neg_prompt,
-                device=device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=False
-            )
-
-            negative_prompt_embeds = neg_embeds[0]
-            negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
-
-            # Apply weights if negative has emphasis
-            if has_neg_emphasis:
-                negative_prompt_embeds = apply_emphasis_to_embeds(negative_prompt, negative_prompt_embeds, pipeline.tokenizer if not is_sdxl else pipeline.tokenizer_2, device, dtype)
-        else:
-            negative_prompt_embeds = None
-            negative_pooled_prompt_embeds = None
-
-        return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
+        # For short prompts without emphasis, use default pipeline encoding
+        return None, None, None, None
 
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text

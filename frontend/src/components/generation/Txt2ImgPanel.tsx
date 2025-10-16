@@ -9,6 +9,7 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
+import ControlNetSelector from "../common/ControlNetSelector";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
@@ -25,6 +26,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   loras: [],
   prompt_chunking_mode: "a1111",
   max_prompt_chunks: 0,
+  controlnets: [],
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -377,6 +379,12 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           onChange={(loras) => setParams({ ...params, loras })}
           disabled={isGenerating}
           storageKey="txt2img_lora_collapsed"
+        />
+
+        <ControlNetSelector
+          value={params.controlnets || []}
+          onChange={(controlnets) => setParams({ ...params, controlnets })}
+          disabled={isGenerating}
         />
 
         <Card title="Prompt">

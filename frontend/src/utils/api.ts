@@ -26,6 +26,18 @@ export interface LoRAInfo {
   layers: string[];
 }
 
+export interface ControlNetConfig {
+  model_path: string;
+  image_base64?: string;
+  strength: number;
+  start_step: number;
+  end_step: number;
+  layer_weights?: { down: number; mid: number; up: number };
+  prompt?: string;
+  is_lllite: boolean;
+  use_input_image: boolean;
+}
+
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
@@ -40,6 +52,7 @@ export interface GenerationParams {
   loras?: LoRAConfig[];
   prompt_chunking_mode?: string;
   max_prompt_chunks?: number;
+  controlnets?: ControlNetConfig[];
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -288,6 +301,11 @@ export const restartBoth = async () => {
   setTimeout(() => {
     window.location.reload();
   }, 2000);
+};
+
+export const getControlNets = async () => {
+  const response = await api.get("/controlnets");
+  return response.data;
 };
 
 export default api;

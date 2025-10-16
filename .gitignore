@@ -17,6 +17,7 @@ build/
 outputs/
 models/
 lora/
+controlnet/
 *.safetensors
 *.ckpt
 *.pt

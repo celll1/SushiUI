@@ -15,6 +15,7 @@ from pathlib import Path
 from diffusers import ControlNetModel
 from PIL import Image
 import numpy as np
+from config.settings import settings
 
 
 class ControlNetConfig:
@@ -43,9 +44,11 @@ class ControlNetConfig:
 class ControlNetManager:
     """Manages ControlNet models and their application"""
 
-    def __init__(self, controlnet_dir: str = "controlnet"):
+    def __init__(self, controlnet_dir: Optional[str] = None):
+        if controlnet_dir is None:
+            controlnet_dir = settings.controlnet_dir
         self.controlnet_dir = Path(controlnet_dir)
-        self.controlnet_dir.mkdir(exist_ok=True)
+        print(f"[ControlNetManager] ControlNet directory: {self.controlnet_dir}")
 
         self.loaded_controlnets: Dict[str, ControlNetModel] = {}
         self.loaded_lllites: Dict[str, Any] = {}

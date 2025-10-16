@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     outputs_dir: str = os.path.realpath(os.path.join(_root_dir, "outputs"))
     thumbnails_dir: str = os.path.realpath(os.path.join(_root_dir, "thumbnails"))
     lora_dir: str = os.path.realpath(os.path.join(_root_dir, "lora"))
+    controlnet_dir: str = os.path.realpath(os.path.join(_root_dir, "controlnet"))
 
     # Database
     database_url: str = f"sqlite:///{os.path.realpath(os.path.join(_root_dir, 'sd_webui.db'))}"
@@ -44,4 +45,5 @@ print(f"[Settings] Root dir: {settings.root_dir}")
 print(f"[Settings] Outputs dir: {settings.outputs_dir}")
 print(f"[Settings] Models dir: {settings.models_dir}")
 print(f"[Settings] LoRA dir: {settings.lora_dir}")
+print(f"[Settings] ControlNet dir: {settings.controlnet_dir}")
 print(f"[Settings] Thumbnails dir: {settings.thumbnails_dir}")

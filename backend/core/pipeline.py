@@ -37,7 +37,7 @@ class DiffusionPipelineManager:
         self.vae_offload_mode: str = "auto"
 
         # Prompt chunking settings
-        self.prompt_chunking_mode: str = "a1111"  # Options: a1111, comfyui, nobos
+        self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
         # Auto-load last used model on startup
@@ -362,8 +362,8 @@ class DiffusionPipelineManager:
         if self.prompt_chunking_mode == "a1111":
             # A1111 mode: concatenate all chunks
             prompt_embeds = torch.cat(chunk_embeds_list, dim=1)
-        elif self.prompt_chunking_mode == "comfyui":
-            # ComfyUI mode: strip BOS/EOS between chunks
+        elif self.prompt_chunking_mode == "sd_scripts":
+            # sd-scripts mode: strip BOS/EOS between chunks
             # First chunk: keep all, middle chunks: strip BOS/EOS, last chunk: keep all
             processed_chunks = []
             for idx, chunk_emb in enumerate(chunk_embeds_list):
@@ -427,7 +427,7 @@ class DiffusionPipelineManager:
             # Concatenate based on mode
             if self.prompt_chunking_mode == "a1111":
                 negative_prompt_embeds = torch.cat(neg_chunk_embeds_list, dim=1)
-            elif self.prompt_chunking_mode == "comfyui":
+            elif self.prompt_chunking_mode == "sd_scripts":
                 processed_chunks = []
                 for idx, chunk_emb in enumerate(neg_chunk_embeds_list):
                     if len(neg_chunk_embeds_list) == 1:
@@ -624,6 +624,16 @@ class DiffusionPipelineManager:
             params.get("negative_prompt", ""),
             pipeline=self.txt2img_pipeline
         )
+
+        # Log embedding shapes for debugging
+        if prompt_embeds is not None:
+            print(f"Prompt embeddings shape: {prompt_embeds.shape}")
+        if negative_prompt_embeds is not None:
+            print(f"Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+        if pooled_prompt_embeds is not None:
+            print(f"Pooled prompt embeddings shape: {pooled_prompt_embeds.shape}")
+        if negative_pooled_prompt_embeds is not None:
+            print(f"Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
 
         # Manage text encoder offload (move to CPU if auto mode)
         self._manage_text_encoder_offload(self.txt2img_pipeline, "after")

@@ -255,6 +255,22 @@ export const getLoraInfo = async (loraName: string) => {
   return response.data;
 };
 
+export interface TokenizeResult {
+  token_count: number;
+  total_count: number;
+  chunks: number;
+}
+
+export const tokenizePrompt = async (prompt: string): Promise<TokenizeResult> => {
+  const formData = new FormData();
+  formData.append("prompt", prompt);
+
+  const response = await api.post("/tokenize", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
 export const restartBackend = async () => {
   const response = await api.post("/system/restart-backend");
   return response.data;

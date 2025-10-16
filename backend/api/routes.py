@@ -51,7 +51,7 @@ class GenerationParams(BaseModel):
     height: int = 512
     model: str = ""
     loras: Optional[List[LoRAConfig]] = []
-    prompt_chunking_mode: str = "a1111"  # Options: a1111, comfyui, nobos
+    prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
 class Txt2ImgRequest(GenerationParams):
@@ -729,6 +729,33 @@ async def get_lora_info(lora_name: str):
     if not info:
         raise HTTPException(status_code=404, detail="LoRA not found")
     return info
+
+@router.post("/tokenize")
+async def tokenize_prompt(prompt: str = Form(...)):
+    """Get token count for a prompt using the loaded model's tokenizer"""
+    try:
+        if not pipeline_manager.txt2img_pipeline:
+            raise HTTPException(status_code=400, detail="No model loaded")
+
+        # Get tokenizer from pipeline
+        from diffusers import StableDiffusionXLPipeline
+        is_sdxl = isinstance(pipeline_manager.txt2img_pipeline, StableDiffusionXLPipeline)
+        tokenizer = pipeline_manager.txt2img_pipeline.tokenizer_2 if is_sdxl else pipeline_manager.txt2img_pipeline.tokenizer
+
+        # Tokenize without special tokens to get actual content token count
+        tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+        token_count = len(tokens)
+
+        # Add 2 for BOS/EOS tokens
+        total_count = token_count + 2
+
+        return {
+            "token_count": token_count,
+            "total_count": total_count,
+            "chunks": (token_count + 74) // 75  # Number of 75-token chunks needed
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/system/restart-backend")
 async def restart_backend():

@@ -3,7 +3,7 @@ Prompt chunking for handling prompts longer than 75 tokens.
 
 Supports different chunking modes:
 - A1111 (Automatic1111): <BOS>75tokens<EOS><BOS>75tokens<EOS>...
-- ComfyUI: <BOS>75tokens 75tokens 75tokens...<EOS>
+- sd-scripts: <BOS>75tokens 75tokens 75tokens...<EOS>
 - NoBOS: 75tokens 75tokens 75tokens (no BOS/EOS tokens)
 
 Also supports A1111-style emphasis syntax: (word:1.2), ((word)), [word]
@@ -12,7 +12,7 @@ Also supports A1111-style emphasis syntax: (word:1.2), ((word)), [word]
 import torch
 from typing import Tuple, Literal, Optional, List
 
-ChunkingMode = Literal["a1111", "comfyui", "nobos"]
+ChunkingMode = Literal["a1111", "sd_scripts", "nobos"]
 
 
 def encode_prompt_chunked(
@@ -39,7 +39,7 @@ def encode_prompt_chunked(
         dtype: Data type for the output
         chunking_mode: How to handle chunking
             - "a1111": Each chunk gets its own BOS/EOS tokens (AUTOMATIC1111 style)
-            - "comfyui": Single BOS/EOS for entire sequence (ComfyUI/as-scripts style)
+            - "sd_scripts": Single BOS/EOS for entire sequence (sd-scripts style)
             - "nobos": No BOS/EOS tokens at all
         max_length: Maximum tokens per chunk (default 75, matching SD's limit)
         emphasis_weights: Optional tensor of per-token weights for emphasis
@@ -163,8 +163,8 @@ def encode_prompt_chunked(
         # Concatenate all chunk embeddings
         final_embeddings = torch.cat(chunk_embeddings, dim=1)
 
-    elif chunking_mode == "comfyui":
-        # ComfyUI/as-scripts mode: Single BOS at start, single EOS at end
+    elif chunking_mode == "sd_scripts":
+        # sd-scripts mode: Single BOS at start, single EOS at end
         # <BOS>chunk1 chunk2 chunk3...<EOS>
 
         # Add BOS at the very beginning
@@ -207,7 +207,7 @@ def encode_prompt_chunked(
             # Apply emphasis weights if provided
             if emphasis_weights is not None:
                 chunk_weights = torch.ones(chunk_emb.size(1), device=device, dtype=dtype)
-                # For ComfyUI mode, we need to map global token positions
+                # For sd-scripts mode, we need to map global token positions
                 # First chunk: BOS + tokens
                 # Later chunks: just tokens
                 token_start = 0 if i == 0 else 1  # Skip BOS in first chunk

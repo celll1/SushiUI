@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -9,7 +9,7 @@ import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
-import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes } from "@/utils/api";
+import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 const DEFAULT_PARAMS: GenerationParams = {
@@ -48,6 +48,61 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
+  const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
+
+  const tokenizeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Tokenize prompts using backend tokenizer (debounced)
+  useEffect(() => {
+    if (tokenizeTimeoutRef.current) {
+      clearTimeout(tokenizeTimeoutRef.current);
+    }
+
+    tokenizeTimeoutRef.current = setTimeout(async () => {
+      try {
+        if (params.prompt) {
+          const result = await tokenizePrompt(params.prompt);
+          setPromptTokenCount(result.total_count);
+        } else {
+          setPromptTokenCount(0);
+        }
+      } catch (error) {
+        // Silently fail, keep previous count
+      }
+    }, 300);
+
+    return () => {
+      if (tokenizeTimeoutRef.current) {
+        clearTimeout(tokenizeTimeoutRef.current);
+      }
+    };
+  }, [params.prompt]);
+
+  useEffect(() => {
+    if (tokenizeTimeoutRef.current) {
+      clearTimeout(tokenizeTimeoutRef.current);
+    }
+
+    tokenizeTimeoutRef.current = setTimeout(async () => {
+      try {
+        if (params.negative_prompt) {
+          const result = await tokenizePrompt(params.negative_prompt);
+          setNegativePromptTokenCount(result.total_count);
+        } else {
+          setNegativePromptTokenCount(0);
+        }
+      } catch (error) {
+        // Silently fail, keep previous count
+      }
+    }, 300);
+
+    return () => {
+      if (tokenizeTimeoutRef.current) {
+        clearTimeout(tokenizeTimeoutRef.current);
+      }
+    };
+  }, [params.negative_prompt]);
 
   // WebSocket progress callback
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string) => {
@@ -322,22 +377,32 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         />
 
         <Card title="Prompt">
-          <Textarea
-            label="Positive Prompt"
-            placeholder="Enter your prompt here..."
-            rows={4}
-            value={params.prompt}
-            onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-            enableWeightControl={true}
-          />
-          <Textarea
-            label="Negative Prompt"
-            placeholder="Enter negative prompt..."
-            rows={3}
-            value={params.negative_prompt}
-            onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-            enableWeightControl={true}
-          />
+          <div className="relative">
+            <Textarea
+              label="Positive Prompt"
+              placeholder="Enter your prompt here..."
+              rows={4}
+              value={params.prompt}
+              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+              enableWeightControl={true}
+            />
+            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1">
+              {promptTokenCount} tokens
+            </div>
+          </div>
+          <div className="relative">
+            <Textarea
+              label="Negative Prompt"
+              placeholder="Enter negative prompt..."
+              rows={3}
+              value={params.negative_prompt}
+              onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+              enableWeightControl={true}
+            />
+            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1">
+              {negativePromptTokenCount} tokens
+            </div>
+          </div>
         </Card>
 
         <Card title="Parameters">
@@ -396,7 +461,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
               label="Prompt Chunking Mode"
               options={[
                 { value: "a1111", label: "A1111 (Separate chunks)" },
-                { value: "comfyui", label: "ComfyUI (Single BOS/EOS)" },
+                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
                 { value: "nobos", label: "No BOS/EOS" },
               ]}
               value={params.prompt_chunking_mode || "a1111"}

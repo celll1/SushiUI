@@ -186,6 +186,17 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         image_hash = calculate_image_hash(image)
         lora_names = extract_lora_names(lora_configs)
 
+        # Remove image objects from params before saving to DB and calculate ControlNet hashes
+        params_for_db = params.copy()
+        if "controlnet_images" in params_for_db:
+            params_for_db["controlnet_images"] = [
+                {
+                    k: (calculate_image_hash(v) if k == "image" else v)
+                    for k, v in cn.items()
+                }
+                for cn in params_for_db["controlnet_images"]
+            ]
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -199,7 +210,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             width=request.width,
             height=request.height,
             generation_type="txt2img",
-            parameters=params,
+            parameters=params_for_db,
             image_hash=image_hash,
             lora_names=lora_names if lora_names else None,
         )
@@ -360,6 +371,17 @@ async def generate_img2img(
         source_image_hash = calculate_image_hash(init_image)
         lora_names = extract_lora_names(lora_configs)
 
+        # Remove image objects from params before saving to DB and calculate ControlNet hashes
+        params_for_db = params.copy()
+        if "controlnet_images" in params_for_db:
+            params_for_db["controlnet_images"] = [
+                {
+                    k: (calculate_image_hash(v) if k == "image" else v)
+                    for k, v in cn.items()
+                }
+                for cn in params_for_db["controlnet_images"]
+            ]
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -373,7 +395,7 @@ async def generate_img2img(
             width=result_image.width,
             height=result_image.height,
             generation_type="img2img",
-            parameters=params,
+            parameters=params_for_db,
             image_hash=image_hash,
             source_image_hash=source_image_hash,
             lora_names=lora_names if lora_names else None,
@@ -553,6 +575,17 @@ async def generate_inpaint(
         mask_data_base64 = encode_mask_to_base64(mask_image)
         lora_names = extract_lora_names(lora_configs)
 
+        # Remove image objects from params before saving to DB and calculate ControlNet hashes
+        params_for_db = params.copy()
+        if "controlnet_images" in params_for_db:
+            params_for_db["controlnet_images"] = [
+                {
+                    k: (calculate_image_hash(v) if k == "image" else v)
+                    for k, v in cn.items()
+                }
+                for cn in params_for_db["controlnet_images"]
+            ]
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
@@ -566,7 +599,7 @@ async def generate_inpaint(
             width=result_image.width,
             height=result_image.height,
             generation_type="inpaint",
-            parameters=params,
+            parameters=params_for_db,
             image_hash=image_hash,
             source_image_hash=source_image_hash,
             mask_data=mask_data_base64,

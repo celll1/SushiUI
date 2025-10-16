@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Input from "./Input";
+import Select from "./Select";
 import { Folder, Globe } from "lucide-react";
 
 interface Model {
@@ -29,6 +30,11 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   const [huggingfaceRevision, setHuggingfaceRevision] = useState("");
   const [localModelPath, setLocalModelPath] = useState("");
   const [browseFile, setBrowseFile] = useState<File | null>(null);
+
+  // VRAM Optimization states
+  const [precision, setPrecision] = useState<"fp32" | "fp16" | "fp8">("fp16");
+  const [textEncoderOffload, setTextEncoderOffload] = useState<"gpu" | "cpu" | "auto">("auto");
+  const [vaeOffload, setVaeOffload] = useState<"gpu" | "cpu" | "auto">("auto");
 
   useEffect(() => {
     loadModels();
@@ -66,6 +72,11 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
       if (revision) {
         formData.append("revision", revision);
       }
+
+      // Add VRAM optimization settings
+      formData.append("precision", precision);
+      formData.append("text_encoder_offload", textEncoderOffload);
+      formData.append("vae_offload", vaeOffload);
 
       const response = await fetch("/api/models/load", {
         method: "POST",
@@ -161,6 +172,52 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
             <p className="text-xs text-gray-500">Type: {currentModel.type || "Unknown"}</p>
           </div>
         )}
+
+        {/* VRAM Optimization Settings */}
+        <div className="bg-gray-800 p-3 rounded-lg space-y-3">
+          <h4 className="text-sm font-semibold text-gray-300">VRAM Optimization</h4>
+
+          <div className="grid grid-cols-3 gap-3">
+            <Select
+              label="Precision"
+              value={precision}
+              onChange={(e) => setPrecision(e.target.value as "fp32" | "fp16" | "fp8")}
+              options={[
+                { value: "fp32", label: "FP32 (Full)" },
+                { value: "fp16", label: "FP16 (Half)" },
+                { value: "fp8", label: "FP8 (Experimental)" },
+              ]}
+            />
+
+            <Select
+              label="Text Encoder"
+              value={textEncoderOffload}
+              onChange={(e) => setTextEncoderOffload(e.target.value as "gpu" | "cpu" | "auto")}
+              options={[
+                { value: "gpu", label: "GPU" },
+                { value: "cpu", label: "CPU" },
+                { value: "auto", label: "Auto Offload" },
+              ]}
+            />
+
+            <Select
+              label="VAE"
+              value={vaeOffload}
+              onChange={(e) => setVaeOffload(e.target.value as "gpu" | "cpu" | "auto")}
+              options={[
+                { value: "gpu", label: "GPU" },
+                { value: "cpu", label: "CPU" },
+                { value: "auto", label: "Auto Offload" },
+              ]}
+            />
+          </div>
+
+          <p className="text-xs text-gray-500">
+            <strong>Precision:</strong> Lower precision uses less VRAM. FP8 is experimental.<br/>
+            <strong>CPU:</strong> Component stays on CPU/RAM (slower).<br/>
+            <strong>Auto Offload:</strong> Moves to CPU after use (saves VRAM).
+          </p>
+        </div>
 
         {/* Tabs */}
         <div className="flex space-x-2 border-b border-gray-700">

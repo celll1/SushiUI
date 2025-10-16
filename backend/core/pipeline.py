@@ -32,6 +32,10 @@ class DiffusionPipelineManager:
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
 
+        # VRAM optimization settings
+        self.text_encoder_offload_mode: str = "auto"
+        self.vae_offload_mode: str = "auto"
+
         # Auto-load last used model on startup
         self._auto_load_last_model()
 
@@ -49,7 +53,21 @@ class DiffusionPipelineManager:
             return
 
         try:
-            torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
+            # Extract VRAM optimization settings
+            precision = kwargs.pop("precision", "fp16")
+            text_encoder_offload = kwargs.pop("text_encoder_offload", "gpu")
+            vae_offload = kwargs.pop("vae_offload", "gpu")
+
+            # Determine dtype based on precision setting
+            if self.device == "cpu":
+                torch_dtype = torch.float32
+            elif precision == "fp32":
+                torch_dtype = torch.float32
+            elif precision == "fp8":
+                # Use fp8_e4m3fn for inference (better range than e5m2)
+                torch_dtype = torch.float8_e4m3fn if hasattr(torch, 'float8_e4m3fn') else torch.float16
+            else:  # fp16
+                torch_dtype = torch.float16
 
             # Load base pipeline
             base_pipeline = ModelLoader.load_model(
@@ -59,6 +77,13 @@ class DiffusionPipelineManager:
                 torch_dtype=torch_dtype,
                 **kwargs
             )
+
+            # Store offload settings
+            self.text_encoder_offload_mode = text_encoder_offload
+            self.vae_offload_mode = vae_offload
+
+            # Apply component offloading
+            self._apply_component_offload(base_pipeline, text_encoder_offload, vae_offload)
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
@@ -131,6 +156,89 @@ class DiffusionPipelineManager:
                 print(f"Successfully loaded last model: {source}")
         except Exception as e:
             print(f"Warning: Failed to auto-load last model: {e}")
+
+    def _apply_component_offload(self, pipeline, text_encoder_offload: str, vae_offload: str):
+        """Apply component offloading to save VRAM"""
+        if not hasattr(pipeline, 'text_encoder') or not hasattr(pipeline, 'vae'):
+            return
+
+        # Handle Text Encoder offload
+        if text_encoder_offload == "cpu":
+            # Keep text encoder on CPU
+            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+                pipeline.text_encoder = pipeline.text_encoder.to("cpu")
+            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+                pipeline.text_encoder_2 = pipeline.text_encoder_2.to("cpu")
+        elif text_encoder_offload == "auto":
+            # Use Diffusers' built-in sequential CPU offload for better memory management
+            try:
+                pipeline.enable_sequential_cpu_offload()
+                print("Enabled sequential CPU offload for all components")
+                return  # Sequential offload handles everything
+            except Exception as e:
+                print(f"Warning: Could not enable sequential CPU offload: {e}")
+
+        # Handle VAE offload (only if not using sequential offload)
+        if vae_offload == "cpu":
+            # Keep VAE on CPU
+            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+                pipeline.vae = pipeline.vae.to("cpu")
+        elif vae_offload == "auto" and text_encoder_offload != "auto":
+            # Manual VAE offload (if not already handled by sequential offload)
+            # We'll handle this in generation methods
+            pass
+
+    def _manage_text_encoder_offload(self, pipeline, stage: str):
+        """Manage text encoder auto-offloading
+
+        Args:
+            stage: "before" (move to GPU) or "after" (move to CPU)
+        """
+        # Skip if using sequential offload (it handles everything automatically)
+        if self.text_encoder_offload_mode == "auto" and hasattr(pipeline, '_all_hooks'):
+            # Sequential offload is enabled (indicated by hooks)
+            return
+
+        if self.text_encoder_offload_mode != "auto":
+            return
+
+        if stage == "before":
+            # Move to GPU before encoding
+            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+                pipeline.text_encoder = pipeline.text_encoder.to(self.device)
+            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+                pipeline.text_encoder_2 = pipeline.text_encoder_2.to(self.device)
+        elif stage == "after":
+            # Move to CPU after encoding
+            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+                pipeline.text_encoder = pipeline.text_encoder.to("cpu")
+            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+                pipeline.text_encoder_2 = pipeline.text_encoder_2.to("cpu")
+            torch.cuda.empty_cache()
+
+    def _manage_vae_offload(self, pipeline, stage: str):
+        """Manage VAE auto-offloading
+
+        Args:
+            stage: "before" (move to GPU) or "after" (move to CPU)
+        """
+        # Skip if using sequential offload (it handles everything automatically)
+        if hasattr(pipeline, '_all_hooks'):
+            # Sequential offload is enabled
+            return
+
+        if self.vae_offload_mode != "auto":
+            return
+
+        if stage == "before":
+            # Move to GPU before decoding
+            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+                pipeline.vae = pipeline.vae.to(self.device)
+        elif stage == "after":
+            # Move to CPU after decoding
+            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+                pipeline.vae = pipeline.vae.to("cpu")
+            torch.cuda.empty_cache()
 
     def register_extension(self, extension: BaseExtension):
         """Register a new extension"""
@@ -245,12 +353,18 @@ class DiffusionPipelineManager:
         # Check if SDXL
         is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
+        # Manage text encoder offload (move to GPU if auto mode)
+        self._manage_text_encoder_offload(self.txt2img_pipeline, "before")
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             params["prompt"],
             params.get("negative_prompt", ""),
             pipeline=self.txt2img_pipeline
         )
+
+        # Manage text encoder offload (move to CPU if auto mode)
+        self._manage_text_encoder_offload(self.txt2img_pipeline, "after")
 
         # Prepare generation parameters
         gen_params = {
@@ -310,6 +424,14 @@ class DiffusionPipelineManager:
             print(f"Generation error: {e}")
             print(f"Parameters used: {gen_params}")
             raise
+        finally:
+            # Manage VAE offload (move to CPU if auto mode)
+            # VAE is used at the end of generation, so we only need to offload after
+            self._manage_vae_offload(self.txt2img_pipeline, "after")
+
+            # Clear intermediate tensors
+            if hasattr(self, 'device') and self.device == "cuda":
+                torch.cuda.empty_cache()
 
         # Apply extensions after generation
         for ext in self.extensions:

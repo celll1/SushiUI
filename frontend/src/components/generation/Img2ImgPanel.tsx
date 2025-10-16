@@ -158,7 +158,15 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {
     if (isMounted) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+      // Remove image data from controlnets before saving to avoid quota exceeded
+      const paramsToSave = {
+        ...params,
+        controlnets: params.controlnets?.map(cn => ({
+          ...cn,
+          image_base64: undefined, // Don't save large base64 data to localStorage
+        })),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(paramsToSave));
     }
   }, [params, isMounted]);
 

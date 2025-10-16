@@ -495,6 +495,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           value={params.controlnets || []}
           onChange={(controlnets) => setParams({ ...params, controlnets })}
           disabled={isGenerating}
+          storageKey="img2img_controlnet_collapsed"
         />
 
         <Card

@@ -385,6 +385,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           value={params.controlnets || []}
           onChange={(controlnets) => setParams({ ...params, controlnets })}
           disabled={isGenerating}
+          storageKey="txt2img_controlnet_collapsed"
         />
 
         <Card title="Prompt">

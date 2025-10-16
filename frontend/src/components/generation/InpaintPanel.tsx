@@ -562,6 +562,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           value={params.controlnets || []}
           onChange={(controlnets) => setParams({ ...params, controlnets })}
           disabled={isGenerating}
+          storageKey="inpaint_controlnet_collapsed"
         />
 
         <Card

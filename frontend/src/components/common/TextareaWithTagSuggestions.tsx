@@ -59,6 +59,7 @@ export default function TextareaWithTagSuggestions({
   // Search for tag suggestions
   const updateSuggestions = async (text: string, cursorPos: number) => {
     const currentTag = getCurrentTag(text, cursorPos);
+    console.log('[TagSuggestions] Current tag:', currentTag, 'at position:', cursorPos);
 
     if (currentTag.length >= 2) {
       // Clear previous timeout
@@ -68,7 +69,9 @@ export default function TextareaWithTagSuggestions({
 
       // Debounce search
       searchTimeoutRef.current = setTimeout(async () => {
+        console.log('[TagSuggestions] Searching for:', currentTag);
         const results = await searchTags(currentTag, 20);
+        console.log('[TagSuggestions] Found results:', results.length);
         setSuggestions(results);
         setSelectedIndex(results.length > 0 ? 0 : -1);
 

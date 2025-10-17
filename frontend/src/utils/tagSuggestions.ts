@@ -51,11 +51,15 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
   }
 
   try {
-    const response = await fetch(`/taglist/${categories[category].name}.json`);
+    console.log(`[TagSuggestions] Loading ${category} tags from API`);
+    const response = await fetch(`http://localhost:8000/api/taglist/${category}`);
     if (response.ok) {
       const data: TagData = await response.json();
       categories[category].tags = data;
       categories[category].loaded = true;
+      console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags for ${category}`);
+    } else {
+      console.error(`[TagSuggestions] Failed to load ${category} tags: HTTP ${response.status}`);
     }
   } catch (error) {
     console.error(`Failed to load ${category} tags:`, error);
@@ -89,10 +93,18 @@ export async function searchTags(
   await loadAllTags();
 
   const normalizedInput = normalizeTag(input);
+  console.log(`[TagSuggestions] Searching with normalized input: "${normalizedInput}"`);
   const results: Array<{ tag: string; count: number; category: string }> = [];
 
   // Search in all categories
   for (const [categoryKey, category] of Object.entries(categories)) {
+    if (!category.loaded) {
+      console.log(`[TagSuggestions] Category ${categoryKey} not loaded, skipping`);
+      continue;
+    }
+    const categoryTagCount = Object.keys(category.tags).length;
+    console.log(`[TagSuggestions] Searching in ${categoryKey} (${categoryTagCount} tags)`);
+
     for (const [tag, count] of Object.entries(category.tags)) {
       const normalizedTag = normalizeTag(tag);
 
@@ -107,6 +119,7 @@ export async function searchTags(
     }
   }
 
+  console.log(`[TagSuggestions] Found ${results.length} matches`);
   // Sort by count (descending) and take top results
   return results.sort((a, b) => b.count - a.count).slice(0, limit);
 }

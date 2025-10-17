@@ -1,5 +1,13 @@
 "use client";
 
+/**
+ * ImageList - Memoized image grid with loading state
+ *
+ * This component is wrapped with React.memo to prevent re-renders
+ * when only filters change. Loading indicator is handled internally
+ * to avoid re-rendering the entire gallery.
+ */
+
 import React, { memo } from "react";
 import { GeneratedImage } from "@/utils/api";
 

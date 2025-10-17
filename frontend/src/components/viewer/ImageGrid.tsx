@@ -1,5 +1,15 @@
 "use client";
 
+/**
+ * ImageGrid - Gallery view with filters and pagination
+ *
+ * Performance optimizations:
+ * - GalleryFilter and ImageList are memoized components
+ * - All callbacks are wrapped with useCallback to prevent filter re-renders
+ * - Computed values (tagSuggestions, filteredImages) use useMemo
+ * - Loading state is handled within ImageList to avoid full re-render
+ */
+
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";

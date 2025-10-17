@@ -1,5 +1,13 @@
 "use client";
 
+/**
+ * GalleryFilter - Memoized filter panel for gallery
+ *
+ * This component is wrapped with React.memo to prevent re-renders
+ * when only the image list changes (e.g., pagination).
+ * All props must be stable references (memoized with useCallback/useMemo).
+ */
+
 import React, { memo } from "react";
 import Card from "../common/Card";
 import Button from "../common/Button";

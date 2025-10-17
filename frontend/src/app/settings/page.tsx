@@ -225,6 +225,39 @@ export default function SettingsPage() {
             </div>
           </Card>
 
+          <Card title="Tag Suggestions">
+            <div className="space-y-4">
+              <p className="text-gray-400 text-sm mb-4">
+                Configure tag autocompletion behavior in prompt fields.
+              </p>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Minimum Tag Count
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10000"
+                    value={
+                      typeof window !== 'undefined'
+                        ? parseInt(localStorage.getItem('tag_suggestion_min_count') || '50')
+                        : 50
+                    }
+                    onChange={(e) => {
+                      localStorage.setItem('tag_suggestion_min_count', e.target.value);
+                    }}
+                    className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Only show tags that appear at least this many times in the dataset. Lower values show more tags but may include uncommon or misspelled tags. Default: 50
+                  </p>
+                </div>
+              </div>
+            </div>
+          </Card>
+
           <Card title="Other Settings">
             <p className="text-gray-400">Additional settings will be implemented in future updates.</p>
           </Card>

@@ -56,6 +56,43 @@ export default function TextareaWithTagSuggestions({
     }
   }, []);
 
+  // Calculate cursor position in pixels
+  const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
+    const textBeforeCursor = textarea.value.substring(0, position);
+    const lines = textBeforeCursor.split('\n');
+    const currentLine = lines.length;
+    const currentColumn = lines[lines.length - 1].length;
+
+    // Create a mirror div to measure text
+    const mirror = document.createElement('div');
+    const style = window.getComputedStyle(textarea);
+
+    // Copy textarea styles
+    ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing',
+     'padding', 'border-width'].forEach(prop => {
+      (mirror.style as any)[prop] = (style as any)[prop];
+    });
+
+    mirror.style.position = 'absolute';
+    mirror.style.visibility = 'hidden';
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.wordWrap = 'break-word';
+    mirror.style.width = textarea.clientWidth + 'px';
+    mirror.textContent = textBeforeCursor;
+
+    document.body.appendChild(mirror);
+
+    const rect = textarea.getBoundingClientRect();
+    const mirrorHeight = mirror.offsetHeight;
+
+    document.body.removeChild(mirror);
+
+    return {
+      top: rect.top + mirrorHeight,
+      left: rect.left,
+    };
+  };
+
   // Search for tag suggestions
   const updateSuggestions = async (text: string, cursorPos: number) => {
     const currentTag = getCurrentTag(text, cursorPos);
@@ -75,14 +112,14 @@ export default function TextareaWithTagSuggestions({
         setSuggestions(results);
         setSelectedIndex(results.length > 0 ? 0 : -1);
 
-        // Calculate position for suggestions dropdown
+        // Calculate position for suggestions dropdown near cursor
         if (textareaRef.current) {
           const textarea = textareaRef.current as any;
           if (textarea.tagName === "TEXTAREA") {
-            const rect = textarea.getBoundingClientRect();
+            const coords = getCursorCoordinates(textarea, cursorPos);
             setSuggestionsPosition({
-              top: rect.bottom + window.scrollY,
-              left: rect.left + window.scrollX,
+              top: coords.top + window.scrollY,
+              left: coords.left + window.scrollX,
             });
           }
         }

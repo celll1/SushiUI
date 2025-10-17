@@ -75,6 +75,23 @@ export async function loadAllTags(): Promise<void> {
   );
 }
 
+// Special tags that should always be available
+const SPECIAL_TAGS = {
+  rating: [
+    { tag: "sensitive", category: "Rating Tag" },
+    { tag: "explicit", category: "Rating Tag" },
+    { tag: "questionable", category: "Rating Tag" },
+    { tag: "general", category: "Rating Tag" },
+  ],
+  quality: [
+    { tag: "best_quality", category: "Quality Tag" },
+    { tag: "normal_quality", category: "Quality Tag" },
+    { tag: "bad_quality", category: "Quality Tag" },
+    { tag: "worst_quality", category: "Quality Tag" },
+    { tag: "masterpiece", category: "Quality Tag" },
+  ],
+};
+
 /**
  * Search for tags matching the input
  * @param input - User input (can be in any format: aaaa_bbbb_(c, aaaa bbbb \(c, etc.)
@@ -89,12 +106,30 @@ export async function searchTags(
     return [];
   }
 
+  // Get minimum count from localStorage (default: 50)
+  const minCount = typeof window !== 'undefined'
+    ? parseInt(localStorage.getItem('tag_suggestion_min_count') || '50')
+    : 50;
+
   // Ensure tags are loaded
   await loadAllTags();
 
   const normalizedInput = normalizeTag(input);
-  console.log(`[TagSuggestions] Searching with normalized input: "${normalizedInput}"`);
+  console.log(`[TagSuggestions] Searching with normalized input: "${normalizedInput}", min count: ${minCount}`);
   const results: Array<{ tag: string; count: number; category: string }> = [];
+
+  // Search special tags first
+  const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
+  for (const specialTag of allSpecialTags) {
+    const normalizedTag = normalizeTag(specialTag.tag);
+    if (normalizedTag.startsWith(normalizedInput)) {
+      results.push({
+        tag: specialTag.tag,
+        count: -1, // Special marker for special tags
+        category: specialTag.category,
+      });
+    }
+  }
 
   // Search in all categories
   for (const [categoryKey, category] of Object.entries(categories)) {
@@ -102,10 +137,18 @@ export async function searchTags(
       console.log(`[TagSuggestions] Category ${categoryKey} not loaded, skipping`);
       continue;
     }
-    const categoryTagCount = Object.keys(category.tags).length;
-    console.log(`[TagSuggestions] Searching in ${categoryKey} (${categoryTagCount} tags)`);
 
     for (const [tag, count] of Object.entries(category.tags)) {
+      // Skip tags below minimum count (except count 0 which are deprecated)
+      if (count < minCount && count !== 0) {
+        continue;
+      }
+
+      // Skip deprecated tags (count = 0)
+      if (count === 0) {
+        continue;
+      }
+
       const normalizedTag = normalizeTag(tag);
 
       // Check if the normalized tag starts with the normalized input
@@ -119,9 +162,20 @@ export async function searchTags(
     }
   }
 
-  console.log(`[TagSuggestions] Found ${results.length} matches`);
-  // Sort by count (descending) and take top results
-  return results.sort((a, b) => b.count - a.count).slice(0, limit);
+  console.log(`[TagSuggestions] Found ${results.length} matches (min count: ${minCount})`);
+
+  // Sort: special tags first, then by count (descending)
+  const sorted = results.sort((a, b) => {
+    // Special tags (count = -1) come first
+    if (a.count === -1 && b.count !== -1) return -1;
+    if (a.count !== -1 && b.count === -1) return 1;
+    if (a.count === -1 && b.count === -1) return 0;
+
+    // Otherwise sort by count
+    return b.count - a.count;
+  });
+
+  return sorted.slice(0, limit);
 }
 
 /**

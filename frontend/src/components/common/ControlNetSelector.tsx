@@ -119,10 +119,19 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   // Use panel-specific storage key for images, fallback to generic key
   const IMAGE_STORAGE_KEY = storageKey ? `${storageKey}_images` : "controlnet_images";
 
+  const [imagesLoaded, setImagesLoaded] = useState(false);
+
   useEffect(() => {
     loadControlNets();
-    loadPersistedImages();
   }, []);
+
+  // Load persisted images when value changes from empty to non-empty
+  useEffect(() => {
+    if (!imagesLoaded && value.length > 0) {
+      loadPersistedImages();
+      setImagesLoaded(true);
+    }
+  }, [value, imagesLoaded]);
 
   useEffect(() => {
     // Detect model types for all loaded ControlNets
@@ -165,7 +174,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       );
 
       // Apply loaded images to the current ControlNet configs
-      if (Object.keys(loadedImages).length > 0) {
+      // Only update if we have both loaded images AND existing ControlNet configs
+      if (Object.keys(loadedImages).length > 0 && value.length > 0) {
         const updatedValue = value.map((cn, index) => {
           if (loadedImages[index]) {
             // Remove data URL prefix if present

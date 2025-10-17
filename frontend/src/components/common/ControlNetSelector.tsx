@@ -116,7 +116,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const [controlnetInfoCache, setControlnetInfoCache] = useState<Map<string, ControlNetInfo>>(new Map());
   const [modelTypes, setModelTypes] = useState<Map<number, string>>(new Map());
 
-  const STORAGE_KEY = "controlnet_images";
+  // Use panel-specific storage key for images, fallback to generic key
+  const IMAGE_STORAGE_KEY = storageKey ? `${storageKey}_images` : "controlnet_images";
 
   useEffect(() => {
     loadControlNets();
@@ -143,7 +144,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   const loadPersistedImages = async () => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
       if (!stored) return;
 
       const imageRefs: { [index: number]: string } = JSON.parse(stored);
@@ -192,7 +193,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       const imageRef = await saveTempImage(fullImageData);
 
       // Update stored references
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
       const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
 
       // Delete old reference if exists
@@ -201,7 +202,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       }
 
       imageRefs[index] = imageRef;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(imageRefs));
+      localStorage.setItem(IMAGE_STORAGE_KEY, JSON.stringify(imageRefs));
     } catch (error) {
       console.error("Failed to save ControlNet image reference:", error);
     }
@@ -209,7 +210,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   const deleteImageReference = async (index: number) => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
       if (!stored) return;
 
       const imageRefs: { [index: number]: string } = JSON.parse(stored);

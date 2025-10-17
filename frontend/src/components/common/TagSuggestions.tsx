@@ -68,6 +68,11 @@ export default function TagSuggestions({
         const categoryColor = CATEGORY_COLORS[suggestion.category] || "text-gray-400";
         const isSpecialTag = suggestion.count === -1;
 
+        // For special tags, show shortened category name (e.g., "Quality" instead of "Quality Tag")
+        const displayCategory = isSpecialTag
+          ? suggestion.category.replace(' Tag', '')
+          : suggestion.category;
+
         return (
           <div
             key={`${suggestion.category}-${suggestion.tag}`}
@@ -91,7 +96,7 @@ export default function TagSuggestions({
               </span>
             </div>
             <div className={`text-xs mt-0.5 font-semibold ${index === selectedIndex ? 'text-blue-200' : categoryColor}`}>
-              {suggestion.category}
+              {displayCategory}
             </div>
           </div>
         );

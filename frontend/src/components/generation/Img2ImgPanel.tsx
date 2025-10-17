@@ -178,6 +178,11 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   useEffect(() => {
     if (isMounted) {
       // ControlNet images are now managed by ControlNetSelector via tempImageStorage
+      console.log("[Img2Img] Saving params to localStorage:", {
+        loras: params.loras?.length || 0,
+        controlnets: params.controlnets?.length || 0,
+        fullParams: params
+      });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }
   }, [params, isMounted]);
@@ -551,14 +556,20 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
         <LoRASelector
           value={params.loras || []}
-          onChange={(loras) => setParams({ ...params, loras })}
+          onChange={(loras) => {
+            console.log("[Img2Img] LoRA onChange called with:", loras);
+            setParams({ ...params, loras });
+          }}
           disabled={isGenerating}
           storageKey="img2img_lora_collapsed"
         />
 
         <ControlNetSelector
           value={params.controlnets || []}
-          onChange={(controlnets) => setParams({ ...params, controlnets })}
+          onChange={(controlnets) => {
+            console.log("[Img2Img] ControlNet onChange called with:", controlnets);
+            setParams({ ...params, controlnets });
+          }}
           disabled={isGenerating}
           storageKey="img2img_controlnet_collapsed"
         />

@@ -165,7 +165,11 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     if (isMounted) {
       // ControlNet images are now managed by ControlNetSelector via tempImageStorage
       // We don't need to remove image_base64 here anymore, as it's no longer stored in params
-      console.log("Saving params to localStorage:", params);
+      console.log("[Txt2Img] Saving params to localStorage:", {
+        loras: params.loras?.length || 0,
+        controlnets: params.controlnets?.length || 0,
+        fullParams: params
+      });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }
   }, [params, isMounted]);
@@ -379,14 +383,20 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
         <LoRASelector
           value={params.loras || []}
-          onChange={(loras) => setParams({ ...params, loras })}
+          onChange={(loras) => {
+            console.log("[Txt2Img] LoRA onChange called with:", loras);
+            setParams({ ...params, loras });
+          }}
           disabled={isGenerating}
           storageKey="txt2img_lora_collapsed"
         />
 
         <ControlNetSelector
           value={params.controlnets || []}
-          onChange={(controlnets) => setParams({ ...params, controlnets })}
+          onChange={(controlnets) => {
+            console.log("[Txt2Img] ControlNet onChange called with:", controlnets);
+            setParams({ ...params, controlnets });
+          }}
           disabled={isGenerating}
           storageKey="txt2img_controlnet_collapsed"
         />

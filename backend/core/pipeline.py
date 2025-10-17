@@ -973,7 +973,9 @@ class DiffusionPipelineManager:
                     import numpy as np
 
                     # Convert to numpy for scipy processing
-                    latent_np = latent.cpu().numpy()
+                    # scipy doesn't support float16, so convert to float32
+                    original_dtype = latent.dtype
+                    latent_np = latent.cpu().float().numpy()  # Convert to float32
                     batch, channels, h, w = latent_np.shape
 
                     # Calculate zoom factors
@@ -991,7 +993,8 @@ class DiffusionPipelineManager:
                         resized_list.append(np.stack(resized_channels))
 
                     resized_np = np.stack(resized_list)
-                    resized_latent = torch.from_numpy(resized_np).to(device=latent.device, dtype=latent.dtype)
+                    # Convert back to original dtype
+                    resized_latent = torch.from_numpy(resized_np).to(device=latent.device, dtype=original_dtype)
                 else:
                     # Use PyTorch's built-in interpolation
                     torch_mode_map = {

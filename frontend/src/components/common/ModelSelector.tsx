@@ -169,7 +169,14 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
           <div className="bg-gray-800 p-3 rounded-lg">
             <p className="text-sm text-gray-400">Currently Loaded:</p>
             <p className="text-white font-medium">{currentModel.source}</p>
-            <p className="text-xs text-gray-500">Type: {currentModel.type || "Unknown"}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <p className="text-xs text-gray-500">Type: {currentModel.type || "Unknown"}</p>
+              {currentModel.is_v_prediction && (
+                <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded">
+                  v-prediction
+                </span>
+              )}
+            </div>
           </div>
         )}
 

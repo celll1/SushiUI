@@ -11,6 +11,83 @@ class ModelLoader:
     """Handles loading models from various sources"""
 
     @staticmethod
+    def _configure_v_prediction_scheduler(pipeline):
+        """Configure scheduler for v-prediction models
+
+        V-prediction models require:
+        1. prediction_type = "v_prediction"
+        2. rescale_betas_zero_snr = True (rescale betas for zero terminal SNR)
+        3. timestep_spacing = "trailing" (recommended for v-prediction)
+
+        References:
+        - https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/16567
+        - https://huggingface.co/docs/diffusers/using-diffusers/scheduler
+        """
+        try:
+            # Register to scheduler config (this modifies the scheduler's configuration)
+            pipeline.scheduler.register_to_config(
+                prediction_type="v_prediction",
+                rescale_betas_zero_snr=True,
+                timestep_spacing="trailing"
+            )
+
+            print(f"[ModelLoader] V-prediction scheduler configured:")
+            print(f"  - prediction_type: v_prediction")
+            print(f"  - rescale_betas_zero_snr: True")
+            print(f"  - timestep_spacing: trailing")
+
+        except Exception as e:
+            print(f"[ModelLoader] Warning: Could not configure v-prediction scheduler: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @staticmethod
+    def detect_v_prediction(model_path: str) -> bool:
+        """Detect if a model is v-prediction by checking for 'v_pred' key in state_dict
+
+        V-prediction models have a 'v_pred' key in their state_dict or config.
+        This is different from standard epsilon-prediction models.
+
+        Returns:
+            True if v-prediction model, False otherwise
+        """
+        try:
+            if model_path.endswith('.safetensors'):
+                # Check safetensors metadata
+                from safetensors import safe_open
+                with safe_open(model_path, framework="pt", device="cpu") as f:
+                    # Check metadata first
+                    metadata = f.metadata()
+                    if metadata:
+                        # Check for v_pred in metadata
+                        if metadata.get('v_pred') or metadata.get('prediction_type') == 'v_prediction':
+                            print(f"[ModelLoader] Detected v-prediction model from metadata: {model_path}")
+                            return True
+
+                    # Also check state dict keys for v_pred indicator
+                    keys = list(f.keys())
+                    if 'v_pred' in keys:
+                        print(f"[ModelLoader] Detected v-prediction model from state_dict keys: {model_path}")
+                        return True
+
+            elif os.path.isdir(model_path):
+                # Check diffusers format config
+                config_path = os.path.join(model_path, "scheduler", "scheduler_config.json")
+                if os.path.exists(config_path):
+                    import json
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        if config.get('prediction_type') == 'v_prediction':
+                            print(f"[ModelLoader] Detected v-prediction model from scheduler config: {model_path}")
+                            return True
+
+            return False
+
+        except Exception as e:
+            print(f"[ModelLoader] Warning: Could not detect v-prediction status: {e}")
+            return False
+
+    @staticmethod
     def detect_model_type(model_path: str) -> str:
         """Detect if model is SD1.5 or SDXL based on config or structure"""
         # Check for SDXL indicators
@@ -43,6 +120,7 @@ class ModelLoader:
             raise FileNotFoundError(f"Model file not found: {file_path}")
 
         model_type = ModelLoader.detect_model_type(file_path)
+        is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Use single_file loading which is the standard way to load safetensors
         try:
@@ -74,6 +152,11 @@ class ModelLoader:
                     use_safetensors=True,
                 )
 
+        # Configure scheduler for v-prediction if detected
+        if is_v_prediction:
+            print(f"[ModelLoader] Configuring scheduler for v-prediction model")
+            ModelLoader._configure_v_prediction_scheduler(pipeline)
+
         # Move to device and ensure all components have the same dtype
         pipeline = pipeline.to(device, dtype=torch_dtype)
         return pipeline
@@ -89,6 +172,7 @@ class ModelLoader:
             raise FileNotFoundError(f"Model directory not found: {model_path}")
 
         model_type = ModelLoader.detect_model_type(model_path)
+        is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
             pipeline = StableDiffusionXLPipeline.from_pretrained(
@@ -102,6 +186,11 @@ class ModelLoader:
                 torch_dtype=torch_dtype,
                 use_safetensors=True,
             )
+
+        # Configure scheduler for v-prediction if detected
+        if is_v_prediction:
+            print(f"[ModelLoader] Configuring scheduler for v-prediction model")
+            ModelLoader._configure_v_prediction_scheduler(pipeline)
 
         pipeline = pipeline.to(device, dtype=torch_dtype)
         return pipeline

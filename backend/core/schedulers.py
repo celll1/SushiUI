@@ -75,6 +75,10 @@ def get_scheduler(pipeline, sampler: str, schedule_type: str = "uniform"):
     try:
         config = pipeline.scheduler.config
 
+        # Preserve v-prediction settings if present
+        is_v_prediction = config.get("prediction_type") == "v_prediction"
+        rescale_betas = config.get("rescale_betas_zero_snr", False)
+
         # Apply schedule type settings
         if schedule_type == "karras":
             # Use Karras sigmas for better quality
@@ -84,7 +88,17 @@ def get_scheduler(pipeline, sampler: str, schedule_type: str = "uniform"):
             config["timestep_spacing"] = "trailing"
         else:  # uniform
             config["use_karras_sigmas"] = False
-            config["timestep_spacing"] = "leading"
+            # For v-prediction, keep "trailing", otherwise use "leading"
+            if not is_v_prediction:
+                config["timestep_spacing"] = "leading"
+
+        # Ensure v-prediction settings are preserved
+        if is_v_prediction:
+            config["prediction_type"] = "v_prediction"
+            config["rescale_betas_zero_snr"] = rescale_betas
+            # For v-prediction, always use trailing timestep spacing if not explicitly set to karras
+            if schedule_type not in ["karras", "exponential"]:
+                config["timestep_spacing"] = "trailing"
 
         return scheduler_class.from_config(config)
     except Exception as e:

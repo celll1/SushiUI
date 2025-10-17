@@ -114,10 +114,17 @@ class DiffusionPipelineManager:
                 self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
 
             self.current_model = model_id
+
+            # Detect v-prediction status
+            is_v_prediction = False
+            if hasattr(base_pipeline, 'scheduler') and hasattr(base_pipeline.scheduler, 'config'):
+                is_v_prediction = base_pipeline.scheduler.config.get("prediction_type") == "v_prediction"
+
             self.current_model_info = {
                 "source_type": source_type,
                 "source": source,
-                "type": ModelLoader.detect_model_type(source) if source_type != "huggingface" else "unknown"
+                "type": ModelLoader.detect_model_type(source) if source_type != "huggingface" else "unknown",
+                "is_v_prediction": is_v_prediction
             }
 
             # Save this model as the last loaded model

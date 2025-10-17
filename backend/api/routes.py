@@ -1159,10 +1159,10 @@ async def get_taglist(category: str):
             raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
 
         filename = category_map[category.lower()]
-        taglist_path = os.path.join(os.getcwd(), "taglist", f"{filename}.json")
+        taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
 
         if not os.path.exists(taglist_path):
-            raise HTTPException(status_code=404, detail=f"Taglist file not found: {filename}.json")
+            raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_path}")
 
         import json
         with open(taglist_path, "r", encoding="utf-8") as f:

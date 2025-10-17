@@ -182,8 +182,13 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         # Update params with actual seed
         params["seed"] = actual_seed
 
-        # Save image with metadata
-        filename = save_image_with_metadata(image, params, "txt2img")
+        # Save image with metadata (include model info)
+        filename = save_image_with_metadata(
+            image,
+            params,
+            "txt2img",
+            model_info=pipeline_manager.current_model_info
+        )
 
         # Create thumbnail
         image_path = os.path.join(settings.outputs_dir, filename)
@@ -204,12 +209,21 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                 for cn in params_for_db["controlnet_images"]
             ]
 
+        # Extract model name and hash from current_model_info
+        model_name = ""
+        model_hash = ""
+        if pipeline_manager.current_model_info:
+            model_source = pipeline_manager.current_model_info.get("source", "")
+            if model_source:
+                model_name = os.path.basename(model_source)
+            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
             prompt=request.prompt,
             negative_prompt=request.negative_prompt,
-            model_name=request.model,
+            model_name=model_name,
             sampler=f"{request.sampler} ({request.schedule_type})",
             steps=request.steps,
             cfg_scale=request.cfg_scale,
@@ -220,6 +234,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             parameters=params_for_db,
             image_hash=image_hash,
             lora_names=lora_names if lora_names else None,
+            model_hash=model_hash if model_hash else None,
         )
         db.add(db_image)
         db.commit()
@@ -375,8 +390,13 @@ async def generate_img2img(
         # Update params with actual seed
         params["seed"] = actual_seed
 
-        # Save image with metadata
-        filename = save_image_with_metadata(result_image, params, "img2img")
+        # Save image with metadata (include model info)
+        filename = save_image_with_metadata(
+            result_image,
+            params,
+            "img2img",
+            model_info=pipeline_manager.current_model_info
+        )
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
@@ -396,12 +416,21 @@ async def generate_img2img(
                 for cn in params_for_db["controlnet_images"]
             ]
 
+        # Extract model name and hash from current_model_info
+        model_name = ""
+        model_hash = ""
+        if pipeline_manager.current_model_info:
+            model_source = pipeline_manager.current_model_info.get("source", "")
+            if model_source:
+                model_name = os.path.basename(model_source)
+            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
             prompt=prompt,
             negative_prompt=negative_prompt,
-            model_name="",
+            model_name=model_name,
             sampler=f"{sampler} ({schedule_type})",
             steps=steps,
             cfg_scale=cfg_scale,
@@ -413,6 +442,7 @@ async def generate_img2img(
             image_hash=image_hash,
             source_image_hash=source_image_hash,
             lora_names=lora_names if lora_names else None,
+            model_hash=model_hash if model_hash else None,
         )
         db.add(db_image)
         db.commit()
@@ -585,8 +615,13 @@ async def generate_inpaint(
         # Update params with actual seed
         params["seed"] = actual_seed
 
-        # Save image with metadata
-        filename = save_image_with_metadata(result_image, params, "inpaint")
+        # Save image with metadata (include model info)
+        filename = save_image_with_metadata(
+            result_image,
+            params,
+            "inpaint",
+            model_info=pipeline_manager.current_model_info
+        )
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
@@ -607,12 +642,21 @@ async def generate_inpaint(
                 for cn in params_for_db["controlnet_images"]
             ]
 
+        # Extract model name and hash from current_model_info
+        model_name = ""
+        model_hash = ""
+        if pipeline_manager.current_model_info:
+            model_source = pipeline_manager.current_model_info.get("source", "")
+            if model_source:
+                model_name = os.path.basename(model_source)
+            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+
         # Save to database
         db_image = GeneratedImage(
             filename=filename,
             prompt=prompt,
             negative_prompt=negative_prompt,
-            model_name="",
+            model_name=model_name,
             sampler=f"{sampler} ({schedule_type})",
             steps=steps,
             cfg_scale=cfg_scale,
@@ -625,6 +669,7 @@ async def generate_inpaint(
             source_image_hash=source_image_hash,
             mask_data=mask_data_base64,
             lora_names=lora_names if lora_names else None,
+            model_hash=model_hash if model_hash else None,
         )
         db.add(db_image)
         db.commit()

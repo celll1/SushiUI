@@ -375,6 +375,19 @@ export default function ImageGrid() {
                       <span className="text-gray-400">LoRA:</span> {selectedImage.lora_names}
                     </div>
                   )}
+                  {selectedImage.model_name && (
+                    <div>
+                      <span className="text-gray-400">Model:</span> {selectedImage.model_name}
+                    </div>
+                  )}
+                  {selectedImage.model_hash && (
+                    <div>
+                      <span className="text-gray-400">Model Hash:</span>{' '}
+                      <span className="text-xs text-gray-100 font-mono" title={selectedImage.model_hash}>
+                        {selectedImage.model_hash.substring(0, 16)}...
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* ControlNet Information */}

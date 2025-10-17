@@ -28,6 +28,7 @@ class GeneratedImage(Base):
     source_image_hash = Column(String, nullable=True)  # Hash of source image for img2img/inpaint
     mask_data = Column(String, nullable=True)  # Base64 encoded mask for inpaint
     lora_names = Column(String, nullable=True)  # Comma-separated LoRA filenames
+    model_hash = Column(String, nullable=True)  # SHA256 hash of model file
 
     def to_dict(self):
         return {
@@ -50,4 +51,5 @@ class GeneratedImage(Base):
             "source_image_hash": self.source_image_hash,
             "mask_data": self.mask_data,
             "lora_names": self.lora_names,
+            "model_hash": self.model_hash,
         }

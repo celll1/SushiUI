@@ -10,9 +10,17 @@ from config.settings import settings
 def save_image_with_metadata(
     image: Image.Image,
     params: Dict[str, Any],
-    generation_type: str = "txt2img"
+    generation_type: str = "txt2img",
+    model_info: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Save image with EXIF metadata"""
+    """Save image with EXIF metadata
+
+    Args:
+        image: PIL Image to save
+        params: Generation parameters
+        generation_type: Type of generation (txt2img, img2img, inpaint)
+        model_info: Model information (source, source_type, hash)
+    """
 
     # Create outputs directory if not exists
     os.makedirs(settings.outputs_dir, exist_ok=True)
@@ -35,8 +43,20 @@ def save_image_with_metadata(
     metadata.add_text("seed", str(seed))
     metadata.add_text("width", str(params.get("width", settings.default_width)))
     metadata.add_text("height", str(params.get("height", settings.default_height)))
-    metadata.add_text("model", params.get("model", ""))
     metadata.add_text("generation_type", generation_type)
+
+    # Add model information
+    if model_info:
+        # Extract filename from source path
+        model_source = model_info.get("source", "")
+        if model_source:
+            model_filename = os.path.basename(model_source)
+            metadata.add_text("model_name", model_filename)
+
+        # Add model hash if available
+        model_hash = model_info.get("model_hash", "")
+        if model_hash:
+            metadata.add_text("model_hash", model_hash)
 
     # Save image
     try:
@@ -111,3 +131,25 @@ def extract_lora_names(lora_configs: list) -> str:
             lora_names.append(filename)
 
     return ", ".join(lora_names)
+
+def calculate_file_hash(file_path: str, algorithm: str = "sha256") -> str:
+    """Calculate hash of a file
+
+    Args:
+        file_path: Path to the file
+        algorithm: Hash algorithm to use (sha256, sha1, md5)
+
+    Returns:
+        Hexadecimal hash string
+    """
+    if not os.path.exists(file_path):
+        return ""
+
+    hash_obj = hashlib.new(algorithm)
+
+    # Read file in chunks to handle large files
+    with open(file_path, 'rb') as f:
+        while chunk := f.read(8192):
+            hash_obj.update(chunk)
+
+    return hash_obj.hexdigest()

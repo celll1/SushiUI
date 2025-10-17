@@ -90,6 +90,7 @@ export interface GeneratedImage {
   source_image_hash?: string;
   mask_data?: string;
   lora_names?: string;
+  model_hash?: string;
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {

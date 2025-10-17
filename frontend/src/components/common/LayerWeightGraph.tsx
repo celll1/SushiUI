@@ -14,16 +14,31 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
   disabled = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [hoveredLayer, setHoveredLayer] = useState<string | null>(null);
+  const [canvasWidth, setCanvasWidth] = useState(360);
 
-  const CANVAS_WIDTH = 360;
   const CANVAS_HEIGHT = 220;
   const PADDING = { top: 15, right: 10, bottom: 35, left: 35 };
-  const GRAPH_WIDTH = CANVAS_WIDTH - PADDING.left - PADDING.right;
+  const GRAPH_WIDTH = canvasWidth - PADDING.left - PADDING.right;
   const GRAPH_HEIGHT = CANVAS_HEIGHT - PADDING.top - PADDING.bottom;
   const MIN_WEIGHT = 0;
   const MAX_WEIGHT = 2;
+
+  // Update canvas width based on container size
+  useEffect(() => {
+    const updateWidth = () => {
+      if (containerRef.current) {
+        const width = containerRef.current.offsetWidth;
+        setCanvasWidth(Math.max(width, 200)); // Minimum 200px
+      }
+    };
+
+    updateWidth();
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
+  }, []);
 
   // Initialize weights for all layers if not present
   useEffect(() => {
@@ -51,11 +66,11 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
     if (!ctx) return;
 
     // Clear canvas
-    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.clearRect(0, 0, canvasWidth, CANVAS_HEIGHT);
 
     // Draw background
     ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillRect(0, 0, canvasWidth, CANVAS_HEIGHT);
 
     // Draw graph area
     ctx.fillStyle = "#0a0a0a";
@@ -152,14 +167,14 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
     ctx.fillStyle = "#aaa";
     ctx.font = "11px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("Blocks", CANVAS_WIDTH / 2, CANVAS_HEIGHT - 3);
+    ctx.fillText("Blocks", canvasWidth / 2, CANVAS_HEIGHT - 3);
 
     ctx.save();
     ctx.translate(12, CANVAS_HEIGHT / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillText("Weight", 0, 0);
     ctx.restore();
-  }, [layers, weights, hoveredLayer]);
+  }, [layers, weights, hoveredLayer, canvasWidth]);
 
   const getLayerFromPosition = (x: number, y: number): { layer: string; index: number } | null => {
     if (layers.length === 0) return null;
@@ -250,9 +265,8 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between items-center">
-        <label className="text-sm font-medium">U-Net Block Weights</label>
+    <div ref={containerRef} className="space-y-2 w-full">
+      <div className="flex justify-end items-center">
         <button
           onClick={resetWeights}
           disabled={disabled}
@@ -261,12 +275,12 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
           Reset All to 1.0
         </button>
       </div>
-      <div className="relative">
+      <div className="relative w-full">
         <canvas
           ref={canvasRef}
-          width={CANVAS_WIDTH}
+          width={canvasWidth}
           height={CANVAS_HEIGHT}
-          className={`border border-gray-700 rounded ${
+          className={`border border-gray-700 rounded w-full ${
             disabled ? "opacity-50 cursor-not-allowed" : "cursor-crosshair"
           }`}
           onMouseDown={handleMouseDown}

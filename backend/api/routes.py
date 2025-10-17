@@ -44,8 +44,8 @@ class ControlNetConfig(BaseModel):
     model_path: str
     image_base64: Optional[str] = None  # Base64 encoded image
     strength: float = 1.0
-    start_step: float = 0.0  # 0.0-1.0, fraction of total steps
-    end_step: float = 1.0    # 0.0-1.0, fraction of total steps
+    start_step: int = 0      # 0-1000, step number to start applying ControlNet
+    end_step: int = 1000     # 0-1000, step number to end applying ControlNet
     layer_weights: Optional[dict] = None  # Per-layer weights like {"IN00": 1.0, ..., "MID": 1.0}
     prompt: Optional[str] = None  # Optional separate prompt
     is_lllite: bool = False

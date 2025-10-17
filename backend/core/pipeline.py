@@ -810,12 +810,28 @@ class DiffusionPipelineManager:
         # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
             gen_params["image"] = pipeline_to_use.control_images
+
             # Add controlnet_conditioning_scale for strength control
             controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
             if len(controlnet_scales) == 1:
                 gen_params["controlnet_conditioning_scale"] = controlnet_scales[0]
             else:
                 gen_params["controlnet_conditioning_scale"] = controlnet_scales
+
+            # Add control_guidance_start and control_guidance_end for step range control
+            # Convert from 0-1000 range to 0.0-1.0 fraction
+            total_steps = params.get("steps", 20)
+            guidance_starts = [cn.get("start_step", 0) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+            guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+
+            if len(guidance_starts) == 1:
+                gen_params["control_guidance_start"] = guidance_starts[0]
+                gen_params["control_guidance_end"] = guidance_ends[0]
+            else:
+                gen_params["control_guidance_start"] = guidance_starts
+                gen_params["control_guidance_end"] = guidance_ends
+
+            print(f"[Pipeline] ControlNet guidance: start={guidance_starts}, end={guidance_ends}")
 
         # Add progress callback if provided
         if progress_callback:

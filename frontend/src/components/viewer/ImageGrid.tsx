@@ -396,9 +396,9 @@ export default function ImageGrid() {
                               <span className="text-gray-500">LLLite:</span> {cn.is_lllite ? 'Yes' : 'No'}
                             </div>
                           </div>
-                          {(cn.start_step !== 0 || cn.end_step !== 1.0) && (
+                          {(cn.start_step !== 0 || cn.end_step !== 1000) && (
                             <div>
-                              <span className="text-gray-500">Step Range:</span> {(cn.start_step * 100).toFixed(0)}% - {(cn.end_step * 100).toFixed(0)}%
+                              <span className="text-gray-500">Step Range:</span> {cn.start_step} - {cn.end_step}
                             </div>
                           )}
                           {cn.image && (

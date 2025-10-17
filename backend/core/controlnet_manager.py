@@ -25,8 +25,8 @@ class ControlNetConfig:
         model_path: str,
         image: Image.Image,
         strength: float = 1.0,
-        start_step: float = 0.0,
-        end_step: float = 1.0,
+        start_step: int = 0,
+        end_step: int = 1000,
         layer_weights: Optional[Dict[str, float]] = None,
         prompt: Optional[str] = None,
         is_lllite: bool = False,
@@ -34,8 +34,8 @@ class ControlNetConfig:
         self.model_path = model_path
         self.image = image
         self.strength = strength
-        self.start_step = start_step
-        self.end_step = end_step
+        self.start_step = start_step  # 0-1000 step range
+        self.end_step = end_step      # 0-1000 step range
         self.layer_weights = layer_weights  # Per-layer weights like {"IN00": 1.0, ..., "MID": 1.0}
         self.prompt = prompt  # Optional separate prompt for this ControlNet
         self.is_lllite = is_lllite

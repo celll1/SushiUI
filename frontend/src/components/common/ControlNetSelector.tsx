@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import Card from "./Card";
 import Select from "./Select";
 import Slider from "./Slider";
@@ -14,8 +15,8 @@ export interface ControlNetConfig {
   model_path: string;
   image_base64?: string;
   strength: number;
-  start_step: number;
-  end_step: number;
+  start_step: number;  // 0-1000 step range (same as LoRA)
+  end_step: number;    // 0-1000 step range (same as LoRA)
   layer_weights?: { [layerName: string]: number };  // Changed to support per-layer weights
   prompt?: string;
   is_lllite: boolean;
@@ -170,8 +171,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     const newControlNet: ControlNetConfig = {
       model_path: availableControlNets[0]?.path || "",
       strength: 1.0,
-      start_step: 0.0,
-      end_step: 1.0,
+      start_step: 0,
+      end_step: 1000,
       layer_weights: {},  // Will be initialized by LayerWeightGraph
       is_lllite: false,
       use_input_image: false,
@@ -245,19 +246,20 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   return (
-    <Card
-      title={`ControlNet (${value.length})`}
-      collapsible={true}
-      defaultCollapsed={false}
-      storageKey={storageKey}
-      collapsedPreview={
-        value.length > 0 ? (
-          <div className="text-xs text-gray-400 truncate">
-            {value.map((cn) => cn.model_path.split("/").pop()).join(", ")}
-          </div>
-        ) : undefined
-      }
-    >
+    <>
+      <Card
+        title={`ControlNet (${value.length})`}
+        collapsible={true}
+        defaultCollapsed={false}
+        storageKey={storageKey}
+        collapsedPreview={
+          value.length > 0 ? (
+            <div className="text-xs text-gray-400 truncate">
+              {value.map((cn) => cn.model_path.split("/").pop()).join(", ")}
+            </div>
+          ) : undefined
+        }
+      >
       <div className="space-y-4">
         {availableControlNets.length === 0 && (
           <div className="text-sm text-gray-400 p-2">
@@ -306,103 +308,105 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
               </Button>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Control Image
-              </label>
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files[0]) {
-                    handleImageUpload(index, e.target.files[0]);
-                  }
-                }}
-                className="block w-full text-sm text-gray-400
-                         file:mr-4 file:py-2 file:px-4
-                         file:rounded-lg file:border-0
-                         file:text-sm file:font-medium
-                         file:bg-blue-600 file:text-white
-                         hover:file:bg-blue-700
-                         file:cursor-pointer cursor-pointer
-                         disabled:opacity-50"
-                disabled={disabled}
-              />
-              <div
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragLeave={(e) => handleDragLeave(e, index)}
-                onDrop={(e) => handleDrop(e, index)}
-                onDoubleClick={() => handleEditImage(index)}
-                className={`mt-2 aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
-                  draggingIndex === index
-                    ? 'border-blue-500 bg-gray-700'
-                    : 'border-gray-600'
-                } ${cn.image_base64 ? 'cursor-pointer' : ''}`}
-                title={cn.image_base64 ? "Double-click to edit image" : ""}
-              >
-                {cn.image_base64 ? (
-                  <img
-                    src={`data:image/png;base64,${cn.image_base64}`}
-                    alt="Control"
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <p className="text-gray-500 text-center px-4 text-sm">
-                      {draggingIndex === index
-                        ? 'Drop image here'
-                        : 'Drag and drop an image here or use the file picker above'}
-                    </p>
-                  </div>
+            {/* 2-column layout: Image on left, settings on right */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* Left column: Control Image */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Control Image
+                </label>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      handleImageUpload(index, e.target.files[0]);
+                    }
+                  }}
+                  className="block w-full text-sm text-gray-400
+                           file:mr-4 file:py-2 file:px-4
+                           file:rounded-lg file:border-0
+                           file:text-sm file:font-medium
+                           file:bg-blue-600 file:text-white
+                           hover:file:bg-blue-700
+                           file:cursor-pointer cursor-pointer
+                           disabled:opacity-50"
+                  disabled={disabled}
+                />
+                <div
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragLeave={(e) => handleDragLeave(e, index)}
+                  onDrop={(e) => handleDrop(e, index)}
+                  onDoubleClick={() => handleEditImage(index)}
+                  className={`mt-2 aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
+                    draggingIndex === index
+                      ? 'border-blue-500 bg-gray-700'
+                      : 'border-gray-600'
+                  } ${cn.image_base64 ? 'cursor-pointer' : ''}`}
+                  title={cn.image_base64 ? "Double-click to edit image" : ""}
+                >
+                  {cn.image_base64 ? (
+                    <img
+                      src={`data:image/png;base64,${cn.image_base64}`}
+                      alt="Control"
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <p className="text-gray-500 text-center px-4 text-sm">
+                        {draggingIndex === index
+                          ? 'Drop image here'
+                          : 'Drag and drop an image here or use the file picker above'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {cn.image_base64 && (
+                  <p className="text-xs text-gray-500 text-center mt-1">
+                    💡 Double-click to edit
+                  </p>
                 )}
               </div>
-              {cn.image_base64 && (
-                <p className="text-xs text-gray-500 text-center mt-1">
-                  💡 Double-click the image to edit with built-in paint tool
-                </p>
-              )}
-            </div>
 
-            <Slider
-              label="Strength"
-              min={0}
-              max={2}
-              step={0.05}
-              value={cn.strength}
-              onChange={(e) => updateControlNet(index, { strength: parseFloat(e.target.value) })}
-              disabled={disabled}
-            />
+              {/* Right column: Settings */}
+              <div className="space-y-3">
+                <Slider
+                  label="Strength"
+                  min={0}
+                  max={2}
+                  step={0.05}
+                  value={cn.strength}
+                  onChange={(e) => updateControlNet(index, { strength: parseFloat(e.target.value) })}
+                  disabled={disabled}
+                />
 
-            <div className="grid grid-cols-2 gap-3">
-              <Slider
-                label="Start Step"
-                min={0}
-                max={1}
-                step={0.01}
-                value={cn.start_step}
-                onChange={(e) => updateControlNet(index, { start_step: parseFloat(e.target.value) })}
-                disabled={disabled}
-              />
-              <Slider
-                label="End Step"
-                min={0}
-                max={1}
-                step={0.01}
-                value={cn.end_step}
-                onChange={(e) => updateControlNet(index, { end_step: parseFloat(e.target.value) })}
-                disabled={disabled}
-              />
-            </div>
+                <RangeSlider
+                  label="Step Range"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={[cn.start_step, cn.end_step]}
+                  onChange={(values) => updateControlNet(index, {
+                    start_step: values[0],
+                    end_step: values[1]
+                  })}
+                  disabled={disabled}
+                />
 
-            {/* Layer Weights Graph (or LLLite detection info) */}
-            <div className="mt-3">
-              <ControlNetLayerWeights
-                controlnetPath={cn.model_path}
-                weights={cn.layer_weights || {}}
-                onChange={(layer_weights) => updateControlNet(index, { layer_weights })}
-                disabled={disabled}
-                loadControlNetInfo={loadControlNetInfo}
-              />
+                {/* U-Net Block Weights */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    U-Net Block Weights
+                  </label>
+                  <ControlNetLayerWeights
+                    controlnetPath={cn.model_path}
+                    weights={cn.layer_weights || {}}
+                    onChange={(layer_weights) => updateControlNet(index, { layer_weights })}
+                    disabled={disabled}
+                    loadControlNetInfo={loadControlNetInfo}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Optional Prompt for this ControlNet */}
@@ -446,15 +450,19 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           + Add ControlNet
         </Button>
       </div>
+    </Card>
 
-      {/* Image Editor Overlay */}
-      {editingImageIndex !== null && value[editingImageIndex]?.image_base64 && (
+    {/* Image Editor Overlay - Use portal to render at document body level */}
+    {editingImageIndex !== null && value[editingImageIndex]?.image_base64 && typeof document !== 'undefined' &&
+      createPortal(
         <ImageEditor
           imageUrl={`data:image/png;base64,${value[editingImageIndex].image_base64}`}
           onSave={handleSaveEditedImage}
           onClose={() => setEditingImageIndex(null)}
-        />
-      )}
-    </Card>
+        />,
+        document.body
+      )
+    }
+    </>
   );
 }

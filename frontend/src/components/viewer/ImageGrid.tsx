@@ -310,10 +310,6 @@ export default function ImageGrid() {
     router.push("/generate?tab=inpaint");
   };
 
-  if (loading) {
-    return <div className="text-center py-8">Loading images...</div>;
-  }
-
   return (
     <div>
       {selectedImage ? (
@@ -607,6 +603,7 @@ export default function ImageGrid() {
             images={filteredImages}
             gridColumns={gridColumns}
             onImageClick={setSelectedImage}
+            loading={loading}
           />
         </div>
       )}

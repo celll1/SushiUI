@@ -27,6 +27,7 @@ interface GalleryFilterProps {
   tagSearchInput: string;
   setTagSearchInput: (value: string) => void;
   tagSearchCommitted: string[];
+  setTagSearchCommitted: (value: string[]) => void;
   searchInNegative: boolean;
   setSearchInNegative: (value: boolean) => void;
   showSuggestions: boolean;
@@ -74,6 +75,7 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   tagSearchInput,
   setTagSearchInput,
   tagSearchCommitted,
+  setTagSearchCommitted,
   searchInNegative,
   setSearchInNegative,
   showSuggestions,

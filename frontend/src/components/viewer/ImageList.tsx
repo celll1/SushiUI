@@ -7,9 +7,18 @@ interface ImageListProps {
   images: GeneratedImage[];
   gridColumns: number;
   onImageClick: (image: GeneratedImage) => void;
+  loading?: boolean;
 }
 
-const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImageClick }) => {
+const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImageClick, loading = false }) => {
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center py-8 text-gray-400">Loading images...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1">
       <div

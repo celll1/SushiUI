@@ -4,10 +4,13 @@ Migration script to add model_hash column to generated_images table
 import sqlite3
 import os
 
-# Database paths
+# Database paths (use relative path from script location)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+
 DB_PATHS = [
-    "sd_webui.db",
-    "backend/sd_webui.db"
+    os.path.join(project_root, "sd_webui.db"),
+    os.path.join(script_dir, "sd_webui.db")
 ]
 
 def add_model_hash_column():

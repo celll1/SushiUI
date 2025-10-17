@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
+import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -403,7 +404,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
         <Card title="Prompt">
           <div className="relative">
-            <Textarea
+            <TextareaWithTagSuggestions
               label="Positive Prompt"
               placeholder="Enter your prompt here..."
               rows={4}
@@ -411,12 +412,12 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
               onChange={(e) => setParams({ ...params, prompt: e.target.value })}
               enableWeightControl={true}
             />
-            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1">
+            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1 pointer-events-none">
               {promptTokenCount} tokens
             </div>
           </div>
           <div className="relative">
-            <Textarea
+            <TextareaWithTagSuggestions
               label="Negative Prompt"
               placeholder="Enter negative prompt..."
               rows={3}
@@ -424,7 +425,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
               onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
               enableWeightControl={true}
             />
-            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1">
+            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1 pointer-events-none">
               {negativePromptTokenCount} tokens
             </div>
           </div>

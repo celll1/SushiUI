@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
+import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -785,7 +786,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         </Card>
 
         <Card title="Prompt">
-          <Textarea
+          <TextareaWithTagSuggestions
             label="Positive Prompt"
             placeholder="Enter your prompt here..."
             rows={4}
@@ -793,7 +794,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
             onChange={(e) => setParams({ ...params, prompt: e.target.value })}
             enableWeightControl={true}
           />
-          <Textarea
+          <TextareaWithTagSuggestions
             label="Negative Prompt"
             placeholder="Enter negative prompt..."
             rows={3}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
@@ -119,8 +119,8 @@ export default function ImageGrid() {
     }
   };
 
-  // Extract unique tags from all prompts for autocomplete
-  const getTagSuggestions = (): string[] => {
+  // Extract unique tags from all prompts for autocomplete - memoized
+  const tagSuggestions = useMemo((): string[] => {
     if (!tagSearchInput || tagSearchInput.length < 2) return [];
 
     const searchLower = tagSearchInput.toLowerCase();
@@ -147,45 +147,54 @@ export default function ImageGrid() {
       .slice(0, 10); // Limit to 10 suggestions
 
     return filteredTags;
-  };
+  }, [tagSearchInput, images, searchInNegative, excludeRareTags]);
 
-  const tagSuggestions = getTagSuggestions();
+  // Client-side tag filtering (only apply committed search) - AND search with exact match - memoized
+  const filteredImages = useMemo(() => {
+    return images.filter((image) => {
+      if (tagSearchCommitted.length === 0) return true;
 
-  // Client-side tag filtering (only apply committed search) - AND search with exact match
-  const filteredImages = images.filter((image) => {
-    if (tagSearchCommitted.length === 0) return true;
+      const searchField = searchInNegative ? image.negative_prompt : image.prompt;
+      if (!searchField) return false;
 
-    const searchField = searchInNegative ? image.negative_prompt : image.prompt;
-    if (!searchField) return false;
+      // Split tags by comma and trim
+      const imageTags = searchField.split(/[,\n]+/).map(t => t.trim().toLowerCase());
 
-    // Split tags by comma and trim
-    const imageTags = searchField.split(/[,\n]+/).map(t => t.trim().toLowerCase());
+      // AND search: all committed tags must exist as exact matches
+      return tagSearchCommitted.every(searchTag =>
+        imageTags.includes(searchTag.toLowerCase())
+      );
+    });
+  }, [images, tagSearchCommitted, searchInNegative]);
 
-    // AND search: all committed tags must exist as exact matches
-    return tagSearchCommitted.every(searchTag =>
-      imageTags.includes(searchTag.toLowerCase())
-    );
-  });
-
-  const handleTagSearchSubmit = () => {
+  const handleTagSearchSubmit = useCallback(() => {
     if (tagSearchInput.trim() && !tagSearchCommitted.includes(tagSearchInput.trim())) {
       setTagSearchCommitted([...tagSearchCommitted, tagSearchInput.trim()]);
       setTagSearchInput("");
     }
     setShowSuggestions(false);
     setSelectedSuggestionIndex(-1);
-  };
+  }, [tagSearchInput, tagSearchCommitted]);
 
-  const removeTag = (tagToRemove: string) => {
+  const removeTag = useCallback((tagToRemove: string) => {
     setTagSearchCommitted(tagSearchCommitted.filter(tag => tag !== tagToRemove));
-  };
+  }, [tagSearchCommitted]);
 
-  const clearAllTags = () => {
+  const clearAllTags = useCallback(() => {
     setTagSearchCommitted([]);
     setTagSearchInput("");
-  };
+  }, []);
 
-  const handleTagSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleSuggestionClick = useCallback((suggestion: string) => {
+    if (!tagSearchCommitted.includes(suggestion)) {
+      setTagSearchCommitted([...tagSearchCommitted, suggestion]);
+    }
+    setTagSearchInput("");
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+  }, [tagSearchCommitted]);
+
+  const handleTagSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < tagSuggestions.length) {
         handleSuggestionClick(tagSuggestions[selectedSuggestionIndex]);
@@ -205,16 +214,7 @@ export default function ImageGrid() {
       e.preventDefault();
       setSelectedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
     }
-  };
-
-  const handleSuggestionClick = (suggestion: string) => {
-    if (!tagSearchCommitted.includes(suggestion)) {
-      setTagSearchCommitted([...tagSearchCommitted, suggestion]);
-    }
-    setTagSearchInput("");
-    setShowSuggestions(false);
-    setSelectedSuggestionIndex(-1);
-  };
+  }, [selectedSuggestionIndex, tagSuggestions, handleSuggestionClick, handleTagSearchSubmit]);
 
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)

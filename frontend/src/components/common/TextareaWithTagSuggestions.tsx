@@ -60,36 +60,56 @@ export default function TextareaWithTagSuggestions({
   const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
     const textBeforeCursor = textarea.value.substring(0, position);
     const lines = textBeforeCursor.split('\n');
-    const currentLine = lines.length;
-    const currentColumn = lines[lines.length - 1].length;
+    const currentLineText = lines[lines.length - 1];
 
-    // Create a mirror div to measure text
-    const mirror = document.createElement('div');
+    // Create a span to measure the current line width
+    const span = document.createElement('span');
     const style = window.getComputedStyle(textarea);
 
-    // Copy textarea styles
-    ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing',
-     'padding', 'border-width'].forEach(prop => {
-      (mirror.style as any)[prop] = (style as any)[prop];
+    // Copy relevant styles
+    span.style.font = style.font;
+    span.style.fontSize = style.fontSize;
+    span.style.fontFamily = style.fontFamily;
+    span.style.fontWeight = style.fontWeight;
+    span.style.letterSpacing = style.letterSpacing;
+    span.style.whiteSpace = 'pre';
+    span.style.visibility = 'hidden';
+    span.style.position = 'absolute';
+    span.textContent = currentLineText;
+
+    document.body.appendChild(span);
+    const currentLineWidth = span.offsetWidth;
+    document.body.removeChild(span);
+
+    // Create a div to measure height up to current position
+    const div = document.createElement('div');
+    Object.assign(div.style, {
+      position: 'absolute',
+      visibility: 'hidden',
+      whiteSpace: 'pre-wrap',
+      wordWrap: 'break-word',
+      width: textarea.clientWidth + 'px',
+      font: style.font,
+      fontSize: style.fontSize,
+      fontFamily: style.fontFamily,
+      fontWeight: style.fontWeight,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      padding: style.padding,
     });
+    div.textContent = textBeforeCursor;
 
-    mirror.style.position = 'absolute';
-    mirror.style.visibility = 'hidden';
-    mirror.style.whiteSpace = 'pre-wrap';
-    mirror.style.wordWrap = 'break-word';
-    mirror.style.width = textarea.clientWidth + 'px';
-    mirror.textContent = textBeforeCursor;
-
-    document.body.appendChild(mirror);
+    document.body.appendChild(div);
+    const totalHeight = div.offsetHeight;
+    document.body.removeChild(div);
 
     const rect = textarea.getBoundingClientRect();
-    const mirrorHeight = mirror.offsetHeight;
-
-    document.body.removeChild(mirror);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
 
     return {
-      top: rect.top + mirrorHeight,
-      left: rect.left,
+      top: rect.top + totalHeight,
+      left: rect.left + paddingLeft + borderLeft + currentLineWidth,
     };
   };
 
@@ -214,6 +234,15 @@ export default function TextareaWithTagSuggestions({
     setSelectedIndex(-1);
   };
 
+  // Handle blur - clear suggestions when focus is lost
+  const handleBlur = () => {
+    // Use setTimeout to allow click on suggestion to register before clearing
+    setTimeout(() => {
+      setSuggestions([]);
+      setSelectedIndex(-1);
+    }, 200);
+  };
+
   return (
     <div className="relative" ref={textareaRef as any}>
       <Textarea
@@ -221,6 +250,7 @@ export default function TextareaWithTagSuggestions({
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        onBlur={handleBlur}
         enableWeightControl={enableWeightControl}
         rows={rows}
         {...props}

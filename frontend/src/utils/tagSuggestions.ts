@@ -185,8 +185,18 @@ export async function searchTags(
  * @returns The tag being typed, or empty string
  */
 export function getCurrentTag(text: string, cursorPos: number): string {
+  // If text is empty, return empty string
+  if (!text || text.trim().length === 0) {
+    return "";
+  }
+
   // Find the start of the current tag (after the last comma or start of string)
-  let start = text.lastIndexOf(",", cursorPos - 1) + 1;
+  let start = text.lastIndexOf(",", cursorPos - 1);
+  if (start === -1) {
+    start = 0;
+  } else {
+    start += 1; // Move past the comma
+  }
 
   // Find the end of the current tag (before the next comma or end of string)
   let end = text.indexOf(",", cursorPos);
@@ -194,14 +204,23 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     end = text.length;
   }
 
-  // Extract and trim the tag
-  const currentTag = text.substring(start, end).trim();
+  // Extract the raw segment
+  const segment = text.substring(start, end);
 
-  // Only return if cursor is actually within/at the end of this tag
-  const tagStart = start + text.substring(start, end).indexOf(currentTag);
-  const tagEnd = tagStart + currentTag.length;
+  // Trim to get the actual tag
+  const currentTag = segment.trim();
 
-  if (cursorPos >= tagStart && cursorPos <= tagEnd) {
+  // If the segment is empty or only whitespace, return empty string
+  if (currentTag.length === 0) {
+    return "";
+  }
+
+  // Calculate where the trimmed tag actually starts and ends
+  const trimmedStart = start + segment.indexOf(currentTag);
+  const trimmedEnd = trimmedStart + currentTag.length;
+
+  // Only return if cursor is actually within the tag (not in whitespace before/after)
+  if (cursorPos >= trimmedStart && cursorPos <= trimmedEnd) {
     return currentTag;
   }
 

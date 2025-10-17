@@ -63,27 +63,6 @@ export default function ImageGrid() {
     loadImages();
   }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange, currentPage]);
 
-  // Keyboard navigation for pagination
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Only handle if not in an input field
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-
-      if (e.key === 'ArrowLeft' && currentPage > 1 && !loading) {
-        e.preventDefault();
-        setCurrentPage(currentPage - 1);
-      } else if (e.key === 'ArrowRight' && currentPage * imagesPerPage < totalImages && !loading) {
-        e.preventDefault();
-        setCurrentPage(currentPage + 1);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPage, totalImages, loading, imagesPerPage]);
-
   const loadImages = async () => {
     try {
       setLoading(true);
@@ -176,6 +155,41 @@ export default function ImageGrid() {
       );
     });
   }, [images, tagSearchCommitted, searchInNegative]);
+
+  // Keyboard navigation for pagination and image navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only handle if not in an input field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // If viewing a single image, handle image navigation
+      if (selectedImage) {
+        const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
+
+        if (e.key === 'ArrowLeft' && currentIndex > 0) {
+          e.preventDefault();
+          setSelectedImage(filteredImages[currentIndex - 1]);
+        } else if (e.key === 'ArrowRight' && currentIndex < filteredImages.length - 1) {
+          e.preventDefault();
+          setSelectedImage(filteredImages[currentIndex + 1]);
+        }
+      } else {
+        // Gallery pagination
+        if (e.key === 'ArrowLeft' && currentPage > 1 && !loading) {
+          e.preventDefault();
+          setCurrentPage(currentPage - 1);
+        } else if (e.key === 'ArrowRight' && currentPage * imagesPerPage < totalImages && !loading) {
+          e.preventDefault();
+          setCurrentPage(currentPage + 1);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentPage, totalImages, loading, imagesPerPage, selectedImage, filteredImages]);
 
   const handleTagSearchSubmit = useCallback(() => {
     if (tagSearchInput.trim() && !tagSearchCommitted.includes(tagSearchInput.trim())) {
@@ -531,8 +545,22 @@ export default function ImageGrid() {
               </div>
             </div>
 
-            {/* Right Area - Image Display */}
-            <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden">
+            {/* Right Area - Image Display with Navigation */}
+            <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden relative">
+              {/* Previous Image Button */}
+              {(() => {
+                const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
+                return currentIndex > 0 && (
+                  <button
+                    onClick={() => setSelectedImage(filteredImages[currentIndex - 1])}
+                    className="absolute left-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full flex items-center justify-center transition-all"
+                    title="Previous image (← key)"
+                  >
+                    ‹
+                  </button>
+                );
+              })()}
+
               <img
                 src={`/outputs/${selectedImage.filename}`}
                 alt="Generated"
@@ -540,6 +568,20 @@ export default function ImageGrid() {
                 onDoubleClick={() => setShowFullSizeImage(true)}
                 title="Double-click to view full size"
               />
+
+              {/* Next Image Button */}
+              {(() => {
+                const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
+                return currentIndex < filteredImages.length - 1 && (
+                  <button
+                    onClick={() => setSelectedImage(filteredImages[currentIndex + 1])}
+                    className="absolute right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full flex items-center justify-center transition-all"
+                    title="Next image (→ key)"
+                  >
+                    ›
+                  </button>
+                );
+              })()}
             </div>
           </div>
 

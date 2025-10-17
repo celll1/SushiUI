@@ -56,98 +56,87 @@ export default function TextareaWithTagSuggestions({
     }
   }, []);
 
-  // Calculate cursor position in pixels
+  // Calculate cursor position in pixels (simple line-based approach)
   const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
+    const style = window.getComputedStyle(textarea);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+
+    // Count lines before cursor
     const textBeforeCursor = textarea.value.substring(0, position);
     const lines = textBeforeCursor.split('\n');
-    const currentLineText = lines[lines.length - 1];
+    const lineNumber = lines.length - 1;
 
-    // Create a span to measure the current line width
-    const span = document.createElement('span');
-    const style = window.getComputedStyle(textarea);
-
-    // Copy relevant styles
-    span.style.font = style.font;
-    span.style.fontSize = style.fontSize;
-    span.style.fontFamily = style.fontFamily;
-    span.style.fontWeight = style.fontWeight;
-    span.style.letterSpacing = style.letterSpacing;
-    span.style.whiteSpace = 'pre';
-    span.style.visibility = 'hidden';
-    span.style.position = 'absolute';
-    span.textContent = currentLineText;
-
-    document.body.appendChild(span);
-    const currentLineWidth = span.offsetWidth;
-    document.body.removeChild(span);
-
-    // Create a div to measure height up to current position
-    const div = document.createElement('div');
-    Object.assign(div.style, {
-      position: 'absolute',
-      visibility: 'hidden',
-      whiteSpace: 'pre-wrap',
-      wordWrap: 'break-word',
-      width: textarea.clientWidth + 'px',
-      font: style.font,
-      fontSize: style.fontSize,
-      fontFamily: style.fontFamily,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      letterSpacing: style.letterSpacing,
-      padding: style.padding,
-    });
-    div.textContent = textBeforeCursor;
-
-    document.body.appendChild(div);
-    const totalHeight = div.offsetHeight;
-    document.body.removeChild(div);
-
+    // Get textarea bounding rect
     const rect = textarea.getBoundingClientRect();
+    const paddingTop = parseFloat(style.paddingTop) || 0;
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
-    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
 
+    // Calculate vertical position (account for scroll)
+    const verticalOffset = lineNumber * lineHeight - textarea.scrollTop;
+
+    // For horizontal position, measure the current line text width
+    const currentLineText = lines[lines.length - 1];
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const textWidth = context.measureText(currentLineText).width;
+
+      return {
+        top: rect.top + paddingTop + verticalOffset + lineHeight,
+        left: rect.left + paddingLeft + textWidth,
+      };
+    }
+
+    // Fallback: just use textarea left edge
     return {
-      top: rect.top + totalHeight,
-      left: rect.left + paddingLeft + borderLeft + currentLineWidth,
+      top: rect.top + paddingTop + verticalOffset + lineHeight,
+      left: rect.left + paddingLeft,
     };
   };
 
   // Search for tag suggestions
   const updateSuggestions = async (text: string, cursorPos: number) => {
+    // Clear previous timeout immediately
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+
     const currentTag = getCurrentTag(text, cursorPos);
     console.log('[TagSuggestions] Current tag:', currentTag, 'at position:', cursorPos);
 
-    if (currentTag.length >= 2) {
-      // Clear previous timeout
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
-
-      // Debounce search
-      searchTimeoutRef.current = setTimeout(async () => {
-        console.log('[TagSuggestions] Searching for:', currentTag);
-        const results = await searchTags(currentTag, 20);
-        console.log('[TagSuggestions] Found results:', results.length);
-        setSuggestions(results);
-        setSelectedIndex(results.length > 0 ? 0 : -1);
-
-        // Calculate position for suggestions dropdown near cursor
-        if (textareaRef.current) {
-          const textarea = textareaRef.current as any;
-          if (textarea.tagName === "TEXTAREA") {
-            const coords = getCursorCoordinates(textarea, cursorPos);
-            setSuggestionsPosition({
-              top: coords.top + window.scrollY,
-              left: coords.left + window.scrollX,
-            });
-          }
-        }
-      }, 150);
-    } else {
+    // If no tag or tag too short, clear suggestions immediately
+    if (currentTag.length < 2) {
       setSuggestions([]);
       setSelectedIndex(-1);
+      return;
     }
+
+    // Debounce search with 300ms delay
+    searchTimeoutRef.current = setTimeout(async () => {
+      console.log('[TagSuggestions] Searching for:', currentTag);
+      const results = await searchTags(currentTag, 20);
+      console.log('[TagSuggestions] Found results:', results.length);
+
+      // Check if the tag is still valid (user might have continued typing)
+      const textarea = textareaRef.current as any;
+      if (textarea && textarea.tagName === "TEXTAREA") {
+        const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
+        // Only show results if the tag hasn't changed
+        if (latestTag === currentTag) {
+          setSuggestions(results);
+          setSelectedIndex(results.length > 0 ? 0 : -1);
+
+          // Calculate position for suggestions dropdown near cursor
+          const coords = getCursorCoordinates(textarea, cursorPos);
+          setSuggestionsPosition({
+            top: coords.top + window.scrollY,
+            left: coords.left + window.scrollX,
+          });
+        }
+      }
+    }, 300); // Increased delay to 300ms
   };
 
   // Handle text change

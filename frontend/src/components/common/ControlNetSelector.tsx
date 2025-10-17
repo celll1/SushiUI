@@ -230,7 +230,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           }
         });
 
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(reindexed));
+        localStorage.setItem(IMAGE_STORAGE_KEY, JSON.stringify(reindexed));
       }
     } catch (error) {
       console.error("Failed to delete ControlNet image reference:", error);

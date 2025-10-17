@@ -332,7 +332,9 @@ export default function ImageGrid() {
           </button>
           <div className="flex gap-4 h-[calc(100vh-12rem)]">
             {/* Left Sidebar - Details */}
-            <div className="w-80 flex-shrink-0 overflow-y-auto">
+            <div className="w-80 flex-shrink-0 flex flex-col">
+              {/* Scrollable content area */}
+              <div className="flex-1 overflow-y-auto">
               <Card title="Image Details">
                 <div className="space-y-3 text-sm">
                   <div>
@@ -465,7 +467,11 @@ export default function ImageGrid() {
                   </div>
                 )}
               </div>
-              <div className="space-y-3 mt-4">
+              </Card>
+              </div>
+
+              {/* Fixed bottom panel - Send controls */}
+              <div className="border-t border-gray-700 bg-gray-900 p-4 space-y-3">
                 <div className="space-y-2 text-sm">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -523,7 +529,6 @@ export default function ImageGrid() {
                   </Button>
                 </div>
               </div>
-              </Card>
             </div>
 
             {/* Right Area - Image Display */}

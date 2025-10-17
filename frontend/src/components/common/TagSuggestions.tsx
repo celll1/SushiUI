@@ -56,10 +56,10 @@ export default function TagSuggestions({
   return (
     <div
       ref={containerRef}
-      className="absolute z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto"
+      className="fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto"
       style={{
-        top: position.top,
-        left: position.left,
+        top: position.top + 'px',
+        left: position.left + 'px',
         minWidth: "300px",
         maxWidth: "500px",
       }}

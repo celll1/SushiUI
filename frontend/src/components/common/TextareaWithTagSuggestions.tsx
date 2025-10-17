@@ -131,8 +131,8 @@ export default function TextareaWithTagSuggestions({
           // Calculate position for suggestions dropdown near cursor
           const coords = getCursorCoordinates(textarea, cursorPos);
           setSuggestionsPosition({
-            top: coords.top + window.scrollY,
-            left: coords.left + window.scrollX,
+            top: coords.top,
+            left: coords.left,
           });
         }
       }

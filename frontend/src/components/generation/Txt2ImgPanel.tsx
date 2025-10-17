@@ -12,6 +12,7 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
+import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -162,16 +163,10 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {
     if (isMounted) {
-      // Remove image data from controlnets before saving to avoid quota exceeded
-      const paramsToSave = {
-        ...params,
-        controlnets: params.controlnets?.map(cn => ({
-          ...cn,
-          image_base64: undefined, // Don't save large base64 data to localStorage
-        })),
-      };
-      console.log("Saving params to localStorage:", paramsToSave);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(paramsToSave));
+      // ControlNet images are now managed by ControlNetSelector via tempImageStorage
+      // We don't need to remove image_base64 here anymore, as it's no longer stored in params
+      console.log("Saving params to localStorage:", params);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }
   }, [params, isMounted]);
 

@@ -121,6 +121,13 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   const [imagesLoaded, setImagesLoaded] = useState(false);
 
+  // Helper function to call onChange without image_base64 to prevent localStorage overflow
+  const notifyChange = (configs: ControlNetConfig[]) => {
+    // Remove image_base64 from configs before passing to parent
+    const cleanConfigs = configs.map(({ image_base64, ...rest }) => rest as ControlNetConfig);
+    onChange(cleanConfigs);
+  };
+
   useEffect(() => {
     loadControlNets();
   }, []);
@@ -186,7 +193,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           }
           return cn;
         });
-        onChange(updatedValue);
+        notifyChange(updatedValue);
       }
     } catch (error) {
       console.error("Failed to load persisted ControlNet images:", error);
@@ -287,7 +294,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       is_lllite: false,
       use_input_image: false,
     };
-    onChange([...value, newControlNet]);
+    notifyChange([...value, newControlNet]);
   };
 
   const removeControlNet = async (index: number) => {
@@ -296,13 +303,13 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
     const newValue = [...value];
     newValue.splice(index, 1);
-    onChange(newValue);
+    notifyChange(newValue);
   };
 
   const updateControlNet = (index: number, updates: Partial<ControlNetConfig>) => {
     const newValue = [...value];
     newValue[index] = { ...newValue[index], ...updates };
-    onChange(newValue);
+    notifyChange(newValue);
 
     // Re-detect model type if model_path changed
     if (updates.model_path) {

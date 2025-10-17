@@ -809,21 +809,13 @@ async def get_models():
 async def load_model(
     source_type: str = Form(...),
     source: str = Form(...),
-    revision: Optional[str] = Form(None),
-    precision: str = Form("fp16"),
-    text_encoder_offload: str = Form("auto"),
-    vae_offload: str = Form("auto")
+    revision: Optional[str] = Form(None)
 ):
-    """Load a model from various sources"""
+    """Load a model from various sources (fp16 by default)"""
     try:
         kwargs = {}
         if revision:
             kwargs["revision"] = revision
-
-        # Add VRAM optimization settings
-        kwargs["precision"] = precision
-        kwargs["text_encoder_offload"] = text_encoder_offload
-        kwargs["vae_offload"] = vae_offload
 
         pipeline_manager.load_model(
             source_type=source_type,

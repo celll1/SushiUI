@@ -3,6 +3,7 @@ from PIL import Image
 import torch
 import json
 import os
+import gc
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -35,10 +36,6 @@ class DiffusionPipelineManager:
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
 
-        # VRAM optimization settings
-        self.text_encoder_offload_mode: str = "auto"
-        self.vae_offload_mode: str = "auto"
-
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -60,23 +57,67 @@ class DiffusionPipelineManager:
             return
 
         try:
-            # Extract VRAM optimization settings
-            precision = kwargs.pop("precision", "fp16")
-            text_encoder_offload = kwargs.pop("text_encoder_offload", "gpu")
-            vae_offload = kwargs.pop("vae_offload", "gpu")
+            # === Step 1: Complete cleanup of existing pipelines ===
+            print("[Pipeline] Cleaning up existing pipelines and releasing resources...")
 
-            # Determine dtype based on precision setting
-            if self.device == "cpu":
-                torch_dtype = torch.float32
-            elif precision == "fp32":
-                torch_dtype = torch.float32
-            elif precision == "fp8":
-                # Use fp8_e4m3fn for inference (better range than e5m2)
-                torch_dtype = torch.float8_e4m3fn if hasattr(torch, 'float8_e4m3fn') else torch.float16
-            else:  # fp16
-                torch_dtype = torch.float16
+            # Get list of all existing pipelines
+            pipelines_to_cleanup = [self.txt2img_pipeline, self.img2img_pipeline, self.inpaint_pipeline]
+
+            # Keep track of already-freed components to avoid double-freeing
+            freed_components = set()
+
+            for pipeline in pipelines_to_cleanup:
+                if pipeline is not None:
+                    # Remove offload hooks if present
+                    if hasattr(pipeline, '_all_hooks') and pipeline._all_hooks:
+                        print(f"[Pipeline] Removing {len(pipeline._all_hooks)} hooks from pipeline")
+                        pipeline._all_hooks.clear()
+                    if hasattr(pipeline, 'remove_all_hooks'):
+                        pipeline.remove_all_hooks()
+
+                    # Move each component to CPU and free from CUDA memory
+                    component_names = ['unet', 'text_encoder', 'text_encoder_2', 'vae']
+                    for comp_name in component_names:
+                        if hasattr(pipeline, comp_name):
+                            comp = getattr(pipeline, comp_name)
+                            if comp is not None and id(comp) not in freed_components:
+                                # Move to CPU to free CUDA memory
+                                if hasattr(comp, 'to'):
+                                    comp.to('cpu')
+                                # Delete the component
+                                delattr(pipeline, comp_name)
+                                freed_components.add(id(comp))
+                                del comp
+
+            # Delete pipeline references
+            if self.txt2img_pipeline is not None:
+                del self.txt2img_pipeline
+                self.txt2img_pipeline = None
+            if self.img2img_pipeline is not None:
+                del self.img2img_pipeline
+                self.img2img_pipeline = None
+            if self.inpaint_pipeline is not None:
+                del self.inpaint_pipeline
+                self.inpaint_pipeline = None
+
+            # Force garbage collection
+            gc.collect()
+
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                # Synchronize to ensure all operations are complete
+                torch.cuda.synchronize()
+
+            print("[Pipeline] Cleanup complete, VRAM released")
+
+            # === Step 2: Load new model ===
+            # Always use fp16 (default in ModelLoader)
+            torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
             # Load base pipeline
+            print("[Pipeline] Loading new model...")
             base_pipeline = ModelLoader.load_model(
                 source_type=source_type,
                 source=source,
@@ -85,33 +126,31 @@ class DiffusionPipelineManager:
                 **kwargs
             )
 
-            # Store offload settings
-            self.text_encoder_offload_mode = text_encoder_offload
-            self.vae_offload_mode = vae_offload
-
-            # Apply component offloading
-            self._apply_component_offload(base_pipeline, text_encoder_offload, vae_offload)
+            # Log component devices after loading
+            self._log_component_devices(base_pipeline, "After model loading")
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
 
-            # Convert to appropriate pipeline type
-            if pipeline_type == "txt2img":
-                self.txt2img_pipeline = base_pipeline
-            elif pipeline_type == "img2img":
-                # Convert to img2img pipeline using components method
-                if is_sdxl:
-                    self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**base_pipeline.components)
-                else:
-                    self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**base_pipeline.components)
-                self.img2img_pipeline = self.img2img_pipeline.to(self.device)
-            elif pipeline_type == "inpaint":
-                # Convert to inpaint pipeline using components method
-                if is_sdxl:
-                    self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**base_pipeline.components)
-                else:
-                    self.inpaint_pipeline = StableDiffusionInpaintPipeline(**base_pipeline.components)
-                self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
+            # === Step 3: Create all pipeline variants from base ===
+            print("[Pipeline] Creating pipeline variants...")
+
+            # Set txt2img pipeline
+            self.txt2img_pipeline = base_pipeline
+
+            # Create img2img pipeline
+            if is_sdxl:
+                self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**base_pipeline.components)
+            else:
+                self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**base_pipeline.components)
+
+            # Create inpaint pipeline
+            if is_sdxl:
+                self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**base_pipeline.components)
+            else:
+                self.inpaint_pipeline = StableDiffusionInpaintPipeline(**base_pipeline.components)
+
+            print(f"[Pipeline] All pipelines created successfully on device: {self.device}")
 
             self.current_model = model_id
 
@@ -141,6 +180,50 @@ class DiffusionPipelineManager:
 
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
+
+    def _log_component_devices(self, pipeline, context: str):
+        """Log the device placement of all pipeline components"""
+        print(f"\n[Pipeline] Component devices - {context}:")
+
+        # Check U-Net
+        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+            try:
+                unet_device = next(pipeline.unet.parameters()).device
+                print(f"  U-Net: {unet_device}")
+            except StopIteration:
+                print(f"  U-Net: No parameters found (meta device?)")
+
+        # Check Text Encoder
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            try:
+                te_device = next(pipeline.text_encoder.parameters()).device
+                print(f"  Text Encoder: {te_device}")
+            except StopIteration:
+                print(f"  Text Encoder: No parameters found (meta device?)")
+
+        # Check Text Encoder 2 (SDXL)
+        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+            try:
+                te2_device = next(pipeline.text_encoder_2.parameters()).device
+                print(f"  Text Encoder 2: {te2_device}")
+            except StopIteration:
+                print(f"  Text Encoder 2: No parameters found (meta device?)")
+
+        # Check VAE
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            try:
+                vae_device = next(pipeline.vae.parameters()).device
+                print(f"  VAE: {vae_device}")
+            except StopIteration:
+                print(f"  VAE: No parameters found (meta device?)")
+
+        # Check for hooks
+        if hasattr(pipeline, '_all_hooks'):
+            print(f"  Offload hooks: {len(pipeline._all_hooks)} hooks registered")
+        else:
+            print(f"  Offload hooks: None")
+
+        print()
 
     def _save_last_model(self, source_type: str, source: str, pipeline_type: str):
         """Save the last loaded model configuration to file"""
@@ -179,89 +262,6 @@ class DiffusionPipelineManager:
                 print(f"Successfully loaded last model: {source}")
         except Exception as e:
             print(f"Warning: Failed to auto-load last model: {e}")
-
-    def _apply_component_offload(self, pipeline, text_encoder_offload: str, vae_offload: str):
-        """Apply component offloading to save VRAM"""
-        if not hasattr(pipeline, 'text_encoder') or not hasattr(pipeline, 'vae'):
-            return
-
-        # Handle Text Encoder offload
-        if text_encoder_offload == "cpu":
-            # Keep text encoder on CPU
-            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-                pipeline.text_encoder = pipeline.text_encoder.to("cpu")
-            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-                pipeline.text_encoder_2 = pipeline.text_encoder_2.to("cpu")
-        elif text_encoder_offload == "auto":
-            # Use Diffusers' built-in sequential CPU offload for better memory management
-            try:
-                pipeline.enable_sequential_cpu_offload()
-                print("Enabled sequential CPU offload for all components")
-                return  # Sequential offload handles everything
-            except Exception as e:
-                print(f"Warning: Could not enable sequential CPU offload: {e}")
-
-        # Handle VAE offload (only if not using sequential offload)
-        if vae_offload == "cpu":
-            # Keep VAE on CPU
-            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-                pipeline.vae = pipeline.vae.to("cpu")
-        elif vae_offload == "auto" and text_encoder_offload != "auto":
-            # Manual VAE offload (if not already handled by sequential offload)
-            # We'll handle this in generation methods
-            pass
-
-    def _manage_text_encoder_offload(self, pipeline, stage: str):
-        """Manage text encoder auto-offloading
-
-        Args:
-            stage: "before" (move to GPU) or "after" (move to CPU)
-        """
-        # Skip if using sequential offload (it handles everything automatically)
-        if self.text_encoder_offload_mode == "auto" and hasattr(pipeline, '_all_hooks'):
-            # Sequential offload is enabled (indicated by hooks)
-            return
-
-        if self.text_encoder_offload_mode != "auto":
-            return
-
-        if stage == "before":
-            # Move to GPU before encoding
-            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-                pipeline.text_encoder = pipeline.text_encoder.to(self.device)
-            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-                pipeline.text_encoder_2 = pipeline.text_encoder_2.to(self.device)
-        elif stage == "after":
-            # Move to CPU after encoding
-            if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-                pipeline.text_encoder = pipeline.text_encoder.to("cpu")
-            if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-                pipeline.text_encoder_2 = pipeline.text_encoder_2.to("cpu")
-            torch.cuda.empty_cache()
-
-    def _manage_vae_offload(self, pipeline, stage: str):
-        """Manage VAE auto-offloading
-
-        Args:
-            stage: "before" (move to GPU) or "after" (move to CPU)
-        """
-        # Skip if using sequential offload (it handles everything automatically)
-        if hasattr(pipeline, '_all_hooks'):
-            # Sequential offload is enabled
-            return
-
-        if self.vae_offload_mode != "auto":
-            return
-
-        if stage == "before":
-            # Move to GPU before decoding
-            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-                pipeline.vae = pipeline.vae.to(self.device)
-        elif stage == "after":
-            # Move to CPU after decoding
-            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-                pipeline.vae = pipeline.vae.to("cpu")
-            torch.cuda.empty_cache()
 
     def register_extension(self, extension: BaseExtension):
         """Register a new extension"""
@@ -728,6 +728,9 @@ class DiffusionPipelineManager:
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
+        # Log component devices before generation
+        self._log_component_devices(self.txt2img_pipeline, "Before txt2img generation")
+
         # Apply extensions before generation
         for ext in self.extensions:
             if ext.enabled:
@@ -745,9 +748,6 @@ class DiffusionPipelineManager:
         # Check if SDXL
         is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
-        # Manage text encoder offload (move to GPU if auto mode)
-        self._manage_text_encoder_offload(self.txt2img_pipeline, "before")
-
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             params["prompt"],
@@ -764,9 +764,6 @@ class DiffusionPipelineManager:
             print(f"Pooled prompt embeddings shape: {pooled_prompt_embeds.shape}")
         if negative_pooled_prompt_embeds is not None:
             print(f"Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
-
-        # Manage text encoder offload (move to CPU if auto mode)
-        self._manage_text_encoder_offload(self.txt2img_pipeline, "after")
 
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
@@ -867,10 +864,6 @@ class DiffusionPipelineManager:
             print(f"Parameters used: {gen_params}")
             raise
         finally:
-            # Manage VAE offload (move to CPU if auto mode)
-            # VAE is used at the end of generation, so we only need to offload after
-            self._manage_vae_offload(self.txt2img_pipeline, "after")
-
             # Clear intermediate tensors
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()

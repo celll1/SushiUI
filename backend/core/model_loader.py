@@ -157,7 +157,7 @@ class ModelLoader:
             print(f"[ModelLoader] Configuring scheduler for v-prediction model")
             ModelLoader._configure_v_prediction_scheduler(pipeline)
 
-        # Move to device and ensure all components have the same dtype
+        # Move to device
         pipeline = pipeline.to(device, dtype=torch_dtype)
         return pipeline
 
@@ -192,6 +192,7 @@ class ModelLoader:
             print(f"[ModelLoader] Configuring scheduler for v-prediction model")
             ModelLoader._configure_v_prediction_scheduler(pipeline)
 
+        # Move to device
         pipeline = pipeline.to(device, dtype=torch_dtype)
         return pipeline
 
@@ -219,6 +220,7 @@ class ModelLoader:
                 use_safetensors=True,
             )
 
+        # Move to device
         pipeline = pipeline.to(device, dtype=torch_dtype)
         return pipeline
 

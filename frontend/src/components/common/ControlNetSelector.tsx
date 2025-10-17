@@ -6,7 +6,9 @@ import Select from "./Select";
 import Slider from "./Slider";
 import Button from "./Button";
 import ImageEditor from "./ImageEditor";
-import { getControlNets } from "@/utils/api";
+import LayerWeightGraph from "./LayerWeightGraph";
+import { getControlNets, getControlNetInfo, ControlNetInfo } from "@/utils/api";
+import RangeSlider from "./RangeSlider";
 
 export interface ControlNetConfig {
   model_path: string;
@@ -14,7 +16,7 @@ export interface ControlNetConfig {
   strength: number;
   start_step: number;
   end_step: number;
-  layer_weights?: { down: number; mid: number; up: number };
+  layer_weights?: { [layerName: string]: number };  // Changed to support per-layer weights
   prompt?: string;
   is_lllite: boolean;
   use_input_image: boolean;
@@ -30,14 +32,100 @@ interface ControlNetSelectorPropsWithStorage extends ControlNetSelectorProps {
   storageKey?: string;
 }
 
+interface ControlNetLayerWeightsProps {
+  controlnetPath: string;
+  weights: { [layerName: string]: number };
+  onChange: (weights: { [layerName: string]: number }) => void;
+  disabled?: boolean;
+  loadControlNetInfo: (path: string) => Promise<ControlNetInfo | null>;
+}
+
+function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, loadControlNetInfo }: ControlNetLayerWeightsProps) {
+  const [layers, setLayers] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLllite, setIsLllite] = useState(false);
+
+  useEffect(() => {
+    loadLayers();
+  }, [controlnetPath]);
+
+  const loadLayers = async () => {
+    setIsLoading(true);
+    try {
+      const info = await loadControlNetInfo(controlnetPath);
+      if (info) {
+        setIsLllite(info.is_lllite);
+        if (info.layers && !info.is_lllite) {
+          setLayers(info.layers);
+        } else {
+          setLayers([]);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load ControlNet layers:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="p-4 bg-gray-800 rounded text-gray-400 text-center text-sm">
+        Loading model information...
+      </div>
+    );
+  }
+
+  if (isLllite) {
+    return (
+      <div className="p-4 bg-gray-800 rounded border border-blue-500">
+        <div className="text-sm text-blue-400 font-medium mb-1">
+          ✓ ControlNet-LLLite Detected
+        </div>
+        <div className="text-xs text-gray-400">
+          This is a lightweight ControlNet model. Layer weights are not applicable.
+        </div>
+      </div>
+    );
+  }
+
+  if (layers.length === 0) {
+    return (
+      <div className="p-4 bg-gray-800 rounded text-gray-400 text-center text-sm">
+        No layer information available
+      </div>
+    );
+  }
+
+  return (
+    <LayerWeightGraph
+      layers={layers}
+      weights={weights}
+      onChange={onChange}
+      disabled={disabled}
+    />
+  );
+}
+
 export default function ControlNetSelector({ value, onChange, disabled, storageKey }: ControlNetSelectorPropsWithStorage) {
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [controlnetInfoCache, setControlnetInfoCache] = useState<Map<string, ControlNetInfo>>(new Map());
+  const [modelTypes, setModelTypes] = useState<Map<number, string>>(new Map());
 
   useEffect(() => {
     loadControlNets();
   }, []);
+
+  useEffect(() => {
+    // Detect model types for all loaded ControlNets
+    value.forEach((cn, index) => {
+      if (cn.model_path && !modelTypes.has(index)) {
+        detectModelType(cn.model_path, index);
+      }
+    });
+  }, [value]);
 
   const loadControlNets = async () => {
     try {
@@ -45,6 +133,34 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       setAvailableControlNets(data.controlnets);
     } catch (error) {
       console.error("Failed to load ControlNets:", error);
+    }
+  };
+
+  const loadControlNetInfo = async (controlnetPath: string): Promise<ControlNetInfo | null> => {
+    // Check cache first
+    if (controlnetInfoCache.has(controlnetPath)) {
+      return controlnetInfoCache.get(controlnetPath)!;
+    }
+
+    try {
+      const info = await getControlNetInfo(controlnetPath);
+      setControlnetInfoCache((prev) => new Map(prev).set(controlnetPath, info));
+      return info;
+    } catch (error) {
+      console.error("Failed to load ControlNet info:", error);
+      return null;
+    }
+  };
+
+  const detectModelType = async (controlnetPath: string, index: number) => {
+    try {
+      const info = await loadControlNetInfo(controlnetPath);
+      if (info) {
+        const modelType = info.is_lllite ? "LLLite" : "Standard";
+        setModelTypes((prev) => new Map(prev).set(index, modelType));
+      }
+    } catch (error) {
+      console.error("Failed to detect model type:", error);
     }
   };
 
@@ -56,7 +172,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       strength: 1.0,
       start_step: 0.0,
       end_step: 1.0,
-      layer_weights: { down: 1.0, mid: 1.0, up: 1.0 },
+      layer_weights: {},  // Will be initialized by LayerWeightGraph
       is_lllite: false,
       use_input_image: false,
     };
@@ -73,6 +189,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     const newValue = [...value];
     newValue[index] = { ...newValue[index], ...updates };
     onChange(newValue);
+
+    // Re-detect model type if model_path changed
+    if (updates.model_path) {
+      detectModelType(updates.model_path, index);
+    }
   };
 
   const handleImageUpload = (index: number, file: File) => {
@@ -146,19 +267,35 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         {value.map((cn, index) => (
           <div key={index} className="p-3 bg-gray-800 rounded-lg">
             {/* Model Selection */}
-            <div className="flex gap-2 mb-3">
-              <select
-                value={cn.model_path}
-                onChange={(e) => updateControlNet(index, { model_path: e.target.value })}
-                disabled={disabled}
-                className="flex-1 bg-gray-700 text-white px-3 py-2 rounded text-sm"
-              >
-                {availableControlNets.map((availCn) => (
-                  <option key={availCn.path} value={availCn.path}>
-                    {availCn.name}
-                  </option>
-                ))}
-              </select>
+            <div className="flex gap-2 mb-3 items-start">
+              <div className="flex-1">
+                <select
+                  value={cn.model_path}
+                  onChange={(e) => updateControlNet(index, { model_path: e.target.value })}
+                  disabled={disabled}
+                  className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
+                >
+                  {availableControlNets.map((availCn) => (
+                    <option key={availCn.path} value={availCn.path}>
+                      {availCn.name}
+                    </option>
+                  ))}
+                </select>
+                {/* Model Type Badge */}
+                {modelTypes.has(index) && (
+                  <div className="mt-1">
+                    <span
+                      className={`inline-block text-xs px-2 py-0.5 rounded ${
+                        modelTypes.get(index) === "LLLite"
+                          ? "bg-blue-600 text-blue-100"
+                          : "bg-gray-600 text-gray-100"
+                      }`}
+                    >
+                      {modelTypes.get(index) === "LLLite" ? "⚡ ControlNet-LLLite" : "🎯 Standard ControlNet"}
+                    </span>
+                  </div>
+                )}
+              </div>
               <Button
                 onClick={() => removeControlNet(index)}
                 disabled={disabled}
@@ -255,6 +392,46 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 onChange={(e) => updateControlNet(index, { end_step: parseFloat(e.target.value) })}
                 disabled={disabled}
               />
+            </div>
+
+            {/* Layer Weights Graph (or LLLite detection info) */}
+            <div className="mt-3">
+              <ControlNetLayerWeights
+                controlnetPath={cn.model_path}
+                weights={cn.layer_weights || {}}
+                onChange={(layer_weights) => updateControlNet(index, { layer_weights })}
+                disabled={disabled}
+                loadControlNetInfo={loadControlNetInfo}
+              />
+            </div>
+
+            {/* Optional Prompt for this ControlNet */}
+            <div className="mt-3">
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Optional Prompt (for this ControlNet only)
+              </label>
+              <input
+                type="text"
+                value={cn.prompt || ""}
+                onChange={(e) => updateControlNet(index, { prompt: e.target.value })}
+                disabled={disabled}
+                placeholder="Leave empty to use main prompt"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Use Input Image Toggle */}
+            <div className="mt-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cn.use_input_image}
+                  onChange={(e) => updateControlNet(index, { use_input_image: e.target.checked })}
+                  disabled={disabled}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">Use input image as control (img2img/inpaint only)</span>
+              </label>
             </div>
           </div>
         ))}

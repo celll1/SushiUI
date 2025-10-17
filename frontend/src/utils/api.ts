@@ -310,4 +310,18 @@ export const getControlNets = async () => {
   return response.data;
 };
 
+export interface ControlNetInfo {
+  name: string;
+  path: string;
+  layers: string[];
+  is_lllite: boolean;
+  exists: boolean;
+  error?: string;
+}
+
+export const getControlNetInfo = async (controlnetPath: string): Promise<ControlNetInfo> => {
+  const response = await api.get(`/controlnets/${encodeURIComponent(controlnetPath)}/info`);
+  return response.data;
+};
+
 export default api;

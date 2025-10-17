@@ -401,12 +401,6 @@ export default function ImageGrid() {
                               <span className="text-gray-500">Step Range:</span> {(cn.start_step * 100).toFixed(0)}% - {(cn.end_step * 100).toFixed(0)}%
                             </div>
                           )}
-                          {cn.layer_weights && (cn.layer_weights.down !== 1.0 || cn.layer_weights.mid !== 1.0 || cn.layer_weights.up !== 1.0) && (
-                            <div className="break-words">
-                              <span className="text-gray-500">Layer Weights:</span>{' '}
-                              Down: {cn.layer_weights.down}, Mid: {cn.layer_weights.mid}, Up: {cn.layer_weights.up}
-                            </div>
-                          )}
                           {cn.image && (
                             <div className="break-words">
                               <span className="text-gray-500">Image Hash:</span>{' '}

@@ -310,6 +310,15 @@ class DiffusionPipelineManager:
                     print(f"Warning: Could not load ControlNet {cn_config['model_path']}")
                     continue
 
+                # Apply layer weights if specified
+                layer_weights = cn_config.get("layer_weights")
+                print(f"[Pipeline] ControlNet config: model_path={cn_config.get('model_path')}, layer_weights={layer_weights}")
+                if layer_weights:
+                    print(f"[Pipeline] Applying layer weights to ControlNet: {layer_weights}")
+                    controlnet_manager.apply_layer_weights(controlnet, layer_weights)
+                else:
+                    print(f"[Pipeline] No layer weights specified for this ControlNet")
+
                 controlnets.append(controlnet)
 
                 # Prepare control image

@@ -37,7 +37,7 @@ class LoRAConfig(BaseModel):
     strength: float = 1.0
     apply_to_text_encoder: bool = True
     apply_to_unet: bool = True
-    unet_layer_weights: Optional[dict] = {"down": 1.0, "mid": 1.0, "up": 1.0}
+    unet_layer_weights: Optional[dict] = None  # Per-layer weights
     step_range: Optional[List[int]] = [0, 1000]
 
 class ControlNetConfig(BaseModel):
@@ -46,7 +46,7 @@ class ControlNetConfig(BaseModel):
     strength: float = 1.0
     start_step: float = 0.0  # 0.0-1.0, fraction of total steps
     end_step: float = 1.0    # 0.0-1.0, fraction of total steps
-    layer_weights: Optional[dict] = {"down": 1.0, "mid": 1.0, "up": 1.0}
+    layer_weights: Optional[dict] = None  # Per-layer weights like {"IN00": 1.0, ..., "MID": 1.0}
     prompt: Optional[str] = None  # Optional separate prompt
     is_lllite: bool = False
     use_input_image: bool = False  # For img2img/inpaint: use input image as control
@@ -80,7 +80,14 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
     try:
         # Generate image
         params = request.dict()
-        print(f"Generation params: {params}")
+        # Log params without large base64 data
+        params_for_log = params.copy()
+        if "controlnets" in params_for_log and params_for_log["controlnets"]:
+            params_for_log["controlnets"] = [
+                {k: ("<base64_data>" if k == "image_base64" else v) for k, v in cn.items()}
+                for cn in params_for_log["controlnets"]
+            ]
+        print(f"Generation params: {params_for_log}")
 
         # Set prompt chunking settings
         prompt_chunking_mode = params.get("prompt_chunking_mode", "a1111")
@@ -122,7 +129,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                         "strength": cn_config.get("strength", 1.0),
                         "start_step": cn_config.get("start_step", 0.0),
                         "end_step": cn_config.get("end_step", 1.0),
-                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "layer_weights": cn_config.get("layer_weights"),
                         "prompt": cn_config.get("prompt"),
                         "is_lllite": cn_config.get("is_lllite", False),
                     })
@@ -278,7 +285,7 @@ async def generate_img2img(
                         "strength": cn_config.get("strength", 1.0),
                         "start_step": cn_config.get("start_step", 0.0),
                         "end_step": cn_config.get("end_step", 1.0),
-                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "layer_weights": cn_config.get("layer_weights"),
                         "prompt": cn_config.get("prompt"),
                         "is_lllite": cn_config.get("is_lllite", False),
                     })
@@ -299,7 +306,14 @@ async def generate_img2img(
             "resampling_method": resampling_method,
             "controlnet_images": controlnet_images,
         }
-        print(f"img2img generation params: {params}")
+        # Log params without large image objects
+        params_for_log = params.copy()
+        if "controlnet_images" in params_for_log and params_for_log["controlnet_images"]:
+            params_for_log["controlnet_images"] = [
+                {k: ("<PIL.Image>" if k == "image" else v) for k, v in cn.items()}
+                for cn in params_for_log["controlnet_images"]
+            ]
+        print(f"img2img generation params: {params_for_log}")
 
         # Load LoRAs if specified
         has_step_range_loras = False
@@ -480,7 +494,7 @@ async def generate_inpaint(
                         "strength": cn_config.get("strength", 1.0),
                         "start_step": cn_config.get("start_step", 0.0),
                         "end_step": cn_config.get("end_step", 1.0),
-                        "layer_weights": cn_config.get("layer_weights", {"down": 1.0, "mid": 1.0, "up": 1.0}),
+                        "layer_weights": cn_config.get("layer_weights"),
                         "prompt": cn_config.get("prompt"),
                         "is_lllite": cn_config.get("is_lllite", False),
                     })
@@ -502,7 +516,14 @@ async def generate_inpaint(
             "inpaint_full_res_padding": inpaint_full_res_padding,
             "controlnet_images": controlnet_images,
         }
-        print(f"inpaint generation params: {params}")
+        # Log params without large image objects
+        params_for_log = params.copy()
+        if "controlnet_images" in params_for_log and params_for_log["controlnet_images"]:
+            params_for_log["controlnet_images"] = [
+                {k: ("<PIL.Image>" if k == "image" else v) for k, v in cn.items()}
+                for cn in params_for_log["controlnet_images"]
+            ]
+        print(f"inpaint generation params: {params_for_log}")
 
         # Load LoRAs if specified
         has_step_range_loras = False
@@ -892,6 +913,30 @@ async def get_controlnets():
             for cn in controlnets
         ]
     }
+
+@router.get("/controlnets/{controlnet_path:path}/info")
+async def get_controlnet_info(controlnet_path: str):
+    """Get information about a specific ControlNet model"""
+    try:
+        is_lllite = controlnet_manager.is_lllite_model(controlnet_path)
+        layers = controlnet_manager.get_controlnet_layers(controlnet_path) if not is_lllite else []
+        return {
+            "name": os.path.basename(controlnet_path),
+            "path": controlnet_path,
+            "layers": layers,
+            "is_lllite": is_lllite,
+            "exists": True
+        }
+    except Exception as e:
+        print(f"Error getting ControlNet info: {e}")
+        return {
+            "name": os.path.basename(controlnet_path),
+            "path": controlnet_path,
+            "layers": [],
+            "is_lllite": False,
+            "exists": False,
+            "error": str(e)
+        }
 
 @router.post("/system/restart-backend")
 async def restart_backend():

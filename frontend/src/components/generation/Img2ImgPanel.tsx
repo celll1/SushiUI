@@ -13,6 +13,7 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
+import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 
 interface Img2ImgParams {
   prompt: string;
@@ -101,50 +102,68 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   useEffect(() => {
     setIsMounted(true);
 
-    // Load params
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        const merged = { ...DEFAULT_PARAMS, ...parsed };
-        setParams(merged);
-      } catch (error) {
-        console.error("Failed to load saved params:", error);
+    const loadInitialData = async () => {
+      // Load params
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          setParams(merged);
+        } catch (error) {
+          console.error("Failed to load saved params:", error);
+        }
       }
-    }
 
-    // Load preview image
-    const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
-    if (savedPreview) {
-      setGeneratedImage(savedPreview);
-    }
+      // Load preview image
+      const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+      if (savedPreview) {
+        setGeneratedImage(savedPreview);
+      }
 
-    // Load input image preview
-    const savedInputPreview = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-    if (savedInputPreview) {
-      setInputImagePreview(savedInputPreview);
-      // Load image dimensions
-      const img = new Image();
-      img.onload = () => {
-        setInputImageSize({ width: img.width, height: img.height });
-      };
-      img.src = savedInputPreview;
-    }
+      // Load input image preview
+      const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (savedInputRef) {
+        try {
+          const imageData = await loadTempImage(savedInputRef);
+          if (imageData) {
+            setInputImagePreview(imageData);
+            // Load image dimensions
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        } catch (error) {
+          console.error("Failed to load input image:", error);
+        }
+      }
 
-    loadSamplers();
-    loadScheduleTypes();
+      loadSamplers();
+      loadScheduleTypes();
+    };
+
+    loadInitialData();
 
     // Listen for input image updates from txt2img or gallery
-    const handleInputUpdate = () => {
-      const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-      if (newInput) {
-        setInputImagePreview(newInput);
-        // Load image dimensions
-        const img = new Image();
-        img.onload = () => {
-          setInputImageSize({ width: img.width, height: img.height });
-        };
-        img.src = newInput;
+    const handleInputUpdate = async () => {
+      const newInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (newInputRef) {
+        try {
+          const imageData = await loadTempImage(newInputRef);
+          if (imageData) {
+            setInputImagePreview(imageData);
+            // Load image dimensions
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        } catch (error) {
+          console.error("Failed to load input image:", error);
+        }
       }
     };
 
@@ -208,11 +227,16 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
     setInputImage(file);
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const preview = event.target?.result as string;
       setInputImagePreview(preview);
       if (isMounted) {
-        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
+        try {
+          const ref = await saveTempImage(preview);
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, ref);
+        } catch (error) {
+          console.error("Failed to save temp image:", error);
+        }
       }
 
       // Load image to get dimensions
@@ -286,19 +310,33 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     }
   };
 
-  const handleClearInputImage = () => {
+  const handleClearInputImage = async () => {
     setInputImage(null);
     setInputImagePreview(null);
     setInputImageSize(null);
     if (isMounted) {
-      localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+      const ref = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (ref) {
+        await deleteTempImageRef(ref);
+        localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+      }
     }
   };
 
-  const handleSaveEditedImage = (editedImageUrl: string) => {
+  const handleSaveEditedImage = async (editedImageUrl: string) => {
     setInputImagePreview(editedImageUrl);
     if (isMounted) {
-      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
+      try {
+        // Delete old reference and save new one
+        const oldRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+        if (oldRef) {
+          await deleteTempImageRef(oldRef);
+        }
+        const ref = await saveTempImage(editedImageUrl);
+        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, ref);
+      } catch (error) {
+        console.error("Failed to save edited image:", error);
+      }
     }
 
     // Update image dimensions
@@ -347,7 +385,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     }
   };
 
-  const sendToImg2Img = () => {
+  const sendToImg2Img = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -355,8 +393,26 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
     // Send image if checked - already in img2img, use generated image as new input
     if (sendImage) {
-      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, generatedImage);
-      window.dispatchEvent(new Event("img2img_input_updated"));
+      try {
+        // First, fetch the generated image and convert to base64
+        const response = await fetch(generatedImage);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64data = reader.result as string;
+          const oldRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+          if (oldRef) {
+            await deleteTempImageRef(oldRef);
+          }
+          const ref = await saveTempImage(base64data);
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, ref);
+          window.dispatchEvent(new Event("img2img_input_updated"));
+          setInputImagePreview(base64data);
+        };
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        console.error("Failed to send image to img2img:", error);
+      }
     }
 
     // Send prompt if checked
@@ -380,14 +436,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       img2imgParams.denoising_strength = params.denoising_strength;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(img2imgParams));
     }
-
-    // Reload current panel to reflect changes if image was sent
-    if (sendImage) {
-      setInputImagePreview(generatedImage);
-    }
   };
 
-  const sendToInpaint = () => {
+  const sendToInpaint = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -395,9 +446,22 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
     // Send image if checked
     if (sendImage) {
-      localStorage.setItem("inpaint_input_image", generatedImage);
-      localStorage.removeItem("inpaint_mask_image");
-      window.dispatchEvent(new Event("inpaint_input_updated"));
+      try {
+        // First, fetch the generated image and convert to base64
+        const response = await fetch(generatedImage);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64data = reader.result as string;
+          const ref = await saveTempImage(base64data);
+          localStorage.setItem("inpaint_input_image", ref);
+          localStorage.removeItem("inpaint_mask_image");
+          window.dispatchEvent(new Event("inpaint_input_updated"));
+        };
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        console.error("Failed to send image to inpaint:", error);
+      }
     }
 
     // Send prompt if checked

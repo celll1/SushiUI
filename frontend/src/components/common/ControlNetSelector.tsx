@@ -10,6 +10,7 @@ import ImageEditor from "./ImageEditor";
 import LayerWeightGraph from "./LayerWeightGraph";
 import { getControlNets, getControlNetInfo, ControlNetInfo } from "@/utils/api";
 import RangeSlider from "./RangeSlider";
+import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 
 export interface ControlNetConfig {
   model_path: string;
@@ -115,8 +116,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const [controlnetInfoCache, setControlnetInfoCache] = useState<Map<string, ControlNetInfo>>(new Map());
   const [modelTypes, setModelTypes] = useState<Map<number, string>>(new Map());
 
+  const STORAGE_KEY = "controlnet_images";
+
   useEffect(() => {
     loadControlNets();
+    loadPersistedImages();
   }, []);
 
   useEffect(() => {
@@ -134,6 +138,101 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       setAvailableControlNets(data.controlnets);
     } catch (error) {
       console.error("Failed to load ControlNets:", error);
+    }
+  };
+
+  const loadPersistedImages = async () => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) return;
+
+      const imageRefs: { [index: number]: string } = JSON.parse(stored);
+      const loadedImages: { [index: number]: string } = {};
+
+      // Load all temp images in parallel
+      await Promise.all(
+        Object.entries(imageRefs).map(async ([index, ref]) => {
+          try {
+            const imageData = await loadTempImage(ref);
+            if (imageData) {
+              loadedImages[parseInt(index)] = imageData;
+            }
+          } catch (error) {
+            console.error(`Failed to load ControlNet image at index ${index}:`, error);
+          }
+        })
+      );
+
+      // Apply loaded images to the current ControlNet configs
+      if (Object.keys(loadedImages).length > 0) {
+        const updatedValue = value.map((cn, index) => {
+          if (loadedImages[index]) {
+            // Remove data URL prefix if present
+            const base64Data = loadedImages[index].includes(",")
+              ? loadedImages[index].split(",")[1]
+              : loadedImages[index];
+            return { ...cn, image_base64: base64Data };
+          }
+          return cn;
+        });
+        onChange(updatedValue);
+      }
+    } catch (error) {
+      console.error("Failed to load persisted ControlNet images:", error);
+    }
+  };
+
+  const saveImageReference = async (index: number, imageBase64: string) => {
+    try {
+      // Add data URL prefix if not present
+      const fullImageData = imageBase64.startsWith("data:")
+        ? imageBase64
+        : `data:image/png;base64,${imageBase64}`;
+
+      const imageRef = await saveTempImage(fullImageData);
+
+      // Update stored references
+      const stored = localStorage.getItem(STORAGE_KEY);
+      const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+
+      // Delete old reference if exists
+      if (imageRefs[index]) {
+        await deleteTempImageRef(imageRefs[index]);
+      }
+
+      imageRefs[index] = imageRef;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(imageRefs));
+    } catch (error) {
+      console.error("Failed to save ControlNet image reference:", error);
+    }
+  };
+
+  const deleteImageReference = async (index: number) => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) return;
+
+      const imageRefs: { [index: number]: string } = JSON.parse(stored);
+
+      if (imageRefs[index]) {
+        await deleteTempImageRef(imageRefs[index]);
+        delete imageRefs[index];
+
+        // Re-index remaining images
+        const reindexed: { [index: number]: string } = {};
+        Object.entries(imageRefs).forEach(([idx, ref]) => {
+          const numIdx = parseInt(idx);
+          if (numIdx > index) {
+            reindexed[numIdx - 1] = ref;
+          } else {
+            reindexed[numIdx] = ref;
+          }
+        });
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(reindexed));
+      }
+    } catch (error) {
+      console.error("Failed to delete ControlNet image reference:", error);
     }
   };
 
@@ -180,7 +279,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     onChange([...value, newControlNet]);
   };
 
-  const removeControlNet = (index: number) => {
+  const removeControlNet = async (index: number) => {
+    // Delete the image reference before removing the ControlNet
+    await deleteImageReference(index);
+
     const newValue = [...value];
     newValue.splice(index, 1);
     onChange(newValue);
@@ -199,11 +301,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   const handleImageUpload = (index: number, file: File) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const base64 = e.target?.result as string;
       // Remove data:image/...;base64, prefix
       const base64Data = base64.split(",")[1];
       updateControlNet(index, { image_base64: base64Data });
+
+      // Save to temp storage
+      await saveImageReference(index, base64Data);
     };
     reader.readAsDataURL(file);
   };
@@ -237,10 +342,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     }
   };
 
-  const handleSaveEditedImage = (editedImageUrl: string) => {
+  const handleSaveEditedImage = async (editedImageUrl: string) => {
     if (editingImageIndex !== null) {
       const base64Data = editedImageUrl.split(",")[1];
       updateControlNet(editingImageIndex, { image_base64: base64Data });
+
+      // Save to temp storage
+      await saveImageReference(editingImageIndex, base64Data);
+
       setEditingImageIndex(null);
     }
   };

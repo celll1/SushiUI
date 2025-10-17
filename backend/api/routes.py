@@ -996,3 +996,99 @@ async def restart_frontend():
         return {"success": True, "message": "Frontend restart signal sent"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Temp image storage endpoints
+import base64
+import hashlib
+import time
+
+TEMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+@router.post("/temp-images/upload")
+async def upload_temp_image(image_base64: str = Form(...)):
+    """Upload a base64 image to temp storage and return a reference ID"""
+    try:
+        # Decode base64 image
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+
+        image_data = base64.b64decode(image_base64)
+
+        # Generate unique filename based on content hash and timestamp
+        content_hash = hashlib.sha256(image_data).hexdigest()[:16]
+        timestamp = str(int(time.time() * 1000))
+        filename = f"{timestamp}_{content_hash}.png"
+        filepath = os.path.join(TEMP_DIR, filename)
+
+        # Save image
+        image = Image.open(io.BytesIO(image_data))
+        image.save(filepath, "PNG")
+
+        return {"success": True, "image_id": filename}
+    except Exception as e:
+        print(f"Error uploading temp image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/temp-images/{image_id}")
+async def get_temp_image(image_id: str):
+    """Get a temp image by ID and return as base64"""
+    try:
+        filepath = os.path.join(TEMP_DIR, image_id)
+
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        # Read image and convert to base64
+        with open(filepath, "rb") as f:
+            image_data = f.read()
+
+        image_base64 = base64.b64encode(image_data).decode("utf-8")
+
+        return {"success": True, "image_base64": f"data:image/png;base64,{image_base64}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting temp image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/temp-images/{image_id}")
+async def delete_temp_image(image_id: str):
+    """Delete a temp image by ID"""
+    try:
+        filepath = os.path.join(TEMP_DIR, image_id)
+
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+        return {"success": True, "message": "Image deleted"}
+    except Exception as e:
+        print(f"Error deleting temp image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/temp-images/cleanup")
+async def cleanup_temp_images(max_age_hours: int = 24):
+    """Clean up temp images older than specified hours"""
+    try:
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+        deleted_count = 0
+
+        for filename in os.listdir(TEMP_DIR):
+            filepath = os.path.join(TEMP_DIR, filename)
+
+            if os.path.isfile(filepath):
+                file_age = current_time - os.path.getmtime(filepath)
+
+                if file_age > max_age_seconds:
+                    os.remove(filepath)
+                    deleted_count += 1
+
+        return {"success": True, "deleted_count": deleted_count}
+    except Exception as e:
+        print(f"Error cleaning up temp images: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

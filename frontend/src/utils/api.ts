@@ -324,4 +324,32 @@ export const getControlNetInfo = async (controlnetPath: string): Promise<Control
   return response.data;
 };
 
+// Temp image storage API
+export const uploadTempImage = async (imageBase64: string): Promise<string> => {
+  const formData = new FormData();
+  formData.append("image_base64", imageBase64);
+
+  const response = await api.post("/temp-images/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
+  return response.data.image_id;
+};
+
+export const getTempImage = async (imageId: string): Promise<string> => {
+  const response = await api.get(`/temp-images/${imageId}`);
+  return response.data.image_base64;
+};
+
+export const deleteTempImage = async (imageId: string): Promise<void> => {
+  await api.delete(`/temp-images/${imageId}`);
+};
+
+export const cleanupTempImages = async (maxAgeHours: number = 24): Promise<number> => {
+  const response = await api.post("/temp-images/cleanup", null, {
+    params: { max_age_hours: maxAgeHours },
+  });
+  return response.data.deleted_count;
+};
+
 export default api;

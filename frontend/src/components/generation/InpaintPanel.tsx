@@ -13,6 +13,7 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
+import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 
 interface InpaintParams {
   prompt: string;
@@ -133,13 +134,25 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     // Load input image preview
     const savedInputPreview = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
     if (savedInputPreview) {
-      setInputImagePreview(savedInputPreview);
+      loadTempImage(savedInputPreview).then((imageData) => {
+        if (imageData) {
+          setInputImagePreview(imageData);
+        }
+      }).catch((error) => {
+        console.error("Failed to load input image:", error);
+      });
     }
 
     // Load mask image preview
     const savedMaskPreview = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
     if (savedMaskPreview) {
-      setMaskImage(savedMaskPreview);
+      loadTempImage(savedMaskPreview).then((imageData) => {
+        if (imageData) {
+          setMaskImage(imageData);
+        }
+      }).catch((error) => {
+        console.error("Failed to load mask image:", error);
+      });
     }
 
     loadSamplers();
@@ -149,7 +162,13 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     const handleInputUpdate = () => {
       const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       if (newInput) {
-        setInputImagePreview(newInput);
+        loadTempImage(newInput).then((imageData) => {
+          if (imageData) {
+            setInputImagePreview(imageData);
+          }
+        }).catch((error) => {
+          console.error("Failed to load updated input image:", error);
+        });
       }
     };
 
@@ -232,15 +251,35 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     // Clear mask when new image is loaded
     setMaskImage(null);
     if (isMounted) {
+      // Delete old mask reference
+      const oldMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+      if (oldMaskRef) {
+        deleteTempImageRef(oldMaskRef).catch(console.error);
+      }
       localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
     }
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const preview = event.target?.result as string;
       setInputImagePreview(preview);
+
       if (isMounted) {
-        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
+        // Delete old input image reference
+        const oldInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+        if (oldInputRef) {
+          await deleteTempImageRef(oldInputRef).catch(console.error);
+        }
+
+        // Save new image and store reference
+        try {
+          const imageRef = await saveTempImage(preview);
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, imageRef);
+        } catch (error) {
+          console.error("Failed to save input image:", error);
+          // Fallback to direct storage for small images
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
+        }
       }
 
       // Load image to get dimensions
@@ -296,18 +335,42 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     }
   };
 
-  const handleEditorSave = (editedImageUrl: string) => {
+  const handleEditorSave = async (editedImageUrl: string) => {
     setInputImagePreview(editedImageUrl);
     if (isMounted) {
-      localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
+      try {
+        // Delete old reference and save new one
+        const oldRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+        if (oldRef) {
+          await deleteTempImageRef(oldRef);
+        }
+        const imageRef = await saveTempImage(editedImageUrl);
+        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, imageRef);
+      } catch (error) {
+        console.error("Failed to save edited input image:", error);
+        // Fallback to direct storage
+        localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, editedImageUrl);
+      }
     }
     setShowImageEditor(false);
   };
 
-  const handleEditorSaveMask = (maskUrl: string) => {
+  const handleEditorSaveMask = async (maskUrl: string) => {
     setMaskImage(maskUrl);
     if (isMounted) {
-      localStorage.setItem(MASK_IMAGE_STORAGE_KEY, maskUrl);
+      try {
+        // Delete old reference and save new one
+        const oldRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+        if (oldRef) {
+          await deleteTempImageRef(oldRef);
+        }
+        const imageRef = await saveTempImage(maskUrl);
+        localStorage.setItem(MASK_IMAGE_STORAGE_KEY, imageRef);
+      } catch (error) {
+        console.error("Failed to save mask image:", error);
+        // Fallback to direct storage
+        localStorage.setItem(MASK_IMAGE_STORAGE_KEY, maskUrl);
+      }
     }
   };
 
@@ -334,20 +397,34 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     }
   };
 
-  const handleClearInputImage = () => {
+  const handleClearInputImage = async () => {
     setInputImage(null);
     setInputImagePreview(null);
     setInputImageSize(null);
     setMaskImage(null);
     if (isMounted) {
+      // Delete temp image references
+      const inputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (inputRef) {
+        await deleteTempImageRef(inputRef).catch(console.error);
+      }
+      const maskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+      if (maskRef) {
+        await deleteTempImageRef(maskRef).catch(console.error);
+      }
       localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
       localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
     }
   };
 
-  const handleClearMask = () => {
+  const handleClearMask = async () => {
     setMaskImage(null);
     if (isMounted) {
+      // Delete temp mask reference
+      const maskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+      if (maskRef) {
+        await deleteTempImageRef(maskRef).catch(console.error);
+      }
       localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
     }
   };
@@ -387,7 +464,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     }
   };
 
-  const sendToImg2Img = () => {
+  const sendToImg2Img = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -395,8 +472,21 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
     // Send image if checked
     if (sendImage) {
-      localStorage.setItem("img2img_input_image", generatedImage);
-      window.dispatchEvent(new Event("img2img_input_updated"));
+      try {
+        // Fetch the generated image and convert to base64
+        const response = await fetch(generatedImage);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64data = reader.result as string;
+          const ref = await saveTempImage(base64data);
+          localStorage.setItem("img2img_input_image", ref);
+          window.dispatchEvent(new Event("img2img_input_updated"));
+        };
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        console.error("Failed to send image to img2img:", error);
+      }
     }
 
     // Send prompt if checked
@@ -427,7 +517,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     }
   };
 
-  const sendToInpaint = () => {
+  const sendToInpaint = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -435,9 +525,31 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
     // Send image if checked (use generated image as new input, clear mask)
     if (sendImage) {
-      localStorage.setItem("inpaint_input_image", generatedImage);
-      localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
-      window.dispatchEvent(new Event("inpaint_input_updated"));
+      try {
+        // Fetch the generated image and convert to base64
+        const response = await fetch(generatedImage);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64data = reader.result as string;
+          // Delete old input and mask references
+          const oldInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+          if (oldInputRef) {
+            await deleteTempImageRef(oldInputRef).catch(console.error);
+          }
+          const oldMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+          if (oldMaskRef) {
+            await deleteTempImageRef(oldMaskRef).catch(console.error);
+          }
+          const ref = await saveTempImage(base64data);
+          localStorage.setItem("inpaint_input_image", ref);
+          localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+          window.dispatchEvent(new Event("inpaint_input_updated"));
+        };
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        console.error("Failed to send image to inpaint:", error);
+      }
     }
 
     // Send prompt if checked
@@ -467,7 +579,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
     // Reload current panel to reflect changes if image was sent
     if (sendImage) {
-      setInputImagePreview(generatedImage);
+      // The preview will be updated by the event listener after loading from temp storage
       setMaskImage(null);
     }
   };

@@ -18,6 +18,7 @@ outputs/
 models/
 lora/
 controlnet/
+taglist/
 *.safetensors
 *.ckpt
 *.pt

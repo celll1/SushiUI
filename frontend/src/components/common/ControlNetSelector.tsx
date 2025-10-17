@@ -121,6 +121,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   const [imagesLoaded, setImagesLoaded] = useState(false);
 
+  // Local state to hold image previews (base64) for display purposes
+  // Images are stored separately from parent state to avoid localStorage overflow
+  const [imagePreviews, setImagePreviews] = useState<Map<number, string>>(new Map());
+
   // Helper function to call onChange without image_base64 to prevent localStorage overflow
   const notifyChange = (configs: ControlNetConfig[]) => {
     // Remove image_base64 from configs before passing to parent
@@ -164,7 +168,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       if (!stored) return;
 
       const imageRefs: { [index: number]: string } = JSON.parse(stored);
-      const loadedImages: { [index: number]: string } = {};
+      const newPreviews = new Map<number, string>();
 
       // Load all temp images in parallel
       await Promise.all(
@@ -172,7 +176,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           try {
             const imageData = await loadTempImage(ref);
             if (imageData) {
-              loadedImages[parseInt(index)] = imageData;
+              // Store full data URL in previews for display
+              newPreviews.set(parseInt(index), imageData);
             }
           } catch (error) {
             console.error(`Failed to load ControlNet image at index ${index}:`, error);
@@ -180,20 +185,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         })
       );
 
-      // Apply loaded images to the current ControlNet configs
-      // Only update if we have both loaded images AND existing ControlNet configs
-      if (Object.keys(loadedImages).length > 0 && value.length > 0) {
-        const updatedValue = value.map((cn, index) => {
-          if (loadedImages[index]) {
-            // Remove data URL prefix if present
-            const base64Data = loadedImages[index].includes(",")
-              ? loadedImages[index].split(",")[1]
-              : loadedImages[index];
-            return { ...cn, image_base64: base64Data };
-          }
-          return cn;
-        });
-        notifyChange(updatedValue);
+      // Update image previews state
+      if (newPreviews.size > 0) {
+        setImagePreviews(newPreviews);
       }
     } catch (error) {
       console.error("Failed to load persisted ControlNet images:", error);
@@ -301,6 +295,22 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     // Delete the image reference before removing the ControlNet
     await deleteImageReference(index);
 
+    // Remove from local preview state
+    setImagePreviews(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(index);
+      // Re-index remaining images
+      const reindexed = new Map<number, string>();
+      Array.from(newMap.entries()).forEach(([idx, img]) => {
+        if (idx > index) {
+          reindexed.set(idx - 1, img);
+        } else {
+          reindexed.set(idx, img);
+        }
+      });
+      return reindexed;
+    });
+
     const newValue = [...value];
     newValue.splice(index, 1);
     notifyChange(newValue);
@@ -320,13 +330,21 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const handleImageUpload = (index: number, file: File) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
-      const base64 = e.target?.result as string;
-      // Remove data:image/...;base64, prefix
-      const base64Data = base64.split(",")[1];
-      updateControlNet(index, { image_base64: base64Data });
+      const fullDataUrl = e.target?.result as string;
+      // Remove data:image/...;base64, prefix for storage
+      const base64Data = fullDataUrl.split(",")[1];
+
+      // Update local preview state (with full data URL for display)
+      setImagePreviews(prev => new Map(prev).set(index, fullDataUrl));
 
       // Save to temp storage
       await saveImageReference(index, base64Data);
+
+      // Notify parent without image_base64 to prevent localStorage overflow
+      // Parent doesn't need the image data, it's managed separately
+      const updatedValue = [...value];
+      updatedValue[index] = { ...updatedValue[index] };
+      notifyChange(updatedValue);
     };
     reader.readAsDataURL(file);
   };
@@ -355,7 +373,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const handleEditImage = (index: number) => {
-    if (value[index].image_base64) {
+    // Check if image exists in local previews
+    if (imagePreviews.has(index)) {
       setEditingImageIndex(index);
     }
   };
@@ -363,10 +382,17 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const handleSaveEditedImage = async (editedImageUrl: string) => {
     if (editingImageIndex !== null) {
       const base64Data = editedImageUrl.split(",")[1];
-      updateControlNet(editingImageIndex, { image_base64: base64Data });
+
+      // Update local preview state
+      setImagePreviews(prev => new Map(prev).set(editingImageIndex, editedImageUrl));
 
       // Save to temp storage
       await saveImageReference(editingImageIndex, base64Data);
+
+      // Notify parent without image_base64
+      const updatedValue = [...value];
+      updatedValue[editingImageIndex] = { ...updatedValue[editingImageIndex] };
+      notifyChange(updatedValue);
 
       setEditingImageIndex(null);
     }
@@ -469,12 +495,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     draggingIndex === index
                       ? 'border-blue-500 bg-gray-700'
                       : 'border-gray-600'
-                  } ${cn.image_base64 ? 'cursor-pointer' : ''}`}
-                  title={cn.image_base64 ? "Double-click to edit image" : ""}
+                  } ${imagePreviews.has(index) ? 'cursor-pointer' : ''}`}
+                  title={imagePreviews.has(index) ? "Double-click to edit image" : ""}
                 >
-                  {cn.image_base64 ? (
+                  {imagePreviews.has(index) ? (
                     <img
-                      src={`data:image/png;base64,${cn.image_base64}`}
+                      src={imagePreviews.get(index)}
                       alt="Control"
                       className="w-full h-full object-contain"
                     />
@@ -488,7 +514,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     </div>
                   )}
                 </div>
-                {cn.image_base64 && (
+                {imagePreviews.has(index) && (
                   <p className="text-xs text-gray-500 text-center mt-1">
                     💡 Double-click to edit
                   </p>
@@ -580,10 +606,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     </Card>
 
     {/* Image Editor Overlay - Use portal to render at document body level */}
-    {editingImageIndex !== null && value[editingImageIndex]?.image_base64 && typeof document !== 'undefined' &&
+    {editingImageIndex !== null && imagePreviews.has(editingImageIndex) && typeof document !== 'undefined' &&
       createPortal(
         <ImageEditor
-          imageUrl={`data:image/png;base64,${value[editingImageIndex].image_base64}`}
+          imageUrl={imagePreviews.get(editingImageIndex)!}
           onSave={handleSaveEditedImage}
           onClose={() => setEditingImageIndex(null)}
         />,

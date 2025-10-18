@@ -21,7 +21,7 @@ from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
 from core.prompt_processors import PromptEditingProcessor
 from core.schedulers import get_scheduler
-from core.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop
+from core.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 # Prompt parser imports are done locally in methods to avoid circular imports
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
@@ -1336,31 +1336,63 @@ class DiffusionPipelineManager:
         if fix_steps:
             print(f"[inpaint] Do full steps enabled: {requested_steps} requested steps -> {total_steps} total steps (t_enc: {t_enc})")
 
-        # Build generation parameters
-        gen_params = {
-            "prompt": params["prompt"],
-            "negative_prompt": params.get("negative_prompt", ""),
-            "image": init_image,
-            "mask_image": mask_image,
-            "width": target_width,
-            "height": target_height,
-            "strength": denoising_strength,
-            "num_inference_steps": total_steps,
-            "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
-            "generator": generator,
-        }
+        # Check for prompt editing syntax
+        prompt_processor = None
+        has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
 
-        # Add progress callback if provided
-        if progress_callback:
-            gen_params["callback"] = progress_callback
-            gen_params["callback_steps"] = 1
+        if has_prompt_editing:
+            print("[PromptEditing] Detected prompt editing syntax in inpaint")
+            prompt_processor = PromptEditingProcessor()
+            prompt_processor.parse(params["prompt"], total_steps)
+            initial_prompt = prompt_processor.current_prompt
+        else:
+            initial_prompt = params["prompt"]
 
-        # Add step callback for LoRA step range if provided
-        if step_callback:
-            gen_params["callback_on_step_end"] = step_callback
+        # Encode initial prompt
+        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
+            initial_prompt,
+            params.get("negative_prompt", ""),
+            pipeline=self.inpaint_pipeline
+        )
 
-        result = self.inpaint_pipeline(**gen_params)
-        image = result.images[0]
+        # Determine if SDXL
+        is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
+
+        # Prepare callback for prompt editing
+        prompt_embeds_callback_fn = None
+        if prompt_processor:
+            embeds_cache = {}
+            def prompt_embeds_callback_fn(step_index):
+                new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
+                if new_prompt is not None:
+                    if new_prompt not in embeds_cache:
+                        print(f"[PromptEditing] Step {step_index}/{total_steps}: Switching to prompt: {new_prompt}")
+                        new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
+                            new_prompt,
+                            params.get("negative_prompt", ""),
+                            pipeline=self.inpaint_pipeline
+                        )
+                        embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+                    return embeds_cache[new_prompt]
+                return None
+
+        # Use custom inpaint sampling loop
+        image = custom_inpaint_sampling_loop(
+            pipeline=self.inpaint_pipeline,
+            init_image=init_image,
+            mask_image=mask_image,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+            num_inference_steps=total_steps,
+            strength=denoising_strength,
+            guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+            generator=torch.Generator(device=self.device).manual_seed(seed),
+            prompt_embeds_callback=prompt_embeds_callback_fn,
+            progress_callback=progress_callback,
+            step_callback=step_callback,
+        )
 
         # Apply extensions after generation
         for ext in self.extensions:

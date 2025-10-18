@@ -15,6 +15,8 @@ from diffusers import (
     StableDiffusionXLPipeline,
     StableDiffusionImg2ImgPipeline,
     StableDiffusionXLImg2ImgPipeline,
+    StableDiffusionInpaintPipeline,
+    StableDiffusionXLInpaintPipeline,
 )
 from PIL import Image
 import numpy as np
@@ -337,3 +339,124 @@ def custom_img2img_sampling_loop(
     image = Image.fromarray(image[0])
 
     return image
+
+
+def custom_inpaint_sampling_loop(
+    pipeline: Union[StableDiffusionInpaintPipeline, StableDiffusionXLInpaintPipeline],
+    init_image: Image.Image,
+    mask_image: Image.Image,
+    prompt_embeds: torch.Tensor,
+    negative_prompt_embeds: torch.Tensor,
+    pooled_prompt_embeds: Optional[torch.Tensor] = None,
+    negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,
+    num_inference_steps: int = 50,
+    strength: float = 0.75,
+    guidance_scale: float = 7.5,
+    generator: Optional[torch.Generator] = None,
+    prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
+    progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
+    step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+) -> Image.Image:
+    """Custom inpaint sampling loop with prompt editing support"""
+    device = pipeline.device
+    dtype = pipeline.unet.dtype
+    is_sdxl = isinstance(pipeline, StableDiffusionXLInpaintPipeline)
+
+    unet = pipeline.unet
+    vae = pipeline.vae
+    scheduler = pipeline.scheduler
+
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = scheduler.timesteps
+
+    init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
+    t_start = max(num_inference_steps - init_timestep, 0)
+    timesteps = timesteps[t_start:]
+
+    # Prepare images
+    if isinstance(init_image, Image.Image):
+        init_image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+        init_image_tensor = init_image_tensor.permute(2, 0, 1).unsqueeze(0)
+        init_image_tensor = init_image_tensor * 2.0 - 1.0
+    else:
+        init_image_tensor = init_image
+
+    if isinstance(mask_image, Image.Image):
+        mask_tensor = torch.from_numpy(np.array(mask_image.convert("L"))).float() / 255.0
+        mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)
+    else:
+        mask_tensor = mask_image
+
+    with torch.no_grad():
+        init_latents = vae.encode(
+            init_image_tensor.to(device=device, dtype=dtype)
+        ).latent_dist.sample(generator)
+        init_latents = init_latents * vae.config.scaling_factor
+
+    mask_latent = torch.nn.functional.interpolate(
+        mask_tensor.to(device=device, dtype=dtype),
+        size=(init_latents.shape[-2], init_latents.shape[-1]),
+        mode="nearest"
+    )
+
+    noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
+    latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+
+    current_prompt_embeds = prompt_embeds
+    current_negative_prompt_embeds = negative_prompt_embeds
+    current_pooled_prompt_embeds = pooled_prompt_embeds
+    current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
+
+    print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
+
+    for i, t in enumerate(timesteps):
+        if prompt_embeds_callback is not None:
+            new_embeds = prompt_embeds_callback(t_start + i)
+            if new_embeds is not None:
+                current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
+
+        latent_model_input = torch.cat([latents] * 2)
+        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+        masked_image_latents = init_latents * (1 - mask_latent)
+        latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+
+        added_cond_kwargs = {}
+        if is_sdxl:
+            height, width = init_image_tensor.shape[-2:]
+            add_time_ids = list((height, width) + (0, 0) + (height, width))
+            add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
+            add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+
+            if current_pooled_prompt_embeds is not None:
+                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+
+        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+
+        with torch.no_grad():
+            noise_pred = unet(latent_model_input, t, encoder_hidden_states=prompt_embeds_input, **added_cond_kwargs).sample
+
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        latents = scheduler.step(noise_pred, t, latents).prev_sample
+
+        init_latents_proper = scheduler.add_noise(init_latents, noise, torch.tensor([t], device=device))
+        latents = init_latents_proper * (1 - mask_latent) + latents * mask_latent
+
+        if progress_callback is not None:
+            progress_callback(i, len(timesteps), latents)
+
+        if step_callback is not None:
+            callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})
+            latents = callback_kwargs.get("latents", latents)
+
+    latents = latents / vae.config.scaling_factor
+    with torch.no_grad():
+        image = vae.decode(latents).sample
+
+    image = (image / 2 + 0.5).clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).round().astype("uint8")
+    return Image.fromarray(image[0])

@@ -1077,9 +1077,22 @@ class DiffusionPipelineManager:
 
                 init_image = init_image.resize((target_width, target_height), resampling)
 
+        # Check for prompt editing syntax
+        prompt_processor = None
+        has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
+
+        if has_prompt_editing:
+            print("[PromptEditing] Detected prompt editing syntax in img2img")
+            prompt_processor = PromptEditingProcessor()
+            num_steps = params.get("steps", settings.default_steps)
+            prompt_processor.parse(params["prompt"], num_steps)
+            initial_prompt = prompt_processor.current_prompt
+        else:
+            initial_prompt = params["prompt"]
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
-            params["prompt"],
+            initial_prompt,
             params.get("negative_prompt", ""),
             pipeline=self.img2img_pipeline
         )
@@ -1203,13 +1216,49 @@ class DiffusionPipelineManager:
         if step_callback:
             gen_params["callback_on_step_end"] = step_callback
 
-        # Generate image
+        # Generate image using custom sampling loop
         try:
-            result = self.img2img_pipeline(**gen_params)
-            image = result.images[0]
+            print("[Pipeline] Using custom img2img sampling loop")
+
+            # Prepare prompt embeddings callback for prompt editing
+            prompt_embeds_callback_fn = None
+            if prompt_processor:
+                embeds_cache = {}
+
+                def prompt_embeds_callback_fn(step_index):
+                    new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
+                    if new_prompt is not None:
+                        if new_prompt not in embeds_cache:
+                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
+                                new_prompt,
+                                params.get("negative_prompt", ""),
+                                pipeline=self.img2img_pipeline
+                            )
+                            embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+                        return embeds_cache[new_prompt]
+                    return None
+
+            # Call custom img2img sampling loop
+            image = custom_img2img_sampling_loop(
+                pipeline=self.img2img_pipeline,
+                init_image=init_image,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                num_inference_steps=total_steps,
+                strength=denoising_strength,
+                guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+                generator=torch.Generator(device=self.device).manual_seed(actual_seed),
+                prompt_embeds_callback=prompt_embeds_callback_fn,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+            )
+
         except Exception as e:
             print(f"Generation error: {e}")
-            print(f"Parameters used: {gen_params}")
+            import traceback
+            traceback.print_exc()
             raise
 
         # Apply extensions after generation

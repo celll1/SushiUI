@@ -57,12 +57,14 @@ export interface GenerationParams {
 
 export interface Img2ImgParams extends GenerationParams {
   denoising_strength?: number;
+  img2img_fix_steps?: boolean;
   resize_mode?: string;
   resampling_method?: string;
 }
 
 export interface InpaintParams extends GenerationParams {
   denoising_strength?: number;
+  img2img_fix_steps?: boolean;
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
@@ -116,6 +118,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("steps", String(params.steps || 20));
   formData.append("cfg_scale", String(params.cfg_scale || 7.0));
   formData.append("denoising_strength", String(params.denoising_strength || 0.75));
+  formData.append("img2img_fix_steps", String(params.img2img_fix_steps ?? true));
   formData.append("sampler", params.sampler || "euler");
   formData.append("schedule_type", params.schedule_type || "uniform");
   formData.append("seed", String(params.seed || -1));
@@ -158,6 +161,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("steps", String(params.steps || 20));
   formData.append("cfg_scale", String(params.cfg_scale || 7.0));
   formData.append("denoising_strength", String(params.denoising_strength || 0.75));
+  formData.append("img2img_fix_steps", String(params.img2img_fix_steps ?? true));
   formData.append("mask_blur", String(params.mask_blur || 4));
   formData.append("sampler", params.sampler || "euler");
   formData.append("schedule_type", params.schedule_type || "uniform");

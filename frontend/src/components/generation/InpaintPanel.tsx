@@ -27,6 +27,7 @@ interface InpaintParams {
   width?: number;
   height?: number;
   denoising_strength?: number;
+  img2img_fix_steps?: boolean;
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
@@ -47,6 +48,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   width: 1024,
   height: 1024,
   denoising_strength: 0.75,
+  img2img_fix_steps: true,
   mask_blur: 4,
   inpaint_full_res: false,
   inpaint_full_res_padding: 32,
@@ -814,6 +816,18 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
               value={params.denoising_strength}
               onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
             />
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="inpaint_fix_steps"
+                checked={params.img2img_fix_steps ?? true}
+                onChange={(e) => setParams({ ...params, img2img_fix_steps: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="inpaint_fix_steps" className="text-sm text-gray-300">
+                Do full steps (ensures complete denoising regardless of strength)
+              </label>
+            </div>
 
             <Slider
               label="Mask Blur"

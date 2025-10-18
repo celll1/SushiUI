@@ -259,6 +259,7 @@ async def generate_img2img(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     denoising_strength: float = Form(0.75),
+    img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -312,6 +313,7 @@ async def generate_img2img(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "denoising_strength": denoising_strength,
+            "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -350,8 +352,13 @@ async def generate_img2img(
 
         # Progress callback to send updates via WebSocket
         def progress_callback(step, timestep, latents):
-            # Calculate actual steps based on denoising strength
-            actual_steps = int(steps * denoising_strength)
+            # Calculate actual steps based on img2img_fix_steps setting
+            if img2img_fix_steps:
+                # When fix_steps is enabled, we show the requested steps
+                actual_steps = steps
+            else:
+                # Standard behavior: steps * strength
+                actual_steps = int(steps * denoising_strength)
 
             # Generate preview image from latent
             preview_image = None
@@ -467,6 +474,7 @@ async def generate_inpaint(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     denoising_strength: float = Form(0.75),
+    img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -536,6 +544,7 @@ async def generate_inpaint(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "denoising_strength": denoising_strength,
+            "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -575,8 +584,13 @@ async def generate_inpaint(
 
         # Progress callback to send updates via WebSocket
         def progress_callback(step, timestep, latents):
-            # Calculate actual steps based on denoising strength
-            actual_steps = int(steps * denoising_strength)
+            # Calculate actual steps based on img2img_fix_steps setting
+            if img2img_fix_steps:
+                # When fix_steps is enabled, we show the requested steps
+                actual_steps = steps
+            else:
+                # Standard behavior: steps * strength
+                actual_steps = int(steps * denoising_strength)
 
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None

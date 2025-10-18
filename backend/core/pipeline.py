@@ -181,6 +181,34 @@ class DiffusionPipelineManager:
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
 
+    def _setup_img2img_steps(self, requested_steps: int, denoising_strength: float, fix_steps: bool = None) -> tuple[int, int]:
+        """Calculate proper steps for img2img/inpaint to ensure full denoising
+
+        Args:
+            requested_steps: The number of steps the user wants to perform
+            denoising_strength: Denoising strength (0.0 to 1.0)
+            fix_steps: Override for img2img_fix_steps setting (defaults to settings value)
+
+        Returns:
+            tuple: (total_steps, t_enc) where total_steps is the adjusted step count
+                   and t_enc is the encoding timestep
+        """
+        # Use parameter if provided, otherwise fall back to settings
+        if fix_steps is None:
+            fix_steps = settings.img2img_fix_steps
+
+        if fix_steps:
+            # Adjust total steps so that actual denoising steps = requested_steps
+            # This ensures proper denoising even with low denoising strength
+            total_steps = int(requested_steps / min(denoising_strength, 0.999)) if denoising_strength > 0 else 0
+            t_enc = requested_steps - 1
+        else:
+            # Standard behavior: steps * strength
+            total_steps = requested_steps
+            t_enc = int(min(denoising_strength, 0.999) * requested_steps)
+
+        return total_steps, t_enc
+
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
         print(f"\n[Pipeline] Component devices - {context}:")
@@ -1031,11 +1059,20 @@ class DiffusionPipelineManager:
                 decoded = (decoded * 255).round().astype("uint8")
                 init_image = Image.fromarray(decoded[0])
 
+        # Calculate proper steps for img2img
+        requested_steps = params.get("steps", settings.default_steps)
+        denoising_strength = params.get("denoising_strength", 0.75)
+        fix_steps = params.get("img2img_fix_steps", True)
+        total_steps, t_enc = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
+
+        if fix_steps:
+            print(f"[img2img] Do full steps enabled: {requested_steps} requested steps -> {total_steps} total steps (t_enc: {t_enc})")
+
         # Prepare generation parameters
         gen_params = {
             "image": init_image,
-            "strength": params.get("denoising_strength", 0.75),
-            "num_inference_steps": params.get("steps", settings.default_steps),
+            "strength": denoising_strength,
+            "num_inference_steps": total_steps,
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
             "generator": torch.Generator(device=self.device).manual_seed(actual_seed),
         }
@@ -1139,6 +1176,15 @@ class DiffusionPipelineManager:
         if mask_image.size != (target_width, target_height):
             mask_image = mask_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
+        # Calculate proper steps for inpaint
+        requested_steps = params.get("steps", settings.default_steps)
+        denoising_strength = params.get("denoising_strength", 0.75)
+        fix_steps = params.get("img2img_fix_steps", True)
+        total_steps, t_enc = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
+
+        if fix_steps:
+            print(f"[inpaint] Do full steps enabled: {requested_steps} requested steps -> {total_steps} total steps (t_enc: {t_enc})")
+
         # Build generation parameters
         gen_params = {
             "prompt": params["prompt"],
@@ -1147,8 +1193,8 @@ class DiffusionPipelineManager:
             "mask_image": mask_image,
             "width": target_width,
             "height": target_height,
-            "strength": params.get("denoising_strength", 0.75),
-            "num_inference_steps": params.get("steps", settings.default_steps),
+            "strength": denoising_strength,
+            "num_inference_steps": total_steps,
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
             "generator": generator,
         }

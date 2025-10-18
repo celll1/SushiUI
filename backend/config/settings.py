@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     default_sampler: str = "euler_a"
     default_width: int = 512
     default_height: int = 512
+    img2img_fix_steps: bool = True  # Do full steps for img2img/inpaint
 
     # System
     max_batch_size: int = 4

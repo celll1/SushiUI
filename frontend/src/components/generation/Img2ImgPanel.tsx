@@ -27,6 +27,7 @@ interface Img2ImgParams {
   width?: number;
   height?: number;
   denoising_strength?: number;
+  img2img_fix_steps?: boolean;
   loras?: LoRAConfig[];
   controlnets?: ControlNetConfig[];
 }
@@ -42,6 +43,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   width: 1024,
   height: 1024,
   denoising_strength: 0.75,
+  img2img_fix_steps: true,
   resize_mode: "image",
   resampling_method: "lanczos",
   loras: [],
@@ -678,6 +680,18 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
               value={params.denoising_strength}
               onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
             />
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="img2img_fix_steps"
+                checked={params.img2img_fix_steps ?? true}
+                onChange={(e) => setParams({ ...params, img2img_fix_steps: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="img2img_fix_steps" className="text-sm text-gray-300">
+                Do full steps (ensures complete denoising regardless of strength)
+              </label>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <Select
                 label="Resize Mode"

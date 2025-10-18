@@ -941,52 +941,58 @@ class DiffusionPipelineManager:
 
         # Generate image
         try:
-            # Use custom sampling loop for more control (especially for prompt editing)
-            # ControlNet support will be added later
-            if not controlnet_images:
-                print("[Pipeline] Using custom sampling loop")
+            # Always use custom sampling loop for consistent behavior
+            print("[Pipeline] Using custom sampling loop")
 
-                # Prepare prompt embeddings callback for prompt editing
-                prompt_embeds_callback_fn = None
-                if prompt_processor:
-                    embeds_cache = {}
+            # Prepare prompt embeddings callback for prompt editing
+            prompt_embeds_callback_fn = None
+            if prompt_processor:
+                embeds_cache = {}
 
-                    def prompt_embeds_callback_fn(step_index):
-                        new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
-                        if new_prompt is not None:
-                            if new_prompt not in embeds_cache:
-                                new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
-                                    new_prompt,
-                                    params.get("negative_prompt", ""),
-                                    pipeline=self.txt2img_pipeline
-                                )
-                                embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
-                            return embeds_cache[new_prompt]
-                        return None
+                def prompt_embeds_callback_fn(step_index):
+                    new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
+                    if new_prompt is not None:
+                        if new_prompt not in embeds_cache:
+                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
+                                new_prompt,
+                                params.get("negative_prompt", ""),
+                                pipeline=pipeline_to_use
+                            )
+                            embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+                        return embeds_cache[new_prompt]
+                    return None
 
-                # Call custom sampling loop
-                image = custom_sampling_loop(
-                    pipeline=self.txt2img_pipeline,
-                    prompt_embeds=prompt_embeds,
-                    negative_prompt_embeds=negative_prompt_embeds,
-                    pooled_prompt_embeds=pooled_prompt_embeds,
-                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                    num_inference_steps=params.get("steps", settings.default_steps),
-                    guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
-                    width=params.get("width", 1024 if is_sdxl else settings.default_width),
-                    height=params.get("height", 1024 if is_sdxl else settings.default_height),
-                    generator=generator,
-                    latents=None,
-                    prompt_embeds_callback=prompt_embeds_callback_fn,
-                    progress_callback=progress_callback,
-                    step_callback=step_callback,
-                )
-            else:
-                # Use standard pipeline for ControlNet (for now)
-                print("[Pipeline] Using standard pipeline (ControlNet detected)")
-                gen_params["generator"] = generator
-                result = pipeline_to_use(**gen_params)
-                image = result.images[0]
+            # Prepare ControlNet parameters
+            controlnet_kwargs = {}
+            if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
+                controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
+                controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
+                controlnet_kwargs['controlnet_conditioning_scale'] = controlnet_scales if len(controlnet_scales) > 1 else controlnet_scales[0]
+
+                total_steps = params.get("steps", settings.default_steps)
+                guidance_starts = [cn.get("start_step", 0) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+                guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+                controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
+                controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
+
+            # Call custom sampling loop
+            image = custom_sampling_loop(
+                pipeline=pipeline_to_use,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                num_inference_steps=params.get("steps", settings.default_steps),
+                guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+                width=params.get("width", 1024 if is_sdxl else settings.default_width),
+                height=params.get("height", 1024 if is_sdxl else settings.default_height),
+                generator=generator,
+                latents=None,
+                prompt_embeds_callback=prompt_embeds_callback_fn,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                **controlnet_kwargs,
+            )
 
         except Exception as e:
             print(f"Generation error: {e}")
@@ -1090,11 +1096,25 @@ class DiffusionPipelineManager:
         else:
             initial_prompt = params["prompt"]
 
+        # Handle ControlNet if specified
+        controlnet_images = params.get("controlnet_images", [])
+        pipeline_to_use = self.img2img_pipeline
+
+        if controlnet_images:
+            print(f"Applying {len(controlnet_images)} ControlNet(s) to img2img")
+            pipeline_to_use = self._apply_controlnets(
+                self.img2img_pipeline,
+                controlnet_images,
+                target_width or settings.default_width,
+                target_height or settings.default_height,
+                is_sdxl
+            )
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
             params.get("negative_prompt", ""),
-            pipeline=self.img2img_pipeline
+            pipeline=pipeline_to_use
         )
 
         # Handle latent resize mode by encoding, resizing latent, then decoding
@@ -1232,15 +1252,27 @@ class DiffusionPipelineManager:
                             new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
                                 new_prompt,
                                 params.get("negative_prompt", ""),
-                                pipeline=self.img2img_pipeline
+                                pipeline=pipeline_to_use
                             )
                             embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
                         return embeds_cache[new_prompt]
                     return None
 
+            # Prepare ControlNet parameters
+            controlnet_kwargs = {}
+            if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
+                controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
+                controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
+                controlnet_kwargs['controlnet_conditioning_scale'] = controlnet_scales if len(controlnet_scales) > 1 else controlnet_scales[0]
+
+                guidance_starts = [cn.get("start_step", 0) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+                guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+                controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
+                controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
+
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
-                pipeline=self.img2img_pipeline,
+                pipeline=pipeline_to_use,
                 init_image=init_image,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
@@ -1253,6 +1285,7 @@ class DiffusionPipelineManager:
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
                 step_callback=step_callback,
+                **controlnet_kwargs,
             )
 
         except Exception as e:
@@ -1348,15 +1381,29 @@ class DiffusionPipelineManager:
         else:
             initial_prompt = params["prompt"]
 
+        # Determine if SDXL
+        is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
+
+        # Handle ControlNet if specified
+        controlnet_images = params.get("controlnet_images", [])
+        pipeline_to_use = self.inpaint_pipeline
+
+        if controlnet_images:
+            print(f"Applying {len(controlnet_images)} ControlNet(s) to inpaint")
+            pipeline_to_use = self._apply_controlnets(
+                self.inpaint_pipeline,
+                controlnet_images,
+                target_width,
+                target_height,
+                is_sdxl
+            )
+
         # Encode initial prompt
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
             params.get("negative_prompt", ""),
-            pipeline=self.inpaint_pipeline
+            pipeline=pipeline_to_use
         )
-
-        # Determine if SDXL
-        is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
 
         # Prepare callback for prompt editing
         prompt_embeds_callback_fn = None
@@ -1370,15 +1417,27 @@ class DiffusionPipelineManager:
                         new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
                             new_prompt,
                             params.get("negative_prompt", ""),
-                            pipeline=self.inpaint_pipeline
+                            pipeline=pipeline_to_use
                         )
                         embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
                     return embeds_cache[new_prompt]
                 return None
 
+        # Prepare ControlNet parameters
+        controlnet_kwargs = {}
+        if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
+            controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
+            controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
+            controlnet_kwargs['controlnet_conditioning_scale'] = controlnet_scales if len(controlnet_scales) > 1 else controlnet_scales[0]
+
+            guidance_starts = [cn.get("start_step", 0) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+            guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
+            controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
+            controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
+
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(
-            pipeline=self.inpaint_pipeline,
+            pipeline=pipeline_to_use,
             init_image=init_image,
             mask_image=mask_image,
             prompt_embeds=prompt_embeds,
@@ -1392,6 +1451,7 @@ class DiffusionPipelineManager:
             prompt_embeds_callback=prompt_embeds_callback_fn,
             progress_callback=progress_callback,
             step_callback=step_callback,
+            **controlnet_kwargs,
         )
 
         # Apply extensions after generation

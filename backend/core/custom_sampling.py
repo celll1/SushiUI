@@ -37,8 +37,12 @@ def custom_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    controlnet_images: Optional[List[Image.Image]] = None,
+    controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
+    control_guidance_start: Optional[Union[float, List[float]]] = None,
+    control_guidance_end: Optional[Union[float, List[float]]] = None,
 ) -> Image.Image:
-    """Custom sampling loop with prompt editing support
+    """Custom sampling loop with prompt editing and ControlNet support
 
     Args:
         pipeline: The diffusers pipeline (SD or SDXL)
@@ -56,6 +60,10 @@ def custom_sampling_loop(
             Called with (step_index) -> (prompt_embeds, negative_prompt_embeds, pooled, neg_pooled)
         progress_callback: Callback for progress updates (step, total, latents)
         step_callback: Callback after each step for custom processing
+        controlnet_images: List of control images for ControlNet
+        controlnet_conditioning_scale: Strength of ControlNet conditioning (float or list)
+        control_guidance_start: When to start ControlNet guidance (0.0-1.0, float or list)
+        control_guidance_end: When to end ControlNet guidance (0.0-1.0, float or list)
 
     Returns:
         Generated PIL Image
@@ -69,6 +77,44 @@ def custom_sampling_loop(
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Check if ControlNet is present
+    controlnet = getattr(pipeline, 'controlnet', None)
+    has_controlnet = controlnet is not None and controlnet_images is not None
+
+    if has_controlnet:
+        print(f"[CustomSampling] ControlNet detected, preparing control images")
+        # Prepare control images
+        if not isinstance(controlnet_images, list):
+            controlnet_images = [controlnet_images]
+
+        # Convert PIL images to tensors
+        control_image_tensors = []
+        for img in controlnet_images:
+            if isinstance(img, Image.Image):
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = torch.from_numpy(np.array(img)).float() / 255.0
+                if img.ndim == 2:  # Grayscale
+                    img = img.unsqueeze(-1).repeat(1, 1, 3)
+                img = img.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            control_image_tensors.append(img.to(device=device, dtype=dtype))
+
+        # Normalize conditioning scales
+        if controlnet_conditioning_scale is None:
+            controlnet_conditioning_scale = 1.0
+        if not isinstance(controlnet_conditioning_scale, list):
+            controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(control_image_tensors)
+
+        # Normalize guidance ranges
+        if control_guidance_start is None:
+            control_guidance_start = 0.0
+        if not isinstance(control_guidance_start, list):
+            control_guidance_start = [control_guidance_start] * len(control_image_tensors)
+
+        if control_guidance_end is None:
+            control_guidance_end = 1.0
+        if not isinstance(control_guidance_end, list):
+            control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
     # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
@@ -140,12 +186,70 @@ def custom_sampling_loop(
         # Concatenate prompt embeddings for CFG (negative first, then positive)
         prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
+        # Get ControlNet residuals if present
+        down_block_res_samples = None
+        mid_block_res_sample = None
+
+        if has_controlnet:
+            # Check if this step is within the guidance range
+            current_fraction = i / num_inference_steps
+
+            # Calculate active ControlNet scales for this step
+            active_scales = []
+            for idx, (start, end, scale) in enumerate(zip(control_guidance_start, control_guidance_end, controlnet_conditioning_scale)):
+                if start <= current_fraction <= end:
+                    active_scales.append(scale)
+                else:
+                    active_scales.append(0.0)  # Disable ControlNet outside guidance range
+
+            # Only run ControlNet if at least one is active
+            if any(s > 0 for s in active_scales):
+                with torch.no_grad():
+                    # Get ControlNet conditioning
+                    if isinstance(controlnet, list):
+                        # Multiple ControlNets
+                        down_block_res_samples_list = []
+                        mid_block_res_sample_list = []
+                        for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
+                            if scale > 0:
+                                ctrl_result = cn(
+                                    latent_model_input,
+                                    t,
+                                    encoder_hidden_states=prompt_embeds_input,
+                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),  # For CFG
+                                    conditioning_scale=scale,
+                                    return_dict=False,
+                                )
+                                down_samples, mid_sample = ctrl_result
+                                down_block_res_samples_list.append(down_samples)
+                                mid_block_res_sample_list.append(mid_sample)
+
+                        # Sum all ControlNet outputs
+                        if down_block_res_samples_list:
+                            down_block_res_samples = [
+                                sum(samples) for samples in zip(*down_block_res_samples_list)
+                            ]
+                            mid_block_res_sample = sum(mid_block_res_sample_list)
+                    else:
+                        # Single ControlNet
+                        if active_scales[0] > 0:
+                            down_block_res_samples, mid_block_res_sample = controlnet(
+                                latent_model_input,
+                                t,
+                                encoder_hidden_states=prompt_embeds_input,
+                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),  # For CFG
+                                conditioning_scale=active_scales[0],
+                                return_dict=False,
+                            )
+
         # Predict noise residual
         with torch.no_grad():
             noise_pred = unet(
                 latent_model_input,
                 t,
                 encoder_hidden_states=prompt_embeds_input,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
                 **added_cond_kwargs
             ).sample
 
@@ -196,8 +300,12 @@ def custom_img2img_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    controlnet_images: Optional[List[Image.Image]] = None,
+    controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
+    control_guidance_start: Optional[Union[float, List[float]]] = None,
+    control_guidance_end: Optional[Union[float, List[float]]] = None,
 ) -> Image.Image:
-    """Custom img2img sampling loop with prompt editing support
+    """Custom img2img sampling loop with prompt editing and ControlNet support
 
     Args:
         pipeline: The diffusers img2img pipeline
@@ -213,6 +321,10 @@ def custom_img2img_sampling_loop(
         prompt_embeds_callback: Callback to get new embeddings at each step
         progress_callback: Callback for progress updates
         step_callback: Callback after each step
+        controlnet_images: List of control images for ControlNet
+        controlnet_conditioning_scale: Strength of ControlNet conditioning
+        control_guidance_start: When to start ControlNet guidance (0.0-1.0)
+        control_guidance_end: When to end ControlNet guidance (0.0-1.0)
 
     Returns:
         Generated PIL Image
@@ -225,6 +337,47 @@ def custom_img2img_sampling_loop(
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Get image dimensions
+    width, height = init_image.size
+
+    # Check if ControlNet is present
+    controlnet = getattr(pipeline, 'controlnet', None)
+    has_controlnet = controlnet is not None and controlnet_images is not None
+
+    if has_controlnet:
+        print(f"[CustomSampling] ControlNet detected in img2img, preparing control images")
+        # Prepare control images
+        if not isinstance(controlnet_images, list):
+            controlnet_images = [controlnet_images]
+
+        # Convert PIL images to tensors
+        control_image_tensors = []
+        for img in controlnet_images:
+            if isinstance(img, Image.Image):
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = torch.from_numpy(np.array(img)).float() / 255.0
+                if img.ndim == 2:  # Grayscale
+                    img = img.unsqueeze(-1).repeat(1, 1, 3)
+                img = img.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            control_image_tensors.append(img.to(device=device, dtype=dtype))
+
+        # Normalize conditioning scales
+        if controlnet_conditioning_scale is None:
+            controlnet_conditioning_scale = 1.0
+        if not isinstance(controlnet_conditioning_scale, list):
+            controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(control_image_tensors)
+
+        # Normalize guidance ranges
+        if control_guidance_start is None:
+            control_guidance_start = 0.0
+        if not isinstance(control_guidance_start, list):
+            control_guidance_start = [control_guidance_start] * len(control_image_tensors)
+
+        if control_guidance_end is None:
+            control_guidance_end = 1.0
+        if not isinstance(control_guidance_end, list):
+            control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
     # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
@@ -299,12 +452,69 @@ def custom_img2img_sampling_loop(
         # Concatenate prompt embeddings for CFG
         prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
+        # Get ControlNet residuals if present
+        down_block_res_samples = None
+        mid_block_res_sample = None
+
+        if has_controlnet:
+            # Check if this step is within the guidance range
+            current_fraction = (t_start + i) / num_inference_steps
+
+            # Calculate active ControlNet scales for this step
+            active_scales = []
+            for idx, (start, end, scale) in enumerate(zip(control_guidance_start, control_guidance_end, controlnet_conditioning_scale)):
+                if start <= current_fraction <= end:
+                    active_scales.append(scale)
+                else:
+                    active_scales.append(0.0)
+
+            # Only run ControlNet if at least one is active
+            if any(s > 0 for s in active_scales):
+                with torch.no_grad():
+                    if isinstance(controlnet, list):
+                        # Multiple ControlNets
+                        down_block_res_samples_list = []
+                        mid_block_res_sample_list = []
+                        for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
+                            if scale > 0:
+                                ctrl_result = cn(
+                                    latent_model_input,
+                                    t,
+                                    encoder_hidden_states=prompt_embeds_input,
+                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),
+                                    conditioning_scale=scale,
+                                    return_dict=False,
+                                )
+                                down_samples, mid_sample = ctrl_result
+                                down_block_res_samples_list.append(down_samples)
+                                mid_block_res_sample_list.append(mid_sample)
+
+                        # Sum all ControlNet outputs
+                        if down_block_res_samples_list:
+                            down_block_res_samples = [
+                                sum(samples) for samples in zip(*down_block_res_samples_list)
+                            ]
+                            mid_block_res_sample = sum(mid_block_res_sample_list)
+                    else:
+                        # Single ControlNet
+                        if active_scales[0] > 0:
+                            down_block_res_samples, mid_block_res_sample = controlnet(
+                                latent_model_input,
+                                t,
+                                encoder_hidden_states=prompt_embeds_input,
+                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),
+                                conditioning_scale=active_scales[0],
+                                return_dict=False,
+                            )
+
         # Predict noise residual
         with torch.no_grad():
             noise_pred = unet(
                 latent_model_input,
                 t,
                 encoder_hidden_states=prompt_embeds_input,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
                 **added_cond_kwargs
             ).sample
 
@@ -356,8 +566,12 @@ def custom_inpaint_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    controlnet_images: Optional[List[Image.Image]] = None,
+    controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
+    control_guidance_start: Optional[Union[float, List[float]]] = None,
+    control_guidance_end: Optional[Union[float, List[float]]] = None,
 ) -> Image.Image:
-    """Custom inpaint sampling loop with prompt editing support"""
+    """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
     dtype = pipeline.unet.dtype
     is_sdxl = isinstance(pipeline, StableDiffusionXLInpaintPipeline)
@@ -365,6 +579,43 @@ def custom_inpaint_sampling_loop(
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Get image dimensions
+    width, height = init_image.size
+
+    # Check if ControlNet is present
+    controlnet = getattr(pipeline, 'controlnet', None)
+    has_controlnet = controlnet is not None and controlnet_images is not None
+
+    if has_controlnet:
+        print(f"[CustomSampling] ControlNet detected in inpaint, preparing control images")
+        if not isinstance(controlnet_images, list):
+            controlnet_images = [controlnet_images]
+
+        control_image_tensors = []
+        for img in controlnet_images:
+            if isinstance(img, Image.Image):
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = torch.from_numpy(np.array(img)).float() / 255.0
+                if img.ndim == 2:
+                    img = img.unsqueeze(-1).repeat(1, 1, 3)
+                img = img.permute(2, 0, 1).unsqueeze(0)
+            control_image_tensors.append(img.to(device=device, dtype=dtype))
+
+        if controlnet_conditioning_scale is None:
+            controlnet_conditioning_scale = 1.0
+        if not isinstance(controlnet_conditioning_scale, list):
+            controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(control_image_tensors)
+
+        if control_guidance_start is None:
+            control_guidance_start = 0.0
+        if not isinstance(control_guidance_start, list):
+            control_guidance_start = [control_guidance_start] * len(control_image_tensors)
+
+        if control_guidance_end is None:
+            control_guidance_end = 1.0
+        if not isinstance(control_guidance_end, list):
+            control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
@@ -434,8 +685,63 @@ def custom_inpaint_sampling_loop(
 
         prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
+        # Get ControlNet residuals if present
+        down_block_res_samples = None
+        mid_block_res_sample = None
+
+        if has_controlnet:
+            current_fraction = (t_start + i) / num_inference_steps
+            active_scales = []
+            for idx, (start, end, scale) in enumerate(zip(control_guidance_start, control_guidance_end, controlnet_conditioning_scale)):
+                if start <= current_fraction <= end:
+                    active_scales.append(scale)
+                else:
+                    active_scales.append(0.0)
+
+            if any(s > 0 for s in active_scales):
+                with torch.no_grad():
+                    if isinstance(controlnet, list):
+                        down_block_res_samples_list = []
+                        mid_block_res_sample_list = []
+                        for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
+                            if scale > 0:
+                                ctrl_result = cn(
+                                    latent_model_input,
+                                    t,
+                                    encoder_hidden_states=prompt_embeds_input,
+                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),
+                                    conditioning_scale=scale,
+                                    return_dict=False,
+                                )
+                                down_samples, mid_sample = ctrl_result
+                                down_block_res_samples_list.append(down_samples)
+                                mid_block_res_sample_list.append(mid_sample)
+
+                        if down_block_res_samples_list:
+                            down_block_res_samples = [
+                                sum(samples) for samples in zip(*down_block_res_samples_list)
+                            ]
+                            mid_block_res_sample = sum(mid_block_res_sample_list)
+                    else:
+                        if active_scales[0] > 0:
+                            down_block_res_samples, mid_block_res_sample = controlnet(
+                                latent_model_input,
+                                t,
+                                encoder_hidden_states=prompt_embeds_input,
+                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),
+                                conditioning_scale=active_scales[0],
+                                return_dict=False,
+                            )
+
         with torch.no_grad():
-            noise_pred = unet(latent_model_input, t, encoder_hidden_states=prompt_embeds_input, **added_cond_kwargs).sample
+            noise_pred = unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds_input,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
+                **added_cond_kwargs
+            ).sample
 
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)

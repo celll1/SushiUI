@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from PIL import Image
 import torch
 import json
@@ -19,7 +19,9 @@ from diffusers import (
 from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
+from core.prompt_processors import PromptEditingProcessor
 from core.schedulers import get_scheduler
+from core.custom_sampling import custom_sampling_loop
 # Prompt parser imports are done locally in methods to avoid circular imports
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
@@ -776,9 +778,24 @@ class DiffusionPipelineManager:
         # Check if SDXL
         is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
+        # Check for prompt editing syntax
+        prompt_processor = None
+        has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
+
+        if has_prompt_editing:
+            print("[PromptEditing] Detected prompt editing syntax")
+            prompt_processor = PromptEditingProcessor()
+            num_steps = params.get("steps", settings.default_steps)
+            prompt_processor.parse(params["prompt"], num_steps)
+
+            # Use the initial (cleaned) prompt for encoding
+            initial_prompt = prompt_processor.current_prompt
+        else:
+            initial_prompt = params["prompt"]
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
-            params["prompt"],
+            initial_prompt,
             params.get("negative_prompt", ""),
             pipeline=self.txt2img_pipeline
         )
@@ -846,7 +863,7 @@ class DiffusionPipelineManager:
         else:
             actual_seed = seed
 
-        gen_params["generator"] = torch.Generator(device=self.device).manual_seed(actual_seed)
+        generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
         # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
@@ -879,17 +896,102 @@ class DiffusionPipelineManager:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
 
-        # Add step callback for LoRA step range if provided
-        if step_callback:
-            gen_params["callback_on_step_end"] = step_callback
+        # Create combined step callback for prompt editing and LoRA step range
+        if prompt_processor or step_callback:
+            # Store embeds cache for prompt editing
+            embeds_cache = {}
+
+            def combined_step_callback(pipe, step_index, timestep, callback_kwargs):
+                # Handle prompt editing
+                if prompt_processor:
+                    new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
+
+                    if new_prompt is not None:
+                        print(f"[PromptEditing] Step {step_index}: Re-encoding prompt")
+
+                        # Check if we've already encoded this prompt
+                        if new_prompt not in embeds_cache:
+                            # Re-encode the new prompt
+                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
+                                new_prompt,
+                                params.get("negative_prompt", ""),
+                                pipeline=self.txt2img_pipeline
+                            )
+                            embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+                        else:
+                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = embeds_cache[new_prompt]
+
+                        # Update the embeddings in callback_kwargs
+                        if 'prompt_embeds' in callback_kwargs:
+                            callback_kwargs['prompt_embeds'] = new_embeds
+                        if 'negative_prompt_embeds' in callback_kwargs:
+                            callback_kwargs['negative_prompt_embeds'] = new_neg_embeds
+                        if new_pooled is not None and 'pooled_prompt_embeds' in callback_kwargs:
+                            callback_kwargs['pooled_prompt_embeds'] = new_pooled
+                        if new_neg_pooled is not None and 'negative_pooled_prompt_embeds' in callback_kwargs:
+                            callback_kwargs['negative_pooled_prompt_embeds'] = new_neg_pooled
+
+                # Handle LoRA step range callback
+                if step_callback:
+                    callback_kwargs = step_callback(pipe, step_index, timestep, callback_kwargs)
+
+                return callback_kwargs
+
+            gen_params["callback_on_step_end"] = combined_step_callback
 
         # Generate image
         try:
-            result = pipeline_to_use(**gen_params)
-            image = result.images[0]
+            # Use custom sampling loop for more control (especially for prompt editing)
+            # ControlNet support will be added later
+            if not controlnet_images:
+                print("[Pipeline] Using custom sampling loop")
+
+                # Prepare prompt embeddings callback for prompt editing
+                prompt_embeds_callback_fn = None
+                if prompt_processor:
+                    embeds_cache = {}
+
+                    def prompt_embeds_callback_fn(step_index):
+                        new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
+                        if new_prompt is not None:
+                            if new_prompt not in embeds_cache:
+                                new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
+                                    new_prompt,
+                                    params.get("negative_prompt", ""),
+                                    pipeline=self.txt2img_pipeline
+                                )
+                                embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+                            return embeds_cache[new_prompt]
+                        return None
+
+                # Call custom sampling loop
+                image = custom_sampling_loop(
+                    pipeline=self.txt2img_pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    pooled_prompt_embeds=pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                    num_inference_steps=params.get("steps", settings.default_steps),
+                    guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+                    width=params.get("width", 1024 if is_sdxl else settings.default_width),
+                    height=params.get("height", 1024 if is_sdxl else settings.default_height),
+                    generator=generator,
+                    latents=None,
+                    prompt_embeds_callback=prompt_embeds_callback_fn,
+                    progress_callback=progress_callback,
+                    step_callback=step_callback,
+                )
+            else:
+                # Use standard pipeline for ControlNet (for now)
+                print("[Pipeline] Using standard pipeline (ControlNet detected)")
+                gen_params["generator"] = generator
+                result = pipeline_to_use(**gen_params)
+                image = result.images[0]
+
         except Exception as e:
             print(f"Generation error: {e}")
-            print(f"Parameters used: {gen_params}")
+            import traceback
+            traceback.print_exc()
             raise
         finally:
             # Clear intermediate tensors

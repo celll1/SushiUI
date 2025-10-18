@@ -21,7 +21,7 @@ from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
 from core.prompt_processors import PromptEditingProcessor
 from core.schedulers import get_scheduler
-from core.custom_sampling import custom_sampling_loop
+from core.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop
 # Prompt parser imports are done locally in methods to avoid circular imports
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")

@@ -184,6 +184,26 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     });
   }, [value]);
 
+  // Auto-preprocess images when restored from localStorage
+  useEffect(() => {
+    if (!imagesLoaded) return;
+
+    value.forEach((cn, index) => {
+      // Check if we have an image and preprocessor enabled, but no preprocessed preview yet
+      if (
+        imagePreviews.has(index) &&
+        cn.enable_preprocessor &&
+        cn.preprocessor &&
+        cn.preprocessor !== "none" &&
+        !preprocessedPreviews.has(index) &&
+        !isPreprocessing.get(index)
+      ) {
+        console.log(`[ControlNetSelector] Auto-preprocessing restored image at index ${index} with ${cn.preprocessor}`);
+        preprocessImage(index);
+      }
+    });
+  }, [value, imagePreviews, imagesLoaded]);
+
   const loadControlNets = async () => {
     try {
       const data = await getControlNets();
@@ -383,11 +403,15 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     }
   };
 
-  const preprocessImage = async (index: number) => {
+  const preprocessImage = async (index: number, forcePreprocessor?: string) => {
     const imageData = imagePreviews.get(index);
     const cn = value[index];
 
-    if (!imageData || !cn.enable_preprocessor || !cn.preprocessor || cn.preprocessor === "none") {
+    // Use forced preprocessor or current config
+    const preprocessor = forcePreprocessor || cn.preprocessor;
+
+    if (!imageData || !cn.enable_preprocessor || !preprocessor || preprocessor === "none") {
+      console.log(`[ControlNetSelector] Skipping preprocessing: imageData=${!!imageData}, enable=${cn.enable_preprocessor}, preprocessor=${preprocessor}`);
       return;
     }
 
@@ -398,8 +422,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       const response = await fetch(imageData);
       const blob = await response.blob();
 
-      console.log(`[ControlNetSelector] Preprocessing image with ${cn.preprocessor}...`);
-      const result = await preprocessControlNetImage(blob, cn.preprocessor);
+      console.log(`[ControlNetSelector] Preprocessing image with ${preprocessor}...`);
+      const result = await preprocessControlNetImage(blob, preprocessor);
 
       // Store preprocessed preview
       setPreprocessedPreviews(prev => new Map(prev).set(index, result.preprocessed_image));
@@ -678,22 +702,28 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                         value={cn.preprocessor || "none"}
                         onChange={async (e) => {
                           const newPreprocessor = e.target.value;
+
+                          // Clear existing preprocessed preview immediately
+                          setPreprocessedPreviews(prev => {
+                            const newMap = new Map(prev);
+                            newMap.delete(index);
+                            return newMap;
+                          });
+
+                          // Reset show preprocessed flag
+                          setShowPreprocessed(prev => {
+                            const newMap = new Map(prev);
+                            newMap.set(index, false);
+                            return newMap;
+                          });
+
+                          // Update config
                           await updateControlNet(index, { preprocessor: newPreprocessor });
-                          // Clear old preprocessed preview and re-preprocess with new preprocessor
-                          if (imagePreviews.has(index)) {
-                            // Clear existing preprocessed preview first
-                            setPreprocessedPreviews(prev => {
-                              const newMap = new Map(prev);
-                              newMap.delete(index);
-                              return newMap;
-                            });
-                            // Re-preprocess if not "none"
-                            if (newPreprocessor !== "none") {
-                              // Wait a bit for state update before preprocessing
-                              setTimeout(async () => {
-                                await preprocessImage(index);
-                              }, 100);
-                            }
+
+                          // Re-preprocess with new preprocessor if not "none"
+                          if (imagePreviews.has(index) && newPreprocessor !== "none") {
+                            // Use forcePreprocessor parameter to ensure we use the new one
+                            await preprocessImage(index, newPreprocessor);
                           }
                         }}
                         disabled={disabled}

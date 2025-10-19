@@ -133,7 +133,23 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   useEffect(() => {
-    loadControlNets();
+    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
+
+    if (startupModelChecked === "true") {
+      // Already checked, just load ControlNets
+      loadControlNets();
+    } else {
+      // Wait for first panel to complete startup check
+      const checkInterval = setInterval(() => {
+        if (sessionStorage.getItem("startup_model_checked") === "true") {
+          clearInterval(checkInterval);
+          loadControlNets();
+        }
+      }, 100);
+
+      // Stop checking after 60 seconds
+      setTimeout(() => clearInterval(checkInterval), 60000);
+    }
   }, []);
 
   // Load persisted images when value changes from empty to non-empty

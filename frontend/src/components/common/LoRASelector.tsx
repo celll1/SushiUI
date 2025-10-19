@@ -76,7 +76,23 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
 
   useEffect(() => {
-    loadAvailableLoras();
+    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
+
+    if (startupModelChecked === "true") {
+      // Already checked, just load LoRAs
+      loadAvailableLoras();
+    } else {
+      // Wait for first panel to complete startup check
+      const checkInterval = setInterval(() => {
+        if (sessionStorage.getItem("startup_model_checked") === "true") {
+          clearInterval(checkInterval);
+          loadAvailableLoras();
+        }
+      }, 100);
+
+      // Stop checking after 60 seconds
+      setTimeout(() => clearInterval(checkInterval), 60000);
+    }
   }, []);
 
   const loadAvailableLoras = async () => {

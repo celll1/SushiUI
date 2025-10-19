@@ -286,7 +286,8 @@ def custom_sampling_loop(
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Compute previous noisy sample
-        latents = scheduler.step(noise_pred, t, latents).prev_sample
+        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
 
         # Progress callback
         if progress_callback is not None:
@@ -572,7 +573,8 @@ def custom_img2img_sampling_loop(
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Compute previous noisy sample
-        latents = scheduler.step(noise_pred, t, latents).prev_sample
+        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
 
         # Progress callback
         if progress_callback is not None:
@@ -834,7 +836,8 @@ def custom_inpaint_sampling_loop(
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        latents = scheduler.step(noise_pred, t, latents).prev_sample
+        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
 
         init_latents_proper = scheduler.add_noise(init_latents, noise, torch.tensor([t], device=device))
         latents = init_latents_proper * (1 - mask_latent) + latents * mask_latent

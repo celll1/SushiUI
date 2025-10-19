@@ -33,7 +33,35 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
 
   useEffect(() => {
     loadModels();
-    loadCurrentModel();
+
+    // Check if startup model load has already been handled
+    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
+
+    if (startupModelChecked === "true") {
+      // Already checked, just load current model without polling
+      loadCurrentModel();
+    } else {
+      // Poll until backend is ready and model is loaded
+      const pollInterval = setInterval(async () => {
+        try {
+          const response = await fetch("/api/models/current");
+          const data = await response.json();
+
+          if (data.loaded) {
+            clearInterval(pollInterval);
+            sessionStorage.setItem("startup_model_checked", "true");
+            setCurrentModel(data.model_info);
+            console.log("[ModelSelector] Model loaded on startup:", data.model_info);
+          }
+        } catch (error) {
+          // Backend not ready yet, will retry
+          console.log("[ModelSelector] Waiting for backend to start...");
+        }
+      }, 1000);
+
+      // Stop polling after 60 seconds
+      setTimeout(() => clearInterval(pollInterval), 60000);
+    }
   }, []);
 
   const loadModels = async () => {

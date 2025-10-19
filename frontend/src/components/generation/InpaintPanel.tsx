@@ -89,6 +89,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [modelLoadedOnStartup, setModelLoadedOnStartup] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
@@ -164,9 +165,49 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       });
     }
 
-    loadSamplers();
-    loadScheduleTypes();
+    // Check if startup model load has already been handled
+    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
 
+    if (startupModelChecked === "true") {
+      // Already checked, just load samplers without polling or alert
+      loadSamplers();
+      loadScheduleTypes();
+    } else {
+      // Poll until backend is ready and model is loaded
+      const pollInterval = setInterval(async () => {
+        try {
+          const response = await fetch("/api/models/current");
+          const data = await response.json();
+
+          if (data.loaded) {
+            clearInterval(pollInterval);
+            console.log("[Inpaint] Model loaded! Setting flag...");
+            sessionStorage.setItem("startup_model_checked", "true");
+            setModelLoadedOnStartup(true);
+          }
+        } catch (error) {
+          // Backend not ready yet, will retry
+          console.log("Waiting for backend to start...");
+        }
+      }, 1000);
+
+      // Stop polling after 60 seconds
+      setTimeout(() => clearInterval(pollInterval), 60000);
+    }
+  }, []);
+
+  // When model loads on startup, load samplers and schedule types
+  useEffect(() => {
+    if (modelLoadedOnStartup) {
+      console.log("[Inpaint] Model loaded on startup! Loading samplers and schedule types...");
+      loadSamplers();
+      loadScheduleTypes();
+      alert("Model loaded successfully!");
+      console.log("[Inpaint] Samplers and schedule types load initiated");
+    }
+  }, [modelLoadedOnStartup]);
+
+  useEffect(() => {
     // Listen for input image updates from txt2img or img2img
     const handleInputUpdate = () => {
       const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);

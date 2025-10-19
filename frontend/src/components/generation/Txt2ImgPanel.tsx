@@ -50,6 +50,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [modelLoadedOnStartup, setModelLoadedOnStartup] = useState(false);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -159,9 +160,47 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       setGeneratedImage(savedPreview);
     }
 
-    loadSamplers();
-    loadScheduleTypes();
+    // Check if startup model load has already been handled
+    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
+
+    if (startupModelChecked === "true") {
+      // Already checked, just load samplers without polling or alert
+      loadSamplers();
+      loadScheduleTypes();
+    } else {
+      // Poll until backend is ready and model is loaded
+      const pollInterval = setInterval(async () => {
+        try {
+          const response = await fetch("/api/models/current");
+          const data = await response.json();
+
+          if (data.loaded) {
+            clearInterval(pollInterval);
+            console.log("[Txt2Img] Model loaded! Setting flag...");
+            sessionStorage.setItem("startup_model_checked", "true");
+            setModelLoadedOnStartup(true);
+          }
+        } catch (error) {
+          // Backend not ready yet, will retry
+          console.log("Waiting for backend to start...");
+        }
+      }, 1000);
+
+      // Stop polling after 60 seconds
+      setTimeout(() => clearInterval(pollInterval), 60000);
+    }
   }, []);
+
+  // When model loads on startup, load samplers and schedule types
+  useEffect(() => {
+    if (modelLoadedOnStartup) {
+      console.log("[Txt2Img] Model loaded on startup! Loading samplers and schedule types...");
+      loadSamplers();
+      loadScheduleTypes();
+      alert("Model loaded successfully!");
+      console.log("[Txt2Img] Samplers and schedule types load initiated");
+    }
+  }, [modelLoadedOnStartup]);
 
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {
@@ -318,8 +357,11 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
   const loadSamplers = async () => {
     try {
+      console.log("[Txt2Img] Calling getSamplers()...");
       const data = await getSamplers();
+      console.log("[Txt2Img] Received samplers:", data.samplers);
       setSamplers(data.samplers);
+      console.log("[Txt2Img] setSamplers called");
     } catch (error) {
       console.error("Failed to load samplers:", error);
     }
@@ -327,8 +369,11 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
   const loadScheduleTypes = async () => {
     try {
+      console.log("[Txt2Img] Calling getScheduleTypes()...");
       const data = await getScheduleTypes();
+      console.log("[Txt2Img] Received schedule types:", data.schedule_types);
       setScheduleTypes(data.schedule_types);
+      console.log("[Txt2Img] setScheduleTypes called");
     } catch (error) {
       console.error("Failed to load schedule types:", error);
     }

@@ -79,6 +79,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [modelLoadedOnStartup, setModelLoadedOnStartup] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -149,12 +150,52 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         }
       }
 
-      loadSamplers();
-      loadScheduleTypes();
+      // Check if startup model load has already been handled
+      const startupModelChecked = sessionStorage.getItem("startup_model_checked");
+
+      if (startupModelChecked === "true") {
+        // Already checked, just load samplers without polling or alert
+        loadSamplers();
+        loadScheduleTypes();
+      } else {
+        // Poll until backend is ready and model is loaded
+        const pollInterval = setInterval(async () => {
+          try {
+            const response = await fetch("/api/models/current");
+            const data = await response.json();
+
+            if (data.loaded) {
+              clearInterval(pollInterval);
+              console.log("[Img2Img] Model loaded! Setting flag...");
+              sessionStorage.setItem("startup_model_checked", "true");
+              setModelLoadedOnStartup(true);
+            }
+          } catch (error) {
+            // Backend not ready yet, will retry
+            console.log("Waiting for backend to start...");
+          }
+        }, 1000);
+
+        // Stop polling after 60 seconds
+        setTimeout(() => clearInterval(pollInterval), 60000);
+      }
     };
 
     loadInitialData();
+  }, []);
 
+  // When model loads on startup, load samplers and schedule types
+  useEffect(() => {
+    if (modelLoadedOnStartup) {
+      console.log("[Img2Img] Model loaded on startup! Loading samplers and schedule types...");
+      loadSamplers();
+      loadScheduleTypes();
+      alert("Model loaded successfully!");
+      console.log("[Img2Img] Samplers and schedule types load initiated");
+    }
+  }, [modelLoadedOnStartup]);
+
+  useEffect(() => {
     // Listen for input image updates from txt2img or gallery
     const handleInputUpdate = async () => {
       const newInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);

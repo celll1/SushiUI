@@ -106,6 +106,7 @@ export interface GenerationParams {
   sampler?: string;
   schedule_type?: string;
   seed?: number;
+  ancestral_seed?: number;
   width?: number;
   height?: number;
   model?: string;
@@ -142,6 +143,7 @@ export interface GeneratedImage {
   steps: number;
   cfg_scale: number;
   seed: number;
+  ancestral_seed?: number;
   width: number;
   height: number;
   generation_type: string;

@@ -23,6 +23,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
+  ancestral_seed: -1,
   width: 1024,
   height: 1024,
   loras: [],
@@ -544,6 +545,40 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   ♻️
                 </Button>
               </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Ancestral Seed
+                <span className="text-xs text-gray-500 ml-2">(for Euler a, DPM2 a, etc.)</span>
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type="number"
+                  value={params.ancestral_seed}
+                  onChange={(e) => setParams({ ...params, ancestral_seed: parseInt(e.target.value) })}
+                  className="flex-1"
+                  placeholder="-1 (use main seed)"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, ancestral_seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random ancestral seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, ancestral_seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use main seed (-1)"
+                >
+                  -1
+                </Button>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                -1 = use main seed (default). Set a different value to vary details while keeping composition.
+              </p>
             </div>
           </div>
         </Card>

@@ -40,6 +40,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
+  ancestral_seed: -1,
   width: 1024,
   height: 1024,
   denoising_strength: 0.75,

@@ -391,6 +391,11 @@ export default function ImageGrid() {
                     <div>
                       <span className="text-gray-400">Seed:</span> {selectedImage.seed}
                     </div>
+                    {selectedImage.ancestral_seed && selectedImage.ancestral_seed !== -1 && (
+                      <div>
+                        <span className="text-gray-400">Ancestral Seed:</span> {selectedImage.ancestral_seed}
+                      </div>
+                    )}
                   </div>
                   {selectedImage.lora_names && (
                     <div>

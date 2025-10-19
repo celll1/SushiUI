@@ -7,6 +7,57 @@ const api = axios.create({
   },
 });
 
+// Helper function to load ControlNet images from temp storage
+const loadControlNetImages = async (
+  controlnets: ControlNetConfig[] | undefined,
+  storageKey: string
+): Promise<ControlNetConfig[]> => {
+  if (!controlnets || controlnets.length === 0) {
+    return controlnets || [];
+  }
+
+  console.log(`[API] Loading ControlNet images from temp storage (${storageKey})...`);
+  const { loadTempImage } = await import('./tempImageStorage');
+
+  const IMAGE_STORAGE_KEY = `${storageKey}_images`;
+  const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+  console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
+  const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+  console.log('[API] imageRefs:', imageRefs);
+
+  const loadedControlnets = await Promise.all(
+    controlnets.map(async (cn, index) => {
+      const imageRef = imageRefs[index];
+      console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
+      if (imageRef) {
+        const imageData = await loadTempImage(imageRef);
+        console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
+        const base64Data = imageData.startsWith('data:')
+          ? imageData.split(',')[1]
+          : imageData;
+        console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
+        return {
+          ...cn,
+          image_base64: base64Data,
+        };
+      }
+      console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
+      return {
+        ...cn,
+        image_base64: cn.image_base64,
+      };
+    })
+  );
+
+  console.log('[API] Final controlnets:', loadedControlnets.map((cn, i) => ({
+    index: i,
+    has_image: !!cn.image_base64,
+    length: cn.image_base64?.length
+  })));
+
+  return loadedControlnets;
+};
+
 export interface LoRAConfig {
   path: string;
   strength: number;
@@ -96,101 +147,20 @@ export interface GeneratedImage {
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {
-  // Load ControlNet images from temp storage before sending
-  const paramsWithImages = { ...params };
-
-  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
-    console.log('[API] Loading ControlNet images from temp storage...');
-    const { loadTempImage } = await import('./tempImageStorage');
-
-    // Get image references from localStorage
-    // ControlNetSelector uses "txt2img_controlnet_collapsed" as storageKey,
-    // and appends "_images" for image storage, so the key becomes "txt2img_controlnet_collapsed_images"
-    const IMAGE_STORAGE_KEY = "txt2img_controlnet_collapsed_images";
-    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
-    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
-    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
-    console.log('[API] imageRefs:', imageRefs);
-
-    paramsWithImages.controlnets = await Promise.all(
-      paramsWithImages.controlnets.map(async (cn, index) => {
-        // Load image from temp storage using the stored reference
-        const imageRef = imageRefs[index];
-        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
-        if (imageRef) {
-          const imageData = await loadTempImage(imageRef);
-          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
-          // Remove data URL prefix if present (backend expects just base64)
-          const base64Data = imageData.startsWith('data:')
-            ? imageData.split(',')[1]
-            : imageData;
-          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
-          return {
-            ...cn,
-            image_base64: base64Data,
-          };
-        }
-        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
-        return {
-          ...cn,
-          image_base64: cn.image_base64, // Fallback to existing
-        };
-      })
-    );
-    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
-      index: i,
-      has_image: !!cn.image_base64,
-      length: cn.image_base64?.length
-    })));
-  }
+  const paramsWithImages = {
+    ...params,
+    controlnets: await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed"),
+  };
 
   const response = await api.post("/generate/txt2img", paramsWithImages);
   return response.data;
 };
 
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
-  // Load ControlNet images from temp storage before sending
-  const paramsWithImages = { ...params };
-
-  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
-    console.log('[API] Loading ControlNet images from temp storage for img2img...');
-    const { loadTempImage } = await import('./tempImageStorage');
-
-    const IMAGE_STORAGE_KEY = "img2img_controlnet_collapsed_images";
-    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
-    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
-    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
-    console.log('[API] imageRefs:', imageRefs);
-
-    paramsWithImages.controlnets = await Promise.all(
-      paramsWithImages.controlnets.map(async (cn, index) => {
-        const imageRef = imageRefs[index];
-        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
-        if (imageRef) {
-          const imageData = await loadTempImage(imageRef);
-          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
-          const base64Data = imageData.startsWith('data:')
-            ? imageData.split(',')[1]
-            : imageData;
-          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
-          return {
-            ...cn,
-            image_base64: base64Data,
-          };
-        }
-        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
-        return {
-          ...cn,
-          image_base64: cn.image_base64,
-        };
-      })
-    );
-    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
-      index: i,
-      has_image: !!cn.image_base64,
-      length: cn.image_base64?.length
-    })));
-  }
+  const paramsWithImages = {
+    ...params,
+    controlnets: await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed"),
+  };
 
   const formData = new FormData();
 
@@ -227,48 +197,10 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 };
 
 export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
-  // Load ControlNet images from temp storage before sending
-  const paramsWithImages = { ...params };
-
-  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
-    console.log('[API] Loading ControlNet images from temp storage for inpaint...');
-    const { loadTempImage } = await import('./tempImageStorage');
-
-    const IMAGE_STORAGE_KEY = "inpaint_controlnet_collapsed_images";
-    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
-    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
-    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
-    console.log('[API] imageRefs:', imageRefs);
-
-    paramsWithImages.controlnets = await Promise.all(
-      paramsWithImages.controlnets.map(async (cn, index) => {
-        const imageRef = imageRefs[index];
-        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
-        if (imageRef) {
-          const imageData = await loadTempImage(imageRef);
-          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
-          const base64Data = imageData.startsWith('data:')
-            ? imageData.split(',')[1]
-            : imageData;
-          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
-          return {
-            ...cn,
-            image_base64: base64Data,
-          };
-        }
-        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
-        return {
-          ...cn,
-          image_base64: cn.image_base64,
-        };
-      })
-    );
-    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
-      index: i,
-      has_image: !!cn.image_base64,
-      length: cn.image_base64?.length
-    })));
-  }
+  const paramsWithImages = {
+    ...params,
+    controlnets: await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed"),
+  };
 
   const formData = new FormData();
 

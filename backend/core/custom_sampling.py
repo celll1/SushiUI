@@ -83,12 +83,6 @@ def custom_sampling_loop(
     vae = pipeline.vae
     scheduler = pipeline.scheduler
 
-    # Debug UNet info
-    print(f"[CustomSampling] UNet type: {type(unet).__name__}")
-    print(f"[CustomSampling] UNet config class: {unet.config.get('_class_name', 'unknown')}")
-    if hasattr(unet.config, 'addition_embed_type'):
-        print(f"[CustomSampling] UNet addition_embed_type: {unet.config.addition_embed_type}")
-
     # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
     has_controlnet = controlnet is not None and controlnet_images is not None

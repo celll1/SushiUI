@@ -467,8 +467,11 @@ class DiffusionPipelineManager:
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
 
         # Parse prompts for emphasis syntax
-        has_pos_emphasis = '(' in prompt or '[' in prompt
-        has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
+        # Note: Escaped parentheses like \( and \) should not be counted as emphasis
+        import re
+        # Check for unescaped ( or [ (not preceded by \)
+        has_pos_emphasis = bool(re.search(r'(?<!\\)[\(\[]', prompt))
+        has_neg_emphasis = bool(re.search(r'(?<!\\)[\(\[]', negative_prompt))
 
         # Get clean prompts
         clean_prompt = prompt
@@ -657,8 +660,11 @@ class DiffusionPipelineManager:
             return None, None, None, None
 
         # Check if prompt or negative prompt contains emphasis syntax
-        has_pos_emphasis = '(' in prompt or '[' in prompt
-        has_neg_emphasis = '(' in negative_prompt or '[' in negative_prompt
+        # Note: Escaped parentheses like \( and \) should not be counted as emphasis
+        import re
+        # Check for unescaped ( or [ (not preceded by \)
+        has_pos_emphasis = bool(re.search(r'(?<!\\)[\(\[]', prompt))
+        has_neg_emphasis = bool(re.search(r'(?<!\\)[\(\[]', negative_prompt))
 
         # Tokenize to check length
         tokenizer = pipeline.tokenizer if hasattr(pipeline, 'tokenizer') else None
@@ -682,17 +688,44 @@ class DiffusionPipelineManager:
 
         # For short prompts (<=75 tokens), use pipeline.encode_prompt for correct encoding
         # Then apply emphasis weights if needed
-        if not has_pos_emphasis and not has_neg_emphasis:
-            # No emphasis - use default pipeline encoding
-            return None, None, None, None
-
-        # Has emphasis but fits in single chunk - use pipeline.encode_prompt then apply weights
-        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
-
         device = self.device
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
         # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
         is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
+
+        # If no emphasis syntax, just encode normally
+        if not has_pos_emphasis and not has_neg_emphasis:
+            # Use pipeline's encode_prompt for correct embeddings
+            base_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
+
+            # Extract embeddings
+            prompt_embeds = base_embeds[0]
+            pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
+
+            # Encode negative prompt
+            if negative_prompt:
+                neg_embeds = pipeline.encode_prompt(
+                    prompt=negative_prompt,
+                    device=device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False
+                )
+
+                negative_prompt_embeds = neg_embeds[0]
+                negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
+            else:
+                negative_prompt_embeds = None
+                negative_pooled_prompt_embeds = None
+
+            return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
+
+        # Has emphasis but fits in single chunk - use pipeline.encode_prompt then apply weights
+        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
         # Parse to get clean text
         parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]

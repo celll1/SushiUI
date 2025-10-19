@@ -159,6 +159,18 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         loadPersistedImages();
         setImagesLoaded(true);
       }
+      // Load layer information for existing ControlNets
+      value.forEach((cn, index) => {
+        if (cn.model_path) {
+          detectModelType(cn.model_path, index);
+          // Trigger layer weight component to reload by clearing cache
+          setControlnetInfoCache(prev => {
+            const newCache = new Map(prev);
+            newCache.delete(cn.model_path);
+            return newCache;
+          });
+        }
+      });
     }
   }, [modelLoaded]);
 
@@ -195,11 +207,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         !preprocessedPreviews.has(index) &&
         !isPreprocessing.get(index)
       ) {
-        console.log(`[ControlNetSelector] Auto-preprocessing for index ${index} with ${cn.preprocessor}`);
+        console.log(`[ControlNetSelector] Auto-preprocessing for index ${index} with preprocessor: ${cn.preprocessor}`);
         preprocessImage(index);
       }
     });
-  }, [value, imagesLoaded]);
+  }, [value, imagesLoaded, imagePreviews.size]);
 
   const loadControlNets = async () => {
     try {

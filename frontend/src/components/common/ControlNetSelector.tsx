@@ -181,6 +181,26 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     });
   }, [value]);
 
+  // Auto-preprocess when both image and preprocessor config are available
+  useEffect(() => {
+    if (!imagesLoaded) return;
+
+    value.forEach((cn, index) => {
+      // Check if we have image, preprocessor enabled, but no preprocessed preview yet
+      if (
+        imagePreviews.has(index) &&
+        cn.enable_preprocessor &&
+        cn.preprocessor &&
+        cn.preprocessor !== "none" &&
+        !preprocessedPreviews.has(index) &&
+        !isPreprocessing.get(index)
+      ) {
+        console.log(`[ControlNetSelector] Auto-preprocessing for index ${index} with ${cn.preprocessor}`);
+        preprocessImage(index);
+      }
+    });
+  }, [value, imagesLoaded]);
+
   const loadControlNets = async () => {
     try {
       const data = await getControlNets();
@@ -216,19 +236,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       // Update image previews state
       if (newPreviews.size > 0) {
         setImagePreviews(newPreviews);
-
-        // Auto-preprocess restored images after they're loaded
-        console.log("[ControlNetSelector] Images restored, checking for preprocessing needs...");
-        // Use setTimeout to ensure state is updated
-        setTimeout(() => {
-          newPreviews.forEach((imageData, index) => {
-            const cn = value[index];
-            if (cn && cn.enable_preprocessor && cn.preprocessor && cn.preprocessor !== "none") {
-              console.log(`[ControlNetSelector] Auto-preprocessing restored image at index ${index} with ${cn.preprocessor}`);
-              preprocessImage(index);
-            }
-          });
-        }, 100);
+        console.log(`[ControlNetSelector] Restored ${newPreviews.size} images from storage`);
       }
     } catch (error) {
       console.error("Failed to load persisted ControlNet images:", error);

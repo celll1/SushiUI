@@ -27,6 +27,12 @@ const loadControlNetImages = async (
 
   const loadedControlnets = await Promise.all(
     controlnets.map(async (cn, index) => {
+      // If use_input_image is true, don't need to load image (backend will use input image)
+      if (cn.use_input_image) {
+        console.log(`[API] ControlNet ${index}: use_input_image=true, skipping image load`);
+        return cn;
+      }
+
       const imageRef = imageRefs[index];
       console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
       if (imageRef) {

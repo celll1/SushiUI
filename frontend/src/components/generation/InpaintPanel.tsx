@@ -204,6 +204,11 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     if (isMounted) {
       // ControlNet images are now managed by ControlNetSelector via tempImageStorage
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+      console.log('[Inpaint] Saving params to localStorage:', {
+        loras: params.loras?.length || 0,
+        controlnets: params.controlnets?.length || 0,
+        fullParams: params
+      });
     }
   }, [params, isMounted]);
 
@@ -621,7 +626,14 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         inpaint_full_res_padding: params.inpaint_full_res_padding,
         resize_mode: params.resize_mode,
         resampling_method: params.resampling_method,
+        loras: params.loras,
+        controlnets: params.controlnets,
       };
+
+      console.log('[Inpaint] Generating with params:', {
+        loras: apiParams.loras?.length || 0,
+        controlnets: apiParams.controlnets?.length || 0,
+      });
 
       const result = await generateInpaint(apiParams, inputImagePreview, maskImage);
 

@@ -149,6 +149,49 @@ export const generateTxt2Img = async (params: GenerationParams) => {
 };
 
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
+  // Load ControlNet images from temp storage before sending
+  const paramsWithImages = { ...params };
+
+  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
+    console.log('[API] Loading ControlNet images from temp storage for img2img...');
+    const { loadTempImage } = await import('./tempImageStorage');
+
+    const IMAGE_STORAGE_KEY = "img2img_controlnet_collapsed_images";
+    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
+    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+    console.log('[API] imageRefs:', imageRefs);
+
+    paramsWithImages.controlnets = await Promise.all(
+      paramsWithImages.controlnets.map(async (cn, index) => {
+        const imageRef = imageRefs[index];
+        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
+        if (imageRef) {
+          const imageData = await loadTempImage(imageRef);
+          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
+          const base64Data = imageData.startsWith('data:')
+            ? imageData.split(',')[1]
+            : imageData;
+          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
+          return {
+            ...cn,
+            image_base64: base64Data,
+          };
+        }
+        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
+        return {
+          ...cn,
+          image_base64: cn.image_base64,
+        };
+      })
+    );
+    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
+      index: i,
+      has_image: !!cn.image_base64,
+      length: cn.image_base64?.length
+    })));
+  }
+
   const formData = new FormData();
 
   // Handle both File objects and data URLs
@@ -161,21 +204,21 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
     formData.append("image", image);
   }
 
-  formData.append("prompt", params.prompt);
-  formData.append("negative_prompt", params.negative_prompt || "");
-  formData.append("steps", String(params.steps || 20));
-  formData.append("cfg_scale", String(params.cfg_scale || 7.0));
-  formData.append("denoising_strength", String(params.denoising_strength || 0.75));
-  formData.append("img2img_fix_steps", String(params.img2img_fix_steps ?? true));
-  formData.append("sampler", params.sampler || "euler");
-  formData.append("schedule_type", params.schedule_type || "uniform");
-  formData.append("seed", String(params.seed || -1));
-  formData.append("width", String(params.width || 1024));
-  formData.append("height", String(params.height || 1024));
-  formData.append("resize_mode", params.resize_mode || "image");
-  formData.append("resampling_method", params.resampling_method || "lanczos");
-  formData.append("loras", JSON.stringify(params.loras || []));
-  formData.append("controlnets", JSON.stringify(params.controlnets || []));
+  formData.append("prompt", paramsWithImages.prompt);
+  formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
+  formData.append("steps", String(paramsWithImages.steps || 20));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
+  formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("sampler", paramsWithImages.sampler || "euler");
+  formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
+  formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("width", String(paramsWithImages.width || 1024));
+  formData.append("height", String(paramsWithImages.height || 1024));
+  formData.append("resize_mode", paramsWithImages.resize_mode || "image");
+  formData.append("resampling_method", paramsWithImages.resampling_method || "lanczos");
+  formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
+  formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -184,6 +227,49 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 };
 
 export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
+  // Load ControlNet images from temp storage before sending
+  const paramsWithImages = { ...params };
+
+  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
+    console.log('[API] Loading ControlNet images from temp storage for inpaint...');
+    const { loadTempImage } = await import('./tempImageStorage');
+
+    const IMAGE_STORAGE_KEY = "inpaint_controlnet_collapsed_images";
+    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
+    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+    console.log('[API] imageRefs:', imageRefs);
+
+    paramsWithImages.controlnets = await Promise.all(
+      paramsWithImages.controlnets.map(async (cn, index) => {
+        const imageRef = imageRefs[index];
+        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
+        if (imageRef) {
+          const imageData = await loadTempImage(imageRef);
+          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
+          const base64Data = imageData.startsWith('data:')
+            ? imageData.split(',')[1]
+            : imageData;
+          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
+          return {
+            ...cn,
+            image_base64: base64Data,
+          };
+        }
+        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
+        return {
+          ...cn,
+          image_base64: cn.image_base64,
+        };
+      })
+    );
+    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
+      index: i,
+      has_image: !!cn.image_base64,
+      length: cn.image_base64?.length
+    })));
+  }
+
   const formData = new FormData();
 
   // Handle both File objects and data URLs for image
@@ -204,24 +290,24 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
     formData.append("mask", mask);
   }
 
-  formData.append("prompt", params.prompt);
-  formData.append("negative_prompt", params.negative_prompt || "");
-  formData.append("steps", String(params.steps || 20));
-  formData.append("cfg_scale", String(params.cfg_scale || 7.0));
-  formData.append("denoising_strength", String(params.denoising_strength || 0.75));
-  formData.append("img2img_fix_steps", String(params.img2img_fix_steps ?? true));
-  formData.append("mask_blur", String(params.mask_blur || 4));
-  formData.append("sampler", params.sampler || "euler");
-  formData.append("schedule_type", params.schedule_type || "uniform");
-  formData.append("seed", String(params.seed || -1));
-  formData.append("width", String(params.width || 1024));
-  formData.append("height", String(params.height || 1024));
-  formData.append("inpaint_full_res", String(params.inpaint_full_res || false));
-  formData.append("inpaint_full_res_padding", String(params.inpaint_full_res_padding || 32));
-  formData.append("resize_mode", params.resize_mode || "image");
-  formData.append("resampling_method", params.resampling_method || "lanczos");
-  formData.append("loras", JSON.stringify(params.loras || []));
-  formData.append("controlnets", JSON.stringify(params.controlnets || []));
+  formData.append("prompt", paramsWithImages.prompt);
+  formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
+  formData.append("steps", String(paramsWithImages.steps || 20));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
+  formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("mask_blur", String(paramsWithImages.mask_blur || 4));
+  formData.append("sampler", paramsWithImages.sampler || "euler");
+  formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
+  formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("width", String(paramsWithImages.width || 1024));
+  formData.append("height", String(paramsWithImages.height || 1024));
+  formData.append("inpaint_full_res", String(paramsWithImages.inpaint_full_res || false));
+  formData.append("inpaint_full_res_padding", String(paramsWithImages.inpaint_full_res_padding || 32));
+  formData.append("resize_mode", paramsWithImages.resize_mode || "image");
+  formData.append("resampling_method", paramsWithImages.resampling_method || "lanczos");
+  formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
+  formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

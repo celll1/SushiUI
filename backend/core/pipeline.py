@@ -460,8 +460,8 @@ class DiffusionPipelineManager:
         if pipeline is None:
             return None, None, None, None
 
-        # Check if SDXL
-        is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline) or isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
+        # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
+        is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
         device = self.device
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
@@ -691,7 +691,8 @@ class DiffusionPipelineManager:
 
         device = self.device
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
-        is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline) or isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
+        # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
+        is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
         # Parse to get clean text
         parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]

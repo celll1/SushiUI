@@ -374,8 +374,8 @@ def custom_img2img_sampling_loop(
     vae = pipeline.vae
     scheduler = pipeline.scheduler
 
-    # Get image dimensions
-    width, height = init_image.size
+    # Get image dimensions (save before converting to tensor)
+    original_width, original_height = init_image.size
 
     # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
@@ -391,7 +391,7 @@ def custom_img2img_sampling_loop(
         control_image_tensors = []
         for img in controlnet_images:
             if isinstance(img, Image.Image):
-                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = img.resize((original_width, original_height), Image.Resampling.LANCZOS)
                 img = torch.from_numpy(np.array(img)).float() / 255.0
                 if img.ndim == 2:  # Grayscale
                     img = img.unsqueeze(-1).repeat(1, 1, 3)
@@ -464,12 +464,11 @@ def custom_img2img_sampling_loop(
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Prepare added conditions for SDXL
-        added_cond_kwargs = {}
+        added_cond_kwargs = None
         if is_sdxl:
-            height, width = init_image.shape[-2:]
-            original_size = (height, width)
+            original_size = (original_height, original_width)
             crops_coords_top_left = (0, 0)
-            target_size = (height, width)
+            target_size = (original_height, original_width)
 
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
@@ -477,13 +476,12 @@ def custom_img2img_sampling_loop(
 
             if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
                 add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
             else:
-                add_text_embeds = None
-
-            added_cond_kwargs = {
-                "text_embeds": add_text_embeds,
-                "time_ids": add_time_ids
-            }
+                print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
 
         # Concatenate prompt embeddings for CFG
         prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
@@ -639,8 +637,13 @@ def custom_inpaint_sampling_loop(
     vae = pipeline.vae
     scheduler = pipeline.scheduler
 
-    # Get image dimensions
-    width, height = init_image.size
+    # Check if this is an inpaint-specific UNet (9 channels) or regular UNet (4 channels)
+    # Regular UNets cannot accept concatenated mask+image, so we'll use img2img-style masking
+    is_inpaint_unet = unet.config.in_channels == 9
+    print(f"[CustomSampling] UNet in_channels: {unet.config.in_channels}, is_inpaint_unet: {is_inpaint_unet}")
+
+    # Get image dimensions (save before converting to tensor)
+    original_width, original_height = init_image.size
 
     # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
@@ -654,7 +657,7 @@ def custom_inpaint_sampling_loop(
         control_image_tensors = []
         for img in controlnet_images:
             if isinstance(img, Image.Image):
-                img = img.resize((width, height), Image.Resampling.LANCZOS)
+                img = img.resize((original_width, original_height), Image.Resampling.LANCZOS)
                 img = torch.from_numpy(np.array(img)).float() / 255.0
                 if img.ndim == 2:
                     img = img.unsqueeze(-1).repeat(1, 1, 3)
@@ -728,19 +731,30 @@ def custom_inpaint_sampling_loop(
         latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-        masked_image_latents = init_latents * (1 - mask_latent)
-        latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+        # Only concatenate mask and masked image for inpaint-specific UNets
+        # Regular UNets use post-processing masking instead (see after scheduler.step)
+        if is_inpaint_unet:
+            masked_image_latents = init_latents * (1 - mask_latent)
+            latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
 
-        added_cond_kwargs = {}
+        added_cond_kwargs = None
         if is_sdxl:
-            height, width = init_image_tensor.shape[-2:]
-            add_time_ids = list((height, width) + (0, 0) + (height, width))
+            original_size = (original_height, original_width)
+            crops_coords_top_left = (0, 0)
+            target_size = (original_height, original_width)
+
+            add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None:
+            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
                 add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
-                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
+            else:
+                print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
 
         prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 

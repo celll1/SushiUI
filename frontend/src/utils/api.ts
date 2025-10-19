@@ -96,7 +96,25 @@ export interface GeneratedImage {
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {
-  const response = await api.post("/generate/txt2img", params);
+  // Load ControlNet images from temp storage before sending
+  const paramsWithImages = { ...params };
+
+  if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
+    const { loadTempImage } = await import('./tempImageStorage');
+
+    paramsWithImages.controlnets = await Promise.all(
+      paramsWithImages.controlnets.map(async (cn, index) => {
+        // Load image from temp storage
+        const imageData = await loadTempImage(`controlnet_${index}`);
+        return {
+          ...cn,
+          image_base64: imageData || cn.image_base64, // Use temp storage or fallback to existing
+        };
+      })
+    );
+  }
+
+  const response = await api.post("/generate/txt2img", paramsWithImages);
   return response.data;
 };
 

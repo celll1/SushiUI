@@ -761,10 +761,16 @@ class DiffusionPipelineManager:
         # Log component devices before generation
         self._log_component_devices(self.txt2img_pipeline, "Before txt2img generation")
 
+        # Debug: Check ControlNet presence
+        print(f"[Pipeline] Before extensions - controlnet_images in params: {'controlnet_images' in params}, value: {bool(params.get('controlnet_images'))}")
+
         # Apply extensions before generation
         for ext in self.extensions:
             if ext.enabled:
                 params = ext.process_before_generation(self.txt2img_pipeline, params)
+
+        # Debug: Check ControlNet presence after extensions
+        print(f"[Pipeline] After extensions - controlnet_images in params: {'controlnet_images' in params}, value: {bool(params.get('controlnet_images'))}")
 
         # Set sampler and schedule type if specified
         sampler = params.get("sampler", "euler")
@@ -964,7 +970,9 @@ class DiffusionPipelineManager:
 
             # Prepare ControlNet parameters
             controlnet_kwargs = {}
+            print(f"[Pipeline] ControlNet check: controlnet_images={bool(controlnet_images)}, has_control_images={hasattr(pipeline_to_use, 'control_images')}, pipeline_type={type(pipeline_to_use).__name__}")
             if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
+                print(f"[Pipeline] Preparing ControlNet kwargs with {len(pipeline_to_use.control_images)} control images")
                 controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
                 controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
                 controlnet_kwargs['controlnet_conditioning_scale'] = controlnet_scales if len(controlnet_scales) > 1 else controlnet_scales[0]
@@ -974,6 +982,10 @@ class DiffusionPipelineManager:
                 guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
                 controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
                 controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
+                print(f"[Pipeline] ControlNet kwargs prepared: scales={controlnet_kwargs['controlnet_conditioning_scale']}, start={controlnet_kwargs['control_guidance_start']}, end={controlnet_kwargs['control_guidance_end']}")
+            else:
+                if controlnet_images:
+                    print(f"[Pipeline] WARNING: ControlNet images specified but pipeline_to_use doesn't have control_images attribute")
 
             # Call custom sampling loop
             image = custom_sampling_loop(

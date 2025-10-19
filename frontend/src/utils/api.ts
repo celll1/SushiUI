@@ -5,6 +5,9 @@ const api = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  // Set a very long timeout for generation requests (10 minutes)
+  // Set to 0 to disable timeout completely
+  timeout: 600000, // 10 minutes in milliseconds
 });
 
 // Helper function to load ControlNet images from temp storage

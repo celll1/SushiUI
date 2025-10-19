@@ -369,6 +369,7 @@ def custom_img2img_sampling_loop(
     guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
     ancestral_generator: Optional[torch.Generator] = None,
+    t_start_override: Optional[int] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
@@ -462,9 +463,16 @@ def custom_img2img_sampling_loop(
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
 
-    # Calculate timestep to start from based on strength
-    init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
-    t_start = max(num_inference_steps - init_timestep, 0)
+    # Calculate timestep to start from
+    if t_start_override is not None:
+        # Use explicit t_start (for "Do full steps" mode)
+        t_start = t_start_override
+        print(f"[CustomSampling] Using explicit t_start={t_start} (Do full steps mode)")
+    else:
+        # Calculate from strength (standard img2img)
+        init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
+        t_start = max(num_inference_steps - init_timestep, 0)
+
     timesteps = timesteps[t_start:]
 
     # Encode initial image to latents
@@ -668,6 +676,7 @@ def custom_inpaint_sampling_loop(
     guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
     ancestral_generator: Optional[torch.Generator] = None,
+    t_start_override: Optional[int] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
@@ -737,8 +746,16 @@ def custom_inpaint_sampling_loop(
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
 
-    init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
-    t_start = max(num_inference_steps - init_timestep, 0)
+    # Calculate timestep to start from
+    if t_start_override is not None:
+        # Use explicit t_start (for "Do full steps" mode)
+        t_start = t_start_override
+        print(f"[CustomSampling] Using explicit t_start={t_start} (Do full steps mode)")
+    else:
+        # Calculate from strength (standard inpaint)
+        init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
+        t_start = max(num_inference_steps - init_timestep, 0)
+
     timesteps = timesteps[t_start:]
 
     # Prepare images

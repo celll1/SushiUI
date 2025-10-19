@@ -392,6 +392,9 @@ async def generate_img2img(
         # Progress callback to send updates via WebSocket
         def progress_callback(step, total_steps, latents):
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
+            # For img2img with "Do full steps" enabled, display requested_steps instead
+            display_total = steps if img2img_fix_steps else total_steps
+
             # Generate preview image from latent
             preview_image = None
             if step % 5 == 0 or step == total_steps - 1:
@@ -406,7 +409,7 @@ async def generate_img2img(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -646,6 +649,9 @@ async def generate_inpaint(
         # Progress callback to send updates via WebSocket
         def progress_callback(step, total_steps, latents):
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
+            # For inpaint with "Do full steps" enabled, display requested_steps instead
+            display_total = steps if img2img_fix_steps else total_steps
+
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
             if step % 5 == 0 or step == total_steps - 1:
@@ -660,7 +666,7 @@ async def generate_inpaint(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image)
 
         # Create step callback for LoRA step range if needed
         step_callback = None

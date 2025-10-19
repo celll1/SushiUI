@@ -1439,6 +1439,14 @@ class DiffusionPipelineManager:
             if is_v_prediction:
                 print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
+            # Calculate t_start for "Do full steps" mode
+            t_start_override = None
+            if fix_steps:
+                # t_start = total_steps - t_enc - 1
+                # This ensures we get exactly requested_steps timesteps
+                t_start_override = total_steps - t_enc - 1
+                print(f"[img2img] Calculated t_start={t_start_override} for Do full steps mode")
+
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
@@ -1453,6 +1461,7 @@ class DiffusionPipelineManager:
                 guidance_rescale=guidance_rescale,
                 generator=torch.Generator(device=self.device).manual_seed(actual_seed),
                 ancestral_generator=ancestral_generator,
+                t_start_override=t_start_override,
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
                 step_callback=step_callback,
@@ -1620,6 +1629,14 @@ class DiffusionPipelineManager:
         if is_v_prediction:
             print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
+        # Calculate t_start for "Do full steps" mode
+        t_start_override = None
+        if fix_steps:
+            # t_start = total_steps - t_enc - 1
+            # This ensures we get exactly requested_steps timesteps
+            t_start_override = total_steps - t_enc - 1
+            print(f"[inpaint] Calculated t_start={t_start_override} for Do full steps mode")
+
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
@@ -1635,6 +1652,7 @@ class DiffusionPipelineManager:
             guidance_rescale=guidance_rescale,
             generator=torch.Generator(device=self.device).manual_seed(seed),
             ancestral_generator=ancestral_generator,
+            t_start_override=t_start_override,
             prompt_embeds_callback=prompt_embeds_callback_fn,
             progress_callback=progress_callback,
             step_callback=step_callback,

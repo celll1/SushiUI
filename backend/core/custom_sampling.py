@@ -24,6 +24,32 @@ from PIL import Image
 import numpy as np
 
 
+def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0) -> torch.Tensor:
+    """
+    Rescale noise predictions to fix overexposure and improve image quality.
+
+    Based on Section 3.4 from "Common Diffusion Noise Schedules and Sample Steps are Flawed"
+    https://arxiv.org/abs/2305.08891
+
+    This is particularly important for v-prediction models to avoid washed out or blurry images.
+
+    Args:
+        noise_cfg: The predicted noise tensor after CFG (classifier-free guidance)
+        noise_pred_text: The predicted noise tensor from text conditioning only (before CFG)
+        guidance_rescale: Rescale factor (0.0 = no rescaling, 0.7 = recommended for v-pred)
+
+    Returns:
+        Rescaled noise prediction tensor
+    """
+    std_text = noise_pred_text.std(dim=list(range(1, noise_pred_text.ndim)), keepdim=True)
+    std_cfg = noise_cfg.std(dim=list(range(1, noise_cfg.ndim)), keepdim=True)
+    # Rescale the results from guidance (fixes overexposure)
+    noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
+    # Mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
+    noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+    return noise_cfg
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -32,6 +58,7 @@ def custom_sampling_loop(
     negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,
     num_inference_steps: int = 50,
     guidance_scale: float = 7.5,
+    guidance_rescale: float = 0.0,
     width: int = 512,
     height: int = 512,
     generator: Optional[torch.Generator] = None,
@@ -293,6 +320,10 @@ def custom_sampling_loop(
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+        # Apply guidance rescale if specified (important for v-prediction models)
+        if guidance_rescale > 0.0:
+            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
@@ -335,6 +366,7 @@ def custom_img2img_sampling_loop(
     num_inference_steps: int = 50,
     strength: float = 0.75,
     guidance_scale: float = 7.5,
+    guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
@@ -582,6 +614,10 @@ def custom_img2img_sampling_loop(
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+        # Apply guidance rescale if specified (important for v-prediction models)
+        if guidance_rescale > 0.0:
+            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
@@ -623,6 +659,7 @@ def custom_inpaint_sampling_loop(
     num_inference_steps: int = 50,
     strength: float = 0.75,
     guidance_scale: float = 7.5,
+    guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,

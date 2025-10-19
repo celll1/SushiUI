@@ -1031,6 +1031,12 @@ class DiffusionPipelineManager:
                 if controlnet_images:
                     print(f"[Pipeline] WARNING: ControlNet images specified but pipeline_to_use doesn't have control_images attribute")
 
+            # Detect v-prediction and apply guidance_rescale if needed
+            is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
+            guidance_rescale = 0.7 if is_v_prediction else 0.0
+            if is_v_prediction:
+                print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
+
             # Call custom sampling loop
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
@@ -1040,6 +1046,7 @@ class DiffusionPipelineManager:
                 negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
                 num_inference_steps=params.get("steps", settings.default_steps),
                 guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+                guidance_rescale=guidance_rescale,
                 width=params.get("width", 1024 if is_sdxl else settings.default_width),
                 height=params.get("height", 1024 if is_sdxl else settings.default_height),
                 generator=generator,
@@ -1335,6 +1342,12 @@ class DiffusionPipelineManager:
                 ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
                 print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
 
+            # Detect v-prediction and apply guidance_rescale if needed
+            is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
+            guidance_rescale = 0.7 if is_v_prediction else 0.0
+            if is_v_prediction:
+                print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
+
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
@@ -1346,6 +1359,7 @@ class DiffusionPipelineManager:
                 num_inference_steps=total_steps,
                 strength=denoising_strength,
                 guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+                guidance_rescale=guidance_rescale,
                 generator=torch.Generator(device=self.device).manual_seed(actual_seed),
                 ancestral_generator=ancestral_generator,
                 prompt_embeds_callback=prompt_embeds_callback_fn,
@@ -1509,6 +1523,12 @@ class DiffusionPipelineManager:
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
             print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
 
+        # Detect v-prediction and apply guidance_rescale if needed
+        is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
+        guidance_rescale = 0.7 if is_v_prediction else 0.0
+        if is_v_prediction:
+            print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
+
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
@@ -1521,6 +1541,7 @@ class DiffusionPipelineManager:
             num_inference_steps=total_steps,
             strength=denoising_strength,
             guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
+            guidance_rescale=guidance_rescale,
             generator=torch.Generator(device=self.device).manual_seed(seed),
             ancestral_generator=ancestral_generator,
             prompt_embeds_callback=prompt_embeds_callback_fn,

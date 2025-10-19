@@ -56,42 +56,64 @@ export default function TextareaWithTagSuggestions({
     }
   }, []);
 
-  // Calculate cursor position in pixels (simple line-based approach)
+  // Calculate cursor position in pixels using a hidden div mirror
   const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
     const style = window.getComputedStyle(textarea);
-    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
-
-    // Count lines before cursor
-    const textBeforeCursor = textarea.value.substring(0, position);
-    const lines = textBeforeCursor.split('\n');
-    const lineNumber = lines.length - 1;
-
-    // Get textarea bounding rect
     const rect = textarea.getBoundingClientRect();
+
+    // Create a mirror div to measure text position with wrapping
+    const mirror = document.createElement('div');
+    const mirrorStyle = mirror.style;
+
+    // Copy all relevant styles from textarea to mirror
+    const properties = [
+      'boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight',
+      'fontStyle', 'letterSpacing', 'textTransform', 'wordSpacing',
+      'textIndent', 'whiteSpace', 'lineHeight', 'padding', 'border',
+    ];
+
+    properties.forEach(prop => {
+      mirrorStyle.setProperty(prop, style.getPropertyValue(prop));
+    });
+
+    // Set mirror-specific styles
+    mirrorStyle.position = 'absolute';
+    mirrorStyle.visibility = 'hidden';
+    mirrorStyle.whiteSpace = 'pre-wrap'; // Important: match textarea wrapping
+    mirrorStyle.wordWrap = 'break-word';
+    mirrorStyle.overflowWrap = 'break-word';
+    mirrorStyle.top = '0';
+    mirrorStyle.left = '0';
+
+    document.body.appendChild(mirror);
+
+    // Set text content up to cursor position
+    const textBeforeCursor = textarea.value.substring(0, position);
+    mirror.textContent = textBeforeCursor;
+
+    // Create a span at the cursor position to measure
+    const cursorSpan = document.createElement('span');
+    cursorSpan.textContent = '|'; // Placeholder character
+    mirror.appendChild(cursorSpan);
+
+    // Get the position of the cursor span
+    const cursorRect = cursorSpan.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+
+    // Calculate relative position within mirror
+    const relativeTop = cursorRect.top - mirrorRect.top;
+    const relativeLeft = cursorRect.left - mirrorRect.left;
+
+    // Clean up
+    document.body.removeChild(mirror);
+
+    // Calculate absolute position (account for scroll and padding)
     const paddingTop = parseFloat(style.paddingTop) || 0;
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
 
-    // Calculate vertical position (account for scroll)
-    const verticalOffset = lineNumber * lineHeight - textarea.scrollTop;
-
-    // For horizontal position, measure the current line text width
-    const currentLineText = lines[lines.length - 1];
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (context) {
-      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-      const textWidth = context.measureText(currentLineText).width;
-
-      return {
-        top: rect.top + paddingTop + verticalOffset + lineHeight,
-        left: rect.left + paddingLeft + textWidth,
-      };
-    }
-
-    // Fallback: just use textarea left edge
     return {
-      top: rect.top + paddingTop + verticalOffset + lineHeight,
-      left: rect.left + paddingLeft,
+      top: rect.top + paddingTop + relativeTop - textarea.scrollTop,
+      left: rect.left + paddingLeft + relativeLeft,
     };
   };
 

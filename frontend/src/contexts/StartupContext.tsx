@@ -42,10 +42,10 @@ export function StartupProvider({ children }: StartupProviderProps) {
           setModelLoaded(true);
 
           // Show alert only once per session
-          if (!hasShownAlertInSession) {
-            hasShownAlertInSession = true;
-            alert("Model loaded successfully!");
-          }
+          // if (!hasShownAlertInSession) {
+          //   hasShownAlertInSession = true;
+          //   alert("Model loaded successfully!");
+          // }
         }
       } catch (error) {
         // Backend not ready yet, will retry

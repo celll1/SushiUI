@@ -20,6 +20,14 @@ const nextConfig = {
       },
     ]
   },
+  // Increase timeout for proxied requests (experimental)
+  experimental: {
+    proxyTimeout: 600000, // 10 minutes in milliseconds
+  },
+  // Increase server response timeout
+  serverRuntimeConfig: {
+    timeout: 600000, // 10 minutes
+  },
 }
 
 module.exports = nextConfig

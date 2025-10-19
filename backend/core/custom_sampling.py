@@ -368,6 +368,7 @@ def custom_img2img_sampling_loop(
     guidance_scale: float = 7.5,
     guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
+    ancestral_generator: Optional[torch.Generator] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
@@ -405,6 +406,11 @@ def custom_img2img_sampling_loop(
 
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
+
+    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
+    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    if ancestral_generator is not None:
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
 
     # Get components
     unet = pipeline.unet
@@ -661,6 +667,7 @@ def custom_inpaint_sampling_loop(
     guidance_scale: float = 7.5,
     guidance_rescale: float = 0.0,
     generator: Optional[torch.Generator] = None,
+    ancestral_generator: Optional[torch.Generator] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
@@ -675,6 +682,11 @@ def custom_inpaint_sampling_loop(
 
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
+
+    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
+    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    if ancestral_generator is not None:
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
 
     unet = pipeline.unet
     vae = pipeline.vae

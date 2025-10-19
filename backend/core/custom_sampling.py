@@ -223,13 +223,20 @@ def custom_sampling_loop(
                         mid_block_res_sample_list = []
                         for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
                             if scale > 0:
+                                controlnet_kwargs = {
+                                    "encoder_hidden_states": prompt_embeds_input,
+                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "conditioning_scale": scale,
+                                    "return_dict": False,
+                                }
+                                # Add SDXL-specific conditioning to ControlNet
+                                if is_sdxl and added_cond_kwargs:
+                                    controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                                 ctrl_result = cn(
                                     latent_model_input,
                                     t,
-                                    encoder_hidden_states=prompt_embeds_input,
-                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),  # For CFG
-                                    conditioning_scale=scale,
-                                    return_dict=False,
+                                    **controlnet_kwargs
                                 )
                                 down_samples, mid_sample = ctrl_result
                                 down_block_res_samples_list.append(down_samples)
@@ -244,13 +251,20 @@ def custom_sampling_loop(
                     else:
                         # Single ControlNet
                         if active_scales[0] > 0:
+                            controlnet_kwargs = {
+                                "encoder_hidden_states": prompt_embeds_input,
+                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "conditioning_scale": active_scales[0],
+                                "return_dict": False,
+                            }
+                            # Add SDXL-specific conditioning to ControlNet
+                            if is_sdxl and added_cond_kwargs:
+                                controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                             down_block_res_samples, mid_block_res_sample = controlnet(
                                 latent_model_input,
                                 t,
-                                encoder_hidden_states=prompt_embeds_input,
-                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),  # For CFG
-                                conditioning_scale=active_scales[0],
-                                return_dict=False,
+                                **controlnet_kwargs
                             )
 
         # Predict noise residual
@@ -499,13 +513,19 @@ def custom_img2img_sampling_loop(
                         mid_block_res_sample_list = []
                         for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
                             if scale > 0:
+                                controlnet_kwargs = {
+                                    "encoder_hidden_states": prompt_embeds_input,
+                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "conditioning_scale": scale,
+                                    "return_dict": False,
+                                }
+                                if is_sdxl and added_cond_kwargs:
+                                    controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                                 ctrl_result = cn(
                                     latent_model_input,
                                     t,
-                                    encoder_hidden_states=prompt_embeds_input,
-                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),
-                                    conditioning_scale=scale,
-                                    return_dict=False,
+                                    **controlnet_kwargs
                                 )
                                 down_samples, mid_sample = ctrl_result
                                 down_block_res_samples_list.append(down_samples)
@@ -520,13 +540,19 @@ def custom_img2img_sampling_loop(
                     else:
                         # Single ControlNet
                         if active_scales[0] > 0:
+                            controlnet_kwargs = {
+                                "encoder_hidden_states": prompt_embeds_input,
+                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "conditioning_scale": active_scales[0],
+                                "return_dict": False,
+                            }
+                            if is_sdxl and added_cond_kwargs:
+                                controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                             down_block_res_samples, mid_block_res_sample = controlnet(
                                 latent_model_input,
                                 t,
-                                encoder_hidden_states=prompt_embeds_input,
-                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),
-                                conditioning_scale=active_scales[0],
-                                return_dict=False,
+                                **controlnet_kwargs
                             )
 
         # Predict noise residual
@@ -738,13 +764,19 @@ def custom_inpaint_sampling_loop(
                         mid_block_res_sample_list = []
                         for cn, ctrl_img, scale in zip(controlnet, control_image_tensors, active_scales):
                             if scale > 0:
+                                controlnet_kwargs = {
+                                    "encoder_hidden_states": prompt_embeds_input,
+                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "conditioning_scale": scale,
+                                    "return_dict": False,
+                                }
+                                if is_sdxl and added_cond_kwargs:
+                                    controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                                 ctrl_result = cn(
                                     latent_model_input,
                                     t,
-                                    encoder_hidden_states=prompt_embeds_input,
-                                    controlnet_cond=ctrl_img.repeat(2, 1, 1, 1),
-                                    conditioning_scale=scale,
-                                    return_dict=False,
+                                    **controlnet_kwargs
                                 )
                                 down_samples, mid_sample = ctrl_result
                                 down_block_res_samples_list.append(down_samples)
@@ -757,13 +789,19 @@ def custom_inpaint_sampling_loop(
                             mid_block_res_sample = sum(mid_block_res_sample_list)
                     else:
                         if active_scales[0] > 0:
+                            controlnet_kwargs = {
+                                "encoder_hidden_states": prompt_embeds_input,
+                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "conditioning_scale": active_scales[0],
+                                "return_dict": False,
+                            }
+                            if is_sdxl and added_cond_kwargs:
+                                controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
                             down_block_res_samples, mid_block_res_sample = controlnet(
                                 latent_model_input,
                                 t,
-                                encoder_hidden_states=prompt_embeds_input,
-                                controlnet_cond=control_image_tensors[0].repeat(2, 1, 1, 1),
-                                conditioning_scale=active_scales[0],
-                                return_dict=False,
+                                **controlnet_kwargs
                             )
 
         with torch.no_grad():

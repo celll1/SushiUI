@@ -6,8 +6,12 @@ Implements A1111-style prompt editing syntax:
 - [from::when] - remove 'from' at step 'when'
 
 Where 'when' can be:
-- A float between 0.0 and 1.0: fraction of total steps
-- An integer >= 1: absolute step number
+- A value < 1.0 (e.g., 0.5): fraction of total steps (0.5 = 50%)
+- A value >= 1.0 (e.g., 15): absolute step number
+
+Examples:
+- [cat:dog:0.5] - switch from 'cat' to 'dog' at 50% of total steps (step 15 if 30 steps)
+- [cat:dog:15] - switch from 'cat' to 'dog' at step 15
 """
 
 import re
@@ -123,7 +127,9 @@ class PromptEditingProcessor(PromptProcessor):
 
             # Parse 'when' value
             when_value = float(when_str)
-            is_fractional = '.' in when_str and 0.0 <= when_value <= 1.0
+            # If value is < 1.0, treat as fractional (0.0-1.0 = 0%-100%)
+            # If value is >= 1.0, treat as absolute step number
+            is_fractional = when_value < 1.0
 
             # Create edit
             edit = PromptEdit(from_text, to_text, when_value, is_fractional)

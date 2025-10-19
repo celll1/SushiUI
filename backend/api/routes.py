@@ -279,6 +279,8 @@ async def generate_img2img(
     height: int = Form(1024),
     resize_mode: str = Form("image"),
     resampling_method: str = Form("lanczos"),
+    prompt_chunking_mode: str = Form("a1111"),
+    max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     controlnets: str = Form("[]"),  # JSON string of ControlNet configs
     image: UploadFile = File(...),
@@ -364,6 +366,10 @@ async def generate_img2img(
                 for cn in params_for_log["controlnet_images"]
             ]
         print(f"img2img generation params: {params_for_log}")
+
+        # Set prompt chunking settings
+        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
+        pipeline_manager.max_prompt_chunks = max_prompt_chunks
 
         # Load LoRAs if specified
         has_step_range_loras = False
@@ -511,6 +517,8 @@ async def generate_inpaint(
     mask_blur: int = Form(4),
     inpaint_full_res: bool = Form(False),
     inpaint_full_res_padding: int = Form(32),
+    prompt_chunking_mode: str = Form("a1111"),
+    max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     controlnets: str = Form("[]"),  # JSON string of ControlNet configs
     image: UploadFile = File(...),
@@ -612,6 +620,10 @@ async def generate_inpaint(
                 for cn in params_for_log["controlnet_images"]
             ]
         print(f"inpaint generation params: {params_for_log}")
+
+        # Set prompt chunking settings
+        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
+        pipeline_manager.max_prompt_chunks = max_prompt_chunks
 
         # Load LoRAs if specified
         has_step_range_loras = False

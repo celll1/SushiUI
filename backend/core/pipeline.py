@@ -644,6 +644,91 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
+    def _encode_prompt_nobos_single_chunk(self, prompt: str, negative_prompt: str = "", pipeline=None):
+        """
+        Encode prompts with NoBOS mode for single chunk (<=75 tokens).
+        Strips BOS and EOS tokens from embeddings.
+
+        Returns:
+            For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
+            For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
+        """
+        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
+
+        # Use provided pipeline or default to txt2img_pipeline
+        if pipeline is None:
+            pipeline = self.txt2img_pipeline
+
+        if pipeline is None:
+            return None, None, None, None
+
+        # Check if SDXL by checking if text_encoder_2 exists
+        is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
+
+        device = self.device
+        dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
+
+        # Parse prompts for emphasis syntax
+        import re
+        has_pos_emphasis = bool(re.search(r'(?<!\\)[\(\[]', prompt))
+        has_neg_emphasis = bool(re.search(r'(?<!\\)[\(\[]', negative_prompt))
+
+        tokenizer = pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer
+
+        # Encode positive prompt
+        embeds = pipeline.encode_prompt(
+            prompt=prompt,
+            device=device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False
+        )
+
+        prompt_embeds = embeds[0]
+        pooled_prompt_embeds = embeds[2] if is_sdxl else None
+
+        # Strip BOS (first token) and EOS (last token) for NoBOS mode
+        # For prompts <=75 tokens, embedding shape is typically [1, 77, hidden_dim]
+        # Remove first and last tokens: [1, 75, hidden_dim]
+        if prompt_embeds.shape[1] > 2:  # Ensure there are enough tokens
+            prompt_embeds = prompt_embeds[:, 1:-1, :]
+
+        # Apply emphasis weights if present
+        if has_pos_emphasis:
+            prompt_embeds = apply_emphasis_to_embeds(
+                prompt, prompt_embeds,
+                tokenizer,
+                device, dtype
+            )
+
+        # Encode negative prompt
+        negative_prompt_embeds = None
+        negative_pooled_prompt_embeds = None
+
+        if negative_prompt:
+            neg_embeds = pipeline.encode_prompt(
+                prompt=negative_prompt,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
+
+            negative_prompt_embeds = neg_embeds[0]
+            negative_pooled_prompt_embeds = neg_embeds[2] if is_sdxl else None
+
+            # Strip BOS and EOS for NoBOS mode
+            if negative_prompt_embeds.shape[1] > 2:
+                negative_prompt_embeds = negative_prompt_embeds[:, 1:-1, :]
+
+            # Apply emphasis weights if present
+            if has_neg_emphasis:
+                negative_prompt_embeds = apply_emphasis_to_embeds(
+                    negative_prompt, negative_prompt_embeds,
+                    tokenizer,
+                    device, dtype
+                )
+
+        return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
+
     def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
         Encode prompts with A1111-style emphasis weights and/or chunking.
@@ -682,9 +767,15 @@ class DiffusionPipelineManager:
         else:
             needs_chunking = False
 
+        # Check if NoBOS mode is enabled
+        needs_nobos_processing = self.prompt_chunking_mode == "nobos"
+
         # Use chunked encoding for long prompts
         if needs_chunking:
             return self._encode_prompt_chunked(prompt, negative_prompt, pipeline)
+        elif needs_nobos_processing:
+            # Even for <=75 tokens, apply NoBOS processing
+            return self._encode_prompt_nobos_single_chunk(prompt, negative_prompt, pipeline)
 
         # For short prompts (<=75 tokens), use pipeline.encode_prompt for correct encoding
         # Then apply emphasis weights if needed

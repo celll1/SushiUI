@@ -33,6 +33,8 @@ interface InpaintParams {
   inpaint_full_res_padding?: number;
   resize_mode?: string;
   resampling_method?: string;
+  prompt_chunking_mode?: string;
+  max_prompt_chunks?: number;
   loras?: LoRAConfig[];
   controlnets?: ControlNetConfig[];
 }
@@ -55,6 +57,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   inpaint_full_res_padding: 32,
   resize_mode: "image",
   resampling_method: "lanczos",
+  prompt_chunking_mode: "a1111",
+  max_prompt_chunks: 0,
   loras: [],
   controlnets: [],
 };
@@ -1053,6 +1057,30 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                   -1 = use main seed (default). Set a different value to vary details while keeping composition.
                 </p>
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="Prompt Chunking Mode"
+                options={[
+                  { value: "a1111", label: "A1111 (Separate chunks)" },
+                  { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+                  { value: "nobos", label: "No BOS/EOS" },
+                ]}
+                value={params.prompt_chunking_mode || "a1111"}
+                onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+              />
+              <Select
+                label="Max Chunks"
+                options={[
+                  { value: "0", label: "Unlimited" },
+                  { value: "1", label: "1 chunk (75 tokens)" },
+                  { value: "2", label: "2 chunks (150 tokens)" },
+                  { value: "3", label: "3 chunks (225 tokens)" },
+                  { value: "4", label: "4 chunks (300 tokens)" },
+                ]}
+                value={String(params.max_prompt_chunks || 0)}
+                onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+              />
             </div>
 
             <div className="flex items-center gap-2">

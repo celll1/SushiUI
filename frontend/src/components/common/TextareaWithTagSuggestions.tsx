@@ -147,25 +147,28 @@ export default function TextareaWithTagSuggestions({
         const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
         // Only show results if the tag hasn't changed
         if (latestTag === currentTag) {
-          // Filter out exact matches - don't suggest if only exact match exists
+          // Don't show suggestions if the only result is an exact match
           const currentTagLower = currentTag.toLowerCase().replace(/_/g, ' ');
-          const filteredResults = results.filter(result => {
-            const resultTagLower = result.tag.toLowerCase().replace(/_/g, ' ');
-            return resultTagLower !== currentTagLower;
-          });
+          const hasOnlyExactMatch = results.length === 1 &&
+            results[0].tag.toLowerCase().replace(/_/g, ' ') === currentTagLower;
 
-          console.log('[TagSuggestions] Filtered results (excluding exact match):', filteredResults.length);
+          if (hasOnlyExactMatch) {
+            console.log('[TagSuggestions] Only exact match found, hiding suggestions');
+            setSuggestions([]);
+            setSelectedIndex(-1);
+          } else {
+            console.log('[TagSuggestions] Showing suggestions:', results.length);
+            setSuggestions(results);
+            setSelectedIndex(results.length > 0 ? 0 : -1);
 
-          setSuggestions(filteredResults);
-          setSelectedIndex(filteredResults.length > 0 ? 0 : -1);
-
-          // Calculate position for suggestions dropdown near cursor
-          if (filteredResults.length > 0) {
-            const coords = getCursorCoordinates(textarea, cursorPos);
-            setSuggestionsPosition({
-              top: coords.top,
-              left: coords.left,
-            });
+            // Calculate position for suggestions dropdown near cursor
+            if (results.length > 0) {
+              const coords = getCursorCoordinates(textarea, cursorPos);
+              setSuggestionsPosition({
+                top: coords.top,
+                left: coords.left,
+              });
+            }
           }
         }
       }

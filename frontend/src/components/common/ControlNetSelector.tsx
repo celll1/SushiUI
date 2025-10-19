@@ -646,12 +646,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     )}
                   </div>
                 )}
-              </div>
 
-              {/* Right column: Settings */}
-              <div className="space-y-3">
-                {/* Preprocessor Settings */}
-                <div className="p-3 bg-gray-700 rounded-lg space-y-2">
+                {/* Preprocessor Settings - moved below image */}
+                <div className="mt-3 p-3 bg-gray-700 rounded-lg space-y-2">
                   <label className="block text-sm font-medium text-gray-300">
                     Preprocessor
                   </label>
@@ -704,6 +701,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Right column: Settings */}
+              <div className="space-y-3">
 
                 <Slider
                   label="Strength"

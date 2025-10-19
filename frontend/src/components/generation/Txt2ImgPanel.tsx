@@ -44,6 +44,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
+  const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
@@ -349,6 +350,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       const result = await generateTxt2Img(params);
       setGeneratedImage(`/outputs/${result.image.filename}`);
       setGeneratedImageSeed(result.image.seed);
+      setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -508,6 +510,9 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                 onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
               />
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Seed
@@ -574,6 +579,15 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   title="Use main seed (-1)"
                 >
                   -1
+                </Button>
+                <Button
+                  onClick={() => generatedImageAncestralSeed !== null && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use ancestral seed from preview image"
+                  disabled={generatedImageAncestralSeed === null}
+                >
+                  ♻️
                 </Button>
               </div>
               <p className="text-xs text-gray-500 mt-1">

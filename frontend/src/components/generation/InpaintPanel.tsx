@@ -73,6 +73,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
+  const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [inputImage, setInputImage] = useState<File | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
   const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -642,6 +643,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         const imageUrl = `/outputs/${result.image.filename}`;
         setGeneratedImage(imageUrl);
         setGeneratedImageSeed(result.actual_seed);
+        setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
 
         if (isMounted) {
           localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
@@ -971,42 +973,85 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
               />
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Seed
-              </label>
-              <div className="flex gap-2">
-                <Input
-                  type="number"
-                  value={params.seed}
-                  onChange={(e) => setParams({ ...params, seed: parseInt(e.target.value) })}
-                  className="flex-1"
-                />
-                <Button
-                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
-                  variant="secondary"
-                  size="sm"
-                  title="Random seed"
-                >
-                  🎲
-                </Button>
-                <Button
-                  onClick={() => setParams({ ...params, seed: -1 })}
-                  variant="secondary"
-                  size="sm"
-                  title="Reset to random (-1)"
-                >
-                  -1
-                </Button>
-                <Button
-                  onClick={() => generatedImageSeed !== null && setParams({ ...params, seed: generatedImageSeed })}
-                  variant="secondary"
-                  size="sm"
-                  title="Use seed from preview image"
-                  disabled={generatedImageSeed === null}
-                >
-                  ♻️
-                </Button>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Seed
+                </label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    value={params.seed}
+                    onChange={(e) => setParams({ ...params, seed: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <Button
+                    onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                    variant="secondary"
+                    size="sm"
+                    title="Random seed"
+                  >
+                    🎲
+                  </Button>
+                  <Button
+                    onClick={() => setParams({ ...params, seed: -1 })}
+                    variant="secondary"
+                    size="sm"
+                    title="Reset to random (-1)"
+                  >
+                    -1
+                  </Button>
+                  <Button
+                    onClick={() => generatedImageSeed !== null && setParams({ ...params, seed: generatedImageSeed })}
+                    variant="secondary"
+                    size="sm"
+                    title="Use seed from preview image"
+                    disabled={generatedImageSeed === null}
+                  >
+                    ♻️
+                  </Button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Ancestral Seed
+                </label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    value={params.ancestral_seed}
+                    onChange={(e) => setParams({ ...params, ancestral_seed: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <Button
+                    onClick={() => setParams({ ...params, ancestral_seed: Math.floor(Math.random() * 2147483647) })}
+                    variant="secondary"
+                    size="sm"
+                    title="Random ancestral seed"
+                  >
+                    🎲
+                  </Button>
+                  <Button
+                    onClick={() => setParams({ ...params, ancestral_seed: -1 })}
+                    variant="secondary"
+                    size="sm"
+                    title="Reset to use main seed (-1)"
+                  >
+                    -1
+                  </Button>
+                  <Button
+                    onClick={() => generatedImageAncestralSeed !== null && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                    variant="secondary"
+                    size="sm"
+                    title="Use ancestral seed from preview image"
+                    disabled={generatedImageAncestralSeed === null}
+                  >
+                    ♻️
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  -1 = use main seed (default). Set a different value to vary details while keeping composition.
+                </p>
               </div>
             </div>
 

@@ -153,6 +153,7 @@ def custom_sampling_loop(
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
     print(f"[CustomSampling] Starting sampling loop with {num_inference_steps} steps")
+    print(f"[CustomSampling] Actual timesteps: {len(timesteps)} (some schedulers like DPM2 use 2x steps)")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
     print(f"[CustomSampling] Prompt embeds shape: {prompt_embeds.shape}")
 
@@ -297,8 +298,10 @@ def custom_sampling_loop(
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
 
         # Progress callback
+        # Note: Some schedulers (DPM2, DPM2a) create more timesteps than num_inference_steps
+        # so we pass len(timesteps) as the total to avoid showing progress > 100%
         if progress_callback is not None:
-            progress_callback(i, num_inference_steps, latents)
+            progress_callback(i, len(timesteps), latents)
 
         # Step callback
         if step_callback is not None:

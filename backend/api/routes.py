@@ -154,9 +154,8 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, timestep, latents):
-            total_steps = params.get("steps", 20)
-
+        def progress_callback(step, total_steps, latents):
+            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
             if step % 5 == 0 or step == total_steps - 1:
@@ -385,18 +384,11 @@ async def generate_img2img(
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, timestep, latents):
-            # Calculate actual steps based on img2img_fix_steps setting
-            if img2img_fix_steps:
-                # When fix_steps is enabled, we show the requested steps
-                actual_steps = steps
-            else:
-                # Standard behavior: steps * strength
-                actual_steps = int(steps * denoising_strength)
-
+        def progress_callback(step, total_steps, latents):
+            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # Generate preview image from latent
             preview_image = None
-            if step % 5 == 0 or step == actual_steps - 1:
+            if step % 5 == 0 or step == total_steps - 1:
                 try:
                     preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
                     if preview_pil:
@@ -408,7 +400,7 @@ async def generate_img2img(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -640,18 +632,11 @@ async def generate_inpaint(
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, timestep, latents):
-            # Calculate actual steps based on img2img_fix_steps setting
-            if img2img_fix_steps:
-                # When fix_steps is enabled, we show the requested steps
-                actual_steps = steps
-            else:
-                # Standard behavior: steps * strength
-                actual_steps = int(steps * denoising_strength)
-
+        def progress_callback(step, total_steps, latents):
+            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
-            if step % 5 == 0 or step == actual_steps - 1:
+            if step % 5 == 0 or step == total_steps - 1:
                 try:
                     preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
                     if preview_pil:
@@ -663,7 +648,7 @@ async def generate_inpaint(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, actual_steps, f"Step {step + 1}/{actual_steps}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
 
         # Create step callback for LoRA step range if needed
         step_callback = None

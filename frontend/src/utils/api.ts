@@ -102,13 +102,29 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
     const { loadTempImage } = await import('./tempImageStorage');
 
+    // Get image references from localStorage
+    const IMAGE_STORAGE_KEY = "txt2img_controlnets_images";
+    const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+    const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+
     paramsWithImages.controlnets = await Promise.all(
       paramsWithImages.controlnets.map(async (cn, index) => {
-        // Load image from temp storage
-        const imageData = await loadTempImage(`controlnet_${index}`);
+        // Load image from temp storage using the stored reference
+        const imageRef = imageRefs[index];
+        if (imageRef) {
+          const imageData = await loadTempImage(imageRef);
+          // Remove data URL prefix if present (backend expects just base64)
+          const base64Data = imageData.startsWith('data:')
+            ? imageData.split(',')[1]
+            : imageData;
+          return {
+            ...cn,
+            image_base64: base64Data,
+          };
+        }
         return {
           ...cn,
-          image_base64: imageData || cn.image_base64, // Use temp storage or fallback to existing
+          image_base64: cn.image_base64, // Fallback to existing
         };
       })
     );

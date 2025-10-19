@@ -8,7 +8,15 @@ import Slider from "./Slider";
 import Button from "./Button";
 import ImageEditor from "./ImageEditor";
 import LayerWeightGraph from "./LayerWeightGraph";
-import { getControlNets, getControlNetInfo, ControlNetInfo } from "@/utils/api";
+import {
+  getControlNets,
+  getControlNetInfo,
+  ControlNetInfo,
+  detectControlNetPreprocessor,
+  preprocessControlNetImage,
+  getAvailablePreprocessors,
+  PreprocessorInfo
+} from "@/utils/api";
 import RangeSlider from "./RangeSlider";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
@@ -23,6 +31,8 @@ export interface ControlNetConfig {
   prompt?: string;
   is_lllite: boolean;
   use_input_image: boolean;
+  preprocessor?: string;
+  enable_preprocessor: boolean;
 }
 
 interface ControlNetSelectorProps {
@@ -127,6 +137,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   // Images are stored separately from parent state to avoid localStorage overflow
   const [imagePreviews, setImagePreviews] = useState<Map<number, string>>(new Map());
 
+  // Preprocessor-related state
+  const [availablePreprocessors, setAvailablePreprocessors] = useState<PreprocessorInfo[]>([]);
+  const [preprocessedPreviews, setPreprocessedPreviews] = useState<Map<number, string>>(new Map());
+  const [showPreprocessed, setShowPreprocessed] = useState<Map<number, boolean>>(new Map());
+  const [isPreprocessing, setIsPreprocessing] = useState<Map<number, boolean>>(new Map());
+
   // Helper function to call onChange without image_base64 to prevent localStorage overflow
   const notifyChange = (configs: ControlNetConfig[]) => {
     // Remove image_base64 from configs before passing to parent
@@ -137,8 +153,19 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   useEffect(() => {
     if (modelLoaded) {
       loadControlNets();
+      loadPreprocessors();
     }
   }, [modelLoaded]);
+
+  const loadPreprocessors = async () => {
+    try {
+      const result = await getAvailablePreprocessors();
+      setAvailablePreprocessors(result.preprocessors);
+      console.log("[ControlNetSelector] Loaded preprocessors:", result.preprocessors);
+    } catch (error) {
+      console.error("Failed to load preprocessors:", error);
+    }
+  };
 
   // Load persisted images when value changes from empty to non-empty
   useEffect(() => {
@@ -291,6 +318,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       layer_weights: {},  // Will be initialized by LayerWeightGraph
       is_lllite: false,
       use_input_image: false,
+      preprocessor: undefined,
+      enable_preprocessor: true,
     };
     notifyChange([...value, newControlNet]);
   };
@@ -320,14 +349,65 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     notifyChange(newValue);
   };
 
-  const updateControlNet = (index: number, updates: Partial<ControlNetConfig>) => {
+  const updateControlNet = async (index: number, updates: Partial<ControlNetConfig>) => {
     const newValue = [...value];
     newValue[index] = { ...newValue[index], ...updates };
     notifyChange(newValue);
 
-    // Re-detect model type if model_path changed
+    // Re-detect model type and preprocessor if model_path changed
     if (updates.model_path) {
       detectModelType(updates.model_path, index);
+      await detectPreprocessor(updates.model_path, index);
+    }
+  };
+
+  const detectPreprocessor = async (modelPath: string, index: number) => {
+    try {
+      const result = await detectControlNetPreprocessor(modelPath);
+      console.log(`[ControlNetSelector] Detected preprocessor for ${modelPath}:`, result);
+
+      const newValue = [...value];
+      newValue[index] = {
+        ...newValue[index],
+        preprocessor: result.preprocessor,
+        enable_preprocessor: result.requires_preprocessing
+      };
+      notifyChange(newValue);
+
+      // If image exists and preprocessing is enabled, preprocess it
+      if (result.requires_preprocessing && imagePreviews.has(index)) {
+        await preprocessImage(index);
+      }
+    } catch (error) {
+      console.error("Failed to detect preprocessor:", error);
+    }
+  };
+
+  const preprocessImage = async (index: number) => {
+    const imageData = imagePreviews.get(index);
+    const cn = value[index];
+
+    if (!imageData || !cn.enable_preprocessor || !cn.preprocessor || cn.preprocessor === "none") {
+      return;
+    }
+
+    setIsPreprocessing(prev => new Map(prev).set(index, true));
+
+    try {
+      // Convert data URL to Blob
+      const response = await fetch(imageData);
+      const blob = await response.blob();
+
+      console.log(`[ControlNetSelector] Preprocessing image with ${cn.preprocessor}...`);
+      const result = await preprocessControlNetImage(blob, cn.preprocessor);
+
+      // Store preprocessed preview
+      setPreprocessedPreviews(prev => new Map(prev).set(index, result.preprocessed_image));
+      console.log(`[ControlNetSelector] Preprocessing complete for index ${index}`);
+    } catch (error) {
+      console.error("Failed to preprocess image:", error);
+    } finally {
+      setIsPreprocessing(prev => new Map(prev).set(index, false));
     }
   };
 
@@ -349,6 +429,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       const updatedValue = [...value];
       updatedValue[index] = { ...updatedValue[index] };
       notifyChange(updatedValue);
+
+      // Preprocess the image if preprocessing is enabled
+      const cn = value[index];
+      if (cn.enable_preprocessor && cn.preprocessor && cn.preprocessor !== "none") {
+        await preprocessImage(index);
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -398,8 +484,22 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       updatedValue[editingImageIndex] = { ...updatedValue[editingImageIndex] };
       notifyChange(updatedValue);
 
+      // Preprocess the edited image if preprocessing is enabled
+      const cn = value[editingImageIndex];
+      if (cn.enable_preprocessor && cn.preprocessor && cn.preprocessor !== "none") {
+        await preprocessImage(editingImageIndex);
+      }
+
       setEditingImageIndex(null);
     }
+  };
+
+  const togglePreprocessedPreview = (index: number) => {
+    setShowPreprocessed(prev => {
+      const newMap = new Map(prev);
+      newMap.set(index, !newMap.get(index));
+      return newMap;
+    });
   };
 
   return (
@@ -495,7 +595,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   onDragLeave={(e) => handleDragLeave(e, index)}
                   onDrop={(e) => handleDrop(e, index)}
                   onDoubleClick={() => handleEditImage(index)}
-                  className={`mt-2 aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
+                  className={`mt-2 aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
                     draggingIndex === index
                       ? 'border-blue-500 bg-gray-700'
                       : 'border-gray-600'
@@ -503,11 +603,22 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   title={imagePreviews.has(index) ? "Double-click to edit image" : ""}
                 >
                   {imagePreviews.has(index) ? (
-                    <img
-                      src={imagePreviews.get(index)}
-                      alt="Control"
-                      className="w-full h-full object-contain"
-                    />
+                    <>
+                      <img
+                        src={
+                          showPreprocessed.get(index) && preprocessedPreviews.has(index)
+                            ? preprocessedPreviews.get(index)
+                            : imagePreviews.get(index)
+                        }
+                        alt="Control"
+                        className="w-full h-full object-contain"
+                      />
+                      {isPreprocessing.get(index) && (
+                        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+                          <div className="text-white text-sm">Processing...</div>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <div className="w-full h-full flex items-center justify-center">
                       <p className="text-gray-500 text-center px-4 text-sm">
@@ -519,14 +630,81 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   )}
                 </div>
                 {imagePreviews.has(index) && (
-                  <p className="text-xs text-gray-500 text-center mt-1">
-                    💡 Double-click to edit
-                  </p>
+                  <div className="mt-1 space-y-1">
+                    <p className="text-xs text-gray-500 text-center">
+                      💡 Double-click to edit
+                    </p>
+                    {/* Preview toggle button */}
+                    {preprocessedPreviews.has(index) && cn.enable_preprocessor && (
+                      <button
+                        onClick={() => togglePreprocessedPreview(index)}
+                        className="w-full text-xs py-1 px-2 bg-gray-700 hover:bg-gray-600 rounded text-gray-300 transition-colors"
+                        disabled={disabled}
+                      >
+                        {showPreprocessed.get(index) ? '👁️ Show Original' : '🔍 Show Preprocessed'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
               {/* Right column: Settings */}
               <div className="space-y-3">
+                {/* Preprocessor Settings */}
+                <div className="p-3 bg-gray-700 rounded-lg space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Preprocessor
+                  </label>
+
+                  {/* Enable/Disable Preprocessor Checkbox */}
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cn.enable_preprocessor}
+                      onChange={async (e) => {
+                        await updateControlNet(index, { enable_preprocessor: e.target.checked });
+                        // Re-preprocess if enabled
+                        if (e.target.checked && imagePreviews.has(index) && cn.preprocessor && cn.preprocessor !== "none") {
+                          await preprocessImage(index);
+                        }
+                      }}
+                      disabled={disabled}
+                      className="rounded"
+                    />
+                    <span className="text-sm text-gray-300">Enable Preprocessing</span>
+                  </label>
+
+                  {/* Preprocessor Dropdown */}
+                  {cn.enable_preprocessor && (
+                    <div>
+                      <select
+                        value={cn.preprocessor || "none"}
+                        onChange={async (e) => {
+                          await updateControlNet(index, { preprocessor: e.target.value });
+                          // Re-preprocess with new preprocessor
+                          if (imagePreviews.has(index) && e.target.value !== "none") {
+                            await preprocessImage(index);
+                          }
+                        }}
+                        disabled={disabled}
+                        className="w-full bg-gray-600 text-white px-3 py-2 rounded text-sm"
+                      >
+                        <option value="none">No Preprocessing</option>
+                        {availablePreprocessors.map((prep) => (
+                          <option key={prep.id} value={prep.id}>
+                            {prep.name}
+                          </option>
+                        ))}
+                      </select>
+                      {cn.preprocessor && cn.preprocessor !== "none" && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          Auto-detected from model name
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <Slider
                   label="Strength"
                   min={0}

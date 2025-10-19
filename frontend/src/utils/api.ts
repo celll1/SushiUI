@@ -96,6 +96,8 @@ export interface ControlNetConfig {
   prompt?: string;
   is_lllite: boolean;
   use_input_image: boolean;
+  preprocessor?: string;
+  enable_preprocessor: boolean;
 }
 
 export interface GenerationParams {
@@ -432,6 +434,49 @@ export const cleanupTempImages = async (maxAgeHours: number = 24): Promise<numbe
     params: { max_age_hours: maxAgeHours },
   });
   return response.data.deleted_count;
+};
+
+// ControlNet Preprocessor API
+export interface PreprocessorInfo {
+  id: string;
+  name: string;
+  category: string;
+}
+
+export const detectControlNetPreprocessor = async (modelPath: string): Promise<{
+  model_path: string;
+  preprocessor: string;
+  requires_preprocessing: boolean;
+}> => {
+  const response = await api.get("/controlnet/detect-preprocessor", {
+    params: { model_path: modelPath },
+  });
+  return response.data;
+};
+
+export const preprocessControlNetImage = async (
+  imageBlob: Blob,
+  preprocessor: string,
+  lowThreshold: number = 100,
+  highThreshold: number = 200
+): Promise<{ preprocessed_image: string; preprocessor: string }> => {
+  const formData = new FormData();
+  formData.append("image", imageBlob);
+  formData.append("preprocessor", preprocessor);
+  formData.append("low_threshold", lowThreshold.toString());
+  formData.append("high_threshold", highThreshold.toString());
+
+  const response = await api.post("/controlnet/preprocess-image", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return response.data;
+};
+
+export const getAvailablePreprocessors = async (): Promise<{ preprocessors: PreprocessorInfo[] }> => {
+  const response = await api.get("/controlnet/preprocessors");
+  return response.data;
 };
 
 export default api;

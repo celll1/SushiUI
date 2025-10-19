@@ -7,6 +7,7 @@ import Slider from "./Slider";
 import RangeSlider from "./RangeSlider";
 import LayerWeightGraph from "./LayerWeightGraph";
 import { LoRAConfig, LoRAInfo, getLoras, getLoraInfo } from "@/utils/api";
+import { useStartup } from "@/contexts/StartupContext";
 
 interface LoRASelectorProps {
   value: LoRAConfig[];
@@ -72,28 +73,15 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
 }
 
 export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed" }: LoRASelectorProps) {
+  const { modelLoaded } = useStartup();
   const [availableLoras, setAvailableLoras] = useState<Array<{ path: string; name: string }>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
 
   useEffect(() => {
-    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
-
-    if (startupModelChecked === "true") {
-      // Already checked, just load LoRAs
+    if (modelLoaded) {
       loadAvailableLoras();
-    } else {
-      // Wait for first panel to complete startup check
-      const checkInterval = setInterval(() => {
-        if (sessionStorage.getItem("startup_model_checked") === "true") {
-          clearInterval(checkInterval);
-          loadAvailableLoras();
-        }
-      }, 100);
-
-      // Stop checking after 60 seconds
-      setTimeout(() => clearInterval(checkInterval), 60000);
     }
-  }, []);
+  }, [modelLoaded]);
 
   const loadAvailableLoras = async () => {
     try {

@@ -11,6 +11,7 @@ import LayerWeightGraph from "./LayerWeightGraph";
 import { getControlNets, getControlNetInfo, ControlNetInfo } from "@/utils/api";
 import RangeSlider from "./RangeSlider";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { useStartup } from "@/contexts/StartupContext";
 
 export interface ControlNetConfig {
   model_path: string;
@@ -110,6 +111,7 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
 }
 
 export default function ControlNetSelector({ value, onChange, disabled, storageKey }: ControlNetSelectorPropsWithStorage) {
+  const { modelLoaded } = useStartup();
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -133,24 +135,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   useEffect(() => {
-    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
-
-    if (startupModelChecked === "true") {
-      // Already checked, just load ControlNets
+    if (modelLoaded) {
       loadControlNets();
-    } else {
-      // Wait for first panel to complete startup check
-      const checkInterval = setInterval(() => {
-        if (sessionStorage.getItem("startup_model_checked") === "true") {
-          clearInterval(checkInterval);
-          loadControlNets();
-        }
-      }, 100);
-
-      // Stop checking after 60 seconds
-      setTimeout(() => clearInterval(checkInterval), 60000);
     }
-  }, []);
+  }, [modelLoaded]);
 
   // Load persisted images when value changes from empty to non-empty
   useEffect(() => {

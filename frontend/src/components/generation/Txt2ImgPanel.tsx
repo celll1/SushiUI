@@ -14,6 +14,7 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
+import { useStartup } from "@/contexts/StartupContext";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -40,6 +41,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
+  const { modelLoaded } = useStartup();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -50,7 +52,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
-  const [modelLoadedOnStartup, setModelLoadedOnStartup] = useState(false);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -160,47 +161,15 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       setGeneratedImage(savedPreview);
     }
 
-    // Check if startup model load has already been handled
-    const startupModelChecked = sessionStorage.getItem("startup_model_checked");
-
-    if (startupModelChecked === "true") {
-      // Already checked, just load samplers without polling or alert
-      loadSamplers();
-      loadScheduleTypes();
-    } else {
-      // Poll until backend is ready and model is loaded
-      const pollInterval = setInterval(async () => {
-        try {
-          const response = await fetch("/api/models/current");
-          const data = await response.json();
-
-          if (data.loaded) {
-            clearInterval(pollInterval);
-            console.log("[Txt2Img] Model loaded! Setting flag...");
-            sessionStorage.setItem("startup_model_checked", "true");
-            setModelLoadedOnStartup(true);
-          }
-        } catch (error) {
-          // Backend not ready yet, will retry
-          console.log("Waiting for backend to start...");
-        }
-      }, 1000);
-
-      // Stop polling after 60 seconds
-      setTimeout(() => clearInterval(pollInterval), 60000);
-    }
   }, []);
 
-  // When model loads on startup, load samplers and schedule types
+  // Load samplers and schedule types when model is loaded
   useEffect(() => {
-    if (modelLoadedOnStartup) {
-      console.log("[Txt2Img] Model loaded on startup! Loading samplers and schedule types...");
+    if (modelLoaded) {
       loadSamplers();
       loadScheduleTypes();
-      alert("Model loaded successfully!");
-      console.log("[Txt2Img] Samplers and schedule types load initiated");
     }
-  }, [modelLoadedOnStartup]);
+  }, [modelLoaded]);
 
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {

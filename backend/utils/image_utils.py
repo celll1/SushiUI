@@ -38,13 +38,16 @@ def save_image_with_metadata(
     metadata.add_text("prompt", params.get("prompt", ""))
     metadata.add_text("negative_prompt", params.get("negative_prompt", ""))
     metadata.add_text("steps", str(params.get("steps", settings.default_steps)))
-    metadata.add_text("sampler", params.get("sampler", settings.default_sampler))
+    sampler = params.get("sampler", settings.default_sampler)
+    metadata.add_text("sampler", sampler)
     metadata.add_text("cfg_scale", str(params.get("cfg_scale", settings.default_cfg_scale)))
     metadata.add_text("seed", str(seed))
 
-    # Add ancestral_seed if specified
+    # Add ancestral_seed only for stochastic samplers (euler_a, dpm2_a, etc.)
+    # These samplers add randomness at each step, so ancestral_seed controls that randomness
+    stochastic_samplers = ["euler_a", "dpm2_a"]
     ancestral_seed = params.get("ancestral_seed", -1)
-    if ancestral_seed != -1:
+    if ancestral_seed != -1 and sampler in stochastic_samplers:
         metadata.add_text("ancestral_seed", str(ancestral_seed))
 
     metadata.add_text("width", str(params.get("width", settings.default_width)))

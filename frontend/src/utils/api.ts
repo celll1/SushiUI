@@ -100,34 +100,48 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   const paramsWithImages = { ...params };
 
   if (paramsWithImages.controlnets && paramsWithImages.controlnets.length > 0) {
+    console.log('[API] Loading ControlNet images from temp storage...');
     const { loadTempImage } = await import('./tempImageStorage');
 
     // Get image references from localStorage
-    const IMAGE_STORAGE_KEY = "txt2img_controlnets_images";
+    // ControlNetSelector uses "txt2img_controlnet_collapsed" as storageKey,
+    // and appends "_images" for image storage, so the key becomes "txt2img_controlnet_collapsed_images"
+    const IMAGE_STORAGE_KEY = "txt2img_controlnet_collapsed_images";
     const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+    console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
     const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+    console.log('[API] imageRefs:', imageRefs);
 
     paramsWithImages.controlnets = await Promise.all(
       paramsWithImages.controlnets.map(async (cn, index) => {
         // Load image from temp storage using the stored reference
         const imageRef = imageRefs[index];
+        console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
         if (imageRef) {
           const imageData = await loadTempImage(imageRef);
+          console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
           // Remove data URL prefix if present (backend expects just base64)
           const base64Data = imageData.startsWith('data:')
             ? imageData.split(',')[1]
             : imageData;
+          console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
           return {
             ...cn,
             image_base64: base64Data,
           };
         }
+        console.log(`[API] ControlNet ${index}: No imageRef, using fallback`);
         return {
           ...cn,
           image_base64: cn.image_base64, // Fallback to existing
         };
       })
     );
+    console.log('[API] Final controlnets:', paramsWithImages.controlnets.map((cn, i) => ({
+      index: i,
+      has_image: !!cn.image_base64,
+      length: cn.image_base64?.length
+    })));
   }
 
   const response = await api.post("/generate/txt2img", paramsWithImages);

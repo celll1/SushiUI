@@ -24,45 +24,46 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [hasShownAlert, setHasShownAlert] = useState(false);
 
   useEffect(() => {
-    // Check if we already checked in this session
-    const alreadyChecked = sessionStorage.getItem("startup_model_checked") === "true";
+    console.log("[StartupContext] Initializing...");
+    let hasShownAlertInSession = false;
 
-    if (alreadyChecked) {
-      setIsBackendReady(true);
-      setModelLoaded(true);
-      setHasShownAlert(true);
-      return;
-    }
-
-    // Poll backend for model load status
+    // Poll backend for model load status (always poll, don't use sessionStorage)
     const pollInterval = setInterval(async () => {
       try {
+        console.log("[StartupContext] Polling /api/models/current...");
         const response = await fetch("/api/models/current");
         const data = await response.json();
+        console.log("[StartupContext] Response:", data);
 
         if (data.loaded) {
           clearInterval(pollInterval);
+          console.log("[StartupContext] Model loaded! Updating state...");
           setIsBackendReady(true);
           setModelLoaded(true);
-          sessionStorage.setItem("startup_model_checked", "true");
 
-          // Show alert only once
-          if (!hasShownAlert) {
-            setHasShownAlert(true);
+          // Show alert only once per session
+          if (!hasShownAlertInSession) {
+            hasShownAlertInSession = true;
             alert("Model loaded successfully!");
           }
         }
       } catch (error) {
         // Backend not ready yet, will retry
-        console.log("Waiting for backend to start...");
+        console.log("[StartupContext] Waiting for backend to start...", error);
       }
     }, 1000);
 
     // Stop polling after 60 seconds
-    setTimeout(() => clearInterval(pollInterval), 60000);
+    setTimeout(() => {
+      console.log("[StartupContext] Polling timeout reached");
+      clearInterval(pollInterval);
+    }, 60000);
 
-    return () => clearInterval(pollInterval);
-  }, [hasShownAlert]);
+    return () => {
+      console.log("[StartupContext] Cleanup");
+      clearInterval(pollInterval);
+    };
+  }, []); // Empty dependency array - only run once on mount
 
   return (
     <StartupContext.Provider value={{ isBackendReady, modelLoaded }}>

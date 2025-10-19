@@ -147,15 +147,26 @@ export default function TextareaWithTagSuggestions({
         const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
         // Only show results if the tag hasn't changed
         if (latestTag === currentTag) {
-          setSuggestions(results);
-          setSelectedIndex(results.length > 0 ? 0 : -1);
+          // Filter out exact matches - don't suggest if only exact match exists
+          const currentTagLower = currentTag.toLowerCase().replace(/_/g, ' ');
+          const filteredResults = results.filter(result => {
+            const resultTagLower = result.tag.toLowerCase().replace(/_/g, ' ');
+            return resultTagLower !== currentTagLower;
+          });
+
+          console.log('[TagSuggestions] Filtered results (excluding exact match):', filteredResults.length);
+
+          setSuggestions(filteredResults);
+          setSelectedIndex(filteredResults.length > 0 ? 0 : -1);
 
           // Calculate position for suggestions dropdown near cursor
-          const coords = getCursorCoordinates(textarea, cursorPos);
-          setSuggestionsPosition({
-            top: coords.top,
-            left: coords.left,
-          });
+          if (filteredResults.length > 0) {
+            const coords = getCursorCoordinates(textarea, cursorPos);
+            setSuggestionsPosition({
+              top: coords.top,
+              left: coords.left,
+            });
+          }
         }
       }
     }, 300); // Increased delay to 300ms

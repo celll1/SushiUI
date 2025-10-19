@@ -60,6 +60,7 @@ class GenerationParams(BaseModel):
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
+    ancestral_seed: int = -1  # Seed for stochastic samplers (Euler a, DPM2 a, etc.). -1 = use main seed
     width: int = 512
     height: int = 512
     model: str = ""
@@ -239,6 +240,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             steps=request.steps,
             cfg_scale=request.cfg_scale,
             seed=actual_seed,
+            ancestral_seed=request.ancestral_seed if request.ancestral_seed != -1 else None,
             width=request.width,
             height=request.height,
             generation_type="txt2img",
@@ -465,6 +467,7 @@ async def generate_img2img(
             model_hash = pipeline_manager.current_model_info.get("model_hash", "")
 
         # Save to database
+        ancestral_seed_value = params.get("ancestral_seed", -1)
         db_image = GeneratedImage(
             filename=filename,
             prompt=prompt,
@@ -474,6 +477,7 @@ async def generate_img2img(
             steps=steps,
             cfg_scale=cfg_scale,
             seed=actual_seed,
+            ancestral_seed=ancestral_seed_value if ancestral_seed_value != -1 else None,
             width=result_image.width,
             height=result_image.height,
             generation_type="img2img",
@@ -719,6 +723,7 @@ async def generate_inpaint(
             model_hash = pipeline_manager.current_model_info.get("model_hash", "")
 
         # Save to database
+        ancestral_seed_value = params.get("ancestral_seed", -1)
         db_image = GeneratedImage(
             filename=filename,
             prompt=prompt,
@@ -728,6 +733,7 @@ async def generate_inpaint(
             steps=steps,
             cfg_scale=cfg_scale,
             seed=actual_seed,
+            ancestral_seed=ancestral_seed_value if ancestral_seed_value != -1 else None,
             width=result_image.width,
             height=result_image.height,
             generation_type="inpaint",

@@ -905,6 +905,16 @@ class DiffusionPipelineManager:
 
         generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
+        # Create ancestral generator for stochastic samplers
+        ancestral_seed = params.get("ancestral_seed", -1)
+        if ancestral_seed == -1:
+            # Use main seed for ancestral sampling (default behavior)
+            ancestral_generator = None  # Will use generator in custom_sampling_loop
+        else:
+            # Use separate seed for ancestral sampling
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+            print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+
         # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
             gen_params["image"] = pipeline_to_use.control_images
@@ -1033,6 +1043,7 @@ class DiffusionPipelineManager:
                 width=params.get("width", 1024 if is_sdxl else settings.default_width),
                 height=params.get("height", 1024 if is_sdxl else settings.default_height),
                 generator=generator,
+                ancestral_generator=ancestral_generator,
                 latents=None,
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
@@ -1316,6 +1327,14 @@ class DiffusionPipelineManager:
                 controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
                 controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
 
+            # Create ancestral generator for stochastic samplers
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                ancestral_generator = None
+            else:
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+                print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
@@ -1328,6 +1347,7 @@ class DiffusionPipelineManager:
                 strength=denoising_strength,
                 guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
                 generator=torch.Generator(device=self.device).manual_seed(actual_seed),
+                ancestral_generator=ancestral_generator,
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
                 step_callback=step_callback,
@@ -1481,6 +1501,14 @@ class DiffusionPipelineManager:
             controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
             controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
 
+        # Create ancestral generator for stochastic samplers
+        ancestral_seed = params.get("ancestral_seed", -1)
+        if ancestral_seed == -1:
+            ancestral_generator = None
+        else:
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+            print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
@@ -1494,6 +1522,7 @@ class DiffusionPipelineManager:
             strength=denoising_strength,
             guidance_scale=params.get("cfg_scale", settings.default_cfg_scale),
             generator=torch.Generator(device=self.device).manual_seed(seed),
+            ancestral_generator=ancestral_generator,
             prompt_embeds_callback=prompt_embeds_callback_fn,
             progress_callback=progress_callback,
             step_callback=step_callback,

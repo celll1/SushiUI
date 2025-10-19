@@ -35,6 +35,7 @@ def custom_sampling_loop(
     width: int = 512,
     height: int = 512,
     generator: Optional[torch.Generator] = None,
+    ancestral_generator: Optional[torch.Generator] = None,
     latents: Optional[torch.Tensor] = None,
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
@@ -56,7 +57,8 @@ def custom_sampling_loop(
         guidance_scale: CFG scale
         width: Output width
         height: Output height
-        generator: Random generator for reproducibility
+        generator: Random generator for initial latent generation
+        ancestral_generator: Separate generator for stochastic samplers (Euler a, etc.). If None, uses generator.
         latents: Initial latents (optional)
         prompt_embeds_callback: Callback to get new embeddings at each step
             Called with (step_index) -> (prompt_embeds, negative_prompt_embeds, pooled, neg_pooled)
@@ -77,6 +79,11 @@ def custom_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
     print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
+
+    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
+    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    if ancestral_generator is not None:
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
 
     # Get components
     unet = pipeline.unet
@@ -286,8 +293,8 @@ def custom_sampling_loop(
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Compute previous noisy sample
-        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
+        # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
 
         # Progress callback
         if progress_callback is not None:
@@ -573,8 +580,8 @@ def custom_img2img_sampling_loop(
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Compute previous noisy sample
-        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
+        # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
 
         # Progress callback
         if progress_callback is not None:
@@ -836,8 +843,8 @@ def custom_inpaint_sampling_loop(
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        # Pass generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
+        # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
+        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
 
         init_latents_proper = scheduler.add_noise(init_latents, noise, torch.tensor([t], device=device))
         latents = init_latents_proper * (1 - mask_latent) + latents * mask_latent

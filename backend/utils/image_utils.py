@@ -41,6 +41,12 @@ def save_image_with_metadata(
     metadata.add_text("sampler", params.get("sampler", settings.default_sampler))
     metadata.add_text("cfg_scale", str(params.get("cfg_scale", settings.default_cfg_scale)))
     metadata.add_text("seed", str(seed))
+
+    # Add ancestral_seed if specified
+    ancestral_seed = params.get("ancestral_seed", -1)
+    if ancestral_seed != -1:
+        metadata.add_text("ancestral_seed", str(ancestral_seed))
+
     metadata.add_text("width", str(params.get("width", settings.default_width)))
     metadata.add_text("height", str(params.get("height", settings.default_height)))
     metadata.add_text("generation_type", generation_type)

@@ -36,6 +36,7 @@ class GeneratedImage(Base):
     steps = Column(Integer)
     cfg_scale = Column(Float)
     seed = Column(Integer)
+    ancestral_seed = Column(Integer, nullable=True)  # Seed for stochastic samplers (Euler a, etc.)
     width = Column(Integer)
     height = Column(Integer)
     generation_type = Column(String)  # txt2img, img2img, inpaint
@@ -61,6 +62,7 @@ class GeneratedImage(Base):
             "steps": self.steps,
             "cfg_scale": self.cfg_scale,
             "seed": self.seed,
+            "ancestral_seed": self.ancestral_seed,
             "width": self.width,
             "height": self.height,
             "generation_type": self.generation_type,

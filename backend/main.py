@@ -19,12 +19,31 @@ init_db()
 # Create FastAPI app
 app = FastAPI(title="Stable Diffusion WebUI API", version="0.1.0")
 
-# Start WebSocket message sender on startup
+# Start WebSocket message sender on startup and load user directory settings
 @app.on_event("startup")
 async def startup_event():
     import asyncio
     from api.websocket import manager
+    from database import SessionLocal
+    from database.models import UserSettings
+    from core.lora_manager import lora_manager
+    from core.controlnet_manager import controlnet_manager
+
     asyncio.create_task(manager.start_sender())
+
+    # Load user-configured directories for LoRA and ControlNet managers
+    try:
+        db = SessionLocal()
+        settings_record = db.query(UserSettings).first()
+        if settings_record:
+            print("[Startup] Loading user-configured directories...")
+            if settings_record.lora_dirs:
+                lora_manager.set_additional_dirs(settings_record.lora_dirs)
+            if settings_record.controlnet_dirs:
+                controlnet_manager.set_additional_dirs(settings_record.controlnet_dirs)
+        db.close()
+    except Exception as e:
+        print(f"[Startup] Error loading user directory settings: {e}")
 
 # WebSocket endpoint BEFORE middleware (to bypass CORS)
 @app.websocket("/ws/progress")

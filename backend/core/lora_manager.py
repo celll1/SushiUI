@@ -64,30 +64,44 @@ class LoRAManager:
         if lora_dir is None:
             lora_dir = settings.lora_dir
         self.lora_dir = Path(lora_dir)
+        self.additional_dirs: List[Path] = []  # User-configured additional directories
         self.loaded_loras: List[LoRAConfig] = []
         print(f"[LoRAManager] LoRA directory: {self.lora_dir}")
 
+    def set_additional_dirs(self, dirs: List[str]):
+        """Set additional directories to scan for LoRAs"""
+        self.additional_dirs = [Path(d) for d in dirs if d.strip()]
+        print(f"[LoRAManager] Additional directories set: {self.additional_dirs}")
+
     def get_available_loras(self) -> List[str]:
-        """Get list of available LoRA files"""
-        print(f"[LoRAManager] Checking directory: {self.lora_dir}")
-        print(f"[LoRAManager] Directory exists: {self.lora_dir.exists()}")
-
-        if not self.lora_dir.exists():
-            print(f"[LoRAManager] Creating directory: {self.lora_dir}")
-            self.lora_dir.mkdir(parents=True, exist_ok=True)
-            return []
-
+        """Get list of available LoRA files from default and additional directories"""
         lora_files = []
-        for ext in [".safetensors", ".pt", ".bin"]:
-            found = list(self.lora_dir.rglob(f"*{ext}"))
-            print(f"[LoRAManager] Found {len(found)} files with extension {ext}")
-            lora_files.extend([
-                str(f.relative_to(self.lora_dir))
-                for f in found
-            ])
+
+        # Combine default directory with additional directories
+        all_dirs = [self.lora_dir] + self.additional_dirs
+
+        for lora_dir in all_dirs:
+            print(f"[LoRAManager] Checking directory: {lora_dir}")
+            print(f"[LoRAManager] Directory exists: {lora_dir.exists()}")
+
+            if not lora_dir.exists():
+                if lora_dir == self.lora_dir:
+                    print(f"[LoRAManager] Creating default directory: {lora_dir}")
+                    lora_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    print(f"[LoRAManager] Skipping non-existent directory: {lora_dir}")
+                continue
+
+            for ext in [".safetensors", ".pt", ".bin"]:
+                found = list(lora_dir.rglob(f"*{ext}"))
+                print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
+                lora_files.extend([
+                    str(f.relative_to(lora_dir))
+                    for f in found
+                ])
 
         print(f"[LoRAManager] Total LoRA files found: {len(lora_files)}")
-        return sorted(lora_files)
+        return sorted(list(set(lora_files)))  # Remove duplicates
 
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:
         """

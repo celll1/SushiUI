@@ -48,25 +48,38 @@ class ControlNetManager:
         if controlnet_dir is None:
             controlnet_dir = settings.controlnet_dir
         self.controlnet_dir = Path(controlnet_dir)
+        self.additional_dirs: List[Path] = []  # User-configured additional directories
         print(f"[ControlNetManager] ControlNet directory: {self.controlnet_dir}")
 
         self.loaded_controlnets: Dict[str, ControlNetModel] = {}
         self.loaded_lllites: Dict[str, Any] = {}
 
+    def set_additional_dirs(self, dirs: List[str]):
+        """Set additional directories to scan for ControlNets"""
+        self.additional_dirs = [Path(d) for d in dirs if d.strip()]
+        print(f"[ControlNetManager] Additional directories set: {self.additional_dirs}")
+
     def get_available_controlnets(self) -> List[str]:
-        """Get list of available ControlNet models"""
+        """Get list of available ControlNet models from default and additional directories"""
         controlnets = []
 
-        if not self.controlnet_dir.exists():
-            return controlnets
+        # Combine default directory with additional directories
+        all_dirs = [self.controlnet_dir] + self.additional_dirs
 
-        # Look for .safetensors and .pth files
-        for file in self.controlnet_dir.glob("**/*"):
-            if file.suffix in [".safetensors", ".pth", ".pt", ".bin"]:
-                relative_path = file.relative_to(self.controlnet_dir)
-                controlnets.append(str(relative_path))
+        for controlnet_dir in all_dirs:
+            if not controlnet_dir.exists():
+                print(f"[ControlNetManager] Skipping non-existent directory: {controlnet_dir}")
+                continue
 
-        return sorted(controlnets)
+            print(f"[ControlNetManager] Scanning directory: {controlnet_dir}")
+            # Look for .safetensors and .pth files
+            for file in controlnet_dir.glob("**/*"):
+                if file.suffix in [".safetensors", ".pth", ".pt", ".bin"]:
+                    relative_path = file.relative_to(controlnet_dir)
+                    controlnets.append(str(relative_path))
+
+        print(f"[ControlNetManager] Total ControlNet models found: {len(controlnets)}")
+        return sorted(list(set(controlnets)))  # Remove duplicates
 
     def is_lllite_model(self, controlnet_path: str) -> bool:
         """Check if a ControlNet model is LLLite format

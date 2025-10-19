@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Sidebar from "@/components/common/Sidebar";
 import Card from "@/components/common/Card";
 import Button from "@/components/common/Button";
+import DirectorySettings from "@/components/settings/DirectorySettings";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 
 export default function SettingsPage() {
@@ -223,6 +224,10 @@ export default function SettingsPage() {
                 </ul>
               </div>
             </div>
+          </Card>
+
+          <Card title="Model Directories">
+            <DirectorySettings />
           </Card>
 
           <Card title="Tag Suggestions">

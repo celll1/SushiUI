@@ -1,8 +1,28 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
+
+class UserSettings(Base):
+    """User settings for application configuration"""
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Store directory paths as JSON arrays
+    model_dirs = Column(JSON, default=list)  # Additional directories for base models
+    lora_dirs = Column(JSON, default=list)   # Additional directories for LoRAs
+    controlnet_dirs = Column(JSON, default=list)  # Additional directories for ControlNets
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "model_dirs": self.model_dirs or [],
+            "lora_dirs": self.lora_dirs or [],
+            "controlnet_dirs": self.controlnet_dirs or [],
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 class GeneratedImage(Base):
     __tablename__ = "generated_images"

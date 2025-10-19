@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime
 import os
 import sys
 import subprocess
@@ -11,7 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_db
-from database.models import GeneratedImage
+from database.models import GeneratedImage, UserSettings
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
@@ -845,19 +846,33 @@ async def delete_image(image_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 @router.get("/models")
-async def get_models():
-    """Get list of available models"""
+async def get_models(db: Session = Depends(get_db)):
+    """Get list of available models from default and user-configured directories"""
     models = []
-    if os.path.exists(settings.models_dir):
-        for item in os.listdir(settings.models_dir):
-            item_path = os.path.join(settings.models_dir, item)
+
+    # Get user-configured directories
+    settings_record = db.query(UserSettings).first()
+    additional_model_dirs = settings_record.model_dirs if settings_record else []
+
+    # Combine default directory with user directories
+    all_dirs = [settings.models_dir] + additional_model_dirs
+
+    for models_dir in all_dirs:
+        if not os.path.exists(models_dir):
+            print(f"[Models] Directory does not exist: {models_dir}")
+            continue
+
+        print(f"[Models] Scanning directory: {models_dir}")
+        for item in os.listdir(models_dir):
+            item_path = os.path.join(models_dir, item)
             if os.path.isdir(item_path):
                 # Diffusers format directory
                 models.append({
                     "name": item,
                     "path": item_path,
                     "type": "diffusers",
-                    "source_type": "diffusers"
+                    "source_type": "diffusers",
+                    "source_dir": models_dir
                 })
             elif item.endswith('.safetensors'):
                 # Safetensors file
@@ -867,8 +882,11 @@ async def get_models():
                     "path": item_path,
                     "type": "safetensors",
                     "source_type": "safetensors",
-                    "size_gb": round(file_size, 2)
+                    "size_gb": round(file_size, 2),
+                    "source_dir": models_dir
                 })
+
+    print(f"[Models] Found {len(models)} models total")
     return {"models": models}
 
 @router.post("/models/load")
@@ -1040,6 +1058,71 @@ async def get_controlnet_info(controlnet_path: str):
             "exists": False,
             "error": str(e)
         }
+
+@router.get("/settings/directories")
+async def get_directory_settings(db: Session = Depends(get_db)):
+    """Get user-configured model directories"""
+    try:
+        # Get or create settings record (we'll only have one record for singleton settings)
+        settings_record = db.query(UserSettings).first()
+        if not settings_record:
+            settings_record = UserSettings(
+                model_dirs=[],
+                lora_dirs=[],
+                controlnet_dirs=[]
+            )
+            db.add(settings_record)
+            db.commit()
+            db.refresh(settings_record)
+
+        return settings_record.to_dict()
+    except Exception as e:
+        print(f"Error getting directory settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/settings/directories")
+async def save_directory_settings(
+    model_dirs: List[str] = [],
+    lora_dirs: List[str] = [],
+    controlnet_dirs: List[str] = [],
+    db: Session = Depends(get_db)
+):
+    """Save user-configured model directories"""
+    try:
+        # Get or create settings record
+        settings_record = db.query(UserSettings).first()
+        if not settings_record:
+            settings_record = UserSettings()
+            db.add(settings_record)
+
+        # Update directory paths (filter out empty strings)
+        settings_record.model_dirs = [d.strip() for d in model_dirs if d.strip()]
+        settings_record.lora_dirs = [d.strip() for d in lora_dirs if d.strip()]
+        settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
+        settings_record.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(settings_record)
+
+        print(f"[Settings] Updated directory settings:")
+        print(f"  Model dirs: {settings_record.model_dirs}")
+        print(f"  LoRA dirs: {settings_record.lora_dirs}")
+        print(f"  ControlNet dirs: {settings_record.controlnet_dirs}")
+
+        # Update managers with new directories
+        lora_manager.set_additional_dirs(settings_record.lora_dirs)
+        controlnet_manager.set_additional_dirs(settings_record.controlnet_dirs)
+
+        return {
+            "success": True,
+            "message": "Directory settings saved successfully",
+            "settings": settings_record.to_dict()
+        }
+    except Exception as e:
+        print(f"Error saving directory settings: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/system/restart-backend")
 async def restart_backend():

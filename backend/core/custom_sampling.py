@@ -17,6 +17,8 @@ from diffusers import (
     StableDiffusionXLImg2ImgPipeline,
     StableDiffusionInpaintPipeline,
     StableDiffusionXLInpaintPipeline,
+    StableDiffusionControlNetPipeline,
+    StableDiffusionXLControlNetPipeline,
 )
 from PIL import Image
 import numpy as np
@@ -71,7 +73,10 @@ def custom_sampling_loop(
     device = pipeline.device
     # Use unet's dtype for consistency with diffusers
     dtype = pipeline.unet.dtype
-    is_sdxl = isinstance(pipeline, StableDiffusionXLPipeline)
+
+    # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
+    is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
+    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
     # Get components
     unet = pipeline.unet
@@ -244,13 +249,22 @@ def custom_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
+            unet_kwargs = {
+                "encoder_hidden_states": prompt_embeds_input,
+            }
+            if down_block_res_samples is not None:
+                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+            if mid_block_res_sample is not None:
+                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+            # Add SDXL-specific conditioning
+            if is_sdxl and added_cond_kwargs:
+                unet_kwargs.update(added_cond_kwargs)
+
             noise_pred = unet(
                 latent_model_input,
                 t,
-                encoder_hidden_states=prompt_embeds_input,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
-                **added_cond_kwargs
+                **unet_kwargs
             ).sample
 
         # Perform guidance
@@ -331,7 +345,9 @@ def custom_img2img_sampling_loop(
     """
     device = pipeline.device
     dtype = pipeline.unet.dtype
-    is_sdxl = isinstance(pipeline, StableDiffusionXLImg2ImgPipeline)
+
+    # Check if SDXL by checking if text_encoder_2 exists
+    is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
     # Get components
     unet = pipeline.unet
@@ -509,13 +525,22 @@ def custom_img2img_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
+            unet_kwargs = {
+                "encoder_hidden_states": prompt_embeds_input,
+            }
+            if down_block_res_samples is not None:
+                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+            if mid_block_res_sample is not None:
+                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+            # Add SDXL-specific conditioning
+            if is_sdxl and added_cond_kwargs:
+                unet_kwargs.update(added_cond_kwargs)
+
             noise_pred = unet(
                 latent_model_input,
                 t,
-                encoder_hidden_states=prompt_embeds_input,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
-                **added_cond_kwargs
+                **unet_kwargs
             ).sample
 
         # Perform guidance
@@ -574,7 +599,9 @@ def custom_inpaint_sampling_loop(
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
     dtype = pipeline.unet.dtype
-    is_sdxl = isinstance(pipeline, StableDiffusionXLInpaintPipeline)
+
+    # Check if SDXL by checking if text_encoder_2 exists
+    is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
     unet = pipeline.unet
     vae = pipeline.vae
@@ -734,13 +761,22 @@ def custom_inpaint_sampling_loop(
                             )
 
         with torch.no_grad():
+            unet_kwargs = {
+                "encoder_hidden_states": prompt_embeds_input,
+            }
+            if down_block_res_samples is not None:
+                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+            if mid_block_res_sample is not None:
+                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+            # Add SDXL-specific conditioning
+            if is_sdxl and added_cond_kwargs:
+                unet_kwargs.update(added_cond_kwargs)
+
             noise_pred = unet(
                 latent_model_input,
                 t,
-                encoder_hidden_states=prompt_embeds_input,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
-                **added_cond_kwargs
+                **unet_kwargs
             ).sample
 
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)

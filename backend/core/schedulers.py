@@ -77,7 +77,8 @@ def get_scheduler(pipeline, sampler: str, schedule_type: str = "uniform"):
 
         # Preserve v-prediction settings if present
         is_v_prediction = config.get("prediction_type") == "v_prediction"
-        rescale_betas = config.get("rescale_betas_zero_snr", False)
+        # Note: We intentionally do NOT preserve rescale_betas_zero_snr as it can cause
+        # extreme sigma values (4096) with some SDXL v-pred models, leading to black outputs
 
         # Apply schedule type settings
         if schedule_type == "karras":
@@ -95,7 +96,7 @@ def get_scheduler(pipeline, sampler: str, schedule_type: str = "uniform"):
         # Ensure v-prediction settings are preserved
         if is_v_prediction:
             config["prediction_type"] = "v_prediction"
-            config["rescale_betas_zero_snr"] = rescale_betas
+            # rescale_betas_zero_snr is intentionally omitted - let it default to False
             # For v-prediction, always use trailing timestep spacing if not explicitly set to karras
             if schedule_type not in ["karras", "exponential"]:
                 config["timestep_spacing"] = "trailing"

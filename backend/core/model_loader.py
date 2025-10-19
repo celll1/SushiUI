@@ -16,24 +16,30 @@ class ModelLoader:
 
         V-prediction models require:
         1. prediction_type = "v_prediction"
-        2. rescale_betas_zero_snr = True (rescale betas for zero terminal SNR)
-        3. timestep_spacing = "trailing" (recommended for v-prediction)
+        2. timestep_spacing = "trailing" (recommended for v-prediction)
+
+        Note: rescale_betas_zero_snr is intentionally set to False by default.
+        While some v-prediction models were trained with zero terminal SNR,
+        many SDXL v-prediction models (especially newer ones) work better
+        WITHOUT rescale_betas_zero_snr=True, as it can cause extreme sigma
+        values (e.g., 4096) leading to black or blurry outputs.
 
         References:
         - https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/16567
         - https://huggingface.co/docs/diffusers/using-diffusers/scheduler
+        - https://github.com/comfyanonymous/ComfyUI/discussions/2794
         """
         try:
             # Register to scheduler config (this modifies the scheduler's configuration)
+            # Note: rescale_betas_zero_snr is omitted (defaults to False in most schedulers)
             pipeline.scheduler.register_to_config(
                 prediction_type="v_prediction",
-                rescale_betas_zero_snr=True,
                 timestep_spacing="trailing"
             )
 
             print(f"[ModelLoader] V-prediction scheduler configured:")
             print(f"  - prediction_type: v_prediction")
-            print(f"  - rescale_betas_zero_snr: True")
+            print(f"  - rescale_betas_zero_snr: False (default, avoids extreme sigma values)")
             print(f"  - timestep_spacing: trailing")
 
         except Exception as e:

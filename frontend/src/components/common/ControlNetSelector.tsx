@@ -154,6 +154,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     if (modelLoaded) {
       loadControlNets();
       loadPreprocessors();
+      // Load persisted images on startup (like Img2ImgPanel does)
+      if (!imagesLoaded) {
+        loadPersistedImages();
+        setImagesLoaded(true);
+      }
     }
   }, [modelLoaded]);
 
@@ -166,14 +171,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       console.error("Failed to load preprocessors:", error);
     }
   };
-
-  // Load persisted images when value changes from empty to non-empty
-  useEffect(() => {
-    if (!imagesLoaded && value.length > 0) {
-      loadPersistedImages();
-      setImagesLoaded(true);
-    }
-  }, [value, imagesLoaded]);
 
   useEffect(() => {
     // Detect model types for all loaded ControlNets

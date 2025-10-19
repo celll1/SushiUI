@@ -677,16 +677,28 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       <select
                         value={cn.preprocessor || "none"}
                         onChange={async (e) => {
-                          await updateControlNet(index, { preprocessor: e.target.value });
-                          // Re-preprocess with new preprocessor
-                          if (imagePreviews.has(index) && e.target.value !== "none") {
-                            await preprocessImage(index);
+                          const newPreprocessor = e.target.value;
+                          await updateControlNet(index, { preprocessor: newPreprocessor });
+                          // Clear old preprocessed preview and re-preprocess with new preprocessor
+                          if (imagePreviews.has(index)) {
+                            // Clear existing preprocessed preview first
+                            setPreprocessedPreviews(prev => {
+                              const newMap = new Map(prev);
+                              newMap.delete(index);
+                              return newMap;
+                            });
+                            // Re-preprocess if not "none"
+                            if (newPreprocessor !== "none") {
+                              // Wait a bit for state update before preprocessing
+                              setTimeout(async () => {
+                                await preprocessImage(index);
+                              }, 100);
+                            }
                           }
                         }}
                         disabled={disabled}
                         className="w-full bg-gray-600 text-white px-3 py-2 rounded text-sm"
                       >
-                        <option value="none">No Preprocessing</option>
                         {availablePreprocessors.map((prep) => (
                           <option key={prep.id} value={prep.id}>
                             {prep.name}

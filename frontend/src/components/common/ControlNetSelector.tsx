@@ -51,16 +51,19 @@ interface ControlNetLayerWeightsProps {
   onChange: (weights: { [layerName: string]: number }) => void;
   disabled?: boolean;
   loadControlNetInfo: (path: string) => Promise<ControlNetInfo | null>;
+  modelLoaded?: boolean;
 }
 
-function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, loadControlNetInfo }: ControlNetLayerWeightsProps) {
+function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, loadControlNetInfo, modelLoaded }: ControlNetLayerWeightsProps) {
   const [layers, setLayers] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLllite, setIsLllite] = useState(false);
 
   useEffect(() => {
-    loadLayers();
-  }, [controlnetPath]);
+    if (controlnetPath) {
+      loadLayers();
+    }
+  }, [controlnetPath, modelLoaded]);
 
   const loadLayers = async () => {
     setIsLoading(true);
@@ -159,16 +162,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         loadPersistedImages();
         setImagesLoaded(true);
       }
-      // Load layer information for existing ControlNets
+      // Detect model types for existing ControlNets
       value.forEach((cn, index) => {
         if (cn.model_path) {
           detectModelType(cn.model_path, index);
-          // Trigger layer weight component to reload by clearing cache
-          setControlnetInfoCache(prev => {
-            const newCache = new Map(prev);
-            newCache.delete(cn.model_path);
-            return newCache;
-          });
         }
       });
     }
@@ -792,6 +789,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     onChange={(layer_weights) => updateControlNet(index, { layer_weights })}
                     disabled={disabled}
                     loadControlNetInfo={loadControlNetInfo}
+                    modelLoaded={modelLoaded}
                   />
                 </div>
               </div>

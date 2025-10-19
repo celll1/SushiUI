@@ -17,6 +17,7 @@ from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
 from core.controlnet_manager import controlnet_manager
+from core.controlnet_preprocessor import controlnet_preprocessor
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -51,6 +52,8 @@ class ControlNetConfig(BaseModel):
     prompt: Optional[str] = None  # Optional separate prompt
     is_lllite: bool = False
     use_input_image: bool = False  # For img2img/inpaint: use input image as control
+    preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
+    enable_preprocessor: bool = True  # Whether to apply preprocessing
 
 class GenerationParams(BaseModel):
     prompt: str
@@ -1324,3 +1327,96 @@ async def get_taglist(category: str):
     except Exception as e:
         print(f"Error loading taglist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== ControlNet Preprocessor Endpoints ====================
+
+@router.get("/controlnet/detect-preprocessor")
+async def detect_controlnet_preprocessor(model_path: str):
+    """Detect which preprocessor should be used for a ControlNet model"""
+    try:
+        preprocessor_type = controlnet_preprocessor.detect_preprocessor_from_model_name(model_path)
+        return {
+            "model_path": model_path,
+            "preprocessor": preprocessor_type,
+            "requires_preprocessing": preprocessor_type not in ["none", "tile", "blur"]
+        }
+    except Exception as e:
+        print(f"Error detecting preprocessor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/controlnet/preprocess-image")
+async def preprocess_controlnet_image(
+    image: UploadFile = File(...),
+    preprocessor: str = Form(...),
+    low_threshold: int = Form(100),
+    high_threshold: int = Form(200)
+):
+    """Preprocess an image for ControlNet
+    
+    Args:
+        image: Image file to preprocess
+        preprocessor: Type of preprocessor to use (canny, depth_midas, openpose, etc.)
+        low_threshold: Low threshold for Canny (default: 100)
+        high_threshold: High threshold for Canny (default: 200)
+    
+    Returns:
+        Preprocessed image as base64 string
+    """
+    try:
+        # Read uploaded image
+        image_bytes = await image.read()
+        image_pil = Image.open(io.BytesIO(image_bytes))
+        
+        # Apply preprocessing
+        preprocessed = controlnet_preprocessor.preprocess(
+            image_pil,
+            preprocessor,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold
+        )
+        
+        # Convert to base64
+        buffered = io.BytesIO()
+        preprocessed.save(buffered, format="PNG")
+        import base64
+        preprocessed_base64 = base64.b64encode(buffered.getvalue()).decode()
+        
+        return {
+            "preprocessed_image": f"data:image/png;base64,{preprocessed_base64}",
+            "preprocessor": preprocessor
+        }
+        
+    except Exception as e:
+        print(f"Error preprocessing image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/controlnet/preprocessors")
+async def get_available_preprocessors():
+    """Get list of available preprocessors"""
+    return {
+        "preprocessors": [
+            {"id": "none", "name": "No Preprocessing", "category": "none"},
+            {"id": "canny", "name": "Canny Edge Detection", "category": "edge"},
+            {"id": "depth_midas", "name": "Depth (Midas)", "category": "depth"},
+            {"id": "depth_zoe", "name": "Depth (Zoe)", "category": "depth"},
+            {"id": "depth_leres", "name": "Depth (Leres)", "category": "depth"},
+            {"id": "openpose", "name": "OpenPose (Body)", "category": "pose"},
+            {"id": "openpose_hand", "name": "OpenPose (Body + Hand)", "category": "pose"},
+            {"id": "openpose_face", "name": "OpenPose (Body + Face)", "category": "pose"},
+            {"id": "openpose_full", "name": "OpenPose (Full)", "category": "pose"},
+            {"id": "normal_bae", "name": "Normal Map (BAE)", "category": "normal"},
+            {"id": "softedge_hed", "name": "Soft Edge (HED)", "category": "edge"},
+            {"id": "softedge_pidi", "name": "Soft Edge (PIDI)", "category": "edge"},
+            {"id": "lineart", "name": "Lineart", "category": "lineart"},
+            {"id": "lineart_anime", "name": "Lineart (Anime)", "category": "lineart"},
+            {"id": "segment_ofade20k", "name": "Segmentation (OFADE20K)", "category": "segment"},
+            {"id": "mlsd", "name": "MLSD Line Detection", "category": "line"},
+            {"id": "tile", "name": "Tile (No Preprocessing)", "category": "none"},
+            {"id": "blur", "name": "Gaussian Blur", "category": "none"}
+        ]
+    }

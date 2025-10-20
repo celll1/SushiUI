@@ -183,7 +183,7 @@ class DiffusionPipelineManager:
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
 
-    def _setup_img2img_steps(self, requested_steps: int, denoising_strength: float, fix_steps: bool = None) -> tuple[int, int]:
+    def _setup_img2img_steps(self, requested_steps: int, denoising_strength: float, fix_steps: bool = None) -> tuple[int, int, int]:
         """Calculate proper steps for img2img/inpaint to ensure full denoising
 
         Args:
@@ -192,24 +192,28 @@ class DiffusionPipelineManager:
             fix_steps: Override for img2img_fix_steps setting (defaults to settings value)
 
         Returns:
-            tuple: (total_steps, t_enc) where total_steps is the adjusted step count
-                   and t_enc is the encoding timestep
+            tuple: (total_steps, t_start, actual_steps) where:
+                - total_steps: Total steps to set for scheduler
+                - t_start: Starting timestep index
+                - actual_steps: Actual number of denoising steps that will be performed
         """
         # Use parameter if provided, otherwise fall back to settings
         if fix_steps is None:
             fix_steps = settings.img2img_fix_steps
 
         if fix_steps:
-            # Adjust total steps so that actual denoising steps = requested_steps
-            # This ensures proper denoising even with low denoising strength
-            total_steps = int(requested_steps / min(denoising_strength, 0.999)) if denoising_strength > 0 else 0
-            t_enc = requested_steps - 1
+            # Execute exactly requested_steps loops
+            # Formula: total_steps - t_start = requested_steps
+            total_steps = int(requested_steps / max(denoising_strength, 0.001))
+            t_start = total_steps - requested_steps
+            actual_steps = requested_steps
         else:
             # Standard behavior: steps * strength
             total_steps = requested_steps
-            t_enc = int(min(denoising_strength, 0.999) * requested_steps)
+            actual_steps = int(min(denoising_strength, 0.999) * requested_steps)
+            t_start = total_steps - actual_steps
 
-        return total_steps, t_enc
+        return total_steps, t_start, actual_steps
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
@@ -1353,10 +1357,10 @@ class DiffusionPipelineManager:
         requested_steps = params.get("steps", settings.default_steps)
         denoising_strength = params.get("denoising_strength", 0.75)
         fix_steps = params.get("img2img_fix_steps", True)
-        total_steps, t_enc = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
+        total_steps, t_start, actual_steps = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
 
         if fix_steps:
-            print(f"[img2img] Do full steps enabled: {requested_steps} requested steps -> {total_steps} total steps (t_enc: {t_enc})")
+            print(f"[img2img] Do full steps enabled: {requested_steps} requested -> {total_steps} scheduler steps, t_start={t_start}, actual={actual_steps}")
 
         # Prepare generation parameters
         gen_params = {
@@ -1439,13 +1443,10 @@ class DiffusionPipelineManager:
             if is_v_prediction:
                 print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
-            # Calculate t_start for "Do full steps" mode
-            t_start_override = None
+            # Use t_start directly for custom sampling loop
+            t_start_override = t_start if fix_steps else None
             if fix_steps:
-                # t_start = total_steps - t_enc - 1
-                # This ensures we get exactly requested_steps timesteps
-                t_start_override = total_steps - t_enc - 1
-                print(f"[img2img] Calculated t_start={t_start_override} for Do full steps mode")
+                print(f"[img2img] Using t_start={t_start_override} for Do full steps mode")
 
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
@@ -1544,10 +1545,10 @@ class DiffusionPipelineManager:
         requested_steps = params.get("steps", settings.default_steps)
         denoising_strength = params.get("denoising_strength", 0.75)
         fix_steps = params.get("img2img_fix_steps", True)
-        total_steps, t_enc = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
+        total_steps, t_start, actual_steps = self._setup_img2img_steps(requested_steps, denoising_strength, fix_steps)
 
         if fix_steps:
-            print(f"[inpaint] Do full steps enabled: {requested_steps} requested steps -> {total_steps} total steps (t_enc: {t_enc})")
+            print(f"[inpaint] Do full steps enabled: {requested_steps} requested -> {total_steps} scheduler steps, t_start={t_start}, actual={actual_steps}")
 
         # Check for prompt editing syntax
         prompt_processor = None
@@ -1629,13 +1630,10 @@ class DiffusionPipelineManager:
         if is_v_prediction:
             print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
-        # Calculate t_start for "Do full steps" mode
-        t_start_override = None
+        # Use t_start directly for custom sampling loop
+        t_start_override = t_start if fix_steps else None
         if fix_steps:
-            # t_start = total_steps - t_enc - 1
-            # This ensures we get exactly requested_steps timesteps
-            t_start_override = total_steps - t_enc - 1
-            print(f"[inpaint] Calculated t_start={t_start_override} for Do full steps mode")
+            print(f"[inpaint] Using t_start={t_start_override} for Do full steps mode")
 
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(

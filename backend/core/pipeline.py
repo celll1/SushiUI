@@ -343,9 +343,10 @@ class DiffusionPipelineManager:
             return pipeline
 
         try:
-            # Load ControlNet models
+            # Load ControlNet models - separate LLLite from standard ControlNets
             controlnets = []
             control_images = []
+            lllite_models = []
 
             for cn_config in controlnet_images:
                 # Detect if model is LLLite
@@ -373,18 +374,37 @@ class DiffusionPipelineManager:
                 else:
                     print(f"[Pipeline] No layer weights specified for this ControlNet")
 
-                controlnets.append(controlnet)
-
                 # Prepare control image
                 control_image = controlnet_manager.prepare_controlnet_image(
                     cn_config["image"],
                     width,
                     height
                 )
-                control_images.append(control_image)
+
+                # Separate LLLite from standard ControlNets
+                if is_lllite:
+                    lllite_models.append({
+                        'model': controlnet,
+                        'image': control_image,
+                        'config': cn_config
+                    })
+                else:
+                    controlnets.append(controlnet)
+                    control_images.append(control_image)
+
+            # Apply LLLite models directly to U-Net
+            if lllite_models:
+                print(f"Applying {len(lllite_models)} LLLite model(s) to U-Net")
+                for lllite_data in lllite_models:
+                    controlnet_manager.apply_lllite_to_unet(
+                        pipeline.unet,
+                        lllite_data['model'],
+                        lllite_data['image']
+                    )
 
             if not controlnets:
-                print("No ControlNets loaded, using original pipeline")
+                print("No standard ControlNets loaded, using original pipeline" +
+                      (f" (with {len(lllite_models)} LLLite(s))" if lllite_models else ""))
                 return pipeline
 
             # Create ControlNet pipeline

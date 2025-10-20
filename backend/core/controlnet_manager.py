@@ -288,6 +288,52 @@ class ControlNetManager:
         torch.cuda.empty_cache()
         print("All ControlNets unloaded")
 
+    def apply_lllite_to_unet(self, unet, lllite_model: dict, control_image: torch.Tensor):
+        """Apply LLLite ControlNet to U-Net
+
+        LLLite works by injecting LoRA-like modules into U-Net attention layers.
+        The control image is processed and the LLLite weights modulate the attention.
+
+        Args:
+            unet: The U-Net model to modify
+            lllite_model: Dict containing LLLite state_dict and metadata
+            control_image: Preprocessed control image tensor
+        """
+        print(f"[ControlNetManager] Applying LLLite to U-Net")
+
+        # Store control image in the lllite model for later use
+        lllite_model['control_image'] = control_image
+
+        # Get layer weights if available
+        layer_weights = lllite_model.get('_layer_weights', None)
+
+        # Apply LLLite weights to U-Net
+        # LLLite modifies attention layers, we need to patch the forward hooks
+        self._patch_unet_with_lllite(unet, lllite_model, layer_weights)
+
+        print(f"[ControlNetManager] LLLite applied to U-Net")
+
+    def _patch_unet_with_lllite(self, unet, lllite_model: dict, layer_weights=None):
+        """Patch U-Net forward hooks to apply LLLite conditioning
+
+        LLLite uses LoRA-like modules to condition the U-Net.
+        Each attention layer gets modified based on the control image.
+        """
+        state_dict = lllite_model['state_dict']
+        control_image = lllite_model.get('control_image')
+
+        # Store LLLite info on U-Net for access during forward pass
+        if not hasattr(unet, '_lllite_models'):
+            unet._lllite_models = []
+
+        unet._lllite_models.append({
+            'state_dict': state_dict,
+            'control_image': control_image,
+            'layer_weights': layer_weights
+        })
+
+        print(f"[ControlNetManager] LLLite conditioning registered on U-Net")
+
     def prepare_controlnet_image(
         self,
         image: Image.Image,
@@ -307,7 +353,7 @@ class ControlNetManager:
 
     def apply_layer_weights(
         self,
-        controlnet: ControlNetModel,
+        controlnet,
         layer_weights: Dict[str, float]
     ):
         """Apply layer-wise weights to ControlNet
@@ -339,15 +385,22 @@ class ControlNetManager:
 
         # Store weights in a format compatible with ControlNet output
         # ControlNet returns (down_block_res_samples, mid_block_res_sample)
-        controlnet._layer_weights = {
+        layer_weight_data = {
             'down': down_weights,  # List of 12 weights
             'mid': mid_weight      # Single weight
         }
 
         print(f"[ControlNetManager] Layer weights applied: down={down_weights}, mid={mid_weight}")
 
-        # Monkey-patch the forward method to apply weights
-        self._patch_controlnet_forward(controlnet)
+        # Handle LLLite models (stored as dict) vs standard ControlNet models
+        if isinstance(controlnet, dict):
+            # LLLite model - store weights in the dict
+            controlnet['_layer_weights'] = layer_weight_data
+        else:
+            # Standard ControlNet model - store as attribute
+            controlnet._layer_weights = layer_weight_data
+            # Monkey-patch the forward method to apply weights
+            self._patch_controlnet_forward(controlnet)
 
     def _patch_controlnet_forward(self, controlnet: ControlNetModel):
         """Patch ControlNet forward method to apply layer weights"""

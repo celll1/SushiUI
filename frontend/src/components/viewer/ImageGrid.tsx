@@ -439,6 +439,7 @@ export default function ImageGrid() {
                               <span className="text-gray-500">Mask Blur:</span> {selectedImage.parameters.mask_blur}
                             </div>
                           )}
+                          {/* Note: Inpaint Full Res is not implemented in backend
                           {selectedImage.parameters?.inpaint_full_res !== undefined && (
                             <div>
                               <span className="text-gray-500">Inpaint Full Res:</span> {selectedImage.parameters.inpaint_full_res ? 'Yes' : 'No'}
@@ -449,6 +450,7 @@ export default function ImageGrid() {
                               <span className="text-gray-500">Full Res Padding:</span> {selectedImage.parameters.inpaint_full_res_padding}
                             </div>
                           )}
+                          */}
                           {selectedImage.parameters?.inpaint_fill_mode !== undefined && (
                             <div>
                               <span className="text-gray-500">Fill Mode:</span> {selectedImage.parameters.inpaint_fill_mode}

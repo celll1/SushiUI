@@ -64,10 +64,12 @@ def save_image_with_metadata(
     if generation_type == "inpaint":
         if "mask_blur" in params:
             metadata.add_text("mask_blur", str(params["mask_blur"]))
-        if "inpaint_full_res" in params:
-            metadata.add_text("inpaint_full_res", str(params["inpaint_full_res"]))
-        if "inpaint_full_res_padding" in params:
-            metadata.add_text("inpaint_full_res_padding", str(params["inpaint_full_res_padding"]))
+        # Note: inpaint_full_res and inpaint_full_res_padding are not implemented in backend
+        # Commented out to avoid confusion
+        # if "inpaint_full_res" in params:
+        #     metadata.add_text("inpaint_full_res", str(params["inpaint_full_res"]))
+        # if "inpaint_full_res_padding" in params:
+        #     metadata.add_text("inpaint_full_res_padding", str(params["inpaint_full_res_padding"]))
         if "inpaint_fill_mode" in params:
             metadata.add_text("inpaint_fill_mode", params["inpaint_fill_mode"])
         if "inpaint_fill_strength" in params:

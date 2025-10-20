@@ -1121,6 +1121,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
               />
             </div>
 
+            {/* Commented out: Not implemented in backend
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -1144,6 +1145,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                 onChange={(e) => setParams({ ...params, inpaint_full_res_padding: parseInt(e.target.value) })}
               />
             )}
+            */}
           </div>
         </Card>
 

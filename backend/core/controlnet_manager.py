@@ -352,28 +352,91 @@ class ControlNetManager:
         """Find which LLLite modules match actual U-Net structure
 
         Returns set of module base names that have corresponding U-Net layers.
+        kohya-ss uses cumulative indexing: input_blocks_0, 1, 2, ... (across all down_blocks)
         """
         matched = set()
         available_keys = set(lllite_modules.keys())
 
-        # Scan U-Net structure
+        print(f"[ControlNetManager DEBUG TEMPORARY] Scanning U-Net structure...")
+
+        # kohya-ss uses cumulative block indexing
+        input_block_idx = 0
+
+        # Initial conv counts as input_blocks_0
+        input_block_idx += 1
+
+        # Scan down_blocks (input_blocks_1+)
         if hasattr(unet, 'down_blocks'):
-            for block_idx, block in enumerate(unet.down_blocks):
-                if not hasattr(block, 'attentions'):
-                    continue
+            for down_idx, block in enumerate(unet.down_blocks):
+                print(f"[ControlNetManager DEBUG TEMPORARY] down_blocks[{down_idx}]: {type(block).__name__}")
 
-                for attn_idx, attention in enumerate(block.attentions):
-                    if not hasattr(attention, 'transformer_blocks'):
-                        continue
+                # Each down_block can have multiple ResNet blocks + optional attention
+                # SDXL: down_blocks typically have 2-3 ResNet blocks per down_block
+                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
 
-                    for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
-                        # Check if any LLLite module matches this block structure
-                        pattern = f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}"
+                if hasattr(block, 'attentions') and block.attentions is not None:
+                    for attn_idx, attention in enumerate(block.attentions):
+                        if hasattr(attention, 'transformer_blocks'):
+                            print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = input_blocks_{input_block_idx}, {len(attention.transformer_blocks)} transformer_blocks")
 
-                        for key in available_keys:
-                            if pattern in key:
-                                # Found match! Add base name (without to_q/to_k/to_v suffix)
-                                matched.add(key)
+                            for trans_idx in range(len(attention.transformer_blocks)):
+                                # kohya-ss naming: input_blocks_X_1_transformer_blocks_Y
+                                # The "1" is the attention index within the block
+                                pattern = f"lllite_unet_input_blocks_{input_block_idx}_1_transformer_blocks_{trans_idx}"
+
+                                for key in available_keys:
+                                    if key.startswith(pattern):
+                                        matched.add(key)
+                                        print(f"[ControlNetManager DEBUG]     Matched: {key}")
+
+                        input_block_idx += 1
+                else:
+                    # No attention blocks, just increment by number of resnets
+                    input_block_idx += num_resnets
+
+        # Scan mid_block (middle_block)
+        if hasattr(unet, 'mid_block'):
+            print(f"[ControlNetManager DEBUG] mid_block: {type(unet.mid_block).__name__}")
+
+            if hasattr(unet.mid_block, 'attentions'):
+                for attn_idx, attention in enumerate(unet.mid_block.attentions):
+                    if hasattr(attention, 'transformer_blocks'):
+                        print(f"[ControlNetManager DEBUG]   mid_block.attentions[{attn_idx}] = middle_block_1, {len(attention.transformer_blocks)} transformer_blocks")
+
+                        for trans_idx in range(len(attention.transformer_blocks)):
+                            # kohya-ss naming: middle_block_1_transformer_blocks_Y
+                            pattern = f"lllite_unet_middle_block_1_transformer_blocks_{trans_idx}"
+
+                            for key in available_keys:
+                                if key.startswith(pattern):
+                                    matched.add(key)
+                                    print(f"[ControlNetManager DEBUG]     Matched: {key}")
+
+        # Scan up_blocks (output_blocks)
+        output_block_idx = 0
+        if hasattr(unet, 'up_blocks'):
+            for up_idx, block in enumerate(unet.up_blocks):
+                print(f"[ControlNetManager DEBUG] up_blocks[{up_idx}]: {type(block).__name__}")
+
+                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
+
+                if hasattr(block, 'attentions') and block.attentions is not None:
+                    for attn_idx, attention in enumerate(block.attentions):
+                        if hasattr(attention, 'transformer_blocks'):
+                            print(f"[ControlNetManager DEBUG]   up_blocks[{up_idx}].attentions[{attn_idx}] = output_blocks_{output_block_idx}, {len(attention.transformer_blocks)} transformer_blocks")
+
+                            for trans_idx in range(len(attention.transformer_blocks)):
+                                # kohya-ss naming: output_blocks_X_1_transformer_blocks_Y
+                                pattern = f"lllite_unet_output_blocks_{output_block_idx}_1_transformer_blocks_{trans_idx}"
+
+                                for key in available_keys:
+                                    if key.startswith(pattern):
+                                        matched.add(key)
+                                        print(f"[ControlNetManager DEBUG]     Matched: {key}")
+
+                        output_block_idx += 1
+                else:
+                    output_block_idx += num_resnets
 
         return matched
 
@@ -512,63 +575,108 @@ class ControlNetManager:
         Wraps the forward method of attention projection layers (to_q, to_k, to_v)
         to add LLLite conditioning.
 
-        Note: diffusers U-Net structure differs from kohya-ss naming convention.
-        We need to find the correct mapping.
+        Uses cumulative indexing to match kohya-ss convention.
         """
         lllite_modules = lllite_data['modules']
         cond_embeddings = lllite_data['cond_embeddings']
 
-        # Get available LLLite module keys for pattern matching
         available_keys = set(lllite_modules.keys())
         print(f"[ControlNetManager DEBUG] Total available LLLite modules: {len(available_keys)}")
 
-        # Sample a few keys to understand the pattern
-        sample_keys = list(available_keys)[:5]
-        print(f"[ControlNetManager DEBUG] Sample LLLite keys: {sample_keys}")
-
         patched_count = 0
-        attempted_count = 0
+        input_block_idx = 0
 
-        # Iterate through U-Net down_blocks and mid_block
-        def patch_transformer_block(block, block_idx, block_type):
-            nonlocal patched_count, attempted_count
+        # Initial conv counts as input_blocks_0
+        input_block_idx += 1
 
-            if not hasattr(block, 'attentions'):
-                return
-
-            for attn_idx, attention in enumerate(block.attentions):
-                if not hasattr(attention, 'transformer_blocks'):
-                    continue
-
-                for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
-                    # Try different naming patterns to find match
-                    # Pattern 1: input_blocks_X_Y format (kohya-ss uses this)
-                    for lllite_key in available_keys:
-                        # Check if this key might match current block
-                        # LLLite keys format: lllite_unet_input_blocks_4_1_transformer_blocks_0_attn1_to_q
-                        if f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}" in lllite_key:
-                            # Found a potential match!
-                            # Patch attn1
-                            if hasattr(transformer_block, 'attn1') and 'attn1' in lllite_key:
-                                patched_count += self._patch_attention_layer_flexible(
-                                    transformer_block.attn1,
-                                    f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}_attn1",
-                                    lllite_modules, cond_embeddings, available_keys
-                                )
-
-                            # Patch attn2
-                            if hasattr(transformer_block, 'attn2') and 'attn2' in lllite_key:
-                                patched_count += self._patch_attention_layer_flexible(
-                                    transformer_block.attn2,
-                                    f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}_attn2",
-                                    lllite_modules, cond_embeddings, available_keys
-                                )
-                            break
-
-        # Patch down blocks (input_blocks)
+        # Patch down_blocks (input_blocks)
         if hasattr(unet, 'down_blocks'):
-            for idx, block in enumerate(unet.down_blocks):
-                patch_transformer_block(block, idx, "input")
+            for down_idx, block in enumerate(unet.down_blocks):
+                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
+
+                if hasattr(block, 'attentions') and block.attentions is not None:
+                    for attn_idx, attention in enumerate(block.attentions):
+                        if hasattr(attention, 'transformer_blocks'):
+                            for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
+                                # kohya-ss naming: input_blocks_X_1_transformer_blocks_Y
+                                block_name = f"input_blocks_{input_block_idx}_1_transformer_blocks_{trans_idx}"
+
+                                # Patch attn1
+                                if hasattr(transformer_block, 'attn1'):
+                                    patched_count += self._patch_attention_layer_flexible(
+                                        transformer_block.attn1,
+                                        f"{block_name}_attn1",
+                                        lllite_modules, cond_embeddings, available_keys
+                                    )
+
+                                # Patch attn2
+                                if hasattr(transformer_block, 'attn2'):
+                                    patched_count += self._patch_attention_layer_flexible(
+                                        transformer_block.attn2,
+                                        f"{block_name}_attn2",
+                                        lllite_modules, cond_embeddings, available_keys
+                                    )
+
+                        input_block_idx += 1
+                else:
+                    input_block_idx += num_resnets
+
+        # Patch mid_block (middle_block)
+        if hasattr(unet, 'mid_block') and hasattr(unet.mid_block, 'attentions'):
+            for attn_idx, attention in enumerate(unet.mid_block.attentions):
+                if hasattr(attention, 'transformer_blocks'):
+                    for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
+                        # kohya-ss naming: middle_block_1_transformer_blocks_Y
+                        block_name = f"middle_block_1_transformer_blocks_{trans_idx}"
+
+                        # Patch attn1
+                        if hasattr(transformer_block, 'attn1'):
+                            patched_count += self._patch_attention_layer_flexible(
+                                transformer_block.attn1,
+                                f"{block_name}_attn1",
+                                lllite_modules, cond_embeddings, available_keys
+                            )
+
+                        # Patch attn2
+                        if hasattr(transformer_block, 'attn2'):
+                            patched_count += self._patch_attention_layer_flexible(
+                                transformer_block.attn2,
+                                f"{block_name}_attn2",
+                                lllite_modules, cond_embeddings, available_keys
+                            )
+
+        # Patch up_blocks (output_blocks)
+        output_block_idx = 0
+        if hasattr(unet, 'up_blocks'):
+            for up_idx, block in enumerate(unet.up_blocks):
+                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
+
+                if hasattr(block, 'attentions') and block.attentions is not None:
+                    for attn_idx, attention in enumerate(block.attentions):
+                        if hasattr(attention, 'transformer_blocks'):
+                            for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
+                                # kohya-ss naming: output_blocks_X_1_transformer_blocks_Y
+                                block_name = f"output_blocks_{output_block_idx}_1_transformer_blocks_{trans_idx}"
+
+                                # Patch attn1
+                                if hasattr(transformer_block, 'attn1'):
+                                    patched_count += self._patch_attention_layer_flexible(
+                                        transformer_block.attn1,
+                                        f"{block_name}_attn1",
+                                        lllite_modules, cond_embeddings, available_keys
+                                    )
+
+                                # Patch attn2
+                                if hasattr(transformer_block, 'attn2'):
+                                    patched_count += self._patch_attention_layer_flexible(
+                                        transformer_block.attn2,
+                                        f"{block_name}_attn2",
+                                        lllite_modules, cond_embeddings, available_keys
+                                    )
+
+                        output_block_idx += 1
+                else:
+                    output_block_idx += num_resnets
 
         print(f"[ControlNetManager] Patched {patched_count} attention projections with LLLite")
 
@@ -602,8 +710,12 @@ class ControlNetManager:
             # Wrap the projection layer's forward method
             original_forward = proj_layer.forward
 
-            def create_lllite_forward(orig_forward, cond, mods):
-                # Get weights (already on correct device from _build_lllite_modules)
+            def create_lllite_forward(orig_forward, cond_embedding, mods):
+                """Create LLLite forward function based on kohya-ss implementation
+
+                cond_embedding: Pre-computed conditioning embedding (B, C, H, W)
+                """
+                # Get LoRA-like weights (already on GPU)
                 down_weight = mods.get('down.0', {}).get('weight')
                 down_bias = mods.get('down.0', {}).get('bias')
                 mid_weight = mods.get('mid.0', {}).get('weight')
@@ -612,48 +724,48 @@ class ControlNetManager:
                 up_bias = mods.get('up.0', {}).get('bias')
 
                 def lllite_forward(hidden_states):
-                    # Call original projection
-                    output = orig_forward(hidden_states)
+                    x = hidden_states
 
-                    # Apply LLLite modification: down -> concat with cond -> mid -> up
-                    try:
-                        if down_weight is not None:
-                            # Reshape hidden_states for linear layer if needed
-                            batch, seq_len, channels = hidden_states.shape
-                            down_out = torch.nn.functional.linear(hidden_states, down_weight, down_bias)
+                    # Apply LLLite if we have all required components
+                    if cond_embedding is not None and all([down_weight is not None,
+                                                           mid_weight is not None,
+                                                           up_weight is not None]):
+                        try:
+                            # 1. Reshape pre-computed conditioning: (B, C, H, W) -> (B, H*W, C)
+                            n, c, h, w = cond_embedding.shape
+                            cx = cond_embedding.view(n, c, h * w).permute(0, 2, 1)  # (B, H*W, C)
 
-                            # Prepare conditioning embedding
-                            if cond is not None:
-                                # Reshape cond to match sequence
-                                # cond shape: (batch, cond_channels, height, width)
-                                # Need to reshape to (batch, seq_len, cond_channels)
-                                cond_reshaped = cond.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
+                            # 2. Apply down projection to hidden_states
+                            down_x = torch.nn.functional.linear(x, down_weight, down_bias)
 
-                                # Interpolate or pool to match seq_len
-                                if cond_reshaped.shape[1] != seq_len:
-                                    cond_reshaped = torch.nn.functional.adaptive_avg_pool1d(
-                                        cond_reshaped.permute(0, 2, 1), seq_len
-                                    ).permute(0, 2, 1)
+                            # 3. Match spatial dimensions if needed
+                            seq_len = x.shape[1]
+                            if cx.shape[1] != seq_len:
+                                cx = torch.nn.functional.interpolate(
+                                    cx.permute(0, 2, 1),  # (B, C, H*W)
+                                    size=seq_len,
+                                    mode='linear',
+                                    align_corners=False
+                                ).permute(0, 2, 1)  # (B, seq_len, C)
 
-                                # Concatenate conditioning with down output
-                                mid_input = torch.cat([down_out, cond_reshaped], dim=-1)
-                            else:
-                                mid_input = down_out
+                            # 4. Concatenate: [conditioning, down(x)]
+                            cx = torch.cat([cx, down_x], dim=2)
 
-                            # Mid layer: process combined features
-                            if mid_weight is not None:
-                                mid_out = torch.nn.functional.linear(mid_input, mid_weight, mid_bias)
+                            # 5. Mid layer
+                            cx = torch.nn.functional.linear(cx, mid_weight, mid_bias)
 
-                                # Up layer: restore original dimensions
-                                if up_weight is not None:
-                                    up_out = torch.nn.functional.linear(mid_out, up_weight, up_bias)
+                            # 6. Up layer
+                            cx = torch.nn.functional.linear(cx, up_weight, up_bias)
 
-                                    # Add LLLite modification to original output
-                                    output = output + up_out
+                            # 7. Add to input (LoRA-style residual)
+                            x = x + cx
 
-                    except Exception as e:
-                        pass  # Silently fail to avoid spam
+                        except Exception as e:
+                            # Silently fail and use original input
+                            pass
 
+                    # Apply original projection
+                    output = orig_forward(x)
                     return output
 
                 return lllite_forward

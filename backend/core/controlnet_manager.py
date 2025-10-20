@@ -726,48 +726,5 @@ class ControlNetManager:
         # Replace forward method
         controlnet.forward = weighted_forward
 
-    def apply_lllite_to_unet(self, unet, lllite_model_dict: Dict, strength: float = 1.0):
-        """Apply ControlNet-LLLite to U-Net
-
-        LLLite works by adding learned modifications to intermediate layer outputs.
-        Based on kohya-ss implementation.
-        """
-        try:
-            state_dict = lllite_model_dict['state_dict']
-            device = lllite_model_dict['device']
-            dtype = lllite_model_dict['dtype']
-
-            print(f"[ControlNetManager] Applying LLLite to U-Net with strength {strength}")
-
-            # LLLite modules are applied to specific U-Net layers
-            # The state dict contains weights for modules like:
-            # - input_blocks.X.1.transformer_blocks.0.attn1.to_q.lora_down.weight
-            # - middle_block.1.transformer_blocks.0.attn1.to_q.lora_up.weight
-            # etc.
-
-            # For now, store the LLLite state for custom forward hooks
-            # Full implementation would require hooking into U-Net forward pass
-            if not hasattr(unet, '_lllite_modules'):
-                unet._lllite_modules = []
-
-            unet._lllite_modules.append({
-                'state_dict': state_dict,
-                'strength': strength,
-                'device': device,
-                'dtype': dtype
-            })
-
-            print(f"[ControlNetManager] LLLite module registered (strength={strength})")
-            print(f"[ControlNetManager] Note: Full LLLite support requires custom U-Net hooks")
-
-            return True
-
-        except Exception as e:
-            print(f"[ControlNetManager] Failed to apply LLLite: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-
 # Global ControlNet manager instance
 controlnet_manager = ControlNetManager()

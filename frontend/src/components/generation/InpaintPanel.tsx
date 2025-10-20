@@ -126,6 +126,8 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
+    console.clear();
+    console.log("=== InpaintPanel mounted ===");
     setIsMounted(true);
 
     const loadInitialData = async () => {
@@ -149,14 +151,17 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
       // Load input image preview
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      console.log("[Inpaint] Initial load - input image ref:", savedInputRef);
       if (savedInputRef) {
         try {
           const imageData = await loadTempImage(savedInputRef);
+          console.log("[Inpaint] Input image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setInputImagePreview(imageData);
             // Load image dimensions
             const img = new Image();
             img.onload = () => {
+              console.log("[Inpaint] Input image dimensions set:", img.width, "x", img.height);
               setInputImageSize({ width: img.width, height: img.height });
             };
             img.src = imageData;
@@ -168,14 +173,16 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
       // Load mask image preview
       const savedMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+      console.log("[Inpaint] Initial load - mask image ref:", savedMaskRef);
       if (savedMaskRef) {
         try {
           const imageData = await loadTempImage(savedMaskRef);
+          console.log("[Inpaint] Mask image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setMaskImage(imageData);
           }
         } catch (error) {
-          console.error("Failed to load mask image:", error);
+          console.error("[Inpaint] Failed to load mask image:", error);
         }
       }
     };

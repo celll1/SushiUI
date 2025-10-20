@@ -138,6 +138,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
+    console.clear();
+    console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
 
     // Load params

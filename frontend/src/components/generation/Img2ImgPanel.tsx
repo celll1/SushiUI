@@ -111,6 +111,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
+    console.clear();
+    console.log("=== Img2ImgPanel mounted ===");
     setIsMounted(true);
 
     const loadInitialData = async () => {
@@ -134,20 +136,23 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
       // Load input image preview
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      console.log("[Img2Img] Initial load - input image ref:", savedInputRef);
       if (savedInputRef) {
         try {
           const imageData = await loadTempImage(savedInputRef);
+          console.log("[Img2Img] Input image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setInputImagePreview(imageData);
             // Load image dimensions
             const img = new Image();
             img.onload = () => {
+              console.log("[Img2Img] Input image dimensions set:", img.width, "x", img.height);
               setInputImageSize({ width: img.width, height: img.height });
             };
             img.src = imageData;
           }
         } catch (error) {
-          console.error("Failed to load input image:", error);
+          console.error("[Img2Img] Failed to load input image:", error);
         }
       }
     };

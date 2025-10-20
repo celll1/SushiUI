@@ -182,6 +182,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   useEffect(() => {
+    value.forEach((v, idx) => {
+      console.log(`[ControlNetSelector] value[${idx}] from parent:`, v.model_path);
+    });
     // Detect model types for all loaded ControlNets
     value.forEach((cn, index) => {
       if (cn.model_path && !modelTypes.has(index)) {
@@ -377,12 +380,15 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const updateControlNet = async (index: number, updates: Partial<ControlNetConfig>) => {
+    console.log('[ControlNetSelector] updateControlNet called:', { index, updates });
     const newValue = [...value];
     newValue[index] = { ...newValue[index], ...updates };
+    console.log('[ControlNetSelector] New value:', newValue[index]);
     notifyChange(newValue);
 
     // Re-detect model type and preprocessor if model_path changed
     if (updates.model_path) {
+      console.log('[ControlNetSelector] Clearing cache and detecting model type for:', updates.model_path);
       // Clear cache for this model path to force fresh fetch
       setControlnetInfoCache((prev) => {
         const newCache = new Map(prev);
@@ -391,16 +397,17 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       });
 
       detectModelType(updates.model_path, index);
-      await detectPreprocessor(updates.model_path, index);
+      // Pass the updated value array to avoid stale closure
+      await detectPreprocessor(updates.model_path, index, newValue);
     }
   };
 
-  const detectPreprocessor = async (modelPath: string, index: number) => {
+  const detectPreprocessor = async (modelPath: string, index: number, currentValue: ControlNetConfig[]) => {
     try {
       const result = await detectControlNetPreprocessor(modelPath);
       console.log(`[ControlNetSelector] Detected preprocessor for ${modelPath}:`, result);
 
-      const newValue = [...value];
+      const newValue = [...currentValue];
       newValue[index] = {
         ...newValue[index],
         preprocessor: result.preprocessor,

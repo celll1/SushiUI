@@ -54,6 +54,13 @@ class ControlNetManager:
         self.loaded_controlnets: Dict[str, ControlNetModel] = {}
         self.loaded_lllites: Dict[str, Any] = {}
 
+        # Track patched layers for cleanup
+        self.lllite_patched_layers: List[tuple] = []  # [(layer, original_forward), ...]
+
+        # Track LLLite data for cleanup
+        self.current_lllite_modules: Optional[dict] = None  # Cached LLLite weight modules
+        self.current_lllite_embeddings: Optional[dict] = None  # Cached conditioning embeddings
+
     def set_additional_dirs(self, dirs: List[str]):
         """Set additional directories to scan for ControlNets"""
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
@@ -301,6 +308,9 @@ class ControlNetManager:
         """
         print(f"[ControlNetManager] Applying LLLite to U-Net")
 
+        # Remove any existing LLLite patches first
+        self.remove_lllite_patches()
+
         # Store control image in the lllite model for later use
         lllite_model['control_image'] = control_image
 
@@ -330,21 +340,63 @@ class ControlNetManager:
         device = lllite_model.get('device', 'cuda')
         dtype = lllite_model.get('dtype', torch.float16)
 
+        # Log VRAM before processing
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated = torch.cuda.memory_allocated(device) / 1024**3
+            reserved = torch.cuda.memory_reserved(device) / 1024**3
+            print(f"[ControlNetManager VRAM] Before LLLite: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB")
+
         # Build LLLite modules from state dict
         lllite_modules = self._build_lllite_modules(state_dict, device, dtype)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated = torch.cuda.memory_allocated(device) / 1024**3
+            reserved = torch.cuda.memory_reserved(device) / 1024**3
+            print(f"[ControlNetManager VRAM] After building modules: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB")
 
         # IMPORTANT: Only process conditioning for modules that will actually be used
         # First, determine which modules match U-Net structure
         matched_modules = self._find_matching_modules(unet, lllite_modules)
         print(f"[ControlNetManager] Found {len(matched_modules)} matching U-Net attention layers")
 
+        # Debug: Check if problematic modules exist in LLLite model
+        test_modules = ['lllite_unet_input_blocks_5_1_transformer_blocks_0_attn1_to_q',
+                       'lllite_unet_input_blocks_6_1_transformer_blocks_0_attn1_to_q']
+        for test_mod in test_modules:
+            if test_mod in lllite_modules:
+                down_w = lllite_modules[test_mod].get('down.0', {}).get('weight')
+                if down_w is not None:
+                    print(f"[ControlNetManager DEBUG] {test_mod}: down_weight shape = {down_w.shape}")
+                else:
+                    print(f"[ControlNetManager DEBUG] {test_mod}: exists but no down.0 weight")
+            else:
+                print(f"[ControlNetManager DEBUG] {test_mod}: NOT in lllite_modules")
+
         # Process control image ONLY for matched modules
         cond_emb = self._process_control_image_lllite_selective(
             control_image, lllite_modules, matched_modules, device, dtype
         )
 
+        # Store for cleanup
+        self.current_lllite_modules = lllite_modules
+        self.current_lllite_embeddings = cond_emb
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated = torch.cuda.memory_allocated(device) / 1024**3
+            reserved = torch.cuda.memory_reserved(device) / 1024**3
+            print(f"[ControlNetManager VRAM] After conditioning: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB")
+
         # Patch U-Net attention layers
         self._apply_lllite_patches(unet, lllite_modules, cond_emb, layer_weights)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated = torch.cuda.memory_allocated(device) / 1024**3
+            reserved = torch.cuda.memory_reserved(device) / 1024**3
+            print(f"[ControlNetManager VRAM] After patching: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB")
 
         print(f"[ControlNetManager] LLLite patches applied to {len(lllite_modules)} attention layers")
 
@@ -359,40 +411,39 @@ class ControlNetManager:
 
         print(f"[ControlNetManager DEBUG TEMPORARY] Scanning U-Net structure...")
 
-        # kohya-ss uses cumulative block indexing
-        input_block_idx = 0
+        # Hardcoded mapping based on actual LLLite model structure
+        # From test: input_blocks_4,5 (640ch), input_blocks_7,8 (1280ch)
+        # Note: down_blocks[1].attentions[1] uses 1280ch but input_blocks_5 has 640ch weights
+        # Therefore input_blocks_5 should NOT be mapped (it's likely an unused module in the LLLite model)
+        known_mappings = {
+            ('down', 1, 0): 4,  # down_blocks[1].attentions[0] -> input_blocks_4 (640ch)
+            # ('down', 1, 1): 5,  # SKIP: down_blocks[1].attentions[1] is 1280ch but input_blocks_5 is 640ch
+            ('down', 2, 0): 7,  # down_blocks[2].attentions[0] -> input_blocks_7 (1280ch)
+            ('down', 2, 1): 8,  # down_blocks[2].attentions[1] -> input_blocks_8 (1280ch)
+        }
 
-        # Initial conv counts as input_blocks_0
-        input_block_idx += 1
-
-        # Scan down_blocks (input_blocks_1+)
+        # Scan down_blocks
         if hasattr(unet, 'down_blocks'):
             for down_idx, block in enumerate(unet.down_blocks):
                 print(f"[ControlNetManager DEBUG TEMPORARY] down_blocks[{down_idx}]: {type(block).__name__}")
 
-                # Each down_block can have multiple ResNet blocks + optional attention
-                # SDXL: down_blocks typically have 2-3 ResNet blocks per down_block
-                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
-
                 if hasattr(block, 'attentions') and block.attentions is not None:
                     for attn_idx, attention in enumerate(block.attentions):
                         if hasattr(attention, 'transformer_blocks'):
-                            print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = input_blocks_{input_block_idx}, {len(attention.transformer_blocks)} transformer_blocks")
+                            kohya_idx = known_mappings.get(('down', down_idx, attn_idx))
 
-                            for trans_idx in range(len(attention.transformer_blocks)):
-                                # kohya-ss naming: input_blocks_X_1_transformer_blocks_Y
-                                # The "1" is the attention index within the block
-                                pattern = f"lllite_unet_input_blocks_{input_block_idx}_1_transformer_blocks_{trans_idx}"
+                            if kohya_idx is not None:
+                                print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = input_blocks_{kohya_idx}, {len(attention.transformer_blocks)} transformer_blocks")
 
-                                for key in available_keys:
-                                    if key.startswith(pattern):
-                                        matched.add(key)
-                                        print(f"[ControlNetManager DEBUG]     Matched: {key}")
+                                for trans_idx in range(len(attention.transformer_blocks)):
+                                    pattern = f"lllite_unet_input_blocks_{kohya_idx}_1_transformer_blocks_{trans_idx}"
 
-                        input_block_idx += 1
-                else:
-                    # No attention blocks, just increment by number of resnets
-                    input_block_idx += num_resnets
+                                    for key in available_keys:
+                                        if key.startswith(pattern):
+                                            matched.add(key)
+                                            print(f"[ControlNetManager DEBUG]     Matched: {key}")
+                            else:
+                                print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = NO MAPPING (skipped)")
 
         # Scan mid_block (middle_block)
         if hasattr(unet, 'mid_block'):
@@ -413,30 +464,11 @@ class ControlNetManager:
                                     print(f"[ControlNetManager DEBUG]     Matched: {key}")
 
         # Scan up_blocks (output_blocks)
-        output_block_idx = 0
+        # Note: LLLite models typically don't have output_blocks modules
+        # Test showed: NO output_blocks in kohya_controllllite_xl_canny_anime.safetensors
+        # Skip scanning up_blocks since they won't match
         if hasattr(unet, 'up_blocks'):
-            for up_idx, block in enumerate(unet.up_blocks):
-                print(f"[ControlNetManager DEBUG] up_blocks[{up_idx}]: {type(block).__name__}")
-
-                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
-
-                if hasattr(block, 'attentions') and block.attentions is not None:
-                    for attn_idx, attention in enumerate(block.attentions):
-                        if hasattr(attention, 'transformer_blocks'):
-                            print(f"[ControlNetManager DEBUG]   up_blocks[{up_idx}].attentions[{attn_idx}] = output_blocks_{output_block_idx}, {len(attention.transformer_blocks)} transformer_blocks")
-
-                            for trans_idx in range(len(attention.transformer_blocks)):
-                                # kohya-ss naming: output_blocks_X_1_transformer_blocks_Y
-                                pattern = f"lllite_unet_output_blocks_{output_block_idx}_1_transformer_blocks_{trans_idx}"
-
-                                for key in available_keys:
-                                    if key.startswith(pattern):
-                                        matched.add(key)
-                                        print(f"[ControlNetManager DEBUG]     Matched: {key}")
-
-                        output_block_idx += 1
-                else:
-                    output_block_idx += num_resnets
+            print(f"[ControlNetManager DEBUG] Skipping up_blocks scan - LLLite models typically have no output_blocks modules")
 
         return matched
 
@@ -450,11 +482,12 @@ class ControlNetManager:
         if control_image is None:
             return {}
 
-        # Move control image to device and ensure correct format
-        control_image = control_image.to(device=device, dtype=dtype)
+        # Move control image to device and ensure correct format (in-place where possible)
+        if control_image.device != torch.device(device) or control_image.dtype != dtype:
+            control_image = control_image.to(device=device, dtype=dtype)
 
-        # Normalize from [0, 1] to [-1, 1]
-        control_image = control_image * 2.0 - 1.0
+        # Normalize from [0, 1] to [-1, 1] (in-place)
+        control_image = control_image.mul(2.0).sub_(1.0)
 
         # Process ONLY matched modules
         cond_embeddings = {}
@@ -472,7 +505,8 @@ class ControlNetManager:
                 continue
 
             # Apply conditioning convolutions sequentially
-            x = control_image
+            # Use clone() to avoid in-place modification of control_image
+            x = control_image.clone()
 
             # Sort conditioning module layers by their numeric suffix (0, 2, 4)
             cond_layers = sorted(conditioning_modules.items(), key=lambda item: item[0])
@@ -482,17 +516,60 @@ class ControlNetManager:
                     weight = params['weight']
                     bias = params['bias']
 
-                    # Apply conv2d (weights already on device)
-                    x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
+                    # kohya-ss implementation uses specific stride/padding values:
+                    # - kernel_size=4, stride=4, padding=0 (most common)
+                    # - kernel_size=2, stride=2, padding=0 (for final layer in some depths)
+                    # We infer from the weight shape
+                    kernel_size = weight.shape[2]
+
+                    if kernel_size == 4:
+                        stride = 4
+                        padding = 0
+                    elif kernel_size == 2:
+                        stride = 2
+                        padding = 0
+                    else:
+                        # Fallback for unexpected kernel sizes
+                        stride = kernel_size
+                        padding = 0
+
+                    # Apply conv2d with kohya-ss parameters
+                    x_new = torch.nn.functional.conv2d(x, weight, bias, stride=stride, padding=padding)
+
+                    # Free previous x immediately
+                    if x is not control_image:
+                        del x
+
+                    x = x_new
 
                     # Apply ReLU activation (except for last layer)
                     if layer_name != cond_layers[-1][0]:
                         x = torch.nn.functional.relu(x)
 
             # Detach and store conditioning embedding (breaks gradient tracking)
+            # This is the only tensor we keep
             cond_embeddings[base_name] = x.detach()
 
+            # Free x immediately
+            del x
+
+        # Force garbage collection to free intermediate tensors
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings (only matched modules)")
+
+        # Log conditioning embedding sizes
+        if cond_embeddings:
+            first_key = next(iter(cond_embeddings))
+            first_emb = cond_embeddings[first_key]
+            emb_size_mb = first_emb.element_size() * first_emb.nelement() / 1024**2
+            total_size_mb = emb_size_mb * len(cond_embeddings)
+            print(f"[ControlNetManager DEBUG] Each conditioning embedding: {first_emb.shape}, {emb_size_mb:.2f}MB")
+            print(f"[ControlNetManager DEBUG] Total conditioning embeddings size: {total_size_mb:.2f}MB")
+
         return cond_embeddings
 
     def _build_lllite_modules(self, state_dict: dict, device: str, dtype: torch.dtype) -> dict:
@@ -590,16 +667,25 @@ class ControlNetManager:
         input_block_idx += 1
 
         # Patch down_blocks (input_blocks)
+        # Use hardcoded mapping instead of cumulative indexing
         if hasattr(unet, 'down_blocks'):
             for down_idx, block in enumerate(unet.down_blocks):
-                num_resnets = len(block.resnets) if hasattr(block, 'resnets') else 0
-
                 if hasattr(block, 'attentions') and block.attentions is not None:
                     for attn_idx, attention in enumerate(block.attentions):
+                        # Use known_mappings from _find_matching_modules
+                        kohya_idx = {
+                            (1, 0): 4,
+                            (2, 0): 7,
+                            (2, 1): 8,
+                        }.get((down_idx, attn_idx))
+
+                        if kohya_idx is None:
+                            continue  # Skip unmapped blocks
+
                         if hasattr(attention, 'transformer_blocks'):
                             for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
                                 # kohya-ss naming: input_blocks_X_1_transformer_blocks_Y
-                                block_name = f"input_blocks_{input_block_idx}_1_transformer_blocks_{trans_idx}"
+                                block_name = f"input_blocks_{kohya_idx}_1_transformer_blocks_{trans_idx}"
 
                                 # Patch attn1
                                 if hasattr(transformer_block, 'attn1'):
@@ -616,10 +702,6 @@ class ControlNetManager:
                                         f"{block_name}_attn2",
                                         lllite_modules, cond_embeddings, available_keys
                                     )
-
-                        input_block_idx += 1
-                else:
-                    input_block_idx += num_resnets
 
         # Patch mid_block (middle_block)
         if hasattr(unet, 'mid_block') and hasattr(unet.mid_block, 'attentions'):
@@ -707,13 +789,17 @@ class ControlNetManager:
                 print(f"[ControlNetManager DEBUG] No conditioning for {lllite_name}")
                 continue
 
-            # Wrap the projection layer's forward method
+            # Save original forward for cleanup
             original_forward = proj_layer.forward
 
-            def create_lllite_forward(orig_forward, cond_embedding, mods):
+            # Track this patch for later cleanup
+            self.lllite_patched_layers.append((proj_layer, original_forward))
+
+            def create_lllite_forward(orig_forward, cond_embedding, mods, module_name):
                 """Create LLLite forward function based on kohya-ss implementation
 
                 cond_embedding: Pre-computed conditioning embedding (B, C, H, W)
+                module_name: Name of the LLLite module for debugging
                 """
                 # Get LoRA-like weights (already on GPU)
                 down_weight = mods.get('down.0', {}).get('weight')
@@ -722,6 +808,9 @@ class ControlNetManager:
                 mid_bias = mods.get('mid.0', {}).get('bias')
                 up_weight = mods.get('up.0', {}).get('weight')
                 up_bias = mods.get('up.0', {}).get('bias')
+
+                # Create a counter for logging (only log first call)
+                first_call = [True]
 
                 def lllite_forward(hidden_states):
                     x = hidden_states
@@ -748,21 +837,35 @@ class ControlNetManager:
                                     align_corners=False
                                 ).permute(0, 2, 1)  # (B, seq_len, C)
 
-                            # 4. Concatenate: [conditioning, down(x)]
+                            # 4. Match batch size (for CFG, batch size is 2x)
+                            batch_size = x.shape[0]
+                            if cx.shape[0] != batch_size:
+                                # Repeat conditioning for each batch item
+                                cx = cx.repeat(batch_size, 1, 1)
+
+                            # 5. Concatenate: [conditioning, down(x)]
                             cx = torch.cat([cx, down_x], dim=2)
 
-                            # 5. Mid layer
+                            # 6. Mid layer
                             cx = torch.nn.functional.linear(cx, mid_weight, mid_bias)
 
-                            # 6. Up layer
+                            # 7. Up layer
                             cx = torch.nn.functional.linear(cx, up_weight, up_bias)
 
-                            # 7. Add to input (LoRA-style residual)
+                            # 8. Add to input (LoRA-style residual)
                             x = x + cx
 
+                            # Log first successful execution
+                            if first_call[0]:
+                                print(f"[LLLite Forward DEBUG] {module_name}: Successfully applied, hidden_states={hidden_states.shape}, down_weight={down_weight.shape if down_weight is not None else None}")
+                                first_call[0] = False
+
                         except Exception as e:
-                            # Silently fail and use original input
-                            pass
+                            # Log error on first call
+                            if first_call[0]:
+                                print(f"[LLLite Forward ERROR] {module_name}: Failed with hidden_states={hidden_states.shape}, down_weight={down_weight.shape if down_weight is not None else None}")
+                                print(f"  Error: {e}")
+                                first_call[0] = False
 
                     # Apply original projection
                     output = orig_forward(x)
@@ -771,7 +874,7 @@ class ControlNetManager:
                 return lllite_forward
 
             # Replace the forward method
-            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules)
+            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules, lllite_name)
             patched += 1
 
         return patched
@@ -866,7 +969,7 @@ class ControlNetManager:
                 return lllite_forward
 
             # Replace the forward method
-            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules)
+            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules, lllite_name)
             patched += 1
 
         return patched
@@ -993,6 +1096,55 @@ class ControlNetManager:
 
         # Replace forward method
         controlnet.forward = weighted_forward
+
+    def remove_lllite_patches(self):
+        """Remove all LLLite patches and restore original forward methods"""
+        if not self.lllite_patched_layers and self.current_lllite_modules is None:
+            print(f"[ControlNetManager] No LLLite patches to remove")
+            return
+
+        print(f"[ControlNetManager] Removing {len(self.lllite_patched_layers)} LLLite patches")
+
+        # Check VRAM before cleanup
+        if torch.cuda.is_available():
+            allocated_before = torch.cuda.memory_allocated() / 1024**3
+            reserved_before = torch.cuda.memory_reserved() / 1024**3
+            print(f"[ControlNetManager VRAM] Before cleanup: Allocated={allocated_before:.2f}GB, Reserved={reserved_before:.2f}GB")
+
+        # Restore original forward methods
+        for layer, original_forward in self.lllite_patched_layers:
+            layer.forward = original_forward
+
+        self.lllite_patched_layers.clear()
+
+        # Delete cached LLLite data to free GPU memory
+        if self.current_lllite_modules is not None:
+            print(f"[ControlNetManager] Clearing {len(self.current_lllite_modules)} LLLite modules from GPU")
+            for module_name, module_data in self.current_lllite_modules.items():
+                for key in list(module_data.keys()):
+                    if isinstance(module_data[key], dict):
+                        for subkey in list(module_data[key].keys()):
+                            del module_data[key][subkey]
+                        module_data[key].clear()
+            self.current_lllite_modules.clear()
+            self.current_lllite_modules = None
+
+        if self.current_lllite_embeddings is not None:
+            print(f"[ControlNetManager] Clearing {len(self.current_lllite_embeddings)} conditioning embeddings from GPU")
+            self.current_lllite_embeddings.clear()
+            self.current_lllite_embeddings = None
+
+        # Force garbage collection and clear CUDA cache
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            allocated_after = torch.cuda.memory_allocated() / 1024**3
+            reserved_after = torch.cuda.memory_reserved() / 1024**3
+            print(f"[ControlNetManager VRAM] After cleanup: Allocated={allocated_after:.2f}GB, Reserved={reserved_after:.2f}GB")
+
+        print(f"[ControlNetManager] LLLite patches removed")
 
 # Global ControlNet manager instance
 controlnet_manager = ControlNetManager()

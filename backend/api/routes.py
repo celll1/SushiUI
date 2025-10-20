@@ -51,7 +51,6 @@ class ControlNetConfig(BaseModel):
     layer_weights: Optional[dict] = None  # Per-layer weights like {"IN00": 1.0, ..., "MID": 1.0}
     prompt: Optional[str] = None  # Optional separate prompt
     is_lllite: bool = False
-    use_input_image: bool = False  # For img2img/inpaint: use input image as control
     preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
     enable_preprocessor: bool = True  # Whether to apply preprocessing
 
@@ -124,7 +123,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             from io import BytesIO
 
             for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}, use_input_image: {cn_config.get('use_input_image', False)}")
+                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
 
                 # For txt2img, we must have image_base64 since there's no input image
                 if cn_config.get("image_base64"):
@@ -146,7 +145,6 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                         print(f"[ControlNet {idx}] Error decoding image: {e}")
                 else:
                     print(f"[ControlNet {idx}] WARNING: No image_base64 provided for txt2img. ControlNet will be skipped.")
-                    print(f"[ControlNet {idx}] For txt2img, you must provide image_base64. use_input_image is only for img2img/inpaint.")
 
         # Pass ControlNet images to params
         params["controlnet_images"] = controlnet_images
@@ -308,23 +306,9 @@ async def generate_img2img(
             from io import BytesIO
 
             for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}, use_input_image: {cn_config.get('use_input_image', False)}")
+                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
 
-                # Check if using input image
-                if cn_config.get("use_input_image"):
-                    print(f"[ControlNet {idx}] Using input image as control image")
-                    controlnet_images.append({
-                        "model_path": cn_config["model_path"],
-                        "image": init_image.copy(),  # Use the input image
-                        "strength": cn_config.get("strength", 1.0),
-                        "start_step": cn_config.get("start_step", 0.0),
-                        "end_step": cn_config.get("end_step", 1.0),
-                        "layer_weights": cn_config.get("layer_weights"),
-                        "prompt": cn_config.get("prompt"),
-                        "is_lllite": cn_config.get("is_lllite", False),
-                    })
-                # Decode base64 image
-                elif cn_config.get("image_base64"):
+                if cn_config.get("image_base64"):
                     try:
                         image_data = base64.b64decode(cn_config["image_base64"])
                         cn_image = Image.open(BytesIO(image_data))
@@ -566,23 +550,9 @@ async def generate_inpaint(
             from io import BytesIO
 
             for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}, use_input_image: {cn_config.get('use_input_image', False)}")
+                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
 
-                # Check if using input image
-                if cn_config.get("use_input_image"):
-                    print(f"[ControlNet {idx}] Using input image as control image")
-                    controlnet_images.append({
-                        "model_path": cn_config["model_path"],
-                        "image": init_image.copy(),  # Use the input image
-                        "strength": cn_config.get("strength", 1.0),
-                        "start_step": cn_config.get("start_step", 0.0),
-                        "end_step": cn_config.get("end_step", 1.0),
-                        "layer_weights": cn_config.get("layer_weights"),
-                        "prompt": cn_config.get("prompt"),
-                        "is_lllite": cn_config.get("is_lllite", False),
-                    })
-                # Decode base64 image
-                elif cn_config.get("image_base64"):
+                if cn_config.get("image_base64"):
                     try:
                         image_data = base64.b64decode(cn_config["image_base64"])
                         cn_image = Image.open(BytesIO(image_data))

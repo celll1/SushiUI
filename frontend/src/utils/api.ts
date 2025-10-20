@@ -95,7 +95,6 @@ export interface ControlNetConfig {
   layer_weights?: { down: number; mid: number; up: number };
   prompt?: string;
   is_lllite: boolean;
-  use_input_image: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
 }

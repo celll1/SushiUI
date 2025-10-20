@@ -622,6 +622,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           }}
           disabled={isGenerating}
           storageKey="img2img_controlnet_collapsed"
+          inputImagePreview={inputImagePreview}
         />
 
         <Card

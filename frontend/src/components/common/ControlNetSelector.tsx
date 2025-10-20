@@ -30,7 +30,6 @@ export interface ControlNetConfig {
   layer_weights?: { [layerName: string]: number };  // Changed to support per-layer weights
   prompt?: string;
   is_lllite: boolean;
-  use_input_image: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
 }
@@ -39,6 +38,7 @@ interface ControlNetSelectorProps {
   value: ControlNetConfig[];
   onChange: (controlnets: ControlNetConfig[]) => void;
   disabled?: boolean;
+  inputImagePreview?: string;  // For img2img/inpaint: input image to copy
 }
 
 interface ControlNetSelectorPropsWithStorage extends ControlNetSelectorProps {
@@ -123,7 +123,7 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
   );
 }
 
-export default function ControlNetSelector({ value, onChange, disabled, storageKey }: ControlNetSelectorPropsWithStorage) {
+export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview }: ControlNetSelectorPropsWithStorage) {
   const { modelLoaded } = useStartup();
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
@@ -347,7 +347,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       end_step: 1000,
       layer_weights: {},  // Will be initialized by LayerWeightGraph
       is_lllite: false,
-      use_input_image: false,
       preprocessor: undefined,
       enable_preprocessor: true,
     };
@@ -673,6 +672,20 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       </p>
                     </div>
                   )}
+                  {/* Copy Input Image Button (img2img/inpaint only) */}
+                  {inputImagePreview && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await handleImageUpload(index, null, inputImagePreview);
+                      }}
+                      disabled={disabled}
+                      className="absolute top-2 right-2 w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                      title="Copy input image to reference"
+                    >
+                      ↙
+                    </button>
+                  )}
                 </div>
                 {imagePreviews.has(index) && (
                   <div className="mt-1 space-y-1">
@@ -822,20 +835,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 placeholder="Leave empty to use main prompt"
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               />
-            </div>
-
-            {/* Use Input Image Toggle */}
-            <div className="mt-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cn.use_input_image}
-                  onChange={(e) => updateControlNet(index, { use_input_image: e.target.checked })}
-                  disabled={disabled}
-                  className="rounded"
-                />
-                <span className="text-sm text-gray-300">Use input image as control (img2img/inpaint only)</span>
-              </label>
             </div>
           </div>
         ))}

@@ -1146,5 +1146,27 @@ class ControlNetManager:
 
         print(f"[ControlNetManager] LLLite patches removed")
 
+    def offload_controlnets_to_cpu(self):
+        """Move all loaded ControlNet models to CPU to free GPU memory"""
+        if not self.loaded_controlnets:
+            return
+
+        print(f"[ControlNetManager] Offloading {len(self.loaded_controlnets)} ControlNet(s) to CPU")
+
+        if torch.cuda.is_available():
+            allocated_before = torch.cuda.memory_allocated() / 1024**3
+            print(f"[ControlNetManager VRAM] Before offload: Allocated={allocated_before:.2f}GB")
+
+        for model_path, controlnet in self.loaded_controlnets.items():
+            controlnet.to('cpu')
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            allocated_after = torch.cuda.memory_allocated() / 1024**3
+            print(f"[ControlNetManager VRAM] After offload: Allocated={allocated_after:.2f}GB")
+
+        print(f"[ControlNetManager] ControlNets offloaded to CPU")
+
 # Global ControlNet manager instance
 controlnet_manager = ControlNetManager()

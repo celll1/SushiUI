@@ -997,8 +997,9 @@ def custom_inpaint_sampling_loop(
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     image = (image * 255).round().astype("uint8")
 
-    # Clean up ControlNet LLLite patches after generation
+    # Clean up ControlNet after generation
     from .controlnet_manager import controlnet_manager
     controlnet_manager.remove_lllite_patches()
+    controlnet_manager.offload_controlnets_to_cpu()
 
     return Image.fromarray(image[0])

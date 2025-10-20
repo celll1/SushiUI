@@ -17,6 +17,7 @@ import Card from "../common/Card";
 import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
+import { saveTempImage } from "@/utils/tempImageStorage";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -267,12 +268,34 @@ export default function ImageGrid() {
     router.push("/generate");
   };
 
-  const sendToImg2Img = (image: GeneratedImage) => {
+  const sendToImg2Img = async (image: GeneratedImage) => {
     // Send image if checked
     if (sendImage) {
-      const imageUrl = `/outputs/${image.filename}`;
-      localStorage.setItem("img2img_input_image", imageUrl);
-      window.dispatchEvent(new Event("img2img_input_updated"));
+      try {
+        // Load image from /outputs/ and save to tempStorage
+        const imageUrl = `/outputs/${image.filename}`;
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const reader = new FileReader();
+
+        await new Promise((resolve, reject) => {
+          reader.onloadend = async () => {
+            try {
+              const base64data = reader.result as string;
+              const tempRef = await saveTempImage(base64data);
+              localStorage.setItem("img2img_input_image", tempRef);
+              window.dispatchEvent(new Event("img2img_input_updated"));
+              resolve(null);
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch (error) {
+        console.error("[ImageGrid] Failed to send image to img2img:", error);
+      }
     }
 
     // Send prompt if checked
@@ -300,13 +323,35 @@ export default function ImageGrid() {
     router.push("/generate?tab=img2img");
   };
 
-  const sendToInpaint = (image: GeneratedImage) => {
+  const sendToInpaint = async (image: GeneratedImage) => {
     // Send image if checked
     if (sendImage) {
-      const imageUrl = `/outputs/${image.filename}`;
-      localStorage.setItem("inpaint_input_image", imageUrl);
-      localStorage.removeItem("inpaint_mask_image");
-      window.dispatchEvent(new Event("inpaint_input_updated"));
+      try {
+        // Load image from /outputs/ and save to tempStorage
+        const imageUrl = `/outputs/${image.filename}`;
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const reader = new FileReader();
+
+        await new Promise((resolve, reject) => {
+          reader.onloadend = async () => {
+            try {
+              const base64data = reader.result as string;
+              const tempRef = await saveTempImage(base64data);
+              localStorage.setItem("inpaint_input_image", tempRef);
+              localStorage.removeItem("inpaint_mask_image");
+              window.dispatchEvent(new Event("inpaint_input_updated"));
+              resolve(null);
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch (error) {
+        console.error("[ImageGrid] Failed to send image to inpaint:", error);
+      }
     }
 
     // Send prompt if checked

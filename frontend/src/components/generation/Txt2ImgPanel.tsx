@@ -232,7 +232,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     // No tab change needed
   };
 
-  const sendToImg2Img = () => {
+  const sendToImg2Img = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -240,8 +240,13 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     // Send image if checked
     if (sendImage) {
-      localStorage.setItem("img2img_input_image", generatedImage);
-      window.dispatchEvent(new Event("img2img_input_updated"));
+      try {
+        const tempRef = await saveTempImage(generatedImage);
+        localStorage.setItem("img2img_input_image", tempRef);
+        window.dispatchEvent(new Event("img2img_input_updated"));
+      } catch (error) {
+        console.error("[Txt2Img] Failed to send image to img2img:", error);
+      }
     }
 
     // Send prompt if checked
@@ -271,7 +276,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   };
 
-  const sendToInpaint = () => {
+  const sendToInpaint = async () => {
     if (!generatedImage) {
       alert("No image to send");
       return;
@@ -279,9 +284,14 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     // Send image if checked
     if (sendImage) {
-      localStorage.setItem("inpaint_input_image", generatedImage);
-      localStorage.removeItem("inpaint_mask_image");
-      window.dispatchEvent(new Event("inpaint_input_updated"));
+      try {
+        const tempRef = await saveTempImage(generatedImage);
+        localStorage.setItem("inpaint_input_image", tempRef);
+        localStorage.removeItem("inpaint_mask_image");
+        window.dispatchEvent(new Event("inpaint_input_updated"));
+      } catch (error) {
+        console.error("[Txt2Img] Failed to send image to inpaint:", error);
+      }
     }
 
     // Send prompt if checked

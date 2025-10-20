@@ -362,17 +362,17 @@ class ControlNetManager:
         print(f"[ControlNetManager] Found {len(matched_modules)} matching U-Net attention layers")
 
         # Debug: Check if problematic modules exist in LLLite model
-        test_modules = ['lllite_unet_input_blocks_5_1_transformer_blocks_0_attn1_to_q',
-                       'lllite_unet_input_blocks_6_1_transformer_blocks_0_attn1_to_q']
-        for test_mod in test_modules:
-            if test_mod in lllite_modules:
-                down_w = lllite_modules[test_mod].get('down.0', {}).get('weight')
-                if down_w is not None:
-                    print(f"[ControlNetManager DEBUG] {test_mod}: down_weight shape = {down_w.shape}")
-                else:
-                    print(f"[ControlNetManager DEBUG] {test_mod}: exists but no down.0 weight")
-            else:
-                print(f"[ControlNetManager DEBUG] {test_mod}: NOT in lllite_modules")
+        # test_modules = ['lllite_unet_input_blocks_5_1_transformer_blocks_0_attn1_to_q',
+        #                'lllite_unet_input_blocks_6_1_transformer_blocks_0_attn1_to_q']
+        # for test_mod in test_modules:
+        #     if test_mod in lllite_modules:
+        #         down_w = lllite_modules[test_mod].get('down.0', {}).get('weight')
+        #         if down_w is not None:
+        #             print(f"[ControlNetManager DEBUG] {test_mod}: down_weight shape = {down_w.shape}")
+        #         else:
+        #             print(f"[ControlNetManager DEBUG] {test_mod}: exists but no down.0 weight")
+        #     else:
+        #         print(f"[ControlNetManager DEBUG] {test_mod}: NOT in lllite_modules")
 
         # Process control image ONLY for matched modules
         cond_emb = self._process_control_image_lllite_selective(
@@ -409,7 +409,7 @@ class ControlNetManager:
         matched = set()
         available_keys = set(lllite_modules.keys())
 
-        print(f"[ControlNetManager DEBUG TEMPORARY] Scanning U-Net structure...")
+        # print(f"[ControlNetManager DEBUG] Scanning U-Net structure...")
 
         # Hardcoded mapping based on actual LLLite model structure
         # From test: input_blocks_4,5 (640ch), input_blocks_7,8 (1280ch)
@@ -425,7 +425,7 @@ class ControlNetManager:
         # Scan down_blocks
         if hasattr(unet, 'down_blocks'):
             for down_idx, block in enumerate(unet.down_blocks):
-                print(f"[ControlNetManager DEBUG TEMPORARY] down_blocks[{down_idx}]: {type(block).__name__}")
+                # print(f"[ControlNetManager DEBUG] down_blocks[{down_idx}]: {type(block).__name__}")
 
                 if hasattr(block, 'attentions') and block.attentions is not None:
                     for attn_idx, attention in enumerate(block.attentions):
@@ -433,7 +433,7 @@ class ControlNetManager:
                             kohya_idx = known_mappings.get(('down', down_idx, attn_idx))
 
                             if kohya_idx is not None:
-                                print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = input_blocks_{kohya_idx}, {len(attention.transformer_blocks)} transformer_blocks")
+                                # print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = input_blocks_{kohya_idx}, {len(attention.transformer_blocks)} transformer_blocks")
 
                                 for trans_idx in range(len(attention.transformer_blocks)):
                                     pattern = f"lllite_unet_input_blocks_{kohya_idx}_1_transformer_blocks_{trans_idx}"
@@ -441,18 +441,18 @@ class ControlNetManager:
                                     for key in available_keys:
                                         if key.startswith(pattern):
                                             matched.add(key)
-                                            print(f"[ControlNetManager DEBUG]     Matched: {key}")
-                            else:
-                                print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = NO MAPPING (skipped)")
+                                            # print(f"[ControlNetManager DEBUG]     Matched: {key}")
+                            # else:
+                                # print(f"[ControlNetManager DEBUG]   down_blocks[{down_idx}].attentions[{attn_idx}] = NO MAPPING (skipped)")
 
         # Scan mid_block (middle_block)
         if hasattr(unet, 'mid_block'):
-            print(f"[ControlNetManager DEBUG] mid_block: {type(unet.mid_block).__name__}")
+            # print(f"[ControlNetManager DEBUG] mid_block: {type(unet.mid_block).__name__}")
 
             if hasattr(unet.mid_block, 'attentions'):
                 for attn_idx, attention in enumerate(unet.mid_block.attentions):
                     if hasattr(attention, 'transformer_blocks'):
-                        print(f"[ControlNetManager DEBUG]   mid_block.attentions[{attn_idx}] = middle_block_1, {len(attention.transformer_blocks)} transformer_blocks")
+                        # print(f"[ControlNetManager DEBUG]   mid_block.attentions[{attn_idx}] = middle_block_1, {len(attention.transformer_blocks)} transformer_blocks")
 
                         for trans_idx in range(len(attention.transformer_blocks)):
                             # kohya-ss naming: middle_block_1_transformer_blocks_Y
@@ -461,14 +461,14 @@ class ControlNetManager:
                             for key in available_keys:
                                 if key.startswith(pattern):
                                     matched.add(key)
-                                    print(f"[ControlNetManager DEBUG]     Matched: {key}")
+                                    # print(f"[ControlNetManager DEBUG]     Matched: {key}")
 
         # Scan up_blocks (output_blocks)
         # Note: LLLite models typically don't have output_blocks modules
         # Test showed: NO output_blocks in kohya_controllllite_xl_canny_anime.safetensors
         # Skip scanning up_blocks since they won't match
-        if hasattr(unet, 'up_blocks'):
-            print(f"[ControlNetManager DEBUG] Skipping up_blocks scan - LLLite models typically have no output_blocks modules")
+        # if hasattr(unet, 'up_blocks'):
+        #     print(f"[ControlNetManager DEBUG] Skipping up_blocks scan - LLLite models typically have no output_blocks modules")
 
         return matched
 
@@ -562,13 +562,13 @@ class ControlNetManager:
         print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings (only matched modules)")
 
         # Log conditioning embedding sizes
-        if cond_embeddings:
-            first_key = next(iter(cond_embeddings))
-            first_emb = cond_embeddings[first_key]
-            emb_size_mb = first_emb.element_size() * first_emb.nelement() / 1024**2
-            total_size_mb = emb_size_mb * len(cond_embeddings)
-            print(f"[ControlNetManager DEBUG] Each conditioning embedding: {first_emb.shape}, {emb_size_mb:.2f}MB")
-            print(f"[ControlNetManager DEBUG] Total conditioning embeddings size: {total_size_mb:.2f}MB")
+        # if cond_embeddings:
+        #     first_key = next(iter(cond_embeddings))
+        #     first_emb = cond_embeddings[first_key]
+        #     emb_size_mb = first_emb.element_size() * first_emb.nelement() / 1024**2
+        #     total_size_mb = emb_size_mb * len(cond_embeddings)
+        #     print(f"[ControlNetManager DEBUG] Each conditioning embedding: {first_emb.shape}, {emb_size_mb:.2f}MB")
+        #     print(f"[ControlNetManager DEBUG] Total conditioning embeddings size: {total_size_mb:.2f}MB")
 
         return cond_embeddings
 
@@ -658,7 +658,7 @@ class ControlNetManager:
         cond_embeddings = lllite_data['cond_embeddings']
 
         available_keys = set(lllite_modules.keys())
-        print(f"[ControlNetManager DEBUG] Total available LLLite modules: {len(available_keys)}")
+        # print(f"[ControlNetManager DEBUG] Total available LLLite modules: {len(available_keys)}")
 
         patched_count = 0
         input_block_idx = 0
@@ -786,7 +786,7 @@ class ControlNetManager:
             modules = lllite_modules[lllite_name]
 
             if cond_emb is None:
-                print(f"[ControlNetManager DEBUG] No conditioning for {lllite_name}")
+                # print(f"[ControlNetManager DEBUG] No conditioning for {lllite_name}")
                 continue
 
             # Save original forward for cleanup
@@ -856,12 +856,12 @@ class ControlNetManager:
                             x = x + cx
 
                             # Log first successful execution
-                            if first_call[0]:
-                                print(f"[LLLite Forward DEBUG] {module_name}: Successfully applied, hidden_states={hidden_states.shape}, down_weight={down_weight.shape if down_weight is not None else None}")
-                                first_call[0] = False
+                            # if first_call[0]:
+                            #     print(f"[LLLite Forward DEBUG] {module_name}: Successfully applied, hidden_states={hidden_states.shape}, down_weight={down_weight.shape if down_weight is not None else None}")
+                            #     first_call[0] = False
 
                         except Exception as e:
-                            # Log error on first call
+                            # Log error on first call (keep error logging)
                             if first_call[0]:
                                 print(f"[LLLite Forward ERROR] {module_name}: Failed with hidden_states={hidden_states.shape}, down_weight={down_weight.shape if down_weight is not None else None}")
                                 print(f"  Error: {e}")
@@ -896,10 +896,10 @@ class ControlNetManager:
             lllite_name = f"lllite_unet_{block_name}_{proj_name}"
 
             # Debug: Show what we're looking for vs what exists
-            if patched == 0:  # Only log once to avoid spam
-                print(f"[ControlNetManager DEBUG] Looking for: {lllite_name}")
-                sample_keys = list(lllite_modules.keys())[:3]
-                print(f"[ControlNetManager DEBUG] Sample available keys: {sample_keys}")
+            # if patched == 0:  # Only log once to avoid spam
+            #     print(f"[ControlNetManager DEBUG] Looking for: {lllite_name}")
+            #     sample_keys = list(lllite_modules.keys())[:3]
+            #     print(f"[ControlNetManager DEBUG] Sample available keys: {sample_keys}")
 
             if lllite_name not in lllite_modules:
                 continue

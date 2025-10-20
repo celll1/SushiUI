@@ -32,6 +32,8 @@ interface InpaintParams {
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
+  inpaint_fill_mode?: string;
+  inpaint_fill_strength?: number;
   resize_mode?: string;
   resampling_method?: string;
   prompt_chunking_mode?: string;
@@ -56,6 +58,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   mask_blur: 4,
   inpaint_full_res: false,
   inpaint_full_res_padding: 32,
+  inpaint_fill_mode: "original",
+  inpaint_fill_strength: 1.0,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -639,6 +643,8 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         mask_blur: params.mask_blur,
         inpaint_full_res: params.inpaint_full_res,
         inpaint_full_res_padding: params.inpaint_full_res_padding,
+        inpaint_fill_mode: params.inpaint_fill_mode,
+        inpaint_fill_strength: params.inpaint_fill_strength,
         resize_mode: params.resize_mode,
         resampling_method: params.resampling_method,
         loras: params.loras,
@@ -865,6 +871,29 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
               value={params.mask_blur}
               onChange={(e) => setParams({ ...params, mask_blur: parseInt(e.target.value) })}
             />
+
+            <Select
+              label="Masked Content Fill"
+              options={[
+                { value: "original", label: "Original" },
+                { value: "blur", label: "Blur" },
+                { value: "noise", label: "Latent Noise" },
+                { value: "erase", label: "Latent Nothing" },
+              ]}
+              value={params.inpaint_fill_mode || "original"}
+              onChange={(e) => setParams({ ...params, inpaint_fill_mode: e.target.value })}
+            />
+
+            {params.inpaint_fill_mode && params.inpaint_fill_mode !== "original" && (
+              <Slider
+                label="Fill Strength"
+                min={0}
+                max={1}
+                step={0.05}
+                value={params.inpaint_fill_strength || 1.0}
+                onChange={(e) => setParams({ ...params, inpaint_fill_strength: parseFloat(e.target.value) })}
+              />
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <Slider

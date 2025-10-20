@@ -684,6 +684,8 @@ def custom_inpaint_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    inpaint_fill_mode: str = "original",
+    inpaint_fill_strength: float = 1.0,
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -786,6 +788,48 @@ def custom_inpaint_sampling_loop(
 
     # Store original image latents for mask blending (before adding noise)
     image_latents = init_latents.clone()
+
+    # Apply inpaint fill mode to init_latents (before adding scheduler noise)
+    # mask_latent: 1.0 = inpaint area (white), 0.0 = keep original (black)
+    if inpaint_fill_mode != "original" and inpaint_fill_strength > 0:
+        print(f"[CustomSampling] Applying inpaint fill mode: {inpaint_fill_mode} (strength: {inpaint_fill_strength})")
+
+        if inpaint_fill_mode == "blur":
+            # Apply gaussian blur to the original image
+            import torch.nn.functional as F
+            # Blur with kernel size proportional to image size
+            kernel_size = max(3, int(original_width / 10) | 1)  # Ensure odd number
+            sigma = kernel_size / 3.0
+
+            # Create gaussian kernel
+            x = torch.arange(-kernel_size // 2 + 1, kernel_size // 2 + 1, dtype=dtype, device=device)
+            gauss = torch.exp(-x**2 / (2 * sigma**2))
+            gauss = gauss / gauss.sum()
+            kernel_1d = gauss.unsqueeze(0)
+
+            # Apply separable 2D gaussian blur
+            blurred = init_image_tensor.to(device=device, dtype=dtype)
+            for _ in range(3):  # Apply multiple times for stronger blur
+                blurred = F.conv2d(blurred, kernel_1d.unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(0, kernel_size // 2), groups=3)
+                blurred = F.conv2d(blurred, kernel_1d.t().unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(kernel_size // 2, 0), groups=3)
+
+            with torch.no_grad():
+                blurred_latents = vae.encode(blurred).latent_dist.sample(generator)
+                blurred_latents = blurred_latents * vae.config.scaling_factor
+
+            # Mix blurred latents into masked region (mask=1 is inpaint area)
+            # Formula: original * (1-mask) + fill * mask * strength + original * mask * (1-strength)
+            init_latents = init_latents * (1 - mask_latent) + blurred_latents * mask_latent * inpaint_fill_strength + init_latents * mask_latent * (1 - inpaint_fill_strength)
+
+        elif inpaint_fill_mode == "noise":
+            # Fill masked region with random latent noise (mask=1 is inpaint area)
+            random_latents = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
+            init_latents = init_latents * (1 - mask_latent) + random_latents * mask_latent * inpaint_fill_strength + init_latents * mask_latent * (1 - inpaint_fill_strength)
+
+        elif inpaint_fill_mode == "erase":
+            # Fill masked region with zeros/latent nothing (mask=1 is inpaint area)
+            # Keep original where mask=0, zero out where mask=1 (scaled by strength)
+            init_latents = init_latents * (1 - mask_latent * inpaint_fill_strength)
 
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])

@@ -54,6 +54,25 @@ def save_image_with_metadata(
     metadata.add_text("height", str(params.get("height", settings.default_height)))
     metadata.add_text("generation_type", generation_type)
 
+    # Add generation-type specific parameters
+    if generation_type in ("img2img", "inpaint"):
+        if "denoising_strength" in params:
+            metadata.add_text("denoising_strength", str(params["denoising_strength"]))
+        if "img2img_fix_steps" in params:
+            metadata.add_text("img2img_fix_steps", str(params["img2img_fix_steps"]))
+
+    if generation_type == "inpaint":
+        if "mask_blur" in params:
+            metadata.add_text("mask_blur", str(params["mask_blur"]))
+        if "inpaint_full_res" in params:
+            metadata.add_text("inpaint_full_res", str(params["inpaint_full_res"]))
+        if "inpaint_full_res_padding" in params:
+            metadata.add_text("inpaint_full_res_padding", str(params["inpaint_full_res_padding"]))
+        if "inpaint_fill_mode" in params:
+            metadata.add_text("inpaint_fill_mode", params["inpaint_fill_mode"])
+        if "inpaint_fill_strength" in params:
+            metadata.add_text("inpaint_fill_strength", str(params["inpaint_fill_strength"]))
+
     # Add model information
     if model_info:
         # Extract filename from source path

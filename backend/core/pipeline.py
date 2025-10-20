@@ -1654,6 +1654,8 @@ class DiffusionPipelineManager:
             prompt_embeds_callback=prompt_embeds_callback_fn,
             progress_callback=progress_callback,
             step_callback=step_callback,
+            inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
+            inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
             **controlnet_kwargs,
         )
 

@@ -131,6 +131,8 @@ export interface InpaintParams extends GenerationParams {
   mask_blur?: number;
   inpaint_full_res?: boolean;
   inpaint_full_res_padding?: number;
+  inpaint_fill_mode?: string;
+  inpaint_fill_strength?: number;
   resize_mode?: string;
   resampling_method?: string;
 }
@@ -249,6 +251,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("height", String(paramsWithImages.height || 1024));
   formData.append("inpaint_full_res", String(paramsWithImages.inpaint_full_res || false));
   formData.append("inpaint_full_res_padding", String(paramsWithImages.inpaint_full_res_padding || 32));
+  formData.append("inpaint_fill_mode", paramsWithImages.inpaint_fill_mode || "original");
+  formData.append("inpaint_fill_strength", String(paramsWithImages.inpaint_fill_strength ?? 1.0));
   formData.append("resize_mode", paramsWithImages.resize_mode || "image");
   formData.append("resampling_method", paramsWithImages.resampling_method || "lanczos");
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

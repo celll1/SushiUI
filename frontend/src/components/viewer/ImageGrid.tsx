@@ -417,6 +417,54 @@ export default function ImageGrid() {
                   )}
                 </div>
 
+                {/* img2img/Inpaint Parameters */}
+                {(selectedImage.generation_type === 'img2img' || selectedImage.generation_type === 'inpaint') && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">{selectedImage.generation_type === 'inpaint' ? 'Inpaint' : 'img2img'} Parameters:</span>
+                    <div className="mt-2 space-y-2 text-xs">
+                      {selectedImage.parameters?.denoising_strength !== undefined && (
+                        <div>
+                          <span className="text-gray-500">Denoising Strength:</span> {selectedImage.parameters.denoising_strength}
+                        </div>
+                      )}
+                      {selectedImage.parameters?.img2img_fix_steps !== undefined && (
+                        <div>
+                          <span className="text-gray-500">Fix Steps:</span> {selectedImage.parameters.img2img_fix_steps ? 'Yes' : 'No'}
+                        </div>
+                      )}
+                      {selectedImage.generation_type === 'inpaint' && (
+                        <>
+                          {selectedImage.parameters?.mask_blur !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Mask Blur:</span> {selectedImage.parameters.mask_blur}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.inpaint_full_res !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Inpaint Full Res:</span> {selectedImage.parameters.inpaint_full_res ? 'Yes' : 'No'}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.inpaint_full_res_padding !== undefined && selectedImage.parameters.inpaint_full_res && (
+                            <div>
+                              <span className="text-gray-500">Full Res Padding:</span> {selectedImage.parameters.inpaint_full_res_padding}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.inpaint_fill_mode !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Fill Mode:</span> {selectedImage.parameters.inpaint_fill_mode}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.inpaint_fill_strength !== undefined && selectedImage.parameters.inpaint_fill_mode !== 'original' && (
+                            <div>
+                              <span className="text-gray-500">Fill Strength:</span> {selectedImage.parameters.inpaint_fill_strength}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* ControlNet Information */}
                 {selectedImage.parameters?.controlnet_images && selectedImage.parameters.controlnet_images.length > 0 && (
                   <div className="border-t border-gray-700 pt-3">

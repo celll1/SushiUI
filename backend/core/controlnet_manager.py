@@ -533,6 +533,12 @@ class ControlNetManager:
             # Build the full module name for LLLite lookup
             lllite_name = f"lllite_unet_{block_name}_{proj_name}"
 
+            # Debug: Show what we're looking for vs what exists
+            if patched == 0:  # Only log once to avoid spam
+                print(f"[ControlNetManager DEBUG] Looking for: {lllite_name}")
+                sample_keys = list(lllite_modules.keys())[:3]
+                print(f"[ControlNetManager DEBUG] Sample available keys: {sample_keys}")
+
             if lllite_name not in lllite_modules:
                 continue
 

@@ -365,12 +365,14 @@ class DiffusionPipelineManager:
                     print(f"Warning: Could not load ControlNet {cn_config['model_path']}")
                     continue
 
-                # Apply layer weights if specified
+                # Apply layer weights if specified (only for standard ControlNets)
                 layer_weights = cn_config.get("layer_weights")
-                print(f"[Pipeline] ControlNet config: model_path={cn_config.get('model_path')}, layer_weights={layer_weights}")
-                if layer_weights:
+                print(f"[Pipeline] ControlNet config: model_path={cn_config.get('model_path')}, is_lllite={is_lllite}, layer_weights={layer_weights}")
+                if layer_weights and not is_lllite:
                     print(f"[Pipeline] Applying layer weights to ControlNet: {layer_weights}")
                     controlnet_manager.apply_layer_weights(controlnet, layer_weights)
+                elif is_lllite:
+                    print(f"[Pipeline] Skipping layer weights for LLLite model (not supported)")
                 else:
                     print(f"[Pipeline] No layer weights specified for this ControlNet")
 

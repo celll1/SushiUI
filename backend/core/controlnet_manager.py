@@ -385,7 +385,8 @@ class ControlNetManager:
             if submodule_path not in modules[base_name]:
                 modules[base_name][submodule_path] = {}
 
-            modules[base_name][submodule_path][param_name] = state_dict[key].to(device=device, dtype=dtype)
+            # Store reference to original tensor, don't copy to device yet
+            modules[base_name][submodule_path][param_name] = state_dict[key]
 
         print(f"[ControlNetManager] Built {len(modules)} LLLite base modules")
         return modules
@@ -426,8 +427,8 @@ class ControlNetManager:
 
             for layer_name, params in cond_layers:
                 if 'weight' in params and 'bias' in params:
-                    weight = params['weight']
-                    bias = params['bias']
+                    weight = params['weight'].to(device=device, dtype=dtype)
+                    bias = params['bias'].to(device=device, dtype=dtype)
 
                     # Apply conv2d
                     x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
@@ -436,7 +437,8 @@ class ControlNetManager:
                     if layer_name != cond_layers[-1][0]:
                         x = torch.nn.functional.relu(x)
 
-            cond_embeddings[base_name] = x
+            # Detach and store conditioning embedding (breaks gradient tracking)
+            cond_embeddings[base_name] = x.detach()
 
         print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings")
         return cond_embeddings
@@ -539,16 +541,34 @@ class ControlNetManager:
             original_forward = proj_layer.forward
 
             def create_lllite_forward(orig_forward, cond, mods):
+                # Pre-move weights to device (done once)
+                device = cond.device if cond is not None else 'cuda'
+                dtype = cond.dtype if cond is not None else torch.float16
+
+                down_weight = mods.get('down.0', {}).get('weight')
+                down_bias = mods.get('down.0', {}).get('bias')
+                mid_weight = mods.get('mid.0', {}).get('weight')
+                mid_bias = mods.get('mid.0', {}).get('bias')
+                up_weight = mods.get('up.0', {}).get('weight')
+                up_bias = mods.get('up.0', {}).get('bias')
+
+                # Move to device once
+                if down_weight is not None:
+                    down_weight = down_weight.to(device=device, dtype=dtype)
+                    down_bias = down_bias.to(device=device, dtype=dtype) if down_bias is not None else None
+                if mid_weight is not None:
+                    mid_weight = mid_weight.to(device=device, dtype=dtype)
+                    mid_bias = mid_bias.to(device=device, dtype=dtype) if mid_bias is not None else None
+                if up_weight is not None:
+                    up_weight = up_weight.to(device=device, dtype=dtype)
+                    up_bias = up_bias.to(device=device, dtype=dtype) if up_bias is not None else None
+
                 def lllite_forward(hidden_states):
                     # Call original projection
                     output = orig_forward(hidden_states)
 
                     # Apply LLLite modification: down -> concat with cond -> mid -> up
                     try:
-                        # Down layer: reduce dimensions
-                        down_weight = mods.get('down.0', {}).get('weight')
-                        down_bias = mods.get('down.0', {}).get('bias')
-
                         if down_weight is not None:
                             # Reshape hidden_states for linear layer if needed
                             batch, seq_len, channels = hidden_states.shape
@@ -573,16 +593,10 @@ class ControlNetManager:
                                 mid_input = down_out
 
                             # Mid layer: process combined features
-                            mid_weight = mods.get('mid.0', {}).get('weight')
-                            mid_bias = mods.get('mid.0', {}).get('bias')
-
                             if mid_weight is not None:
                                 mid_out = torch.nn.functional.linear(mid_input, mid_weight, mid_bias)
 
                                 # Up layer: restore original dimensions
-                                up_weight = mods.get('up.0', {}).get('weight')
-                                up_bias = mods.get('up.0', {}).get('bias')
-
                                 if up_weight is not None:
                                     up_out = torch.nn.functional.linear(mid_out, up_weight, up_bias)
 

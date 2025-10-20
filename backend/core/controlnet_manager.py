@@ -661,10 +661,6 @@ class ControlNetManager:
         # print(f"[ControlNetManager DEBUG] Total available LLLite modules: {len(available_keys)}")
 
         patched_count = 0
-        input_block_idx = 0
-
-        # Initial conv counts as input_blocks_0
-        input_block_idx += 1
 
         # Patch down_blocks (input_blocks)
         # Use hardcoded mapping instead of cumulative indexing
@@ -869,101 +865,6 @@ class ControlNetManager:
 
                     # Apply original projection
                     output = orig_forward(x)
-                    return output
-
-                return lllite_forward
-
-            # Replace the forward method
-            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules, lllite_name)
-            patched += 1
-
-        return patched
-
-    def _patch_attention_layer(self, attention, block_name: str, lllite_modules: dict, cond_embeddings: dict) -> int:
-        """Patch a single attention layer's projection layers (to_q, to_k, to_v)
-
-        Returns the number of projections patched.
-        """
-        patched = 0
-
-        for proj_name in ['to_q', 'to_k', 'to_v']:
-            if not hasattr(attention, proj_name):
-                continue
-
-            proj_layer = getattr(attention, proj_name)
-
-            # Build the full module name for LLLite lookup
-            lllite_name = f"lllite_unet_{block_name}_{proj_name}"
-
-            # Debug: Show what we're looking for vs what exists
-            # if patched == 0:  # Only log once to avoid spam
-            #     print(f"[ControlNetManager DEBUG] Looking for: {lllite_name}")
-            #     sample_keys = list(lllite_modules.keys())[:3]
-            #     print(f"[ControlNetManager DEBUG] Sample available keys: {sample_keys}")
-
-            if lllite_name not in lllite_modules:
-                continue
-
-            # Get the conditioning embedding and LoRA modules
-            cond_emb = cond_embeddings.get(lllite_name)
-            modules = lllite_modules[lllite_name]
-
-            # Wrap the projection layer's forward method
-            original_forward = proj_layer.forward
-
-            def create_lllite_forward(orig_forward, cond, mods):
-                # Get weights (already on correct device from _build_lllite_modules)
-                down_weight = mods.get('down.0', {}).get('weight')
-                down_bias = mods.get('down.0', {}).get('bias')
-                mid_weight = mods.get('mid.0', {}).get('weight')
-                mid_bias = mods.get('mid.0', {}).get('bias')
-                up_weight = mods.get('up.0', {}).get('weight')
-                up_bias = mods.get('up.0', {}).get('bias')
-
-                def lllite_forward(hidden_states):
-                    # Call original projection
-                    output = orig_forward(hidden_states)
-
-                    # Apply LLLite modification: down -> concat with cond -> mid -> up
-                    try:
-                        if down_weight is not None:
-                            # Reshape hidden_states for linear layer if needed
-                            batch, seq_len, channels = hidden_states.shape
-                            down_out = torch.nn.functional.linear(hidden_states, down_weight, down_bias)
-
-                            # Prepare conditioning embedding
-                            if cond is not None:
-                                # Reshape cond to match sequence
-                                # cond shape: (batch, cond_channels, height, width)
-                                # Need to reshape to (batch, seq_len, cond_channels)
-                                cond_reshaped = cond.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
-
-                                # Interpolate or pool to match seq_len
-                                if cond_reshaped.shape[1] != seq_len:
-                                    cond_reshaped = torch.nn.functional.adaptive_avg_pool1d(
-                                        cond_reshaped.permute(0, 2, 1), seq_len
-                                    ).permute(0, 2, 1)
-
-                                # Concatenate conditioning with down output
-                                mid_input = torch.cat([down_out, cond_reshaped], dim=-1)
-                            else:
-                                mid_input = down_out
-
-                            # Mid layer: process combined features
-                            if mid_weight is not None:
-                                mid_out = torch.nn.functional.linear(mid_input, mid_weight, mid_bias)
-
-                                # Up layer: restore original dimensions
-                                if up_weight is not None:
-                                    up_out = torch.nn.functional.linear(mid_out, up_weight, up_bias)
-
-                                    # Add LLLite modification to original output
-                                    output = output + up_out
-
-                    except Exception as e:
-                        print(f"[ControlNetManager] Warning: LLLite application failed for {lllite_name}: {e}")
-                        pass
-
                     return output
 
                 return lllite_forward

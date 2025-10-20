@@ -19,6 +19,7 @@ Pillow>=10.2.0
 opencv-python>=4.9.0
 imageio>=2.33.0
 scipy>=1.11.0  # Required for Lanczos resampling in latent resize mode
+matplotlib>=3.7.0  # Required for controlnet-aux preprocessors
 controlnet-aux>=0.0.7  # ControlNet preprocessors (depth, openpose, etc.)
 
 # Database

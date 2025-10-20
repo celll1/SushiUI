@@ -161,12 +161,11 @@ class DiffusionPipelineManager:
             if hasattr(base_pipeline, 'scheduler') and hasattr(base_pipeline.scheduler, 'config'):
                 is_v_prediction = base_pipeline.scheduler.config.get("prediction_type") == "v_prediction"
 
-            # Calculate model hash for local files
+            # Calculate model hash for local files (with caching)
             model_hash = ""
             if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
-                print(f"[Pipeline] Calculating model hash for: {source}")
-                from utils import calculate_file_hash
-                model_hash = calculate_file_hash(source)
+                from utils.hash_cache import get_cached_file_hash
+                model_hash = get_cached_file_hash(source)
                 print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
             self.current_model_info = {

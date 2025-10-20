@@ -63,6 +63,7 @@ temp/
 
 # 設定ファイル
 last_model.json
+model_hash_cache.json
 
 # 要件定義
 sd-app-requirements.md

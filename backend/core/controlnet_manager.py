@@ -59,6 +59,21 @@ class ControlNetManager:
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[ControlNetManager] Additional directories set: {self.additional_dirs}")
 
+    def _resolve_controlnet_path(self, controlnet_path: str) -> Optional[Path]:
+        """Resolve controlnet path, checking default and additional directories"""
+        # Try default directory first
+        full_path = self.controlnet_dir / controlnet_path
+        if full_path.exists():
+            return full_path
+
+        # Try additional directories
+        for additional_dir in self.additional_dirs:
+            full_path = additional_dir / controlnet_path
+            if full_path.exists():
+                return full_path
+
+        return None
+
     def get_available_controlnets(self) -> List[str]:
         """Get list of available ControlNet models from default and additional directories"""
         controlnets = []
@@ -92,9 +107,9 @@ class ControlNetManager:
         - input_blocks.X.1.proj_in.weight
         - middle_block.1.proj_in.weight
         """
-        full_path = self.controlnet_dir / controlnet_path
+        full_path = self._resolve_controlnet_path(controlnet_path)
 
-        if not full_path.exists():
+        if full_path is None:
             return False
 
         try:
@@ -144,10 +159,10 @@ class ControlNetManager:
 
         Returns list like: ['IN00', 'IN01', ..., 'IN11', 'MID']
         """
-        full_path = self.controlnet_dir / controlnet_path
+        full_path = self._resolve_controlnet_path(controlnet_path)
 
-        if not full_path.exists():
-            print(f"[ControlNetManager] ControlNet not found: {full_path}")
+        if full_path is None:
+            print(f"[ControlNetManager] ControlNet not found: {controlnet_path}")
             return []
 
         try:
@@ -185,10 +200,10 @@ class ControlNetManager:
         if model_path in self.loaded_controlnets:
             return self.loaded_controlnets[model_path]
 
-        full_path = self.controlnet_dir / model_path
+        full_path = self._resolve_controlnet_path(model_path)
 
-        if not full_path.exists():
-            print(f"ControlNet model not found: {full_path}")
+        if full_path is None:
+            print(f"[ControlNetManager] ControlNet model not found: {model_path}")
             return None
 
         try:

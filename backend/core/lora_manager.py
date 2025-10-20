@@ -73,6 +73,21 @@ class LoRAManager:
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[LoRAManager] Additional directories set: {self.additional_dirs}")
 
+    def _resolve_lora_path(self, lora_path: str) -> Optional[Path]:
+        """Resolve LoRA path, checking default and additional directories"""
+        # Try default directory first
+        full_path = self.lora_dir / lora_path
+        if full_path.exists():
+            return full_path
+
+        # Try additional directories
+        for additional_dir in self.additional_dirs:
+            full_path = additional_dir / lora_path
+            if full_path.exists():
+                return full_path
+
+        return None
+
     def get_available_loras(self) -> List[str]:
         """Get list of available LoRA files from default and additional directories"""
         lora_files = []
@@ -128,13 +143,14 @@ class LoRAManager:
         # Load LoRAs using diffusers' native support
         try:
             for i, lora_config in enumerate(self.loaded_loras):
-                lora_path = self.lora_dir / lora_config.path
+                lora_path = self._resolve_lora_path(lora_config.path)
+
+                if lora_path is None:
+                    print(f"[LoRAManager] WARNING: LoRA file not found: {lora_config.path}")
+                    continue
+
                 print(f"[LoRAManager] Attempting to load LoRA from: {lora_path}")
                 print(f"[LoRAManager] LoRA config: strength={lora_config.strength}, apply_to_text_encoder={lora_config.apply_to_text_encoder}, apply_to_unet={lora_config.apply_to_unet}")
-
-                if not lora_path.exists():
-                    print(f"[LoRAManager] WARNING: LoRA file not found: {lora_path}")
-                    continue
 
                 print(f"[LoRAManager] Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
 

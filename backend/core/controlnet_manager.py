@@ -333,13 +333,104 @@ class ControlNetManager:
         # Build LLLite modules from state dict
         lllite_modules = self._build_lllite_modules(state_dict, device, dtype)
 
-        # Process control image through conditioning modules
-        cond_emb = self._process_control_image_lllite(control_image, lllite_modules, device, dtype)
+        # IMPORTANT: Only process conditioning for modules that will actually be used
+        # First, determine which modules match U-Net structure
+        matched_modules = self._find_matching_modules(unet, lllite_modules)
+        print(f"[ControlNetManager] Found {len(matched_modules)} matching U-Net attention layers")
+
+        # Process control image ONLY for matched modules
+        cond_emb = self._process_control_image_lllite_selective(
+            control_image, lllite_modules, matched_modules, device, dtype
+        )
 
         # Patch U-Net attention layers
         self._apply_lllite_patches(unet, lllite_modules, cond_emb, layer_weights)
 
         print(f"[ControlNetManager] LLLite patches applied to {len(lllite_modules)} attention layers")
+
+    def _find_matching_modules(self, unet, lllite_modules: dict) -> set:
+        """Find which LLLite modules match actual U-Net structure
+
+        Returns set of module base names that have corresponding U-Net layers.
+        """
+        matched = set()
+        available_keys = set(lllite_modules.keys())
+
+        # Scan U-Net structure
+        if hasattr(unet, 'down_blocks'):
+            for block_idx, block in enumerate(unet.down_blocks):
+                if not hasattr(block, 'attentions'):
+                    continue
+
+                for attn_idx, attention in enumerate(block.attentions):
+                    if not hasattr(attention, 'transformer_blocks'):
+                        continue
+
+                    for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
+                        # Check if any LLLite module matches this block structure
+                        pattern = f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}"
+
+                        for key in available_keys:
+                            if pattern in key:
+                                # Found match! Add base name (without to_q/to_k/to_v suffix)
+                                matched.add(key)
+
+        return matched
+
+    def _process_control_image_lllite_selective(self, control_image: torch.Tensor,
+                                                 lllite_modules: dict, matched_modules: set,
+                                                 device: str, dtype: torch.dtype) -> dict:
+        """Process control image ONLY for matched modules to save VRAM
+
+        This prevents creating 136 conditioning embeddings when only ~10 are actually used.
+        """
+        if control_image is None:
+            return {}
+
+        # Move control image to device and ensure correct format
+        control_image = control_image.to(device=device, dtype=dtype)
+
+        # Normalize from [0, 1] to [-1, 1]
+        control_image = control_image * 2.0 - 1.0
+
+        # Process ONLY matched modules
+        cond_embeddings = {}
+
+        for base_name in matched_modules:
+            if base_name not in lllite_modules:
+                continue
+
+            submodules = lllite_modules[base_name]
+
+            # Find conditioning1 submodules
+            conditioning_modules = {k: v for k, v in submodules.items() if k.startswith('conditioning1')}
+
+            if not conditioning_modules:
+                continue
+
+            # Apply conditioning convolutions sequentially
+            x = control_image
+
+            # Sort conditioning module layers by their numeric suffix (0, 2, 4)
+            cond_layers = sorted(conditioning_modules.items(), key=lambda item: item[0])
+
+            for layer_name, params in cond_layers:
+                if 'weight' in params and 'bias' in params:
+                    weight = params['weight']
+                    bias = params['bias']
+
+                    # Apply conv2d (weights already on device)
+                    x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
+
+                    # Apply ReLU activation (except for last layer)
+                    if layer_name != cond_layers[-1][0]:
+                        x = torch.nn.functional.relu(x)
+
+            # Detach and store conditioning embedding (breaks gradient tracking)
+            cond_embeddings[base_name] = x.detach()
+
+        print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings (only matched modules)")
+        return cond_embeddings
 
     def _build_lllite_modules(self, state_dict: dict, device: str, dtype: torch.dtype) -> dict:
         """Build LLLite module structure from state dict
@@ -394,58 +485,6 @@ class ControlNetManager:
         print(f"[ControlNetManager] Built {len(modules)} LLLite base modules (moved to {device})")
         return modules
 
-    def _process_control_image_lllite(self, control_image: torch.Tensor, lllite_modules: dict,
-                                      device: str, dtype: torch.dtype) -> dict:
-        """Process control image through LLLite conditioning modules
-
-        LLLite uses convolutional layers (conditioning1) to extract conditioning embeddings.
-        Each module has its own conditioning layers that process the control image.
-
-        Returns dict mapping base module names to their conditioning embeddings.
-        """
-        if control_image is None:
-            return {}
-
-        # Move control image to device and ensure correct format
-        control_image = control_image.to(device=device, dtype=dtype)
-
-        # Normalize from [0, 1] to [-1, 1]
-        control_image = control_image * 2.0 - 1.0
-
-        # Process each module's conditioning
-        cond_embeddings = {}
-
-        for base_name, submodules in lllite_modules.items():
-            # Find conditioning1 submodules
-            conditioning_modules = {k: v for k, v in submodules.items() if k.startswith('conditioning1')}
-
-            if not conditioning_modules:
-                continue
-
-            # Apply conditioning convolutions sequentially
-            x = control_image
-
-            # Sort conditioning module layers by their numeric suffix (0, 2, 4)
-            cond_layers = sorted(conditioning_modules.items(), key=lambda item: item[0])
-
-            for layer_name, params in cond_layers:
-                if 'weight' in params and 'bias' in params:
-                    weight = params['weight']
-                    bias = params['bias']
-
-                    # Apply conv2d (weights already on device)
-                    x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
-
-                    # Apply ReLU activation (except for last layer)
-                    if layer_name != cond_layers[-1][0]:
-                        x = torch.nn.functional.relu(x)
-
-            # Detach and store conditioning embedding (breaks gradient tracking)
-            cond_embeddings[base_name] = x.detach()
-
-        print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings")
-        return cond_embeddings
-
     def _apply_lllite_patches(self, unet, lllite_modules: dict, cond_embeddings: dict,
                               layer_weights=None):
         """Apply LLLite patches to U-Net attention layers
@@ -472,15 +511,27 @@ class ControlNetManager:
 
         Wraps the forward method of attention projection layers (to_q, to_k, to_v)
         to add LLLite conditioning.
+
+        Note: diffusers U-Net structure differs from kohya-ss naming convention.
+        We need to find the correct mapping.
         """
         lllite_modules = lllite_data['modules']
         cond_embeddings = lllite_data['cond_embeddings']
 
+        # Get available LLLite module keys for pattern matching
+        available_keys = set(lllite_modules.keys())
+        print(f"[ControlNetManager DEBUG] Total available LLLite modules: {len(available_keys)}")
+
+        # Sample a few keys to understand the pattern
+        sample_keys = list(available_keys)[:5]
+        print(f"[ControlNetManager DEBUG] Sample LLLite keys: {sample_keys}")
+
         patched_count = 0
+        attempted_count = 0
 
         # Iterate through U-Net down_blocks and mid_block
-        def patch_transformer_block(block, block_name):
-            nonlocal patched_count
+        def patch_transformer_block(block, block_idx, block_type):
+            nonlocal patched_count, attempted_count
 
             if not hasattr(block, 'attentions'):
                 return
@@ -490,32 +541,128 @@ class ControlNetManager:
                     continue
 
                 for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
-                    # Patch attn1 (self-attention)
-                    if hasattr(transformer_block, 'attn1'):
-                        attn1 = transformer_block.attn1
-                        patched_count += self._patch_attention_layer(
-                            attn1, f"{block_name}_{attn_idx}_transformer_blocks_{trans_idx}_attn1",
-                            lllite_modules, cond_embeddings
-                        )
+                    # Try different naming patterns to find match
+                    # Pattern 1: input_blocks_X_Y format (kohya-ss uses this)
+                    for lllite_key in available_keys:
+                        # Check if this key might match current block
+                        # LLLite keys format: lllite_unet_input_blocks_4_1_transformer_blocks_0_attn1_to_q
+                        if f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}" in lllite_key:
+                            # Found a potential match!
+                            # Patch attn1
+                            if hasattr(transformer_block, 'attn1') and 'attn1' in lllite_key:
+                                patched_count += self._patch_attention_layer_flexible(
+                                    transformer_block.attn1,
+                                    f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}_attn1",
+                                    lllite_modules, cond_embeddings, available_keys
+                                )
 
-                    # Patch attn2 (cross-attention)
-                    if hasattr(transformer_block, 'attn2'):
-                        attn2 = transformer_block.attn2
-                        patched_count += self._patch_attention_layer(
-                            attn2, f"{block_name}_{attn_idx}_transformer_blocks_{trans_idx}_attn2",
-                            lllite_modules, cond_embeddings
-                        )
+                            # Patch attn2
+                            if hasattr(transformer_block, 'attn2') and 'attn2' in lllite_key:
+                                patched_count += self._patch_attention_layer_flexible(
+                                    transformer_block.attn2,
+                                    f"input_blocks_{block_idx}_{attn_idx}_transformer_blocks_{trans_idx}_attn2",
+                                    lllite_modules, cond_embeddings, available_keys
+                                )
+                            break
 
         # Patch down blocks (input_blocks)
         if hasattr(unet, 'down_blocks'):
             for idx, block in enumerate(unet.down_blocks):
-                patch_transformer_block(block, f"input_blocks_{idx}")
-
-        # Patch mid block
-        if hasattr(unet, 'mid_block'):
-            patch_transformer_block(unet.mid_block, "middle_block")
+                patch_transformer_block(block, idx, "input")
 
         print(f"[ControlNetManager] Patched {patched_count} attention projections with LLLite")
+
+    def _patch_attention_layer_flexible(self, attention, block_name: str, lllite_modules: dict, cond_embeddings: dict, available_keys: set) -> int:
+        """Patch a single attention layer with flexible key matching
+
+        Returns the number of projections patched.
+        """
+        patched = 0
+
+        for proj_name in ['to_q', 'to_k', 'to_v']:
+            if not hasattr(attention, proj_name):
+                continue
+
+            proj_layer = getattr(attention, proj_name)
+
+            # Build the full module name for LLLite lookup
+            lllite_name = f"lllite_unet_{block_name}_{proj_name}"
+
+            if lllite_name not in lllite_modules:
+                continue
+
+            # Get the conditioning embedding and LoRA modules
+            cond_emb = cond_embeddings.get(lllite_name)
+            modules = lllite_modules[lllite_name]
+
+            if cond_emb is None:
+                print(f"[ControlNetManager DEBUG] No conditioning for {lllite_name}")
+                continue
+
+            # Wrap the projection layer's forward method
+            original_forward = proj_layer.forward
+
+            def create_lllite_forward(orig_forward, cond, mods):
+                # Get weights (already on correct device from _build_lllite_modules)
+                down_weight = mods.get('down.0', {}).get('weight')
+                down_bias = mods.get('down.0', {}).get('bias')
+                mid_weight = mods.get('mid.0', {}).get('weight')
+                mid_bias = mods.get('mid.0', {}).get('bias')
+                up_weight = mods.get('up.0', {}).get('weight')
+                up_bias = mods.get('up.0', {}).get('bias')
+
+                def lllite_forward(hidden_states):
+                    # Call original projection
+                    output = orig_forward(hidden_states)
+
+                    # Apply LLLite modification: down -> concat with cond -> mid -> up
+                    try:
+                        if down_weight is not None:
+                            # Reshape hidden_states for linear layer if needed
+                            batch, seq_len, channels = hidden_states.shape
+                            down_out = torch.nn.functional.linear(hidden_states, down_weight, down_bias)
+
+                            # Prepare conditioning embedding
+                            if cond is not None:
+                                # Reshape cond to match sequence
+                                # cond shape: (batch, cond_channels, height, width)
+                                # Need to reshape to (batch, seq_len, cond_channels)
+                                cond_reshaped = cond.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
+
+                                # Interpolate or pool to match seq_len
+                                if cond_reshaped.shape[1] != seq_len:
+                                    cond_reshaped = torch.nn.functional.adaptive_avg_pool1d(
+                                        cond_reshaped.permute(0, 2, 1), seq_len
+                                    ).permute(0, 2, 1)
+
+                                # Concatenate conditioning with down output
+                                mid_input = torch.cat([down_out, cond_reshaped], dim=-1)
+                            else:
+                                mid_input = down_out
+
+                            # Mid layer: process combined features
+                            if mid_weight is not None:
+                                mid_out = torch.nn.functional.linear(mid_input, mid_weight, mid_bias)
+
+                                # Up layer: restore original dimensions
+                                if up_weight is not None:
+                                    up_out = torch.nn.functional.linear(mid_out, up_weight, up_bias)
+
+                                    # Add LLLite modification to original output
+                                    output = output + up_out
+
+                    except Exception as e:
+                        pass  # Silently fail to avoid spam
+
+                    return output
+
+                return lllite_forward
+
+            # Replace the forward method
+            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules)
+            patched += 1
+
+        return patched
 
     def _patch_attention_layer(self, attention, block_name: str, lllite_modules: dict, cond_embeddings: dict) -> int:
         """Patch a single attention layer's projection layers (to_q, to_k, to_v)

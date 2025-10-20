@@ -348,12 +348,16 @@ class DiffusionPipelineManager:
             control_images = []
 
             for cn_config in controlnet_images:
+                # Detect if model is LLLite
+                model_path = cn_config["model_path"]
+                is_lllite = controlnet_manager.is_lllite_model(model_path)
+
                 # Load ControlNet model
                 controlnet = controlnet_manager.load_controlnet(
-                    cn_config["model_path"],
+                    model_path,
                     device=self.device,
                     dtype=pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16,
-                    is_lllite=cn_config.get("is_lllite", False)
+                    is_lllite=is_lllite
                 )
 
                 if controlnet is None:

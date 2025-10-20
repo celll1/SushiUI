@@ -347,12 +347,14 @@ class ControlNetManager:
         Returns dict mapping base module names to their submodules.
         Base module: lllite_unet_input_blocks_4_1_transformer_blocks_0_attn1_to_q
         Submodules: conditioning1, down, mid, up
+
+        Moves all weights to device ONCE to avoid duplication.
         """
         import torch.nn as nn
 
         modules = {}
 
-        # Group keys by base module name
+        # Group keys by base module name and move to device immediately
         for key in state_dict.keys():
             # Parse key structure: lllite_unet_..._to_q.conditioning1.0.weight
             # Split by dots to separate base module, submodule, layer, param
@@ -385,10 +387,11 @@ class ControlNetManager:
             if submodule_path not in modules[base_name]:
                 modules[base_name][submodule_path] = {}
 
-            # Store reference to original tensor, don't copy to device yet
-            modules[base_name][submodule_path][param_name] = state_dict[key]
+            # Move to device once and store
+            # All closures will share these same GPU tensors
+            modules[base_name][submodule_path][param_name] = state_dict[key].to(device=device, dtype=dtype)
 
-        print(f"[ControlNetManager] Built {len(modules)} LLLite base modules")
+        print(f"[ControlNetManager] Built {len(modules)} LLLite base modules (moved to {device})")
         return modules
 
     def _process_control_image_lllite(self, control_image: torch.Tensor, lllite_modules: dict,
@@ -427,10 +430,10 @@ class ControlNetManager:
 
             for layer_name, params in cond_layers:
                 if 'weight' in params and 'bias' in params:
-                    weight = params['weight'].to(device=device, dtype=dtype)
-                    bias = params['bias'].to(device=device, dtype=dtype)
+                    weight = params['weight']
+                    bias = params['bias']
 
-                    # Apply conv2d
+                    # Apply conv2d (weights already on device)
                     x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
 
                     # Apply ReLU activation (except for last layer)
@@ -541,27 +544,13 @@ class ControlNetManager:
             original_forward = proj_layer.forward
 
             def create_lllite_forward(orig_forward, cond, mods):
-                # Pre-move weights to device (done once)
-                device = cond.device if cond is not None else 'cuda'
-                dtype = cond.dtype if cond is not None else torch.float16
-
+                # Get weights (already on correct device from _build_lllite_modules)
                 down_weight = mods.get('down.0', {}).get('weight')
                 down_bias = mods.get('down.0', {}).get('bias')
                 mid_weight = mods.get('mid.0', {}).get('weight')
                 mid_bias = mods.get('mid.0', {}).get('bias')
                 up_weight = mods.get('up.0', {}).get('weight')
                 up_bias = mods.get('up.0', {}).get('bias')
-
-                # Move to device once
-                if down_weight is not None:
-                    down_weight = down_weight.to(device=device, dtype=dtype)
-                    down_bias = down_bias.to(device=device, dtype=dtype) if down_bias is not None else None
-                if mid_weight is not None:
-                    mid_weight = mid_weight.to(device=device, dtype=dtype)
-                    mid_bias = mid_bias.to(device=device, dtype=dtype) if mid_bias is not None else None
-                if up_weight is not None:
-                    up_weight = up_weight.to(device=device, dtype=dtype)
-                    up_bias = up_bias.to(device=device, dtype=dtype) if up_bias is not None else None
 
                 def lllite_forward(hidden_states):
                     # Call original projection

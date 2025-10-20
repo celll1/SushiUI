@@ -383,6 +383,13 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
     // Re-detect model type and preprocessor if model_path changed
     if (updates.model_path) {
+      // Clear cache for this model path to force fresh fetch
+      setControlnetInfoCache((prev) => {
+        const newCache = new Map(prev);
+        newCache.delete(updates.model_path!);
+        return newCache;
+      });
+
       detectModelType(updates.model_path, index);
       await detectPreprocessor(updates.model_path, index);
     }

@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 echo ==========================================
 echo   Stable Diffusion WebUI Launcher
 echo ==========================================
@@ -22,11 +23,29 @@ if exist "venv\Scripts\activate.bat" (
 echo [INFO] Activating virtual environment...
 call venv\Scripts\activate.bat
 
-:: Check if backend dependencies are installed
+:: Check if backend dependencies need to be installed/updated
 echo [INFO] Checking backend dependencies...
-python -c "import fastapi" 2>nul
-if errorlevel 1 (
-    echo [INFO] Installing backend dependencies...
+set INSTALL_DEPS=0
+
+:: Check if .requirements_hash exists
+if not exist "backend\.requirements_hash" (
+    set INSTALL_DEPS=1
+) else (
+    :: Calculate current requirements.txt hash
+    for /f %%A in ('certutil -hashfile backend\requirements.txt SHA256 ^| findstr /v "hash"') do set CURRENT_HASH=%%A
+
+    :: Read stored hash
+    set /p STORED_HASH=<backend\.requirements_hash
+
+    :: Compare hashes
+    if not "!CURRENT_HASH!"=="!STORED_HASH!" (
+        echo [INFO] requirements.txt has been updated
+        set INSTALL_DEPS=1
+    )
+)
+
+if !INSTALL_DEPS!==1 (
+    echo [INFO] Installing/updating backend dependencies...
     cd backend
     pip install -r requirements.txt
     if errorlevel 1 (
@@ -35,10 +54,14 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
+
+    :: Store hash of requirements.txt
+    for /f %%A in ('certutil -hashfile requirements.txt SHA256 ^| findstr /v "hash"') do echo %%A > .requirements_hash
+
     cd ..
     echo [SUCCESS] Backend dependencies installed
 ) else (
-    echo [INFO] Backend dependencies already installed
+    echo [INFO] Backend dependencies are up to date
 )
 
 :: Check if frontend dependencies are installed

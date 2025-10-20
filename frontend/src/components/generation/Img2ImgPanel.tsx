@@ -65,7 +65,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
-  const { modelLoaded } = useStartup();
+  const { modelLoaded, isBackendReady } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -167,6 +167,32 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       loadScheduleTypes();
     }
   }, [modelLoaded]);
+
+  // When backend becomes ready, reload temp image if not already loaded
+  useEffect(() => {
+    if (isBackendReady && !inputImagePreview) {
+      const reloadImage = async () => {
+        const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+        if (savedInputRef) {
+          try {
+            const imageData = await loadTempImage(savedInputRef);
+            if (imageData) {
+              setInputImagePreview(imageData);
+              const img = new Image();
+              img.onload = () => {
+                setInputImageSize({ width: img.width, height: img.height });
+              };
+              img.src = imageData;
+            }
+          } catch (error) {
+            console.error("[Img2Img] Failed to reload input image after backend ready:", error);
+          }
+        }
+      };
+
+      reloadImage();
+    }
+  }, [isBackendReady]);
 
   useEffect(() => {
     // Listen for input image updates from txt2img or gallery

@@ -191,13 +191,14 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     }
   }, [modelLoaded]);
 
-  // When backend becomes ready, reload temp images (input and mask) if not already loaded
+  // When backend becomes ready, reload temp images (input and mask) if they exist in storage
   useEffect(() => {
-    if (isBackendReady && !inputImagePreview) {
+    if (isBackendReady) {
       const reloadImages = async () => {
-        // Reload input image
+        // Reload input image if not already loaded
         const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-        if (savedInputRef) {
+        if (savedInputRef && !inputImagePreview) {
+          console.log("[Inpaint] Backend ready, reloading input image");
           try {
             const imageData = await loadTempImage(savedInputRef);
             if (imageData) {
@@ -214,9 +215,10 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           }
         }
 
-        // Reload mask image
+        // Reload mask image if not already loaded
         const savedMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
         if (savedMaskRef && !maskImage) {
+          console.log("[Inpaint] Backend ready, reloading mask image");
           try {
             const imageData = await loadTempImage(savedMaskRef);
             if (imageData) {

@@ -78,7 +78,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady } = useStartup();
+  const { modelLoaded } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -190,49 +190,6 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       loadScheduleTypes();
     }
   }, [modelLoaded]);
-
-  // When backend becomes ready, reload temp images (input and mask) if they exist in storage
-  useEffect(() => {
-    if (isBackendReady) {
-      const reloadImages = async () => {
-        // Reload input image if not already loaded
-        const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-        if (savedInputRef && !inputImagePreview) {
-          console.log("[Inpaint] Backend ready, reloading input image");
-          try {
-            const imageData = await loadTempImage(savedInputRef);
-            if (imageData) {
-              setInputImagePreview(imageData);
-              // Load image dimensions
-              const img = new Image();
-              img.onload = () => {
-                setInputImageSize({ width: img.width, height: img.height });
-              };
-              img.src = imageData;
-            }
-          } catch (error) {
-            console.error("[Inpaint] Failed to reload input image:", error);
-          }
-        }
-
-        // Reload mask image if not already loaded
-        const savedMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
-        if (savedMaskRef && !maskImage) {
-          console.log("[Inpaint] Backend ready, reloading mask image");
-          try {
-            const imageData = await loadTempImage(savedMaskRef);
-            if (imageData) {
-              setMaskImage(imageData);
-            }
-          } catch (error) {
-            console.error("[Inpaint] Failed to reload mask image:", error);
-          }
-        }
-      };
-
-      reloadImages();
-    }
-  }, [isBackendReady]);
 
   useEffect(() => {
     // Listen for input image updates from txt2img or img2img

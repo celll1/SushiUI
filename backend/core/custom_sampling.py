@@ -784,6 +784,9 @@ def custom_inpaint_sampling_loop(
         mode="nearest"
     )
 
+    # Store original image latents for mask blending (before adding noise)
+    image_latents = init_latents.clone()
+
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 
@@ -806,7 +809,8 @@ def custom_inpaint_sampling_loop(
         # Only concatenate mask and masked image for inpaint-specific UNets
         # Regular UNets use post-processing masking instead (see after scheduler.step)
         if is_inpaint_unet:
-            masked_image_latents = init_latents * (1 - mask_latent)
+            # Use original clean image latents, masked to show only non-inpaint regions
+            masked_image_latents = image_latents * (1 - mask_latent)
             latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
 
         added_cond_kwargs = None
@@ -915,8 +919,24 @@ def custom_inpaint_sampling_loop(
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
 
-        init_latents_proper = scheduler.add_noise(init_latents, noise, torch.tensor([t], device=device))
-        latents = init_latents_proper * (1 - mask_latent) + latents * mask_latent
+        # Apply mask blending ONLY for 4-channel UNets (regular models)
+        # 9-channel inpaint UNets handle masking internally via concatenation
+        if not is_inpaint_unet:
+            init_latents_proper = image_latents  # Use clean original image latents
+
+            # Re-noise original to match the noise level of denoised latents
+            # Use NEXT timestep (where denoised latents are), not current timestep
+            # Skip re-noising on the last step
+            if i < len(timesteps) - 1:
+                noise_timestep = timesteps[i + 1]
+                init_latents_proper = scheduler.add_noise(
+                    init_latents_proper,
+                    noise,
+                    noise_timestep.unsqueeze(0) if noise_timestep.dim() == 0 else noise_timestep
+                )
+
+            # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
+            latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
 
         if progress_callback is not None:
             progress_callback(i, len(timesteps), latents)

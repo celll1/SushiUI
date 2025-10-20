@@ -680,21 +680,36 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                         try {
                           console.log("[ControlNetSelector] Copy input image - original:", inputImagePreview.substring(0, 100));
 
-                          // inputImagePreview should be a valid data URL
+                          let imageDataUrl = inputImagePreview;
+
+                          // If it's an old-style URL reference, convert to data URL first
                           if (!inputImagePreview.startsWith('data:')) {
-                            console.error("[ControlNetSelector] inputImagePreview is not a valid data URL, skipping");
-                            alert("Invalid input image format. Please reload the input image.");
-                            return;
+                            console.log("[ControlNetSelector] Converting old-style URL to data URL:", inputImagePreview);
+                            try {
+                              const response = await fetch(inputImagePreview);
+                              const blob = await response.blob();
+                              imageDataUrl = await new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onloadend = () => resolve(reader.result as string);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(blob);
+                              });
+                              console.log("[ControlNetSelector] Converted to data URL successfully");
+                            } catch (fetchError) {
+                              console.error("[ControlNetSelector] Failed to fetch and convert image:", fetchError);
+                              alert("Failed to load input image. Please try again.");
+                              return;
+                            }
                           }
 
                           // Save to temp storage
-                          const imageRef = await saveTempImage(inputImagePreview);
+                          const imageRef = await saveTempImage(imageDataUrl);
                           console.log("[ControlNetSelector] Saved to tempStorage:", imageRef);
 
                           // Update local preview
                           setImagePreviews(prev => {
                             const newMap = new Map(prev);
-                            newMap.set(index, inputImagePreview);
+                            newMap.set(index, imageDataUrl);
                             return newMap;
                           });
 
@@ -713,7 +728,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
                           // Trigger preprocessing if enabled
                           if (cn.enable_preprocessor && cn.preprocessor && cn.preprocessor !== "none") {
-                            await preprocessImage(index, inputImagePreview);
+                            await preprocessImage(index, imageDataUrl);
                           }
                         } catch (error) {
                           console.error("[ControlNetSelector] Failed to copy input image:", error);

@@ -153,61 +153,65 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       console.log("[Inpaint] Initial load - input image ref:", savedInputRef);
       if (savedInputRef) {
-        // Check if it's an old-style reference (direct URL like /outputs/... or http://...)
-        if (savedInputRef.startsWith('/outputs/') || savedInputRef.startsWith('http://') || savedInputRef.startsWith('https://')) {
-          console.log("[Inpaint] Detected old-style input image reference, clearing storage");
-          localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
-        } else if (savedInputRef.startsWith('temp_img://') || savedInputRef.startsWith('data:')) {
-          try {
-            const imageData = await loadTempImage(savedInputRef);
-            console.log("[Inpaint] Input image loaded successfully:", imageData ? "yes" : "no");
-            if (imageData && imageData.startsWith('data:')) {
-              setInputImagePreview(imageData);
-              // Load image dimensions
-              const img = new Image();
-              img.onload = () => {
-                console.log("[Inpaint] Input image dimensions set:", img.width, "x", img.height);
-                setInputImageSize({ width: img.width, height: img.height });
-              };
-              img.src = imageData;
-            } else {
-              console.warn("[Inpaint] Invalid input image data, clearing storage");
-              localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
-            }
-          } catch (error) {
-            console.error("[Inpaint] Failed to load input image:", error);
+        // NOTE: Allow old-style references (direct URLs) for now
+        // // Check if it's an old-style reference (direct URL like /outputs/... or http://...)
+        // if (savedInputRef.startsWith('/outputs/') || savedInputRef.startsWith('http://') || savedInputRef.startsWith('https://')) {
+        //   console.log("[Inpaint] Detected old-style input image reference, clearing storage");
+        //   localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+        // } else if (savedInputRef.startsWith('temp_img://') || savedInputRef.startsWith('data:')) {
+        try {
+          const imageData = await loadTempImage(savedInputRef);
+          console.log("[Inpaint] Input image loaded successfully:", imageData ? "yes" : "no");
+          if (imageData) {
+            setInputImagePreview(imageData);
+            // Load image dimensions
+            const img = new Image();
+            img.onload = () => {
+              console.log("[Inpaint] Input image dimensions set:", img.width, "x", img.height);
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
           }
-        } else {
-          console.warn("[Inpaint] Unknown input image reference format, clearing storage");
-          localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+          // } else {
+          //   console.warn("[Inpaint] Invalid input image data, clearing storage");
+          //   localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+          // }
+        } catch (error) {
+          console.error("[Inpaint] Failed to load input image:", error);
         }
+        // } else {
+        //   console.warn("[Inpaint] Unknown input image reference format, clearing storage");
+        //   localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+        // }
       }
 
       // Load mask image preview
       const savedMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
       console.log("[Inpaint] Initial load - mask image ref:", savedMaskRef);
       if (savedMaskRef) {
-        // Check if it's an old-style reference
-        if (savedMaskRef.startsWith('/outputs/') || savedMaskRef.startsWith('http://') || savedMaskRef.startsWith('https://')) {
-          console.log("[Inpaint] Detected old-style mask image reference, clearing storage");
-          localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
-        } else if (savedMaskRef.startsWith('temp_img://') || savedMaskRef.startsWith('data:')) {
-          try {
-            const imageData = await loadTempImage(savedMaskRef);
-            console.log("[Inpaint] Mask image loaded successfully:", imageData ? "yes" : "no");
-            if (imageData && imageData.startsWith('data:')) {
-              setMaskImage(imageData);
-            } else {
-              console.warn("[Inpaint] Invalid mask image data, clearing storage");
-              localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
-            }
-          } catch (error) {
-            console.error("[Inpaint] Failed to load mask image:", error);
+        // NOTE: Allow old-style references (direct URLs) for now
+        // // Check if it's an old-style reference
+        // if (savedMaskRef.startsWith('/outputs/') || savedMaskRef.startsWith('http://') || savedMaskRef.startsWith('https://')) {
+        //   console.log("[Inpaint] Detected old-style mask image reference, clearing storage");
+        //   localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+        // } else if (savedMaskRef.startsWith('temp_img://') || savedMaskRef.startsWith('data:')) {
+        try {
+          const imageData = await loadTempImage(savedMaskRef);
+          console.log("[Inpaint] Mask image loaded successfully:", imageData ? "yes" : "no");
+          if (imageData) {
+            setMaskImage(imageData);
           }
-        } else {
-          console.warn("[Inpaint] Unknown mask image reference format, clearing storage");
-          localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+          // } else {
+          //   console.warn("[Inpaint] Invalid mask image data, clearing storage");
+          //   localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+          // }
+        } catch (error) {
+          console.error("[Inpaint] Failed to load mask image:", error);
         }
+        // } else {
+        //   console.warn("[Inpaint] Unknown mask image reference format, clearing storage");
+        //   localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
+        // }
       }
     };
 

@@ -128,47 +128,59 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   useEffect(() => {
     setIsMounted(true);
 
-    // Load params
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        const merged = { ...DEFAULT_PARAMS, ...parsed };
-        setParams(merged);
-      } catch (error) {
-        console.error("Failed to load saved params:", error);
+    const loadInitialData = async () => {
+      // Load params
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          setParams(merged);
+        } catch (error) {
+          console.error("Failed to load saved params:", error);
+        }
       }
-    }
 
-    // Load preview image
-    const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
-    if (savedPreview) {
-      setGeneratedImage(savedPreview);
-    }
+      // Load preview image
+      const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+      if (savedPreview) {
+        setGeneratedImage(savedPreview);
+      }
 
-    // Load input image preview
-    const savedInputPreview = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-    if (savedInputPreview) {
-      loadTempImage(savedInputPreview).then((imageData) => {
-        if (imageData) {
-          setInputImagePreview(imageData);
+      // Load input image preview
+      const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (savedInputRef) {
+        try {
+          const imageData = await loadTempImage(savedInputRef);
+          if (imageData) {
+            setInputImagePreview(imageData);
+            // Load image dimensions
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        } catch (error) {
+          console.error("Failed to load input image:", error);
         }
-      }).catch((error) => {
-        console.error("Failed to load input image:", error);
-      });
-    }
+      }
 
-    // Load mask image preview
-    const savedMaskPreview = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
-    if (savedMaskPreview) {
-      loadTempImage(savedMaskPreview).then((imageData) => {
-        if (imageData) {
-          setMaskImage(imageData);
+      // Load mask image preview
+      const savedMaskRef = localStorage.getItem(MASK_IMAGE_STORAGE_KEY);
+      if (savedMaskRef) {
+        try {
+          const imageData = await loadTempImage(savedMaskRef);
+          if (imageData) {
+            setMaskImage(imageData);
+          }
+        } catch (error) {
+          console.error("Failed to load mask image:", error);
         }
-      }).catch((error) => {
-        console.error("Failed to load mask image:", error);
-      });
-    }
+      }
+    };
+
+    loadInitialData();
   }, []);
 
   // When model loads on startup, load samplers and schedule types

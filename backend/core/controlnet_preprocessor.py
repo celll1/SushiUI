@@ -195,9 +195,19 @@ class ControlNetPreprocessor:
             depth_map = detector(image_pil)
             return np.array(depth_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, falling back to simple grayscale for depth")
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            print("[Preprocessor] Falling back to simple grayscale for depth")
             # Simple fallback: convert to grayscale as pseudo-depth
+            if len(image_np.shape) == 3:
+                gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+                return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in depth preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to grayscale
             if len(image_np.shape) == 3:
                 gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
                 return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
@@ -226,8 +236,13 @@ class ControlNetPreprocessor:
             pose_map = detector(image_pil, hand_and_face=include_hand or include_face)
             return np.array(pose_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, returning original image")
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error loading OpenPose: {e}")
+            import traceback
+            traceback.print_exc()
             return image_np
 
     def _preprocess_normal(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
@@ -247,8 +262,13 @@ class ControlNetPreprocessor:
             normal_map = detector(image_pil)
             return np.array(normal_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, returning original image")
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in normal preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
             return image_np
 
     def _preprocess_softedge(self, image_np: np.ndarray, edge_type: str, **kwargs) -> np.ndarray:
@@ -274,9 +294,14 @@ class ControlNetPreprocessor:
             edge_map = detector(image_pil)
             return np.array(edge_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, falling back to Canny")
-            return self._preprocess_canny(image_np)
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in softedge preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
+            return image_np
 
     def _preprocess_lineart(self, image_np: np.ndarray, lineart_type: str, **kwargs) -> np.ndarray:
         """Apply lineart extraction
@@ -301,9 +326,14 @@ class ControlNetPreprocessor:
             lineart_map = detector(image_pil)
             return np.array(lineart_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, falling back to Canny")
-            return self._preprocess_canny(image_np)
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in lineart preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
+            return image_np
 
     def _preprocess_segment(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
         """Apply segmentation
@@ -322,8 +352,13 @@ class ControlNetPreprocessor:
             segment_map = detector(image_pil)
             return np.array(segment_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, returning original image")
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in segment preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
             return image_np
 
     def _preprocess_mlsd(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
@@ -343,9 +378,14 @@ class ControlNetPreprocessor:
             mlsd_map = detector(image_pil)
             return np.array(mlsd_map)
 
-        except ImportError:
-            print("[Preprocessor] controlnet-aux not installed, falling back to Canny")
-            return self._preprocess_canny(image_np)
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in MLSD preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
+            return image_np
 
     def _preprocess_blur(self, image_np: np.ndarray, kernel_size: int = 15, **kwargs) -> np.ndarray:
         """Apply Gaussian blur (for tile/blur models)"""

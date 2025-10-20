@@ -677,7 +677,47 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        await handleImageUpload(index, null, inputImagePreview);
+                        try {
+                          console.log("[ControlNetSelector] Copy input image - original:", inputImagePreview.substring(0, 100));
+
+                          // inputImagePreview should be a valid data URL
+                          if (!inputImagePreview.startsWith('data:')) {
+                            console.error("[ControlNetSelector] inputImagePreview is not a valid data URL, skipping");
+                            alert("Invalid input image format. Please reload the input image.");
+                            return;
+                          }
+
+                          // Save to temp storage
+                          const imageRef = await saveTempImage(inputImagePreview);
+                          console.log("[ControlNetSelector] Saved to tempStorage:", imageRef);
+
+                          // Update local preview
+                          setImagePreviews(prev => {
+                            const newMap = new Map(prev);
+                            newMap.set(index, inputImagePreview);
+                            return newMap;
+                          });
+
+                          // Save reference to localStorage
+                          const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
+                          const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
+                          if (imageRefs[index]) {
+                            await deleteTempImageRef(imageRefs[index]);
+                          }
+                          imageRefs[index] = imageRef;
+                          localStorage.setItem(IMAGE_STORAGE_KEY, JSON.stringify(imageRefs));
+                          console.log("[ControlNetSelector] Saved reference to localStorage");
+
+                          // Update parent (without image_base64, as it's stored separately)
+                          updateControlNet(index, {});
+
+                          // Trigger preprocessing if enabled
+                          if (cn.enable_preprocessor && cn.preprocessor && cn.preprocessor !== "none") {
+                            await preprocessImage(index, inputImagePreview);
+                          }
+                        } catch (error) {
+                          console.error("[ControlNetSelector] Failed to copy input image:", error);
+                        }
                       }}
                       disabled={disabled}
                       className="absolute top-2 right-2 w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"

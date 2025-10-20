@@ -344,103 +344,264 @@ class ControlNetManager:
     def _build_lllite_modules(self, state_dict: dict, device: str, dtype: torch.dtype) -> dict:
         """Build LLLite module structure from state dict
 
-        Returns dict mapping module names to their parameters.
-        Module names like: lllite_unet_input_blocks_4_1_transformer_blocks_0_attn1_to_q
+        Returns dict mapping base module names to their submodules.
+        Base module: lllite_unet_input_blocks_4_1_transformer_blocks_0_attn1_to_q
+        Submodules: conditioning1, down, mid, up
         """
         import torch.nn as nn
 
         modules = {}
 
-        # Group keys by module prefix
+        # Group keys by base module name
         for key in state_dict.keys():
-            # Extract module name (everything before the last dot)
-            parts = key.rsplit('.', 1)
-            if len(parts) != 2:
+            # Parse key structure: lllite_unet_..._to_q.conditioning1.0.weight
+            # Split by dots to separate base module, submodule, layer, param
+            parts = key.split('.')
+
+            # Find the split point (before conditioning1/down/mid/up)
+            base_parts = []
+            submodule_parts = []
+            found_submodule = False
+
+            for part in parts:
+                if part in ['conditioning1', 'down', 'mid', 'up']:
+                    found_submodule = True
+                    submodule_parts.append(part)
+                elif found_submodule:
+                    submodule_parts.append(part)
+                else:
+                    base_parts.append(part)
+
+            if not found_submodule:
                 continue
 
-            module_name, param_name = parts
+            base_name = '.'.join(base_parts)
+            submodule_path = '.'.join(submodule_parts[:-1])  # Exclude 'weight'/'bias'
+            param_name = submodule_parts[-1]
 
-            if module_name not in modules:
-                modules[module_name] = {}
+            if base_name not in modules:
+                modules[base_name] = {}
 
-            modules[module_name][param_name] = state_dict[key].to(device=device, dtype=dtype)
+            if submodule_path not in modules[base_name]:
+                modules[base_name][submodule_path] = {}
 
-        print(f"[ControlNetManager] Built {len(modules)} LLLite modules")
+            modules[base_name][submodule_path][param_name] = state_dict[key].to(device=device, dtype=dtype)
+
+        print(f"[ControlNetManager] Built {len(modules)} LLLite base modules")
         return modules
 
     def _process_control_image_lllite(self, control_image: torch.Tensor, lllite_modules: dict,
-                                      device: str, dtype: torch.dtype) -> torch.Tensor:
+                                      device: str, dtype: torch.dtype) -> dict:
         """Process control image through LLLite conditioning modules
 
-        LLLite uses convolutional layers to extract conditioning embeddings from the control image.
+        LLLite uses convolutional layers (conditioning1) to extract conditioning embeddings.
+        Each module has its own conditioning layers that process the control image.
+
+        Returns dict mapping base module names to their conditioning embeddings.
         """
         if control_image is None:
-            return None
+            return {}
 
-        # Move control image to device
+        # Move control image to device and ensure correct format
         control_image = control_image.to(device=device, dtype=dtype)
 
-        # Find conditioning modules (they have .conditioning1 in their name)
-        # For now, we'll store the control image as-is and process it during forward pass
-        # A full implementation would apply the conditioning convolutions here
+        # Normalize from [0, 1] to [-1, 1]
+        control_image = control_image * 2.0 - 1.0
 
-        # Return control image for now (will be processed per-layer during forward)
-        return control_image
+        # Process each module's conditioning
+        cond_embeddings = {}
 
-    def _apply_lllite_patches(self, unet, lllite_modules: dict, cond_emb: torch.Tensor,
+        for base_name, submodules in lllite_modules.items():
+            # Find conditioning1 submodules
+            conditioning_modules = {k: v for k, v in submodules.items() if k.startswith('conditioning1')}
+
+            if not conditioning_modules:
+                continue
+
+            # Apply conditioning convolutions sequentially
+            x = control_image
+
+            # Sort conditioning module layers by their numeric suffix (0, 2, 4)
+            cond_layers = sorted(conditioning_modules.items(), key=lambda item: item[0])
+
+            for layer_name, params in cond_layers:
+                if 'weight' in params and 'bias' in params:
+                    weight = params['weight']
+                    bias = params['bias']
+
+                    # Apply conv2d
+                    x = torch.nn.functional.conv2d(x, weight, bias, padding='same')
+
+                    # Apply ReLU activation (except for last layer)
+                    if layer_name != cond_layers[-1][0]:
+                        x = torch.nn.functional.relu(x)
+
+            cond_embeddings[base_name] = x
+
+        print(f"[ControlNetManager] Processed {len(cond_embeddings)} conditioning embeddings")
+        return cond_embeddings
+
+    def _apply_lllite_patches(self, unet, lllite_modules: dict, cond_embeddings: dict,
                               layer_weights=None):
         """Apply LLLite patches to U-Net attention layers
 
         Patches specific transformer blocks to add LLLite conditioning.
         """
         # Store LLLite info on U-Net for access during forward pass
-        if not hasattr(unet, '_lllite_modules'):
-            unet._lllite_modules = []
+        if not hasattr(unet, '_lllite_data'):
+            unet._lllite_data = []
 
-        unet._lllite_modules.append({
+        lllite_data = {
             'modules': lllite_modules,
-            'cond_emb': cond_emb,
+            'cond_embeddings': cond_embeddings,
             'layer_weights': layer_weights
-        })
+        }
 
-        # Patch attention processors
-        self._patch_attention_processors(unet, lllite_modules, cond_emb)
+        unet._lllite_data.append(lllite_data)
 
-    def _patch_attention_processors(self, unet, lllite_modules: dict, cond_emb: torch.Tensor):
-        """Patch U-Net attention processors to apply LLLite
+        # Patch U-Net transformer blocks
+        self._patch_unet_transformers(unet, lllite_data)
 
-        Modifies the attention processor to add LLLite conditioning to q, k, v projections.
+    def _patch_unet_transformers(self, unet, lllite_data: dict):
+        """Patch U-Net transformer blocks to apply LLLite
+
+        Wraps the forward method of attention projection layers (to_q, to_k, to_v)
+        to add LLLite conditioning.
         """
-        # Get current attention processors
-        from diffusers.models.attention_processor import Attention, AttnProcessor
+        lllite_modules = lllite_data['modules']
+        cond_embeddings = lllite_data['cond_embeddings']
 
-        # We need to patch specific transformer blocks
-        # LLLite targets: input_blocks[X][Y].transformer_blocks[Z].attn1/attn2
+        patched_count = 0
 
-        def create_lllite_processor(original_processor, module_prefix: str):
-            """Create a wrapped processor that applies LLLite"""
+        # Iterate through U-Net down_blocks and mid_block
+        def patch_transformer_block(block, block_name):
+            nonlocal patched_count
 
-            class LLLiteAttnProcessor:
-                def __init__(self, original, prefix, modules, cond):
-                    self.original = original
-                    self.prefix = prefix
-                    self.modules = modules
-                    self.cond = cond
+            if not hasattr(block, 'attentions'):
+                return
 
-                def __call__(self, attn: Attention, hidden_states, encoder_hidden_states=None,
-                            attention_mask=None, **kwargs):
-                    # Apply LLLite modifications to projections
-                    # For now, just call original processor
-                    # Full implementation would apply LoRA-style weights here
-                    return self.original(attn, hidden_states, encoder_hidden_states,
-                                       attention_mask, **kwargs)
+            for attn_idx, attention in enumerate(block.attentions):
+                if not hasattr(attention, 'transformer_blocks'):
+                    continue
 
-            return LLLiteAttnProcessor(original_processor, module_prefix, lllite_modules, cond_emb)
+                for trans_idx, transformer_block in enumerate(attention.transformer_blocks):
+                    # Patch attn1 (self-attention)
+                    if hasattr(transformer_block, 'attn1'):
+                        attn1 = transformer_block.attn1
+                        patched_count += self._patch_attention_layer(
+                            attn1, f"{block_name}_{attn_idx}_transformer_blocks_{trans_idx}_attn1",
+                            lllite_modules, cond_embeddings
+                        )
 
-        # Note: Full implementation would iterate through unet blocks and patch attention processors
-        # For now, we register the modules and the actual application happens in custom_sampling
+                    # Patch attn2 (cross-attention)
+                    if hasattr(transformer_block, 'attn2'):
+                        attn2 = transformer_block.attn2
+                        patched_count += self._patch_attention_layer(
+                            attn2, f"{block_name}_{attn_idx}_transformer_blocks_{trans_idx}_attn2",
+                            lllite_modules, cond_embeddings
+                        )
 
-        print(f"[ControlNetManager] LLLite attention processors prepared")
+        # Patch down blocks (input_blocks)
+        if hasattr(unet, 'down_blocks'):
+            for idx, block in enumerate(unet.down_blocks):
+                patch_transformer_block(block, f"input_blocks_{idx}")
+
+        # Patch mid block
+        if hasattr(unet, 'mid_block'):
+            patch_transformer_block(unet.mid_block, "middle_block")
+
+        print(f"[ControlNetManager] Patched {patched_count} attention projections with LLLite")
+
+    def _patch_attention_layer(self, attention, block_name: str, lllite_modules: dict, cond_embeddings: dict) -> int:
+        """Patch a single attention layer's projection layers (to_q, to_k, to_v)
+
+        Returns the number of projections patched.
+        """
+        patched = 0
+
+        for proj_name in ['to_q', 'to_k', 'to_v']:
+            if not hasattr(attention, proj_name):
+                continue
+
+            proj_layer = getattr(attention, proj_name)
+
+            # Build the full module name for LLLite lookup
+            lllite_name = f"lllite_unet_{block_name}_{proj_name}"
+
+            if lllite_name not in lllite_modules:
+                continue
+
+            # Get the conditioning embedding and LoRA modules
+            cond_emb = cond_embeddings.get(lllite_name)
+            modules = lllite_modules[lllite_name]
+
+            # Wrap the projection layer's forward method
+            original_forward = proj_layer.forward
+
+            def create_lllite_forward(orig_forward, cond, mods):
+                def lllite_forward(hidden_states):
+                    # Call original projection
+                    output = orig_forward(hidden_states)
+
+                    # Apply LLLite modification: down -> concat with cond -> mid -> up
+                    try:
+                        # Down layer: reduce dimensions
+                        down_weight = mods.get('down.0', {}).get('weight')
+                        down_bias = mods.get('down.0', {}).get('bias')
+
+                        if down_weight is not None:
+                            # Reshape hidden_states for linear layer if needed
+                            batch, seq_len, channels = hidden_states.shape
+                            down_out = torch.nn.functional.linear(hidden_states, down_weight, down_bias)
+
+                            # Prepare conditioning embedding
+                            if cond is not None:
+                                # Reshape cond to match sequence
+                                # cond shape: (batch, cond_channels, height, width)
+                                # Need to reshape to (batch, seq_len, cond_channels)
+                                cond_reshaped = cond.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
+
+                                # Interpolate or pool to match seq_len
+                                if cond_reshaped.shape[1] != seq_len:
+                                    cond_reshaped = torch.nn.functional.adaptive_avg_pool1d(
+                                        cond_reshaped.permute(0, 2, 1), seq_len
+                                    ).permute(0, 2, 1)
+
+                                # Concatenate conditioning with down output
+                                mid_input = torch.cat([down_out, cond_reshaped], dim=-1)
+                            else:
+                                mid_input = down_out
+
+                            # Mid layer: process combined features
+                            mid_weight = mods.get('mid.0', {}).get('weight')
+                            mid_bias = mods.get('mid.0', {}).get('bias')
+
+                            if mid_weight is not None:
+                                mid_out = torch.nn.functional.linear(mid_input, mid_weight, mid_bias)
+
+                                # Up layer: restore original dimensions
+                                up_weight = mods.get('up.0', {}).get('weight')
+                                up_bias = mods.get('up.0', {}).get('bias')
+
+                                if up_weight is not None:
+                                    up_out = torch.nn.functional.linear(mid_out, up_weight, up_bias)
+
+                                    # Add LLLite modification to original output
+                                    output = output + up_out
+
+                    except Exception as e:
+                        print(f"[ControlNetManager] Warning: LLLite application failed for {lllite_name}: {e}")
+                        pass
+
+                    return output
+
+                return lllite_forward
+
+            # Replace the forward method
+            proj_layer.forward = create_lllite_forward(original_forward, cond_emb, modules)
+            patched += 1
+
+        return patched
 
     def prepare_controlnet_image(
         self,

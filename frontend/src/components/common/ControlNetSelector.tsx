@@ -774,128 +774,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     )}
                   </div>
                 )}
-
-                {/* Preprocessor Settings - 2 column layout */}
-                <div className="mt-3 p-3 bg-gray-700 rounded-lg">
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Preprocessor
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* Left column: Enable checkbox and dropdown */}
-                    <div className="space-y-2">
-                      {/* Enable/Disable Preprocessor Checkbox */}
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={cn.enable_preprocessor}
-                          onChange={async (e) => {
-                            await updateControlNet(index, { enable_preprocessor: e.target.checked });
-                            // Re-preprocess if enabled
-                            if (e.target.checked && imagePreviews.has(index) && cn.preprocessor && cn.preprocessor !== "none") {
-                              await preprocessImage(index);
-                            }
-                          }}
-                          disabled={disabled}
-                          className="rounded"
-                        />
-                        <span className="text-sm text-gray-300">Enable Preprocessing</span>
-                      </label>
-
-                      {/* Preprocessor Dropdown */}
-                      {cn.enable_preprocessor && (
-                        <div>
-                          <select
-                            value={cn.preprocessor || "none"}
-                            onChange={async (e) => {
-                              const newPreprocessor = e.target.value;
-
-                              // Clear existing preprocessed preview immediately
-                              setPreprocessedPreviews(prev => {
-                                const newMap = new Map(prev);
-                                newMap.delete(index);
-                                return newMap;
-                              });
-
-                              // Reset show preprocessed flag
-                              setShowPreprocessed(prev => {
-                                const newMap = new Map(prev);
-                                newMap.set(index, false);
-                                return newMap;
-                              });
-
-                              // Update config
-                              await updateControlNet(index, { preprocessor: newPreprocessor });
-
-                              // Re-preprocess with new preprocessor if not "none"
-                              if (imagePreviews.has(index) && newPreprocessor !== "none") {
-                                // Use forcePreprocessor parameter to ensure we use the new one
-                                await preprocessImage(index, newPreprocessor);
-                              }
-                            }}
-                            disabled={disabled}
-                            className="w-full bg-gray-600 text-white px-3 py-2 rounded text-sm"
-                          >
-                            {availablePreprocessors.map((prep) => (
-                              <option key={prep.id} value={prep.id}>
-                                {prep.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Right column: Parameter sliders */}
-                    {cn.enable_preprocessor && cn.preprocessor && cn.preprocessor.startsWith("tile") && (
-                      <div className="space-y-2">
-                        {/* Down Sampling Rate slider for tile preprocessors */}
-                        <div>
-                          <label className="block text-xs text-gray-400 mb-1">
-                            Down Sampling Rate: {(downSamplingRate.get(index) ?? 2.0).toFixed(1)}
-                          </label>
-                          <input
-                            type="range"
-                            min="1.0"
-                            max="8.0"
-                            step="0.1"
-                            value={downSamplingRate.get(index) ?? 2.0}
-                            onChange={(e) => {
-                              const newRate = parseFloat(e.target.value);
-                              setDownSamplingRate(prev => new Map(prev).set(index, newRate));
-                            }}
-                            onMouseUp={() => preprocessImage(index)}
-                            disabled={disabled}
-                            className="w-full"
-                          />
-                        </div>
-
-                        {/* Sharpness slider for tile_colorfix+sharp */}
-                        {cn.preprocessor === "tile_colorfix+sharp" && (
-                          <div>
-                            <label className="block text-xs text-gray-400 mb-1">
-                              Sharpness: {(sharpness.get(index) ?? 1.0).toFixed(1)}
-                            </label>
-                            <input
-                              type="range"
-                              min="0.0"
-                              max="3.0"
-                              step="0.1"
-                              value={sharpness.get(index) ?? 1.0}
-                              onChange={(e) => {
-                                const newSharpness = parseFloat(e.target.value);
-                                setSharpness(prev => new Map(prev).set(index, newSharpness));
-                              }}
-                              onMouseUp={() => preprocessImage(index)}
-                              disabled={disabled}
-                              className="w-full"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
 
               {/* Right column: Settings */}
@@ -938,6 +816,128 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     modelLoaded={modelLoaded}
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* Preprocessor Settings - Full width, 2 column layout */}
+            <div className="mt-3 p-3 bg-gray-700 rounded-lg">
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Preprocessor
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Left column: Enable checkbox and dropdown */}
+                <div className="space-y-2">
+                  {/* Enable/Disable Preprocessor Checkbox */}
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cn.enable_preprocessor}
+                      onChange={async (e) => {
+                        await updateControlNet(index, { enable_preprocessor: e.target.checked });
+                        // Re-preprocess if enabled
+                        if (e.target.checked && imagePreviews.has(index) && cn.preprocessor && cn.preprocessor !== "none") {
+                          await preprocessImage(index);
+                        }
+                      }}
+                      disabled={disabled}
+                      className="rounded"
+                    />
+                    <span className="text-sm text-gray-300">Enable Preprocessing</span>
+                  </label>
+
+                  {/* Preprocessor Dropdown */}
+                  {cn.enable_preprocessor && (
+                    <div>
+                      <select
+                        value={cn.preprocessor || "none"}
+                        onChange={async (e) => {
+                          const newPreprocessor = e.target.value;
+
+                          // Clear existing preprocessed preview immediately
+                          setPreprocessedPreviews(prev => {
+                            const newMap = new Map(prev);
+                            newMap.delete(index);
+                            return newMap;
+                          });
+
+                          // Reset show preprocessed flag
+                          setShowPreprocessed(prev => {
+                            const newMap = new Map(prev);
+                            newMap.set(index, false);
+                            return newMap;
+                          });
+
+                          // Update config
+                          await updateControlNet(index, { preprocessor: newPreprocessor });
+
+                          // Re-preprocess with new preprocessor if not "none"
+                          if (imagePreviews.has(index) && newPreprocessor !== "none") {
+                            // Use forcePreprocessor parameter to ensure we use the new one
+                            await preprocessImage(index, newPreprocessor);
+                          }
+                        }}
+                        disabled={disabled}
+                        className="w-full bg-gray-600 text-white px-3 py-2 rounded text-sm"
+                      >
+                        {availablePreprocessors.map((prep) => (
+                          <option key={prep.id} value={prep.id}>
+                            {prep.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right column: Parameter sliders */}
+                {cn.enable_preprocessor && cn.preprocessor && cn.preprocessor.startsWith("tile") && (
+                  <div className="space-y-2">
+                    {/* Down Sampling Rate slider for tile preprocessors */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Down Sampling Rate: {(downSamplingRate.get(index) ?? 2.0).toFixed(1)}
+                      </label>
+                      <input
+                        type="range"
+                        min="1.0"
+                        max="8.0"
+                        step="0.1"
+                        value={downSamplingRate.get(index) ?? 2.0}
+                        onChange={(e) => {
+                          const newRate = parseFloat(e.target.value);
+                          setDownSamplingRate(prev => new Map(prev).set(index, newRate));
+                        }}
+                        onMouseUp={() => preprocessImage(index)}
+                        disabled={disabled}
+                        className="w-full"
+                      />
+                    </div>
+
+                    {/* Sharpness slider for tile_colorfix+sharp */}
+                    {cn.preprocessor === "tile_colorfix+sharp" && (
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">
+                          Sharpness: {(sharpness.get(index) ?? 1.0).toFixed(1)}
+                        </label>
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="3.0"
+                          step="0.1"
+                          value={sharpness.get(index) ?? 1.0}
+                          onChange={(e) => {
+                            const newSharpness = parseFloat(e.target.value);
+                            setSharpness(prev => new Map(prev).set(index, newSharpness));
+                          }}
+                          onMouseUp={() => preprocessImage(index)}
+                          disabled={disabled}
+                          className="w-full"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

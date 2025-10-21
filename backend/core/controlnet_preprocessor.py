@@ -424,15 +424,15 @@ class ControlNetPreprocessor:
             return image_np
         elif tile_type == "tile_resample":
             # Resample with downsampling
-            down_rate = kwargs.get("down_sampling_rate", 1.0)
+            down_rate = kwargs.get("down_sampling_rate", 2.0)
             if down_rate <= 1.0:
                 return image_np
 
             h, w = image_np.shape[:2]
             new_h, new_w = int(h / down_rate), int(w / down_rate)
-            # Downsample
+            # Downsample using INTER_AREA for better quality reduction
             downsampled = cv2.resize(image_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            # Upsample back
+            # Upsample back using INTER_CUBIC
             upsampled = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_CUBIC)
             return upsampled
         elif tile_type == "tile_colorfix" or tile_type == "tile_colorfix+sharp":
@@ -450,12 +450,11 @@ class ControlNetPreprocessor:
 
             # Apply sharpening if requested
             if sharpness > 0:
-                # Create sharpening kernel
-                kernel = np.array([[-1, -1, -1],
-                                   [-1,  9, -1],
-                                   [-1, -1, -1]]) * (sharpness / 8.0)
-                kernel[1, 1] = 1 + sharpness
-                upsampled = cv2.filter2D(upsampled, -1, kernel)
+                # Unsharp masking for better sharpening
+                # Create Gaussian blur
+                blurred = cv2.GaussianBlur(upsampled, (0, 0), 3)
+                # Sharpen = Original + sharpness * (Original - Blurred)
+                upsampled = cv2.addWeighted(upsampled, 1.0 + sharpness, blurred, -sharpness, 0)
                 upsampled = np.clip(upsampled, 0, 255).astype(np.uint8)
 
             return upsampled

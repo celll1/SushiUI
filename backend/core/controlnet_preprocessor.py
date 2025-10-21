@@ -406,8 +406,28 @@ class ControlNetPreprocessor:
             traceback.print_exc()
             return image_np
 
-    def _preprocess_blur(self, image_np: np.ndarray, kernel_size: int = 15, **kwargs) -> np.ndarray:
-        """Apply Gaussian blur (for tile/blur models)"""
+    def _preprocess_blur(self, image_np: np.ndarray, kernel_size: int = 15, blur_strength: float = None, **kwargs) -> np.ndarray:
+        """Apply Gaussian blur (for tile/blur models)
+
+        Args:
+            kernel_size: Absolute kernel size (deprecated, for backward compatibility)
+            blur_strength: Blur strength as percentage of image size (0.0-10.0, recommended)
+        """
+        # If blur_strength is provided, calculate kernel size relative to image size
+        if blur_strength is not None and blur_strength > 0:
+            # Use the shorter dimension to calculate kernel size
+            h, w = image_np.shape[:2]
+            shorter_side = min(h, w)
+            # kernel_size = (shorter_side * blur_strength / 100), rounded to nearest odd number
+            calculated_size = int(shorter_side * blur_strength / 100.0)
+            # Ensure it's odd and at least 3
+            kernel_size = max(3, calculated_size if calculated_size % 2 == 1 else calculated_size + 1)
+            print(f"[Blur] Image size: {w}x{h}, blur_strength: {blur_strength}%, calculated kernel: {kernel_size}")
+        else:
+            # Ensure kernel_size is odd
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+
         return cv2.GaussianBlur(image_np, (kernel_size, kernel_size), 0)
 
     def _preprocess_tile(self, image_np: np.ndarray, tile_type: str, **kwargs) -> np.ndarray:

@@ -147,7 +147,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const [isPreprocessing, setIsPreprocessing] = useState<Map<number, boolean>>(new Map());
   const [downSamplingRate, setDownSamplingRate] = useState<Map<number, number>>(new Map());
   const [sharpness, setSharpness] = useState<Map<number, number>>(new Map());
-  const [blurKernelSize, setBlurKernelSize] = useState<Map<number, number>>(new Map());
+  const [blurStrength, setBlurStrength] = useState<Map<number, number>>(new Map());
 
   // Helper function to call onChange without image_base64 to prevent localStorage overflow
   const notifyChange = (configs: ControlNetConfig[]) => {
@@ -449,7 +449,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       const result = await preprocessControlNetImage(blob, preprocessor, {
         downSamplingRate: downSamplingRate.get(index) ?? 2.0,
         sharpness: sharpness.get(index) ?? 1.0,
-        kernelSize: blurKernelSize.get(index) ?? 15
+        blurStrength: blurStrength.get(index) ?? 1.5
       });
 
       // Store preprocessed preview
@@ -944,21 +944,21 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       </>
                     )}
 
-                    {/* Blur kernel size slider */}
+                    {/* Blur strength slider (percentage of image size) */}
                     {cn.preprocessor === "blur" && (
                       <div>
                         <label className="block text-xs text-gray-400 mb-1">
-                          Kernel Size: {blurKernelSize.get(index) ?? 15} (must be odd)
+                          Blur Strength: {(blurStrength.get(index) ?? 1.5).toFixed(1)}% of image size
                         </label>
                         <input
                           type="range"
-                          min="3"
-                          max="201"
-                          step="2"
-                          value={blurKernelSize.get(index) ?? 15}
+                          min="0.1"
+                          max="10.0"
+                          step="0.1"
+                          value={blurStrength.get(index) ?? 1.5}
                           onChange={(e) => {
-                            const newSize = parseInt(e.target.value);
-                            setBlurKernelSize(prev => new Map(prev).set(index, newSize));
+                            const newStrength = parseFloat(e.target.value);
+                            setBlurStrength(prev => new Map(prev).set(index, newStrength));
                           }}
                           onMouseUp={() => preprocessImage(index)}
                           disabled={disabled}

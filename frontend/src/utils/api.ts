@@ -465,7 +465,7 @@ export const preprocessControlNetImage = async (
     highThreshold?: number;
     downSamplingRate?: number;
     sharpness?: number;
-    kernelSize?: number;
+    blurStrength?: number;
   } = {}
 ): Promise<{ preprocessed_image: string; preprocessor: string }> => {
   const formData = new FormData();
@@ -480,8 +480,8 @@ export const preprocessControlNetImage = async (
   if (options.sharpness !== undefined) {
     formData.append("sharpness", options.sharpness.toString());
   }
-  if (options.kernelSize !== undefined) {
-    formData.append("kernel_size", options.kernelSize.toString());
+  if (options.blurStrength !== undefined) {
+    formData.append("blur_strength", options.blurStrength.toString());
   }
 
   const response = await api.post("/controlnet/preprocess-image", formData, {

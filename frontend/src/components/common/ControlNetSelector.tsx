@@ -953,7 +953,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                         <input
                           type="range"
                           min="3"
-                          max="51"
+                          max="201"
                           step="2"
                           value={blurKernelSize.get(index) ?? 15}
                           onChange={(e) => {

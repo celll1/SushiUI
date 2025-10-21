@@ -1375,22 +1375,41 @@ async def get_available_preprocessors():
     return {
         "preprocessors": [
             {"id": "none", "name": "No Preprocessing", "category": "none"},
+            # Edge Detection
             {"id": "canny", "name": "Canny Edge Detection", "category": "edge"},
+            {"id": "softedge_hed", "name": "Soft Edge (HED)", "category": "edge"},
+            {"id": "softedge_pidi", "name": "Soft Edge (PIDI)", "category": "edge"},
+            # Scribble (similar to soft edge)
+            {"id": "scribble_hed", "name": "Scribble (HED)", "category": "scribble"},
+            {"id": "scribble_pidinet", "name": "Scribble (PIDINet)", "category": "scribble"},
+            # Depth
             {"id": "depth_midas", "name": "Depth (Midas)", "category": "depth"},
             {"id": "depth_zoe", "name": "Depth (Zoe)", "category": "depth"},
             {"id": "depth_leres", "name": "Depth (Leres)", "category": "depth"},
+            # Pose
             {"id": "openpose", "name": "OpenPose (Body)", "category": "pose"},
             {"id": "openpose_hand", "name": "OpenPose (Body + Hand)", "category": "pose"},
             {"id": "openpose_face", "name": "OpenPose (Body + Face)", "category": "pose"},
             {"id": "openpose_full", "name": "OpenPose (Full)", "category": "pose"},
+            # Normal Maps
             {"id": "normal_bae", "name": "Normal Map (BAE)", "category": "normal"},
-            {"id": "softedge_hed", "name": "Soft Edge (HED)", "category": "edge"},
-            {"id": "softedge_pidi", "name": "Soft Edge (PIDI)", "category": "edge"},
+            # Lineart
             {"id": "lineart", "name": "Lineart", "category": "lineart"},
             {"id": "lineart_anime", "name": "Lineart (Anime)", "category": "lineart"},
+            # Segmentation
             {"id": "segment_ofade20k", "name": "Segmentation (OFADE20K)", "category": "segment"},
+            # Line Detection
             {"id": "mlsd", "name": "MLSD Line Detection", "category": "line"},
-            {"id": "tile", "name": "Tile (No Preprocessing)", "category": "none"},
-            {"id": "blur", "name": "Gaussian Blur", "category": "none"}
+            # Tile (for upscaling)
+            {"id": "tile", "name": "Tile (No Preprocessing)", "category": "tile"},
+            {"id": "tile_resample", "name": "Tile Resample", "category": "tile"},
+            {"id": "tile_colorfix", "name": "Tile Color Fix", "category": "tile"},
+            {"id": "tile_colorfix+sharp", "name": "Tile Color Fix + Sharp", "category": "tile"},
+            # Simple operations
+            {"id": "blur", "name": "Gaussian Blur", "category": "simple"},
+            {"id": "invert", "name": "Invert (Black/White)", "category": "simple"},
+            {"id": "binary", "name": "Binary Threshold", "category": "simple"},
+            {"id": "color", "name": "Color Simplification", "category": "simple"},
+            {"id": "threshold", "name": "Threshold", "category": "simple"}
         ]
     }

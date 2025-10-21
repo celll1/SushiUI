@@ -37,7 +37,16 @@ PreprocessorType = Literal[
     "segment_ofade20k",
     "mlsd",
     "tile",
-    "blur"
+    "tile_resample",
+    "tile_colorfix",
+    "tile_colorfix+sharp",
+    "blur",
+    "invert",
+    "binary",
+    "color",
+    "threshold",
+    "scribble_hed",
+    "scribble_pidinet"
 ]
 
 
@@ -126,16 +135,26 @@ class ControlNetPreprocessor:
             result = self._preprocess_normal(image_np, **kwargs)
         elif preprocessor_type.startswith("softedge"):
             result = self._preprocess_softedge(image_np, preprocessor_type, **kwargs)
+        elif preprocessor_type.startswith("scribble"):
+            result = self._preprocess_scribble(image_np, preprocessor_type, **kwargs)
         elif preprocessor_type.startswith("lineart"):
             result = self._preprocess_lineart(image_np, preprocessor_type, **kwargs)
         elif preprocessor_type.startswith("segment"):
             result = self._preprocess_segment(image_np, **kwargs)
         elif preprocessor_type == "mlsd":
             result = self._preprocess_mlsd(image_np, **kwargs)
-        elif preprocessor_type == "tile":
-            result = image_np  # No preprocessing for tile
+        elif preprocessor_type.startswith("tile"):
+            result = self._preprocess_tile(image_np, preprocessor_type, **kwargs)
         elif preprocessor_type == "blur":
             result = self._preprocess_blur(image_np, **kwargs)
+        elif preprocessor_type == "invert":
+            result = self._preprocess_invert(image_np, **kwargs)
+        elif preprocessor_type == "binary":
+            result = self._preprocess_binary(image_np, **kwargs)
+        elif preprocessor_type == "color":
+            result = self._preprocess_color(image_np, **kwargs)
+        elif preprocessor_type == "threshold":
+            result = self._preprocess_threshold(image_np, **kwargs)
         else:
             print(f"[Preprocessor] Unknown preprocessor type: {preprocessor_type}, returning original image")
             result = image_np
@@ -390,6 +409,144 @@ class ControlNetPreprocessor:
     def _preprocess_blur(self, image_np: np.ndarray, kernel_size: int = 15, **kwargs) -> np.ndarray:
         """Apply Gaussian blur (for tile/blur models)"""
         return cv2.GaussianBlur(image_np, (kernel_size, kernel_size), 0)
+
+    def _preprocess_tile(self, image_np: np.ndarray, tile_type: str, **kwargs) -> np.ndarray:
+        """Apply tile preprocessing variants for upscaling
+
+        Args:
+            image_np: Input image
+            tile_type: Type of tile preprocessing (tile, tile_resample, tile_colorfix, tile_colorfix+sharp)
+            **kwargs: Additional parameters
+                - down_sampling_rate: Downsampling factor (default: 1.0, range: 1.0-8.0)
+        """
+        if tile_type == "tile":
+            # Basic tile: no preprocessing
+            return image_np
+        elif tile_type == "tile_resample":
+            # Resample with downsampling
+            down_rate = kwargs.get("down_sampling_rate", 1.0)
+            if down_rate <= 1.0:
+                return image_np
+
+            h, w = image_np.shape[:2]
+            new_h, new_w = int(h / down_rate), int(w / down_rate)
+            # Downsample
+            downsampled = cv2.resize(image_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            # Upsample back
+            upsampled = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_CUBIC)
+            return upsampled
+        elif tile_type == "tile_colorfix" or tile_type == "tile_colorfix+sharp":
+            # Color-preserving downsampling with optional sharpening
+            down_rate = kwargs.get("down_sampling_rate", 2.0)
+            sharpness = kwargs.get("sharpness", 1.0) if "sharp" in tile_type else 0.0
+
+            h, w = image_np.shape[:2]
+            new_h, new_w = int(h / down_rate), int(w / down_rate)
+
+            # Downsample
+            downsampled = cv2.resize(image_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            # Upsample back
+            upsampled = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_CUBIC)
+
+            # Apply sharpening if requested
+            if sharpness > 0:
+                # Create sharpening kernel
+                kernel = np.array([[-1, -1, -1],
+                                   [-1,  9, -1],
+                                   [-1, -1, -1]]) * (sharpness / 8.0)
+                kernel[1, 1] = 1 + sharpness
+                upsampled = cv2.filter2D(upsampled, -1, kernel)
+                upsampled = np.clip(upsampled, 0, 255).astype(np.uint8)
+
+            return upsampled
+        else:
+            return image_np
+
+    def _preprocess_invert(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
+        """Invert image colors (for sketch inputs)"""
+        return cv2.bitwise_not(image_np)
+
+    def _preprocess_binary(self, image_np: np.ndarray, threshold: int = 0, **kwargs) -> np.ndarray:
+        """Apply binary thresholding
+
+        Args:
+            threshold: Threshold value (0 = auto/Otsu, 1-254 = fixed threshold)
+        """
+        # Convert to grayscale
+        if len(image_np.shape) == 3:
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image_np
+
+        # Apply thresholding
+        if threshold == 0:
+            # Use Otsu's method for automatic threshold
+            thresh_value, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            print(f"[Preprocessor] Binary threshold (Otsu): {thresh_value}")
+        else:
+            _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+
+        # Convert back to RGB
+        return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+
+    def _preprocess_color(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
+        """Apply color simplification (downscale to 64x64 then upscale)"""
+        h, w = image_np.shape[:2]
+        # Downscale to 64x64
+        small = cv2.resize(image_np, (64, 64), interpolation=cv2.INTER_AREA)
+        # Upscale back to original size
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
+
+    def _preprocess_threshold(self, image_np: np.ndarray, threshold: int = 127, **kwargs) -> np.ndarray:
+        """Apply simple thresholding
+
+        Args:
+            threshold: Threshold value (default: 127)
+        """
+        # Convert to grayscale
+        if len(image_np.shape) == 3:
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image_np
+
+        # Apply threshold
+        _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+
+        # Convert back to RGB
+        return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+
+    def _preprocess_scribble(self, image_np: np.ndarray, scribble_type: str, **kwargs) -> np.ndarray:
+        """Apply scribble preprocessing (using HED or PIDINet detectors)
+
+        Scribble is essentially the same as softedge but may have different default parameters
+        """
+        try:
+            from controlnet_aux import HEDdetector, PidiNetDetector
+
+            if "hed" in scribble_type:
+                if "scribble_hed" not in self.loaded_preprocessors:
+                    print("[Preprocessor] Loading HED detector for scribble...")
+                    self.loaded_preprocessors["scribble_hed"] = HEDdetector.from_pretrained("lllyasviel/Annotators")
+                detector = self.loaded_preprocessors["scribble_hed"]
+            else:  # pidinet
+                if "scribble_pidinet" not in self.loaded_preprocessors:
+                    print("[Preprocessor] Loading PIDINet detector for scribble...")
+                    self.loaded_preprocessors["scribble_pidinet"] = PidiNetDetector.from_pretrained("lllyasviel/Annotators")
+                detector = self.loaded_preprocessors["scribble_pidinet"]
+
+            image_pil = Image.fromarray(image_np)
+            # Use scribble mode if available
+            scribble_map = detector(image_pil, scribble=True)
+            return np.array(scribble_map)
+
+        except ImportError as e:
+            print(f"[Preprocessor] controlnet-aux not installed: {e}")
+            return image_np
+        except Exception as e:
+            print(f"[Preprocessor] Error in scribble preprocessor: {e}")
+            import traceback
+            traceback.print_exc()
+            return image_np
 
 
 # Global preprocessor instance

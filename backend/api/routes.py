@@ -1327,7 +1327,8 @@ async def preprocess_controlnet_image(
     low_threshold: int = Form(100),
     high_threshold: int = Form(200),
     down_sampling_rate: float = Form(2.0),
-    sharpness: float = Form(1.0)
+    sharpness: float = Form(1.0),
+    kernel_size: int = Form(15)
 ):
     """Preprocess an image for ControlNet
 
@@ -1338,6 +1339,7 @@ async def preprocess_controlnet_image(
         high_threshold: High threshold for Canny (default: 200)
         down_sampling_rate: Down sampling rate for tile preprocessors (default: 2.0)
         sharpness: Sharpness for tile_colorfix+sharp (default: 1.0)
+        kernel_size: Kernel size for Gaussian blur (default: 15, must be odd)
 
     Returns:
         Preprocessed image as base64 string
@@ -1354,7 +1356,8 @@ async def preprocess_controlnet_image(
             low_threshold=low_threshold,
             high_threshold=high_threshold,
             down_sampling_rate=down_sampling_rate,
-            sharpness=sharpness
+            sharpness=sharpness,
+            kernel_size=kernel_size
         )
         
         # Convert to base64

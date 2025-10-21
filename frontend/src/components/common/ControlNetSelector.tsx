@@ -147,6 +147,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const [isPreprocessing, setIsPreprocessing] = useState<Map<number, boolean>>(new Map());
   const [downSamplingRate, setDownSamplingRate] = useState<Map<number, number>>(new Map());
   const [sharpness, setSharpness] = useState<Map<number, number>>(new Map());
+  const [blurKernelSize, setBlurKernelSize] = useState<Map<number, number>>(new Map());
 
   // Helper function to call onChange without image_base64 to prevent localStorage overflow
   const notifyChange = (configs: ControlNetConfig[]) => {
@@ -447,7 +448,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       console.log(`[ControlNetSelector] Preprocessing image with ${preprocessor}...`);
       const result = await preprocessControlNetImage(blob, preprocessor, {
         downSamplingRate: downSamplingRate.get(index) ?? 2.0,
-        sharpness: sharpness.get(index) ?? 1.0
+        sharpness: sharpness.get(index) ?? 1.0,
+        kernelSize: blurKernelSize.get(index) ?? 15
       });
 
       // Store preprocessed preview
@@ -891,44 +893,72 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 </div>
 
                 {/* Right column: Parameter sliders */}
-                {cn.enable_preprocessor && cn.preprocessor && cn.preprocessor.startsWith("tile") && (
+                {cn.enable_preprocessor && cn.preprocessor && (
                   <div className="space-y-2">
-                    {/* Down Sampling Rate slider for tile preprocessors */}
-                    <div>
-                      <label className="block text-xs text-gray-400 mb-1">
-                        Down Sampling Rate: {(downSamplingRate.get(index) ?? 2.0).toFixed(1)}
-                      </label>
-                      <input
-                        type="range"
-                        min="1.0"
-                        max="8.0"
-                        step="0.1"
-                        value={downSamplingRate.get(index) ?? 2.0}
-                        onChange={(e) => {
-                          const newRate = parseFloat(e.target.value);
-                          setDownSamplingRate(prev => new Map(prev).set(index, newRate));
-                        }}
-                        onMouseUp={() => preprocessImage(index)}
-                        disabled={disabled}
-                        className="w-full"
-                      />
-                    </div>
+                    {/* Tile preprocessor sliders */}
+                    {cn.preprocessor.startsWith("tile") && (
+                      <>
+                        {/* Down Sampling Rate slider for tile preprocessors */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">
+                            Down Sampling Rate: {(downSamplingRate.get(index) ?? 2.0).toFixed(1)}
+                          </label>
+                          <input
+                            type="range"
+                            min="1.0"
+                            max="8.0"
+                            step="0.1"
+                            value={downSamplingRate.get(index) ?? 2.0}
+                            onChange={(e) => {
+                              const newRate = parseFloat(e.target.value);
+                              setDownSamplingRate(prev => new Map(prev).set(index, newRate));
+                            }}
+                            onMouseUp={() => preprocessImage(index)}
+                            disabled={disabled}
+                            className="w-full"
+                          />
+                        </div>
 
-                    {/* Sharpness slider for tile_colorfix+sharp */}
-                    {cn.preprocessor === "tile_colorfix+sharp" && (
+                        {/* Sharpness slider for tile_colorfix+sharp */}
+                        {cn.preprocessor === "tile_colorfix+sharp" && (
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">
+                              Sharpness: {(sharpness.get(index) ?? 1.0).toFixed(1)}
+                            </label>
+                            <input
+                              type="range"
+                              min="0.0"
+                              max="3.0"
+                              step="0.1"
+                              value={sharpness.get(index) ?? 1.0}
+                              onChange={(e) => {
+                                const newSharpness = parseFloat(e.target.value);
+                                setSharpness(prev => new Map(prev).set(index, newSharpness));
+                              }}
+                              onMouseUp={() => preprocessImage(index)}
+                              disabled={disabled}
+                              className="w-full"
+                            />
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Blur kernel size slider */}
+                    {cn.preprocessor === "blur" && (
                       <div>
                         <label className="block text-xs text-gray-400 mb-1">
-                          Sharpness: {(sharpness.get(index) ?? 1.0).toFixed(1)}
+                          Kernel Size: {blurKernelSize.get(index) ?? 15} (must be odd)
                         </label>
                         <input
                           type="range"
-                          min="0.0"
-                          max="3.0"
-                          step="0.1"
-                          value={sharpness.get(index) ?? 1.0}
+                          min="3"
+                          max="51"
+                          step="2"
+                          value={blurKernelSize.get(index) ?? 15}
                           onChange={(e) => {
-                            const newSharpness = parseFloat(e.target.value);
-                            setSharpness(prev => new Map(prev).set(index, newSharpness));
+                            const newSize = parseInt(e.target.value);
+                            setBlurKernelSize(prev => new Map(prev).set(index, newSize));
                           }}
                           onMouseUp={() => preprocessImage(index)}
                           disabled={disabled}

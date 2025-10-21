@@ -1325,16 +1325,20 @@ async def preprocess_controlnet_image(
     image: UploadFile = File(...),
     preprocessor: str = Form(...),
     low_threshold: int = Form(100),
-    high_threshold: int = Form(200)
+    high_threshold: int = Form(200),
+    down_sampling_rate: float = Form(2.0),
+    sharpness: float = Form(1.0)
 ):
     """Preprocess an image for ControlNet
-    
+
     Args:
         image: Image file to preprocess
         preprocessor: Type of preprocessor to use (canny, depth_midas, openpose, etc.)
         low_threshold: Low threshold for Canny (default: 100)
         high_threshold: High threshold for Canny (default: 200)
-    
+        down_sampling_rate: Down sampling rate for tile preprocessors (default: 2.0)
+        sharpness: Sharpness for tile_colorfix+sharp (default: 1.0)
+
     Returns:
         Preprocessed image as base64 string
     """
@@ -1342,13 +1346,15 @@ async def preprocess_controlnet_image(
         # Read uploaded image
         image_bytes = await image.read()
         image_pil = Image.open(io.BytesIO(image_bytes))
-        
+
         # Apply preprocessing
         preprocessed = controlnet_preprocessor.preprocess(
             image_pil,
             preprocessor,
             low_threshold=low_threshold,
-            high_threshold=high_threshold
+            high_threshold=high_threshold,
+            down_sampling_rate=down_sampling_rate,
+            sharpness=sharpness
         )
         
         # Convert to base64

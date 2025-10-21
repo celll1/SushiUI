@@ -460,14 +460,25 @@ export const detectControlNetPreprocessor = async (modelPath: string): Promise<{
 export const preprocessControlNetImage = async (
   imageBlob: Blob,
   preprocessor: string,
-  lowThreshold: number = 100,
-  highThreshold: number = 200
+  options: {
+    lowThreshold?: number;
+    highThreshold?: number;
+    downSamplingRate?: number;
+    sharpness?: number;
+  } = {}
 ): Promise<{ preprocessed_image: string; preprocessor: string }> => {
   const formData = new FormData();
   formData.append("image", imageBlob);
   formData.append("preprocessor", preprocessor);
-  formData.append("low_threshold", lowThreshold.toString());
-  formData.append("high_threshold", highThreshold.toString());
+  formData.append("low_threshold", (options.lowThreshold ?? 100).toString());
+  formData.append("high_threshold", (options.highThreshold ?? 200).toString());
+
+  if (options.downSamplingRate !== undefined) {
+    formData.append("down_sampling_rate", options.downSamplingRate.toString());
+  }
+  if (options.sharpness !== undefined) {
+    formData.append("sharpness", options.sharpness.toString());
+  }
 
   const response = await api.post("/controlnet/preprocess-image", formData, {
     headers: {

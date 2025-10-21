@@ -574,7 +574,17 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
               <div className="flex-1">
                 <select
                   value={cn.model_path}
-                  onChange={(e) => updateControlNet(index, { model_path: e.target.value })}
+                  onChange={(e) => {
+                    const newModelPath = e.target.value;
+                    updateControlNet(index, { model_path: newModelPath });
+
+                    // Reset showPreprocessed when model changes
+                    setShowPreprocessed(prev => {
+                      const newMap = new Map(prev);
+                      newMap.set(index, false);
+                      return newMap;
+                    });
+                  }}
                   disabled={disabled}
                   className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
                 >

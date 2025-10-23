@@ -6,8 +6,8 @@ import { getTIPOStatus, loadTIPOModel, unloadTIPOModel } from "@/utils/api";
 interface TIPODialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (settings: TIPOSettings) => void;
-  currentSettings: TIPOSettings;
+  settings: TIPOSettings;
+  onSettingsChange: (settings: TIPOSettings) => void;
 }
 
 export interface TIPOCategory {
@@ -27,8 +27,8 @@ export interface TIPOSettings {
   categories: TIPOCategory[];
 }
 
-export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }: TIPODialogProps) {
-  const [settings, setSettings] = useState<TIPOSettings>(currentSettings);
+export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange }: TIPODialogProps) {
+  const [localSettings, setLocalSettings] = useState<TIPOSettings>(settings);
   const [modelStatus, setModelStatus] = useState<{ loaded: boolean; model_name: string | null }>({
     loaded: false,
     model_name: null
@@ -37,9 +37,10 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
 
   useEffect(() => {
     if (isOpen) {
+      setLocalSettings(settings);
       loadStatus();
     }
-  }, [isOpen]);
+  }, [isOpen, settings]);
 
   const loadStatus = async () => {
     try {
@@ -53,7 +54,7 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
   const handleLoadModel = async () => {
     setLoading(true);
     try {
-      await loadTIPOModel(settings.model_name);
+      await loadTIPOModel(localSettings.model_name);
       await loadStatus();
       alert("TIPO model loaded successfully!");
     } catch (error) {
@@ -78,7 +79,7 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
   };
 
   const handleSave = () => {
-    onSave(settings);
+    onSettingsChange(localSettings);
     onClose();
   };
 
@@ -127,8 +128,8 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             Model
           </label>
           <select
-            value={settings.model_name}
-            onChange={(e) => setSettings({ ...settings, model_name: e.target.value })}
+            value={localSettings.model_name}
+            onChange={(e) => setLocalSettings({ ...localSettings, model_name: e.target.value })}
             className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
           >
             <option value="KBlueLeaf/TIPO-500M">TIPO-500M (Recommended)</option>
@@ -145,8 +146,8 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             Tag Length
           </label>
           <select
-            value={settings.tag_length}
-            onChange={(e) => setSettings({ ...settings, tag_length: e.target.value })}
+            value={localSettings.tag_length}
+            onChange={(e) => setLocalSettings({ ...localSettings, tag_length: e.target.value })}
             className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
           >
             <option value="very_short">Very Short (6-17 tags)</option>
@@ -162,8 +163,8 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             Natural Language Length
           </label>
           <select
-            value={settings.nl_length}
-            onChange={(e) => setSettings({ ...settings, nl_length: e.target.value })}
+            value={localSettings.nl_length}
+            onChange={(e) => setLocalSettings({ ...localSettings, nl_length: e.target.value })}
             className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
           >
             <option value="very_short">Very Short (1-2 sentences)</option>
@@ -179,15 +180,15 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             Output Category Order
           </label>
           <div className="bg-gray-700 rounded p-3 space-y-2">
-            {settings.categories.map((category, index) => (
+            {localSettings.categories.map((category, index) => (
               <div key={category.id} className="flex items-center gap-2 bg-gray-800 p-2 rounded">
                 <input
                   type="checkbox"
                   checked={category.enabled}
                   onChange={() => {
-                    const newCategories = [...settings.categories];
+                    const newCategories = [...localSettings.categories];
                     newCategories[index].enabled = !newCategories[index].enabled;
-                    setSettings({ ...settings, categories: newCategories });
+                    setLocalSettings({ ...localSettings, categories: newCategories });
                   }}
                   className="w-4 h-4"
                 />
@@ -196,9 +197,9 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
                   <button
                     onClick={() => {
                       if (index === 0) return;
-                      const newCategories = [...settings.categories];
+                      const newCategories = [...localSettings.categories];
                       [newCategories[index - 1], newCategories[index]] = [newCategories[index], newCategories[index - 1]];
-                      setSettings({ ...settings, categories: newCategories });
+                      setLocalSettings({ ...localSettings, categories: newCategories });
                     }}
                     disabled={index === 0}
                     className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
@@ -207,12 +208,12 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
                   </button>
                   <button
                     onClick={() => {
-                      if (index === settings.categories.length - 1) return;
-                      const newCategories = [...settings.categories];
+                      if (index === localSettings.categories.length - 1) return;
+                      const newCategories = [...localSettings.categories];
                       [newCategories[index], newCategories[index + 1]] = [newCategories[index + 1], newCategories[index]];
-                      setSettings({ ...settings, categories: newCategories });
+                      setLocalSettings({ ...localSettings, categories: newCategories });
                     }}
-                    disabled={index === settings.categories.length - 1}
+                    disabled={index === localSettings.categories.length - 1}
                     className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     ↓
@@ -235,15 +236,15 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             {/* Temperature */}
             <div>
               <label className="block text-sm text-gray-400 mb-1">
-                Temperature: {settings.temperature.toFixed(2)}
+                Temperature: {localSettings.temperature.toFixed(2)}
               </label>
               <input
                 type="range"
                 min="0.1"
                 max="2.0"
                 step="0.1"
-                value={settings.temperature}
-                onChange={(e) => setSettings({ ...settings, temperature: parseFloat(e.target.value) })}
+                value={localSettings.temperature}
+                onChange={(e) => setLocalSettings({ ...localSettings, temperature: parseFloat(e.target.value) })}
                 className="w-full"
               />
             </div>
@@ -251,15 +252,15 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             {/* Top P */}
             <div>
               <label className="block text-sm text-gray-400 mb-1">
-                Top P: {settings.top_p.toFixed(2)}
+                Top P: {localSettings.top_p.toFixed(2)}
               </label>
               <input
                 type="range"
                 min="0.1"
                 max="1.0"
                 step="0.05"
-                value={settings.top_p}
-                onChange={(e) => setSettings({ ...settings, top_p: parseFloat(e.target.value) })}
+                value={localSettings.top_p}
+                onChange={(e) => setLocalSettings({ ...localSettings, top_p: parseFloat(e.target.value) })}
                 className="w-full"
               />
             </div>
@@ -267,15 +268,15 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             {/* Top K */}
             <div>
               <label className="block text-sm text-gray-400 mb-1">
-                Top K: {settings.top_k}
+                Top K: {localSettings.top_k}
               </label>
               <input
                 type="range"
                 min="1"
                 max="100"
                 step="1"
-                value={settings.top_k}
-                onChange={(e) => setSettings({ ...settings, top_k: parseInt(e.target.value) })}
+                value={localSettings.top_k}
+                onChange={(e) => setLocalSettings({ ...localSettings, top_k: parseInt(e.target.value) })}
                 className="w-full"
               />
             </div>
@@ -283,15 +284,15 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             {/* Max New Tokens */}
             <div>
               <label className="block text-sm text-gray-400 mb-1">
-                Max New Tokens: {settings.max_new_tokens}
+                Max New Tokens: {localSettings.max_new_tokens}
               </label>
               <input
                 type="range"
                 min="50"
                 max="512"
                 step="10"
-                value={settings.max_new_tokens}
-                onChange={(e) => setSettings({ ...settings, max_new_tokens: parseInt(e.target.value) })}
+                value={localSettings.max_new_tokens}
+                onChange={(e) => setLocalSettings({ ...localSettings, max_new_tokens: parseInt(e.target.value) })}
                 className="w-full"
               />
             </div>

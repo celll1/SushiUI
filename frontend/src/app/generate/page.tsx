@@ -6,11 +6,14 @@ import Sidebar from "@/components/common/Sidebar";
 import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
+import FloatingGallery from "@/components/common/FloatingGallery";
 
 export default function GeneratePage() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
   const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint">("txt2img");
+  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
+  const [maxGalleryImages, setMaxGalleryImages] = useState(30);
 
   useEffect(() => {
     if (tabParam === "img2img") {
@@ -19,6 +22,18 @@ export default function GeneratePage() {
       setActiveTab("inpaint");
     }
   }, [tabParam]);
+
+  useEffect(() => {
+    // Load max gallery images setting
+    const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
+    if (savedMaxImages) {
+      setMaxGalleryImages(parseInt(savedMaxImages));
+    }
+  }, []);
+
+  const handleImageGenerated = (imageUrl: string) => {
+    setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+  };
 
   return (
     <div className="flex h-screen">
@@ -61,10 +76,13 @@ export default function GeneratePage() {
         </div>
 
         {/* Tab Content */}
-        {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} />}
-        {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} />}
-        {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} />}
+        {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+        {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+        {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
       </main>
+
+      {/* Floating Gallery - shared across all tabs */}
+      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
     </div>
   );
 }

@@ -13,7 +13,6 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
-import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
@@ -64,10 +63,11 @@ const PREVIEW_STORAGE_KEY = "img2img_preview";
 const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
 
 interface Img2ImgPanelProps {
+  onImageGenerated?: (imageUrl: string) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
 }
 
-export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
+export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
   const { modelLoaded, isBackendReady } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -113,8 +113,6 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
-  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
-  const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -201,10 +199,6 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         // }
       }
 
-      // Load max gallery images setting
-      const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
-      if (savedMaxImages) {
-        setMaxGalleryImages(parseInt(savedMaxImages));
       }
     };
 
@@ -674,7 +668,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
 
       // Add to gallery
-      setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+      if (onImageGenerated) {
+        onImageGenerated(imageUrl);
+      }
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -1229,8 +1225,6 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         />
       )}
 
-      {/* Floating Gallery */}
-      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
 
       {/* Preview Image Viewer */}
       {previewViewerOpen && generatedImage && (

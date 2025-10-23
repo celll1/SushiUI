@@ -77,10 +77,11 @@ const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 
 interface InpaintPanelProps {
+  onImageGenerated?: (imageUrl: string) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
 }
 
-export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
+export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
   const { modelLoaded, isBackendReady } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);

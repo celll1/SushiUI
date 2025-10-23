@@ -12,7 +12,6 @@ import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
-import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
@@ -41,9 +40,10 @@ const PREVIEW_STORAGE_KEY = "txt2img_preview";
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
+  onImageGenerated?: (imageUrl: string) => void;
 }
 
-export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
+export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
   const { modelLoaded } = useStartup();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -84,8 +84,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
-  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
-  const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
 
   const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -191,12 +189,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview) {
       setGeneratedImage(savedPreview);
-    }
-
-    // Load max gallery images setting
-    const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
-    if (savedMaxImages) {
-      setMaxGalleryImages(parseInt(savedMaxImages));
     }
 
   }, []);
@@ -465,8 +457,10 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       setGeneratedImageSeed(result.image.seed);
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
 
-      // Add to gallery
-      setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+      // Notify parent component
+      if (onImageGenerated) {
+        onImageGenerated(imageUrl);
+      }
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -862,9 +856,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           </div>
         </Card>
       </div>
-
-      {/* Floating Gallery */}
-      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
 
       {/* Preview Image Viewer */}
       {previewViewerOpen && generatedImage && (

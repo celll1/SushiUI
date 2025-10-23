@@ -172,6 +172,9 @@ class TIPOManager:
     ) -> str:
         """Generate using transformers library directly"""
         try:
+            print(f"[TIPO Transform] Input: '{input_prompt}'")
+            print(f"[TIPO Transform] max_new_tokens: {max_new_tokens}, temperature: {temperature}")
+
             # Tokenize input
             inputs = self.tokenizer(
                 input_prompt,
@@ -179,6 +182,8 @@ class TIPOManager:
                 truncation=True,
                 max_length=512
             ).to(self.device)
+
+            print(f"[TIPO Transform] Input token length: {inputs['input_ids'].shape[1]}")
 
             # Generate
             with torch.no_grad():
@@ -192,11 +197,16 @@ class TIPOManager:
                     pad_token_id=self.tokenizer.eos_token_id
                 )
 
+            print(f"[TIPO Transform] Output token length: {outputs.shape[1]}")
+
             # Decode
             generated_text = self.tokenizer.decode(
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
+
+            print(f"[TIPO Transform] Generated text length: {len(generated_text)} chars")
+            print(f"[TIPO Transform] Generated text preview: {generated_text[:200]}...")
 
             # Combine with input if needed
             result = input_prompt + ", " + generated_text if generated_text else input_prompt

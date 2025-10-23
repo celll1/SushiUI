@@ -18,6 +18,7 @@ from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
 from core.controlnet_manager import controlnet_manager
 from core.controlnet_preprocessor import controlnet_preprocessor
+from core.tipo_manager import tipo_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -1425,3 +1426,95 @@ async def get_available_preprocessors():
             {"id": "threshold", "name": "Threshold", "category": "simple"}
         ]
     }
+
+
+
+# ============================================================================
+# TIPO (Prompt Optimization) Endpoints
+# ============================================================================
+
+class TIPOGenerateRequest(BaseModel):
+    input_prompt: str
+    tag_length: str = "short"  # very_short, short, long, very_long
+    nl_length: str = "short"  # very_short, short, long, very_long
+    temperature: float = 1.0
+    top_p: float = 0.95
+    top_k: int = 50
+    max_new_tokens: int = 256
+
+class TIPOLoadModelRequest(BaseModel):
+    model_name: str = "KBlueLeaf/TIPO-500M"
+
+@router.post("/tipo/load-model")
+async def load_tipo_model(request: TIPOLoadModelRequest):
+    """Load TIPO model for prompt optimization"""
+    try:
+        tipo_manager.load_model(request.model_name)
+        return {
+            "status": "success",
+            "model_name": request.model_name,
+            "loaded": tipo_manager.loaded
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tipo/generate")
+async def generate_tipo_prompt(request: TIPOGenerateRequest):
+    """Generate enhanced prompt using TIPO
+    
+    Args:
+        input_prompt: Input prompt (tags or natural language)
+        tag_length: Length target for tags (very_short/short/long/very_long)
+        nl_length: Length target for natural language
+        temperature: Sampling temperature
+        top_p: Nucleus sampling parameter
+        top_k: Top-k sampling parameter
+        max_new_tokens: Maximum tokens to generate
+        
+    Returns:
+        Generated enhanced prompt
+    """
+    try:
+        if not tipo_manager.loaded:
+            # Auto-load default model if not loaded
+            tipo_manager.load_model()
+        
+        generated_prompt = tipo_manager.generate_prompt(
+            input_prompt=request.input_prompt,
+            tag_length=request.tag_length,
+            nl_length=request.nl_length,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            max_new_tokens=request.max_new_tokens
+        )
+        
+        return {
+            "status": "success",
+            "original_prompt": request.input_prompt,
+            "generated_prompt": generated_prompt
+        }
+    except Exception as e:
+        print(f"[API] TIPO generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/tipo/status")
+async def get_tipo_status():
+    """Get TIPO model status"""
+    return {
+        "loaded": tipo_manager.loaded,
+        "model_name": tipo_manager.model_name,
+        "device": tipo_manager.device
+    }
+
+@router.post("/tipo/unload")
+async def unload_tipo_model():
+    """Unload TIPO model from memory"""
+    try:
+        tipo_manager.unload_model()
+        return {"status": "success", "loaded": False}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -12,7 +12,8 @@ import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
-import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig } from "@/utils/api";
+import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
+import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
@@ -87,6 +88,19 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
+  const [tipoSettings, setTipoSettings] = useState<TIPOSettings>({
+    model_name: "KBlueLeaf/TIPO-500M",
+    tag_length: "short",
+    nl_length: "short",
+    temperature: 1.0,
+    top_p: 0.95,
+    top_k: 50,
+    max_new_tokens: 256
+  });
+  const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
+
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // WebSocket progress callback
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string) => {
@@ -553,6 +567,53 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     }
   };
 
+  const handleGenerateTIPO = async () => {
+    const textarea = promptTextareaRef.current;
+    if (!textarea) return;
+
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const hasSelection = selectionStart !== selectionEnd;
+
+    const inputPrompt = hasSelection
+      ? params.prompt.substring(selectionStart, selectionEnd)
+      : params.prompt;
+
+    if (!inputPrompt.trim()) {
+      alert("Please enter a prompt or select text to enhance");
+      return;
+    }
+
+    setIsGeneratingTIPO(true);
+    try {
+      const result = await generateTIPOPrompt({
+        input_prompt: inputPrompt,
+        tag_length: tipoSettings.tag_length,
+        nl_length: tipoSettings.nl_length,
+        temperature: tipoSettings.temperature,
+        top_p: tipoSettings.top_p,
+        top_k: tipoSettings.top_k,
+        max_new_tokens: tipoSettings.max_new_tokens
+      });
+
+      // Replace selected text or entire prompt
+      if (hasSelection) {
+        const newPrompt =
+          params.prompt.substring(0, selectionStart) +
+          result.generated_prompt +
+          params.prompt.substring(selectionEnd);
+        setParams({ ...params, prompt: newPrompt });
+      } else {
+        setParams({ ...params, prompt: result.generated_prompt });
+      }
+    } catch (error) {
+      console.error("TIPO generation failed:", error);
+      alert("TIPO generation failed. Make sure the model is loaded in settings.");
+    } finally {
+      setIsGeneratingTIPO(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -714,14 +775,39 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         </Card>
 
         <Card title="Prompt">
-          <TextareaWithTagSuggestions
-            label="Positive Prompt"
-            placeholder="Enter your prompt here..."
-            rows={4}
-            value={params.prompt}
-            onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-            enableWeightControl={true}
-          />
+          <div className="relative">
+            <TextareaWithTagSuggestions
+              label="Positive Prompt"
+              placeholder="Enter your prompt here..."
+              rows={4}
+              value={params.prompt}
+              onChange={(e) => {
+                setParams({ ...params, prompt: e.target.value });
+                if (e.target) {
+                  promptTextareaRef.current = e.target as HTMLTextAreaElement;
+                }
+              }}
+              enableWeightControl={true}
+            />
+            <div className="absolute top-0 right-0 flex items-center gap-1 px-2 py-1">
+              <button
+                onClick={handleGenerateTIPO}
+                disabled={isGeneratingTIPO || isGenerating}
+                className="p-1 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Generate enhanced prompt with TIPO"
+              >
+                {isGeneratingTIPO ? "⏳" : "✨"}
+              </button>
+              <button
+                onClick={() => setIsTIPODialogOpen(true)}
+                disabled={isGenerating}
+                className="p-1 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="TIPO Settings"
+              >
+                ⚙️
+              </button>
+            </div>
+          </div>
           <TextareaWithTagSuggestions
             label="Negative Prompt"
             placeholder="Enter negative prompt..."
@@ -731,6 +817,13 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
             enableWeightControl={true}
           />
         </Card>
+
+        <TIPODialog
+          isOpen={isTIPODialogOpen}
+          onClose={() => setIsTIPODialogOpen(false)}
+          onSave={(settings) => setTipoSettings(settings)}
+          currentSettings={tipoSettings}
+        />
 
         <Card title="Parameters">
           <div className="space-y-4">

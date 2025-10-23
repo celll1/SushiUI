@@ -497,4 +497,47 @@ export const getAvailablePreprocessors = async (): Promise<{ preprocessors: Prep
   return response.data;
 };
 
+// TIPO API
+export interface TIPOGenerateRequest {
+  input_prompt: string;
+  tag_length?: string;  // very_short, short, long, very_long
+  nl_length?: string;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  max_new_tokens?: number;
+}
+
+export interface TIPOGenerateResponse {
+  status: string;
+  original_prompt: string;
+  generated_prompt: string;
+}
+
+export interface TIPOStatusResponse {
+  loaded: boolean;
+  model_name: string | null;
+  device: string;
+}
+
+export const generateTIPOPrompt = async (request: TIPOGenerateRequest): Promise<TIPOGenerateResponse> => {
+  const response = await api.post("/tipo/generate", request);
+  return response.data;
+};
+
+export const loadTIPOModel = async (model_name: string = "KBlueLeaf/TIPO-500M") => {
+  const response = await api.post("/tipo/load-model", { model_name });
+  return response.data;
+};
+
+export const getTIPOStatus = async (): Promise<TIPOStatusResponse> => {
+  const response = await api.get("/tipo/status");
+  return response.data;
+};
+
+export const unloadTIPOModel = async () => {
+  const response = await api.post("/tipo/unload");
+  return response.data;
+};
+
 export default api;

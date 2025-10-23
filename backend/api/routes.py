@@ -1484,6 +1484,9 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             # Auto-load default model if not loaded
             tipo_manager.load_model()
 
+        # Parse input tags to preserve them
+        input_parsed = tipo_manager.parse_input_tags(request.input_prompt)
+
         # Generate raw TIPO output
         raw_output = tipo_manager.generate_prompt(
             input_prompt=request.input_prompt,
@@ -1495,13 +1498,16 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             max_new_tokens=request.max_new_tokens
         )
 
-        # Parse output into structured format
-        parsed = tipo_manager.parse_tipo_output(raw_output)
+        # Parse TIPO output into structured format
+        tipo_parsed = tipo_manager.parse_tipo_output(raw_output)
+
+        # Merge input tags with TIPO generated tags
+        merged_parsed = tipo_manager.merge_tags(input_parsed, tipo_parsed)
 
         # Format according to user preferences
         if request.category_order and request.enabled_categories:
             formatted_prompt = tipo_manager.format_prompt_from_parsed(
-                parsed,
+                merged_parsed,
                 request.category_order,
                 request.enabled_categories
             )
@@ -1510,7 +1516,7 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             default_order = ['special', 'quality', 'rating', 'artist', 'copyright', 'characters', 'meta', 'general']
             default_enabled = {cat: True for cat in default_order}
             formatted_prompt = tipo_manager.format_prompt_from_parsed(
-                parsed,
+                merged_parsed,
                 default_order,
                 default_enabled
             )
@@ -1519,7 +1525,7 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             "status": "success",
             "original_prompt": request.input_prompt,
             "raw_output": raw_output,
-            "parsed": parsed,
+            "parsed": merged_parsed,
             "generated_prompt": formatted_prompt
         }
     except Exception as e:

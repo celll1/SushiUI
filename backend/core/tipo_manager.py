@@ -260,6 +260,7 @@ class TIPOManager:
             'general_tags': []
         }
 
+
         # Parse line-by-line
         lines = output.strip().split('\n')
         for line in lines:
@@ -391,6 +392,81 @@ class TIPOManager:
         """Extract general tags (everything not quality/meta)"""
         return [t for t in tags if t not in exclude]
 
+    def parse_input_tags(self, input_prompt: str) -> Dict[str, Any]:
+        """Parse input prompt tags into categories
+
+        Args:
+            input_prompt: Original input prompt
+
+        Returns:
+            Dictionary with categorized input tags
+        """
+        # Split input into tags (comma-separated)
+        input_tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
+
+        # Categorize input tags
+        result = {
+            'special_tags': self._extract_special_tags(input_tags),
+            'quality_tags': self._extract_quality_tags(input_tags),
+            'meta_tags': self._extract_meta_tags(input_tags),
+        }
+
+        used_tags = (result['special_tags'] + result['quality_tags'] + result['meta_tags'])
+        result['general_tags'] = self._extract_general_tags(input_tags, used_tags)
+
+        print(f"[TIPO] Input tags parsed: special={result['special_tags']}, quality={result['quality_tags']}, meta={result['meta_tags']}, general={len(result['general_tags'])}")
+
+        return result
+
+    def merge_tags(self, input_parsed: Dict[str, Any], tipo_parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge input tags with TIPO generated tags
+
+        Args:
+            input_parsed: Parsed input tags
+            tipo_parsed: Parsed TIPO output
+
+        Returns:
+            Merged tags dictionary
+        """
+        merged = {
+            'rating': tipo_parsed.get('rating', ''),
+            'artist': tipo_parsed.get('artist', ''),
+            'copyright': tipo_parsed.get('copyright', ''),
+            'characters': tipo_parsed.get('characters', ''),
+            'target': tipo_parsed.get('target', ''),
+            'short_nl': tipo_parsed.get('short_nl', ''),
+            'long_nl': tipo_parsed.get('long_nl', ''),
+        }
+
+        # Merge tags from both sources, preserving order and removing duplicates
+        for category in ['special_tags', 'quality_tags', 'meta_tags', 'general_tags']:
+            input_tags = input_parsed.get(category, [])
+            tipo_tags = tipo_parsed.get(category, [])
+
+            # Combine and deduplicate (case-insensitive)
+            seen_lower = set()
+            combined = []
+
+            # Add input tags first (preserve user's original tags)
+            for tag in input_tags:
+                tag_lower = tag.lower()
+                if tag_lower not in seen_lower:
+                    seen_lower.add(tag_lower)
+                    combined.append(tag)
+
+            # Add TIPO tags
+            for tag in tipo_tags:
+                tag_lower = tag.lower()
+                if tag_lower not in seen_lower:
+                    seen_lower.add(tag_lower)
+                    combined.append(tag)
+
+            merged[category] = combined
+
+        print(f"[TIPO] Merged tags: special={len(merged['special_tags'])}, quality={len(merged['quality_tags'])}, meta={len(merged['meta_tags'])}, general={len(merged['general_tags'])}")
+
+        return merged
+
     def format_prompt_from_parsed(
         self,
         parsed: Dict[str, Any],
@@ -415,25 +491,25 @@ class TIPOManager:
             if not enabled_categories.get(category, True):
                 continue
 
-            if category == 'special' and parsed['special_tags']:
+            if category == 'special' and parsed.get('special_tags'):
                 parts.extend(parsed['special_tags'])
-            elif category == 'quality' and parsed['quality_tags']:
+            elif category == 'quality' and parsed.get('quality_tags'):
                 parts.extend(parsed['quality_tags'])
-            elif category == 'rating' and parsed['rating']:
+            elif category == 'rating' and parsed.get('rating'):
                 parts.append(parsed['rating'])
-            elif category == 'artist' and parsed['artist']:
+            elif category == 'artist' and parsed.get('artist'):
                 parts.append(parsed['artist'])
-            elif category == 'copyright' and parsed['copyright']:
+            elif category == 'copyright' and parsed.get('copyright'):
                 parts.append(parsed['copyright'])
-            elif category == 'characters' and parsed['characters']:
+            elif category == 'characters' and parsed.get('characters'):
                 parts.append(parsed['characters'])
-            elif category == 'meta' and parsed['meta_tags']:
+            elif category == 'meta' and parsed.get('meta_tags'):
                 parts.extend(parsed['meta_tags'])
-            elif category == 'general' and parsed['general_tags']:
+            elif category == 'general' and parsed.get('general_tags'):
                 parts.extend(parsed['general_tags'])
-            elif category == 'short_nl' and parsed['short_nl']:
+            elif category == 'short_nl' and parsed.get('short_nl'):
                 parts.append(parsed['short_nl'])
-            elif category == 'long_nl' and parsed['long_nl']:
+            elif category == 'long_nl' and parsed.get('long_nl'):
                 parts.append(parsed['long_nl'])
 
         return ', '.join(parts)

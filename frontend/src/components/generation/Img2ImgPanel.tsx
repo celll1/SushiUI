@@ -198,8 +198,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         //   localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
         // }
       }
-
-      }
     };
 
     loadInitialData();

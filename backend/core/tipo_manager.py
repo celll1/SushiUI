@@ -302,6 +302,13 @@ class TIPOManager:
                                 result['meta_tags'])
                     result['general_tags'] = self._extract_general_tags(tags, used_tags)
 
+                    # Debug logging
+                    print(f"[TIPO Parse] Total tags: {len(tags)}")
+                    print(f"[TIPO Parse] Special: {result['special_tags']}")
+                    print(f"[TIPO Parse] Quality: {result['quality_tags']}")
+                    print(f"[TIPO Parse] Meta: {result['meta_tags']}")
+                    print(f"[TIPO Parse] General: {len(result['general_tags'])} tags")
+
         return result
 
     def _extract_special_tags(self, tags: List[str]) -> List[str]:
@@ -334,12 +341,13 @@ class TIPOManager:
         Note: This should NOT include meta tags like highres/lowres/absurdres
         """
         quality_patterns = [
-            r'^score_\d+',        # score_9, score_8, etc.
-            r'^.*quality$',       # best quality, high quality, etc.
+            r'^score_\d+',              # score_9, score_8, etc.
+            r'^.*\s+quality$',          # best quality, high quality, etc. (with space)
+            r'^quality$',               # quality (single word)
             r'^masterpiece$',
-            r'^amazing$',
-            r'^great$',
-            r'^worst$',
+            r'^amazing\s+quality$',
+            r'^great\s+quality$',
+            r'^worst\s+quality$',
         ]
 
         quality_tags = []
@@ -348,6 +356,7 @@ class TIPOManager:
             for pattern in quality_patterns:
                 if re.match(pattern, tag_lower):
                     quality_tags.append(tag)
+                    print(f"[TIPO] Matched quality tag: '{tag}' with pattern '{pattern}'")
                     break
         return quality_tags
 

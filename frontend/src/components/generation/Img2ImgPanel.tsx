@@ -615,16 +615,10 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         max_new_tokens: tipoSettings.max_new_tokens,
         category_order: categoryOrder,
         enabled_categories: enabledCategories
-      });
-
-      // Replace selected text or entire prompt
-      if (hasSelection) {
-        const newPrompt =
-          params.prompt.substring(0, selectionStart) +
-          result.generated_prompt +
-          params.prompt.substring(selectionEnd);
-        setParams({ ...params, prompt: newPrompt });
-      } else {
+      // Replace with generated prompt
+      // If selection exists, only the selected portion is used as input
+      // The entire prompt is replaced with the generated result
+      setParams({ ...params, prompt: result.generated_prompt });
         setParams({ ...params, prompt: result.generated_prompt });
       }
     } catch (error) {

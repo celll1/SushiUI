@@ -423,16 +423,10 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         enabled_categories: enabledCategories
       });
 
-      // Replace selected text or entire prompt
-      if (hasSelection) {
-        const newPrompt =
-          params.prompt.substring(0, selectionStart) +
-          result.generated_prompt +
-          params.prompt.substring(selectionEnd);
-        setParams({ ...params, prompt: newPrompt });
-      } else {
-        setParams({ ...params, prompt: result.generated_prompt });
-      }
+      // Replace with generated prompt
+      // If selection exists, only the selected portion is used as input
+      // The entire prompt is replaced with the generated result
+      setParams({ ...params, prompt: result.generated_prompt });
     } catch (error) {
       console.error("TIPO generation failed:", error);
       alert("TIPO generation failed. Make sure the model is loaded in settings.");

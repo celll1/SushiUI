@@ -1441,6 +1441,9 @@ class TIPOGenerateRequest(BaseModel):
     top_p: float = 0.95
     top_k: int = 50
     max_new_tokens: int = 256
+    # Output formatting options
+    category_order: Optional[List[str]] = None  # Order of categories in output
+    enabled_categories: Optional[Dict[str, bool]] = None  # Which categories to include
 
 class TIPOLoadModelRequest(BaseModel):
     model_name: str = "KBlueLeaf/TIPO-500M"
@@ -1461,7 +1464,7 @@ async def load_tipo_model(request: TIPOLoadModelRequest):
 @router.post("/tipo/generate")
 async def generate_tipo_prompt(request: TIPOGenerateRequest):
     """Generate enhanced prompt using TIPO
-    
+
     Args:
         input_prompt: Input prompt (tags or natural language)
         tag_length: Length target for tags (very_short/short/long/very_long)
@@ -1470,16 +1473,19 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
         top_p: Nucleus sampling parameter
         top_k: Top-k sampling parameter
         max_new_tokens: Maximum tokens to generate
-        
+        category_order: Optional order of categories in output
+        enabled_categories: Optional dict of which categories to include
+
     Returns:
-        Generated enhanced prompt
+        Generated enhanced prompt with parsed structure
     """
     try:
         if not tipo_manager.loaded:
             # Auto-load default model if not loaded
             tipo_manager.load_model()
-        
-        generated_prompt = tipo_manager.generate_prompt(
+
+        # Generate raw TIPO output
+        raw_output = tipo_manager.generate_prompt(
             input_prompt=request.input_prompt,
             tag_length=request.tag_length,
             nl_length=request.nl_length,
@@ -1488,11 +1494,33 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             top_k=request.top_k,
             max_new_tokens=request.max_new_tokens
         )
-        
+
+        # Parse output into structured format
+        parsed = tipo_manager.parse_tipo_output(raw_output)
+
+        # Format according to user preferences
+        if request.category_order and request.enabled_categories:
+            formatted_prompt = tipo_manager.format_prompt_from_parsed(
+                parsed,
+                request.category_order,
+                request.enabled_categories
+            )
+        else:
+            # Default order if not specified
+            default_order = ['quality', 'rating', 'artist', 'characters', 'meta', 'general']
+            default_enabled = {cat: True for cat in default_order}
+            formatted_prompt = tipo_manager.format_prompt_from_parsed(
+                parsed,
+                default_order,
+                default_enabled
+            )
+
         return {
             "status": "success",
             "original_prompt": request.input_prompt,
-            "generated_prompt": generated_prompt
+            "raw_output": raw_output,
+            "parsed": parsed,
+            "generated_prompt": formatted_prompt
         }
     except Exception as e:
         print(f"[API] TIPO generation error: {e}")

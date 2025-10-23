@@ -6,7 +6,8 @@ Based on KBlueLeaf's TIPO framework: https://github.com/KohakuBlueleaf/KGen
 """
 
 import torch
-from typing import Optional, Dict, Any
+import re
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 
@@ -220,6 +221,148 @@ class TIPOManager:
             torch.cuda.empty_cache()
         self.loaded = False
         print("[TIPO] Model unloaded")
+
+    def parse_tipo_output(self, output: str) -> Dict[str, Any]:
+        """Parse TIPO output into structured format
+
+        Args:
+            output: Raw TIPO output string
+
+        Returns:
+            Dictionary with parsed components:
+            {
+                'rating': str,
+                'artist': str,
+                'characters': str,
+                'target': str,
+                'short_nl': str,
+                'long_nl': str,
+                'tags': List[str],
+                'quality_tags': List[str],
+                'meta_tags': List[str],
+                'general_tags': List[str]
+            }
+        """
+        result = {
+            'rating': '',
+            'artist': '',
+            'characters': '',
+            'target': '',
+            'short_nl': '',
+            'long_nl': '',
+            'tags': [],
+            'quality_tags': [],
+            'meta_tags': [],
+            'general_tags': []
+        }
+
+        # Parse line-by-line
+        lines = output.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse key-value pairs
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().lower()
+                value = value.strip()
+
+                if key == 'artrating' or key == 'rating':
+                    result['rating'] = value
+                elif key == 'artist':
+                    result['artist'] = value
+                elif key == 'characters' or key == 'character':
+                    result['characters'] = value
+                elif key == 'target':
+                    result['target'] = value
+                elif key == 'short':
+                    result['short_nl'] = value
+                elif key == 'long':
+                    result['long_nl'] = value
+                elif key == 'tag' or key == 'tags':
+                    # Parse comma-separated tags
+                    tags = [t.strip() for t in value.split(',') if t.strip()]
+                    result['tags'] = tags
+
+                    # Categorize tags
+                    result['quality_tags'] = self._extract_quality_tags(tags)
+                    result['meta_tags'] = self._extract_meta_tags(tags)
+                    result['general_tags'] = self._extract_general_tags(tags,
+                        result['quality_tags'] + result['meta_tags'])
+
+        return result
+
+    def _extract_quality_tags(self, tags: List[str]) -> List[str]:
+        """Extract quality-related tags"""
+        quality_keywords = [
+            'best quality', 'high quality', 'masterpiece', 'amazing quality',
+            'worst quality', 'low quality', 'normal quality', 'great quality',
+            'absurdres', 'highres', 'lowres'
+        ]
+        return [t for t in tags if any(kw in t.lower() for kw in quality_keywords)]
+
+    def _extract_meta_tags(self, tags: List[str]) -> List[str]:
+        """Extract meta tags (year, copyright, etc.)"""
+        meta_patterns = [
+            r'\d{4}',  # Year tags
+            r'.*\(.*\)',  # Tags with parentheses (often copyright/series)
+        ]
+        meta_tags = []
+        for tag in tags:
+            for pattern in meta_patterns:
+                if re.match(pattern, tag):
+                    meta_tags.append(tag)
+                    break
+        return meta_tags
+
+    def _extract_general_tags(self, tags: List[str], exclude: List[str]) -> List[str]:
+        """Extract general tags (everything not quality/meta)"""
+        return [t for t in tags if t not in exclude]
+
+    def format_prompt_from_parsed(
+        self,
+        parsed: Dict[str, Any],
+        order: List[str],
+        enabled_categories: Dict[str, bool]
+    ) -> str:
+        """Format prompt from parsed TIPO output according to user preferences
+
+        Args:
+            parsed: Parsed TIPO output from parse_tipo_output()
+            order: List of category names in desired order
+                   (e.g., ['quality', 'rating', 'artist', 'characters', 'meta',
+                    'general', 'short_nl', 'long_nl'])
+            enabled_categories: Dict mapping category names to whether they're enabled
+
+        Returns:
+            Formatted prompt string
+        """
+        parts = []
+
+        for category in order:
+            if not enabled_categories.get(category, True):
+                continue
+
+            if category == 'quality' and parsed['quality_tags']:
+                parts.extend(parsed['quality_tags'])
+            elif category == 'rating' and parsed['rating']:
+                parts.append(parsed['rating'])
+            elif category == 'artist' and parsed['artist']:
+                parts.append(parsed['artist'])
+            elif category == 'characters' and parsed['characters']:
+                parts.append(parsed['characters'])
+            elif category == 'meta' and parsed['meta_tags']:
+                parts.extend(parsed['meta_tags'])
+            elif category == 'general' and parsed['general_tags']:
+                parts.extend(parsed['general_tags'])
+            elif category == 'short_nl' and parsed['short_nl']:
+                parts.append(parsed['short_nl'])
+            elif category == 'long_nl' and parsed['long_nl']:
+                parts.append(parsed['long_nl'])
+
+        return ', '.join(parts)
 
 
 # Global TIPO manager instance

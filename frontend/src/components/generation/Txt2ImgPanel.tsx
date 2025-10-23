@@ -67,7 +67,17 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     temperature: 1.0,
     top_p: 0.95,
     top_k: 50,
-    max_new_tokens: 256
+    max_new_tokens: 256,
+    categories: [
+      { id: 'quality', label: 'Quality Tags', enabled: true },
+      { id: 'rating', label: 'Rating', enabled: true },
+      { id: 'artist', label: 'Artist', enabled: true },
+      { id: 'characters', label: 'Characters', enabled: true },
+      { id: 'meta', label: 'Meta Tags', enabled: true },
+      { id: 'general', label: 'General Tags', enabled: true },
+      { id: 'short_nl', label: 'Short Natural Language', enabled: false },
+      { id: 'long_nl', label: 'Long Natural Language', enabled: false }
+    ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
 
@@ -392,6 +402,13 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     setIsGeneratingTIPO(true);
     try {
+      // Build category order and enabled map from settings
+      const categoryOrder = tipoSettings.categories.map(c => c.id);
+      const enabledCategories: Record<string, boolean> = {};
+      tipoSettings.categories.forEach(c => {
+        enabledCategories[c.id] = c.enabled;
+      });
+
       const result = await generateTIPOPrompt({
         input_prompt: inputPrompt,
         tag_length: tipoSettings.tag_length,
@@ -399,7 +416,9 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         temperature: tipoSettings.temperature,
         top_p: tipoSettings.top_p,
         top_k: tipoSettings.top_k,
-        max_new_tokens: tipoSettings.max_new_tokens
+        max_new_tokens: tipoSettings.max_new_tokens,
+        category_order: categoryOrder,
+        enabled_categories: enabledCategories
       });
 
       // Replace selected text or entire prompt

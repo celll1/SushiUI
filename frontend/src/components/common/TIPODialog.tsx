@@ -10,6 +10,12 @@ interface TIPODialogProps {
   currentSettings: TIPOSettings;
 }
 
+export interface TIPOCategory {
+  id: string;
+  label: string;
+  enabled: boolean;
+}
+
 export interface TIPOSettings {
   model_name: string;
   tag_length: string;
@@ -18,6 +24,7 @@ export interface TIPOSettings {
   top_p: number;
   top_k: number;
   max_new_tokens: number;
+  categories: TIPOCategory[];
 }
 
 export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }: TIPODialogProps) {
@@ -164,6 +171,59 @@ export default function TIPODialog({ isOpen, onClose, onSave, currentSettings }:
             <option value="long">Long (4-6 sentences)</option>
             <option value="very_long">Very Long (6-8 sentences)</option>
           </select>
+        </div>
+
+        {/* Category Order */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Output Category Order
+          </label>
+          <div className="bg-gray-700 rounded p-3 space-y-2">
+            {settings.categories.map((category, index) => (
+              <div key={category.id} className="flex items-center gap-2 bg-gray-800 p-2 rounded">
+                <input
+                  type="checkbox"
+                  checked={category.enabled}
+                  onChange={() => {
+                    const newCategories = [...settings.categories];
+                    newCategories[index].enabled = !newCategories[index].enabled;
+                    setSettings({ ...settings, categories: newCategories });
+                  }}
+                  className="w-4 h-4"
+                />
+                <span className="flex-1 text-sm text-gray-300">{category.label}</span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => {
+                      if (index === 0) return;
+                      const newCategories = [...settings.categories];
+                      [newCategories[index - 1], newCategories[index]] = [newCategories[index], newCategories[index - 1]];
+                      setSettings({ ...settings, categories: newCategories });
+                    }}
+                    disabled={index === 0}
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (index === settings.categories.length - 1) return;
+                      const newCategories = [...settings.categories];
+                      [newCategories[index], newCategories[index + 1]] = [newCategories[index + 1], newCategories[index]];
+                      setSettings({ ...settings, categories: newCategories });
+                    }}
+                    disabled={index === settings.categories.length - 1}
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    ↓
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            Check to enable, use arrows to reorder. Tags will be output in this order.
+          </p>
         </div>
 
         {/* Advanced Settings */}

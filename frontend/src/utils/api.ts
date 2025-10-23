@@ -506,11 +506,28 @@ export interface TIPOGenerateRequest {
   top_p?: number;
   top_k?: number;
   max_new_tokens?: number;
+  category_order?: string[];
+  enabled_categories?: Record<string, boolean>;
+}
+
+export interface TIPOParsedOutput {
+  rating: string;
+  artist: string;
+  characters: string;
+  target: string;
+  short_nl: string;
+  long_nl: string;
+  tags: string[];
+  quality_tags: string[];
+  meta_tags: string[];
+  general_tags: string[];
 }
 
 export interface TIPOGenerateResponse {
   status: string;
   original_prompt: string;
+  raw_output: string;
+  parsed: TIPOParsedOutput;
   generated_prompt: string;
 }
 

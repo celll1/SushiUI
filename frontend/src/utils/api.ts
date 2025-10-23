@@ -500,6 +500,7 @@ export const getAvailablePreprocessors = async (): Promise<{ preprocessors: Prep
 // TIPO API
 export interface TIPOGenerateRequest {
   input_prompt: string;
+  model_name?: string;  // Model to use (auto-loads if not loaded)
   tag_length?: string;  // very_short, short, long, very_long
   nl_length?: string;
   temperature?: number;

@@ -761,6 +761,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       const result = await generateTIPOPrompt({
         input_prompt: inputPrompt,
+        model_name: tipoSettings.model_name,
         tag_length: tipoSettings.tag_length,
         nl_length: tipoSettings.nl_length,
         temperature: tipoSettings.temperature,

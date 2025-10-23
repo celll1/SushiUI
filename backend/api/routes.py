@@ -1435,6 +1435,7 @@ async def get_available_preprocessors():
 
 class TIPOGenerateRequest(BaseModel):
     input_prompt: str
+    model_name: Optional[str] = "KBlueLeaf/TIPO-500M"  # Model to use (auto-load if needed)
     tag_length: str = "short"  # very_short, short, long, very_long
     nl_length: str = "short"  # very_short, short, long, very_long
     temperature: float = 1.0
@@ -1467,6 +1468,7 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
 
     Args:
         input_prompt: Input prompt (tags or natural language)
+        model_name: Model to use (will auto-load if not already loaded)
         tag_length: Length target for tags (very_short/short/long/very_long)
         nl_length: Length target for natural language
         temperature: Sampling temperature
@@ -1479,10 +1481,15 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
     Returns:
         Generated enhanced prompt with parsed structure
     """
+    # Track if we auto-loaded the model (to unload it after)
+    auto_loaded = False
+
     try:
-        if not tipo_manager.loaded:
-            # Auto-load default model if not loaded
-            tipo_manager.load_model()
+        # Auto-load model if not loaded or if different model requested
+        if not tipo_manager.loaded or (tipo_manager.model_name != request.model_name):
+            print(f"[TIPO] Auto-loading model: {request.model_name}")
+            tipo_manager.load_model(request.model_name)
+            auto_loaded = True
 
         # Parse input tags to preserve them
         input_parsed = tipo_manager.parse_input_tags(request.input_prompt)
@@ -1521,6 +1528,11 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
                 default_enabled
             )
 
+        # Auto-unload model to free VRAM if we auto-loaded it
+        if auto_loaded:
+            print(f"[TIPO] Auto-unloading model to free VRAM")
+            tipo_manager.unload_model()
+
         return {
             "status": "success",
             "original_prompt": request.input_prompt,
@@ -1529,6 +1541,11 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             "generated_prompt": formatted_prompt
         }
     except Exception as e:
+        # Make sure to unload if we auto-loaded and hit an error
+        if auto_loaded and tipo_manager.loaded:
+            print(f"[TIPO] Auto-unloading model after error")
+            tipo_manager.unload_model()
+
         print(f"[API] TIPO generation error: {e}")
         import traceback
         traceback.print_exc()

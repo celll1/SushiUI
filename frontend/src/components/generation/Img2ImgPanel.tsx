@@ -610,6 +610,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       const result = await generateTIPOPrompt({
         input_prompt: inputPrompt,
+        model_name: tipoSettings.model_name,
         tag_length: tipoSettings.tag_length,
         nl_length: tipoSettings.nl_length,
         temperature: tipoSettings.temperature,

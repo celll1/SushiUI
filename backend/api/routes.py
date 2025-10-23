@@ -1506,8 +1506,8 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
                 request.enabled_categories
             )
         else:
-            # Default order if not specified
-            default_order = ['quality', 'rating', 'artist', 'characters', 'meta', 'general']
+            # Default order if not specified - following TIPO's category structure
+            default_order = ['special', 'quality', 'rating', 'artist', 'copyright', 'characters', 'meta', 'general']
             default_enabled = {cat: True for cat in default_order}
             formatted_prompt = tipo_manager.format_prompt_from_parsed(
                 parsed,

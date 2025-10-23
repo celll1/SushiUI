@@ -233,11 +233,13 @@ class TIPOManager:
             {
                 'rating': str,
                 'artist': str,
+                'copyright': str,
                 'characters': str,
                 'target': str,
                 'short_nl': str,
                 'long_nl': str,
                 'tags': List[str],
+                'special_tags': List[str],  # 1girl, 1boy, etc.
                 'quality_tags': List[str],
                 'meta_tags': List[str],
                 'general_tags': List[str]
@@ -246,11 +248,13 @@ class TIPOManager:
         result = {
             'rating': '',
             'artist': '',
+            'copyright': '',
             'characters': '',
             'target': '',
             'short_nl': '',
             'long_nl': '',
             'tags': [],
+            'special_tags': [],
             'quality_tags': [],
             'meta_tags': [],
             'general_tags': []
@@ -273,6 +277,8 @@ class TIPOManager:
                     result['rating'] = value
                 elif key == 'artist':
                     result['artist'] = value
+                elif key == 'copyright' or key == 'copyrights':
+                    result['copyright'] = value
                 elif key == 'characters' or key == 'character':
                     result['characters'] = value
                 elif key == 'target':
@@ -286,35 +292,90 @@ class TIPOManager:
                     tags = [t.strip() for t in value.split(',') if t.strip()]
                     result['tags'] = tags
 
-                    # Categorize tags
+                    # Categorize tags according to TIPO's classification
+                    result['special_tags'] = self._extract_special_tags(tags)
                     result['quality_tags'] = self._extract_quality_tags(tags)
                     result['meta_tags'] = self._extract_meta_tags(tags)
-                    result['general_tags'] = self._extract_general_tags(tags,
-                        result['quality_tags'] + result['meta_tags'])
+
+                    # General tags = everything not in other categories
+                    used_tags = (result['special_tags'] + result['quality_tags'] +
+                                result['meta_tags'])
+                    result['general_tags'] = self._extract_general_tags(tags, used_tags)
 
         return result
 
-    def _extract_quality_tags(self, tags: List[str]) -> List[str]:
-        """Extract quality-related tags"""
-        quality_keywords = [
-            'best quality', 'high quality', 'masterpiece', 'amazing quality',
-            'worst quality', 'low quality', 'normal quality', 'great quality',
-            'absurdres', 'highres', 'lowres'
+    def _extract_special_tags(self, tags: List[str]) -> List[str]:
+        """Extract special tags (character count: 1girl, 1boy, 2girls, etc.)
+
+        TIPO's <|special|> category includes character count tags.
+        """
+        special_patterns = [
+            r'^\d+girl(s)?$',     # 1girl, 2girls, etc.
+            r'^\d+boy(s)?$',      # 1boy, 2boys, etc.
+            r'^\d+other(s)?$',    # 1other, 2others, etc.
+            r'^solo$',            # solo
+            r'^multiple girls$',  # multiple girls
+            r'^multiple boys$',   # multiple boys
         ]
-        return [t for t in tags if any(kw in t.lower() for kw in quality_keywords)]
+
+        special_tags = []
+        for tag in tags:
+            tag_lower = tag.lower()
+            for pattern in special_patterns:
+                if re.match(pattern, tag_lower):
+                    special_tags.append(tag)
+                    break
+        return special_tags
+
+    def _extract_quality_tags(self, tags: List[str]) -> List[str]:
+        """Extract quality-related tags
+
+        TIPO's <|quality|> category includes score_xxx and quality descriptors.
+        Note: This should NOT include meta tags like highres/lowres/absurdres
+        """
+        quality_patterns = [
+            r'^score_\d+',        # score_9, score_8, etc.
+            r'^.*quality$',       # best quality, high quality, etc.
+            r'^masterpiece$',
+            r'^amazing$',
+            r'^great$',
+            r'^worst$',
+        ]
+
+        quality_tags = []
+        for tag in tags:
+            tag_lower = tag.lower()
+            for pattern in quality_patterns:
+                if re.match(pattern, tag_lower):
+                    quality_tags.append(tag)
+                    break
+        return quality_tags
 
     def _extract_meta_tags(self, tags: List[str]) -> List[str]:
-        """Extract meta tags (year, copyright, etc.)"""
+        """Extract meta tags
+
+        TIPO's <|meta|> category includes highres/lowres/absurdres and year tags.
+        """
+        meta_keywords = ['highres', 'lowres', 'absurdres']
         meta_patterns = [
-            r'\d{4}',  # Year tags
-            r'.*\(.*\)',  # Tags with parentheses (often copyright/series)
+            r'^\d{4}$',  # Year tags (4 digits)
         ]
+
         meta_tags = []
         for tag in tags:
+            tag_lower = tag.lower()
+
+            # Check keywords
+            if tag_lower in meta_keywords:
+                meta_tags.append(tag)
+                continue
+
+            # Check patterns
             for pattern in meta_patterns:
                 if re.match(pattern, tag):
                     meta_tags.append(tag)
                     break
+
         return meta_tags
 
     def _extract_general_tags(self, tags: List[str], exclude: List[str]) -> List[str]:
@@ -332,8 +393,8 @@ class TIPOManager:
         Args:
             parsed: Parsed TIPO output from parse_tipo_output()
             order: List of category names in desired order
-                   (e.g., ['quality', 'rating', 'artist', 'characters', 'meta',
-                    'general', 'short_nl', 'long_nl'])
+                   (e.g., ['special', 'quality', 'rating', 'artist', 'copyright',
+                    'characters', 'meta', 'general', 'short_nl', 'long_nl'])
             enabled_categories: Dict mapping category names to whether they're enabled
 
         Returns:
@@ -345,12 +406,16 @@ class TIPOManager:
             if not enabled_categories.get(category, True):
                 continue
 
-            if category == 'quality' and parsed['quality_tags']:
+            if category == 'special' and parsed['special_tags']:
+                parts.extend(parsed['special_tags'])
+            elif category == 'quality' and parsed['quality_tags']:
                 parts.extend(parsed['quality_tags'])
             elif category == 'rating' and parsed['rating']:
                 parts.append(parsed['rating'])
             elif category == 'artist' and parsed['artist']:
                 parts.append(parsed['artist'])
+            elif category == 'copyright' and parsed['copyright']:
+                parts.append(parsed['copyright'])
             elif category == 'characters' and parsed['characters']:
                 parts.append(parsed['characters'])
             elif category == 'meta' and parsed['meta_tags']:

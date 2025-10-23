@@ -513,11 +513,13 @@ export interface TIPOGenerateRequest {
 export interface TIPOParsedOutput {
   rating: string;
   artist: string;
+  copyright: string;
   characters: string;
   target: string;
   short_nl: string;
   long_nl: string;
   tags: string[];
+  special_tags: string[];
   quality_tags: string[];
   meta_tags: string[];
   general_tags: string[];

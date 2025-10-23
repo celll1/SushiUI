@@ -69,14 +69,16 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     top_k: 50,
     max_new_tokens: 256,
     categories: [
-      { id: 'quality', label: 'Quality Tags', enabled: true },
+      { id: 'special', label: 'Special', enabled: true },
+      { id: 'quality', label: 'Quality', enabled: true },
       { id: 'rating', label: 'Rating', enabled: true },
       { id: 'artist', label: 'Artist', enabled: true },
+      { id: 'copyright', label: 'Copyright', enabled: true },
       { id: 'characters', label: 'Characters', enabled: true },
-      { id: 'meta', label: 'Meta Tags', enabled: true },
-      { id: 'general', label: 'General Tags', enabled: true },
-      { id: 'short_nl', label: 'Short Natural Language', enabled: false },
-      { id: 'long_nl', label: 'Long Natural Language', enabled: false }
+      { id: 'meta', label: 'Meta', enabled: true },
+      { id: 'general', label: 'General', enabled: true },
+      { id: 'short_nl', label: 'Short NL', enabled: false },
+      { id: 'long_nl', label: 'Long NL', enabled: false }
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);

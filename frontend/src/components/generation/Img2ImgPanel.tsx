@@ -13,6 +13,8 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
+import FloatingGallery from "../common/FloatingGallery";
+import ImageViewer from "../common/ImageViewer";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -111,6 +113,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
+  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
+  const [maxGalleryImages, setMaxGalleryImages] = useState(30);
+  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -194,6 +199,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         //   console.warn("[Img2Img] Unknown input image reference format, clearing storage");
         //   localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
         // }
+      }
+
+      // Load max gallery images setting
+      const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
+      if (savedMaxImages) {
+        setMaxGalleryImages(parseInt(savedMaxImages));
       }
     };
 
@@ -657,9 +668,13 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       }
 
       const result = await generateImg2Img(params, imageSource);
-      setGeneratedImage(`/outputs/${result.image.filename}`);
+      const imageUrl = `/outputs/${result.image.filename}`;
+      setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+
+      // Add to gallery
+      setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
@@ -832,13 +847,6 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
             enableWeightControl={true}
           />
         </Card>
-
-        <TIPODialog
-          isOpen={isTIPODialogOpen}
-          onClose={() => setIsTIPODialogOpen(false)}
-          onSave={(settings) => setTipoSettings(settings)}
-          currentSettings={tipoSettings}
-        />
 
         <Card title="Parameters">
           <div className="space-y-4">
@@ -1124,7 +1132,14 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
                 </div>
               </div>
             )}
-            <div className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center">
+            <div
+              className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+              onDoubleClick={() => {
+                if (generatedImage) {
+                  setPreviewViewerOpen(true);
+                }
+              }}
+            >
               {generatedImage ? (
                 <img
                   src={generatedImage}
@@ -1213,6 +1228,25 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           onClose={() => setIsEditingImage(false)}
         />
       )}
+
+      {/* Floating Gallery */}
+      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
+
+      {/* Preview Image Viewer */}
+      {previewViewerOpen && generatedImage && (
+        <ImageViewer
+          imageUrl={generatedImage}
+          onClose={() => setPreviewViewerOpen(false)}
+        />
+      )}
+
+      {/* TIPO Dialog */}
+      <TIPODialog
+        isOpen={isTIPODialogOpen}
+        onClose={() => setIsTIPODialogOpen(false)}
+        settings={tipoSettings}
+        onSettingsChange={setTipoSettings}
+      />
     </div>
   );
 }

@@ -13,6 +13,8 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
+import FloatingGallery from "../common/FloatingGallery";
+import ImageViewer from "../common/ImageViewer";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -126,6 +128,9 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
+  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
+  const [maxGalleryImages, setMaxGalleryImages] = useState(30);
+  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -238,6 +243,12 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         //   console.warn("[Inpaint] Unknown mask image reference format, clearing storage");
         //   localStorage.removeItem(MASK_IMAGE_STORAGE_KEY);
         // }
+      }
+
+      // Load max gallery images setting
+      const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
+      if (savedMaxImages) {
+        setMaxGalleryImages(parseInt(savedMaxImages));
       }
     };
 
@@ -831,6 +842,9 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         setGeneratedImageSeed(result.actual_seed);
         setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
 
+        // Add to gallery
+        setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+
         if (isMounted) {
           localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
         }
@@ -1032,13 +1046,6 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
             enableWeightControl={true}
           />
         </Card>
-
-        <TIPODialog
-          isOpen={isTIPODialogOpen}
-          onClose={() => setIsTIPODialogOpen(false)}
-          onSave={(settings) => setTipoSettings(settings)}
-          currentSettings={tipoSettings}
-        />
 
         <Card title="Parameters">
           <div className="space-y-4">
@@ -1387,7 +1394,14 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                 </div>
               </div>
             )}
-            <div className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center">
+            <div
+              className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+              onDoubleClick={() => {
+                if (generatedImage) {
+                  setPreviewViewerOpen(true);
+                }
+              }}
+            >
               {generatedImage ? (
                 <img
                   src={generatedImage}
@@ -1479,6 +1493,25 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           initialMaskUrl={maskImage || undefined}
         />
       )}
+
+      {/* Floating Gallery */}
+      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
+
+      {/* Preview Image Viewer */}
+      {previewViewerOpen && generatedImage && (
+        <ImageViewer
+          imageUrl={generatedImage}
+          onClose={() => setPreviewViewerOpen(false)}
+        />
+      )}
+
+      {/* TIPO Dialog */}
+      <TIPODialog
+        isOpen={isTIPODialogOpen}
+        onClose={() => setIsTIPODialogOpen(false)}
+        settings={tipoSettings}
+        onSettingsChange={setTipoSettings}
+      />
     </div>
   );
 }

@@ -263,6 +263,39 @@ export default function SettingsPage() {
             </div>
           </Card>
 
+          <Card title="Generation Gallery">
+            <div className="space-y-4">
+              <p className="text-gray-400 text-sm mb-4">
+                Configure the floating gallery that shows recent generated images.
+              </p>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Maximum Images in Gallery
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="100"
+                    value={
+                      typeof window !== 'undefined'
+                        ? parseInt(localStorage.getItem('floating_gallery_max_images') || '30')
+                        : 30
+                    }
+                    onChange={(e) => {
+                      localStorage.setItem('floating_gallery_max_images', e.target.value);
+                    }}
+                    className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Maximum number of recent images to keep in the floating gallery. Older images will be removed automatically. Default: 30
+                  </p>
+                </div>
+              </div>
+            </div>
+          </Card>
+
           <Card title="Other Settings">
             <p className="text-gray-400">Additional settings will be implemented in future updates.</p>
           </Card>

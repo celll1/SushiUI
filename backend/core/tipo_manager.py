@@ -280,6 +280,7 @@ class TIPOManager:
             'tags': [],
             'special_tags': [],
             'quality_tags': [],
+            'rating_tags': [],
             'meta_tags': [],
             'general_tags': []
         }

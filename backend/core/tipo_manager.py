@@ -266,6 +266,9 @@ class TIPOManager:
                 'general_tags': List[str]
             }
         """
+        print(f"[TIPO Parse DEBUG] Raw output string ({len(output)} chars):")
+        print(f"[TIPO Parse DEBUG] {output[:500]}...")  # First 500 chars
+
         result = {
             'rating': '',
             'artist': '',
@@ -284,10 +287,14 @@ class TIPOManager:
 
         # Parse line-by-line
         lines = output.strip().split('\n')
-        for line in lines:
+        print(f"[TIPO Parse DEBUG] Split into {len(lines)} lines")
+
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
+
+            print(f"[TIPO Parse DEBUG] Line {i}: {line[:100]}")  # First 100 chars of each line
 
             # Parse key-value pairs
             if ':' in line:
@@ -295,24 +302,35 @@ class TIPOManager:
                 key = key.strip().lower()
                 value = value.strip()
 
+                print(f"[TIPO Parse DEBUG] Parsed key='{key}', value length={len(value)}")
+
                 if key == 'artrating' or key == 'rating':
                     result['rating'] = value
+                    print(f"[TIPO Parse DEBUG] Set rating='{value}'")
                 elif key == 'artist':
                     result['artist'] = value
+                    print(f"[TIPO Parse DEBUG] Set artist='{value}'")
                 elif key == 'copyright' or key == 'copyrights':
                     result['copyright'] = value
+                    print(f"[TIPO Parse DEBUG] Set copyright='{value}'")
                 elif key == 'characters' or key == 'character':
                     result['characters'] = value
+                    print(f"[TIPO Parse DEBUG] Set characters='{value}'")
                 elif key == 'target':
                     result['target'] = value
+                    print(f"[TIPO Parse DEBUG] Set target='{value}'")
                 elif key == 'short':
                     result['short_nl'] = value
+                    print(f"[TIPO Parse DEBUG] Set short_nl='{value[:100]}...'")
                 elif key == 'long':
                     result['long_nl'] = value
+                    print(f"[TIPO Parse DEBUG] Set long_nl='{value[:100]}...'")
                 elif key == 'tag' or key == 'tags':
                     # Parse comma-separated tags
                     tags = [t.strip() for t in value.split(',') if t.strip()]
                     result['tags'] = tags
+                    print(f"[TIPO Parse DEBUG] Parsed {len(tags)} tags from tag field")
+                    print(f"[TIPO Parse DEBUG] First 10 tags: {tags[:10]}")
 
                     # Categorize tags according to TIPO's classification
                     result['special_tags'] = self._extract_special_tags(tags)
@@ -332,6 +350,21 @@ class TIPOManager:
                     print(f"[TIPO Parse] Rating: {result['rating_tags']}")
                     print(f"[TIPO Parse] Meta: {result['meta_tags']}")
                     print(f"[TIPO Parse] General: {len(result['general_tags'])} tags")
+
+        print(f"[TIPO Parse DEBUG] Final result summary:")
+        print(f"[TIPO Parse DEBUG]   rating: '{result['rating']}'")
+        print(f"[TIPO Parse DEBUG]   artist: '{result['artist']}'")
+        print(f"[TIPO Parse DEBUG]   copyright: '{result['copyright']}'")
+        print(f"[TIPO Parse DEBUG]   characters: '{result['characters']}'")
+        print(f"[TIPO Parse DEBUG]   target: '{result['target']}'")
+        print(f"[TIPO Parse DEBUG]   short_nl: {len(result['short_nl'])} chars")
+        print(f"[TIPO Parse DEBUG]   long_nl: {len(result['long_nl'])} chars")
+        print(f"[TIPO Parse DEBUG]   tags: {len(result['tags'])} total")
+        print(f"[TIPO Parse DEBUG]   special_tags: {len(result['special_tags'])}")
+        print(f"[TIPO Parse DEBUG]   quality_tags: {len(result['quality_tags'])}")
+        print(f"[TIPO Parse DEBUG]   rating_tags: {len(result['rating_tags'])}")
+        print(f"[TIPO Parse DEBUG]   meta_tags: {len(result['meta_tags'])}")
+        print(f"[TIPO Parse DEBUG]   general_tags: {len(result['general_tags'])}")
 
         return result
 
@@ -471,6 +504,22 @@ class TIPOManager:
         Returns:
             Merged tags dictionary
         """
+        print(f"[TIPO Merge DEBUG] Input parsed summary:")
+        print(f"[TIPO Merge DEBUG]   special_tags: {input_parsed.get('special_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   quality_tags: {input_parsed.get('quality_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   rating_tags: {input_parsed.get('rating_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   general_tags: {len(input_parsed.get('general_tags', []))} tags")
+
+        print(f"[TIPO Merge DEBUG] TIPO parsed summary:")
+        print(f"[TIPO Merge DEBUG]   rating: '{tipo_parsed.get('rating', '')}'")
+        print(f"[TIPO Merge DEBUG]   artist: '{tipo_parsed.get('artist', '')}'")
+        print(f"[TIPO Merge DEBUG]   copyright: '{tipo_parsed.get('copyright', '')}'")
+        print(f"[TIPO Merge DEBUG]   characters: '{tipo_parsed.get('characters', '')}'")
+        print(f"[TIPO Merge DEBUG]   special_tags: {tipo_parsed.get('special_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   quality_tags: {tipo_parsed.get('quality_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   rating_tags: {tipo_parsed.get('rating_tags', [])}")
+        print(f"[TIPO Merge DEBUG]   general_tags: {len(tipo_parsed.get('general_tags', []))} tags")
+
         merged = {
             'rating': tipo_parsed.get('rating', ''),
             'artist': tipo_parsed.get('artist', ''),
@@ -493,11 +542,16 @@ class TIPOManager:
                 field_tags = [t.strip() for t in field_value.split(',') if t.strip()]
                 for tag in field_tags:
                     seen_lower.add(tag.lower())
+                    print(f"[TIPO Merge DEBUG] Added '{tag}' to seen_lower from {field}")
+
+        print(f"[TIPO Merge DEBUG] seen_lower after string fields: {len(seen_lower)} tags")
 
         # Merge tags from both sources, preserving order and removing duplicates
         for category in ['special_tags', 'quality_tags', 'rating_tags', 'meta_tags', 'general_tags']:
             input_tags = input_parsed.get(category, [])
             tipo_tags = tipo_parsed.get(category, [])
+
+            print(f"[TIPO Merge DEBUG] Processing {category}: {len(input_tags)} input + {len(tipo_tags)} tipo")
 
             combined = []
 
@@ -507,6 +561,9 @@ class TIPOManager:
                 if tag_lower not in seen_lower:
                     seen_lower.add(tag_lower)
                     combined.append(tag)
+                    print(f"[TIPO Merge DEBUG]   Added input tag '{tag}' to {category}")
+                else:
+                    print(f"[TIPO Merge DEBUG]   Skipped duplicate input tag '{tag}'")
 
             # Add TIPO tags (skip if already seen in ANY category)
             for tag in tipo_tags:
@@ -514,8 +571,12 @@ class TIPOManager:
                 if tag_lower not in seen_lower:
                     seen_lower.add(tag_lower)
                     combined.append(tag)
+                    print(f"[TIPO Merge DEBUG]   Added tipo tag '{tag}' to {category}")
+                else:
+                    print(f"[TIPO Merge DEBUG]   Skipped duplicate tipo tag '{tag}'")
 
             merged[category] = combined
+            print(f"[TIPO Merge DEBUG] {category} final: {len(combined)} tags")
 
         print(f"[TIPO] Merged tags: special={len(merged['special_tags'])}, quality={len(merged['quality_tags'])}, rating={len(merged['rating_tags'])}, meta={len(merged['meta_tags'])}, general={len(merged['general_tags'])}")
 
@@ -539,39 +600,75 @@ class TIPOManager:
         Returns:
             Formatted prompt string
         """
+        print(f"[TIPO Format DEBUG] Received parsed data:")
+        print(f"[TIPO Format DEBUG]   special_tags: {len(parsed.get('special_tags', []))} items")
+        print(f"[TIPO Format DEBUG]   quality_tags: {len(parsed.get('quality_tags', []))} items")
+        print(f"[TIPO Format DEBUG]   rating_tags: {len(parsed.get('rating_tags', []))} items")
+        print(f"[TIPO Format DEBUG]   rating: '{parsed.get('rating', '')}'")
+        print(f"[TIPO Format DEBUG]   artist: '{parsed.get('artist', '')}'")
+        print(f"[TIPO Format DEBUG]   copyright: '{parsed.get('copyright', '')}'")
+        print(f"[TIPO Format DEBUG]   characters: '{parsed.get('characters', '')}'")
+        print(f"[TIPO Format DEBUG]   meta_tags: {len(parsed.get('meta_tags', []))} items")
+        print(f"[TIPO Format DEBUG]   general_tags: {len(parsed.get('general_tags', []))} items")
+        print(f"[TIPO Format DEBUG]   short_nl: {len(parsed.get('short_nl', ''))} chars")
+        print(f"[TIPO Format DEBUG]   long_nl: {len(parsed.get('long_nl', ''))} chars")
+        print(f"[TIPO Format DEBUG] Category order: {order}")
+        print(f"[TIPO Format DEBUG] Enabled categories: {enabled_categories}")
+
         parts = []
 
         for category in order:
             if not enabled_categories.get(category, True):
+                print(f"[TIPO Format DEBUG] Skipping disabled category: {category}")
                 continue
 
             if category == 'special' and parsed.get('special_tags'):
-                parts.extend(parsed['special_tags'])
+                items = parsed['special_tags']
+                parts.extend(items)
+                print(f"[TIPO Format DEBUG] Added {len(items)} special tags")
             elif category == 'quality' and parsed.get('quality_tags'):
-                parts.extend(parsed['quality_tags'])
+                items = parsed['quality_tags']
+                parts.extend(items)
+                print(f"[TIPO Format DEBUG] Added {len(items)} quality tags")
             elif category == 'rating':
                 # Check both rating (string from TIPO) and rating_tags (list from input/tags)
                 # Use rating_tags (from tag categorization) in priority, fall back to rating string
                 if parsed.get('rating_tags'):
-                    parts.extend(parsed['rating_tags'])
+                    items = parsed['rating_tags']
+                    parts.extend(items)
+                    print(f"[TIPO Format DEBUG] Added {len(items)} rating tags")
                 elif parsed.get('rating'):
                     parts.append(parsed['rating'])
+                    print(f"[TIPO Format DEBUG] Added rating string: '{parsed['rating']}'")
             elif category == 'artist' and parsed.get('artist'):
                 parts.append(parsed['artist'])
+                print(f"[TIPO Format DEBUG] Added artist: '{parsed['artist']}'")
             elif category == 'copyright' and parsed.get('copyright'):
                 parts.append(parsed['copyright'])
+                print(f"[TIPO Format DEBUG] Added copyright: '{parsed['copyright']}'")
             elif category == 'characters' and parsed.get('characters'):
                 parts.append(parsed['characters'])
+                print(f"[TIPO Format DEBUG] Added characters: '{parsed['characters']}'")
             elif category == 'meta' and parsed.get('meta_tags'):
-                parts.extend(parsed['meta_tags'])
+                items = parsed['meta_tags']
+                parts.extend(items)
+                print(f"[TIPO Format DEBUG] Added {len(items)} meta tags")
             elif category == 'general' and parsed.get('general_tags'):
-                parts.extend(parsed['general_tags'])
+                items = parsed['general_tags']
+                parts.extend(items)
+                print(f"[TIPO Format DEBUG] Added {len(items)} general tags")
             elif category == 'short_nl' and parsed.get('short_nl'):
                 parts.append(parsed['short_nl'])
+                print(f"[TIPO Format DEBUG] Added short_nl")
             elif category == 'long_nl' and parsed.get('long_nl'):
                 parts.append(parsed['long_nl'])
+                print(f"[TIPO Format DEBUG] Added long_nl")
 
-        return ', '.join(parts)
+        result = ', '.join(parts)
+        print(f"[TIPO Format DEBUG] Final output: {len(parts)} parts, {len(result)} chars")
+        print(f"[TIPO Format DEBUG] First 200 chars: {result[:200]}")
+
+        return result
 
 
 # Global TIPO manager instance

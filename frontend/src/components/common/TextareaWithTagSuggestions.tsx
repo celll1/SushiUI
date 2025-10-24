@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, TextareaHTMLAttributes } from "react";
+import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, TextareaHTMLAttributes, forwardRef, useImperativeHandle } from "react";
 import Textarea from "./Textarea";
 import TagSuggestions from "./TagSuggestions";
 import {
@@ -32,26 +32,30 @@ interface TextareaWithTagSuggestionsProps extends Omit<TextareaHTMLAttributes<HT
  * - Enter/Tab to accept suggestion
  * - Ctrl+Backspace to delete tag at cursor
  */
-export default function TextareaWithTagSuggestions({
+const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithTagSuggestionsProps>(({
   label,
   value,
   onChange,
   enableWeightControl = false,
   rows = 4,
   ...props
-}: TextareaWithTagSuggestionsProps) {
+}, forwardedRef) => {
   const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [suggestionsPosition, setSuggestionsPosition] = useState({ top: 0, left: 0 });
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Expose the internal textarea ref to parent components
+  useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
 
   // Get textarea ref from Textarea component
   useEffect(() => {
-    if (textareaRef.current) {
-      const textarea = textareaRef.current.querySelector("textarea");
+    if (containerRef.current) {
+      const textarea = containerRef.current.querySelector("textarea");
       if (textarea) {
-        textareaRef.current = textarea as any;
+        internalTextareaRef.current = textarea as HTMLTextAreaElement;
       }
     }
   }, []);
@@ -142,7 +146,7 @@ export default function TextareaWithTagSuggestions({
       console.log('[TagSuggestions] Found results:', results.length);
 
       // Check if the tag is still valid (user might have continued typing)
-      const textarea = textareaRef.current as any;
+      const textarea = internalTextareaRef.current;
       if (textarea && textarea.tagName === "TEXTAREA") {
         const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
         // Only show results if the tag hasn't changed
@@ -232,9 +236,9 @@ export default function TextareaWithTagSuggestions({
 
   // Accept a suggestion
   const acceptSuggestion = (tag: string) => {
-    if (!textareaRef.current) return;
+    if (!internalTextareaRef.current) return;
 
-    const textarea = textareaRef.current as any;
+    const textarea = internalTextareaRef.current;
     if (textarea.tagName !== "TEXTAREA") return;
 
     const cursorPos = textarea.selectionStart;
@@ -269,7 +273,7 @@ export default function TextareaWithTagSuggestions({
   };
 
   return (
-    <div className="relative" ref={textareaRef as any}>
+    <div className="relative" ref={containerRef}>
       <Textarea
         label={label}
         value={value}
@@ -291,4 +295,8 @@ export default function TextareaWithTagSuggestions({
       )}
     </div>
   );
-}
+});
+
+TextareaWithTagSuggestions.displayName = 'TextareaWithTagSuggestions';
+
+export default TextareaWithTagSuggestions;

@@ -734,16 +734,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   const handleGenerateTIPO = async () => {
+    // Use params.prompt directly, or selection if user has selected text
     const textarea = promptTextareaRef.current;
-    if (!textarea) return;
+    let inputPrompt = params.prompt;
 
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-    const hasSelection = selectionStart !== selectionEnd;
+    // If textarea is available and user has selected text, use only the selection
+    if (textarea) {
+      const selectionStart = textarea.selectionStart;
+      const selectionEnd = textarea.selectionEnd;
+      const hasSelection = selectionStart !== selectionEnd;
 
-    const inputPrompt = hasSelection
-      ? params.prompt.substring(selectionStart, selectionEnd)
-      : params.prompt;
+      if (hasSelection) {
+        inputPrompt = params.prompt.substring(selectionStart, selectionEnd);
+      }
+    }
 
     if (!inputPrompt.trim()) {
       alert("Please enter a prompt or select text to enhance");

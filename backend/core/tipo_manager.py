@@ -306,17 +306,19 @@ class TIPOManager:
                     # Categorize tags according to TIPO's classification
                     result['special_tags'] = self._extract_special_tags(tags)
                     result['quality_tags'] = self._extract_quality_tags(tags)
+                    result['rating_tags'] = self._extract_rating_tags(tags)
                     result['meta_tags'] = self._extract_meta_tags(tags)
 
                     # General tags = everything not in other categories
                     used_tags = (result['special_tags'] + result['quality_tags'] +
-                                result['meta_tags'])
+                                result['rating_tags'] + result['meta_tags'])
                     result['general_tags'] = self._extract_general_tags(tags, used_tags)
 
                     # Debug logging
                     print(f"[TIPO Parse] Total tags: {len(tags)}")
                     print(f"[TIPO Parse] Special: {result['special_tags']}")
                     print(f"[TIPO Parse] Quality: {result['quality_tags']}")
+                    print(f"[TIPO Parse] Rating: {result['rating_tags']}")
                     print(f"[TIPO Parse] Meta: {result['meta_tags']}")
                     print(f"[TIPO Parse] General: {len(result['general_tags'])} tags")
 
@@ -398,8 +400,26 @@ class TIPOManager:
 
         return meta_tags
 
+    def _extract_rating_tags(self, tags: List[str]) -> List[str]:
+        """Extract rating tags
+
+        TIPO's <|rating|> category includes rating tags like general, sensitive, nsfw, explicit
+        """
+        rating_keywords = [
+            'general', 'sensitive', 'questionable', 'explicit', 'nsfw', 'safe',
+            'rating:general', 'rating:sensitive', 'rating:questionable', 'rating:explicit'
+        ]
+
+        rating_tags = []
+        for tag in tags:
+            tag_lower = tag.lower()
+            if tag_lower in rating_keywords:
+                rating_tags.append(tag)
+
+        return rating_tags
+
     def _extract_general_tags(self, tags: List[str], exclude: List[str]) -> List[str]:
-        """Extract general tags (everything not quality/meta)"""
+        """Extract general tags (everything not in other categories)"""
         return [t for t in tags if t not in exclude]
 
     def parse_input_tags(self, input_prompt: str) -> Dict[str, Any]:
@@ -418,13 +438,15 @@ class TIPOManager:
         result = {
             'special_tags': self._extract_special_tags(input_tags),
             'quality_tags': self._extract_quality_tags(input_tags),
+            'rating_tags': self._extract_rating_tags(input_tags),
             'meta_tags': self._extract_meta_tags(input_tags),
         }
 
-        used_tags = (result['special_tags'] + result['quality_tags'] + result['meta_tags'])
+        used_tags = (result['special_tags'] + result['quality_tags'] +
+                    result['rating_tags'] + result['meta_tags'])
         result['general_tags'] = self._extract_general_tags(input_tags, used_tags)
 
-        print(f"[TIPO] Input tags parsed: special={result['special_tags']}, quality={result['quality_tags']}, meta={result['meta_tags']}, general={len(result['general_tags'])}")
+        print(f"[TIPO] Input tags parsed: special={result['special_tags']}, quality={result['quality_tags']}, rating={result['rating_tags']}, meta={result['meta_tags']}, general={len(result['general_tags'])}")
 
         return result
 
@@ -449,7 +471,7 @@ class TIPOManager:
         }
 
         # Merge tags from both sources, preserving order and removing duplicates
-        for category in ['special_tags', 'quality_tags', 'meta_tags', 'general_tags']:
+        for category in ['special_tags', 'quality_tags', 'rating_tags', 'meta_tags', 'general_tags']:
             input_tags = input_parsed.get(category, [])
             tipo_tags = tipo_parsed.get(category, [])
 
@@ -473,7 +495,7 @@ class TIPOManager:
 
             merged[category] = combined
 
-        print(f"[TIPO] Merged tags: special={len(merged['special_tags'])}, quality={len(merged['quality_tags'])}, meta={len(merged['meta_tags'])}, general={len(merged['general_tags'])}")
+        print(f"[TIPO] Merged tags: special={len(merged['special_tags'])}, quality={len(merged['quality_tags'])}, rating={len(merged['rating_tags'])}, meta={len(merged['meta_tags'])}, general={len(merged['general_tags'])}")
 
         return merged
 
@@ -505,8 +527,13 @@ class TIPOManager:
                 parts.extend(parsed['special_tags'])
             elif category == 'quality' and parsed.get('quality_tags'):
                 parts.extend(parsed['quality_tags'])
-            elif category == 'rating' and parsed.get('rating'):
-                parts.append(parsed['rating'])
+            elif category == 'rating':
+                # Check both rating (string from TIPO) and rating_tags (list from input/tags)
+                # Use rating_tags (from tag categorization) in priority, fall back to rating string
+                if parsed.get('rating_tags'):
+                    parts.extend(parsed['rating_tags'])
+                elif parsed.get('rating'):
+                    parts.append(parsed['rating'])
             elif category == 'artist' and parsed.get('artist'):
                 parts.append(parsed['artist'])
             elif category == 'copyright' and parsed.get('copyright'):

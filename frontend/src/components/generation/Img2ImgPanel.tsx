@@ -95,9 +95,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     model_name: "KBlueLeaf/TIPO-500M",
     tag_length: "short",
     nl_length: "short",
-    temperature: 1.0,
-    top_p: 0.95,
-    top_k: 50,
+    temperature: 0.5,
+    top_p: 0.9,
+    top_k: 40,
     max_new_tokens: 256,
     categories: [
       { id: 'rating', label: 'Rating', enabled: true },

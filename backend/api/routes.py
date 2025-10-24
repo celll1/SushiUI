@@ -1438,9 +1438,9 @@ class TIPOGenerateRequest(BaseModel):
     model_name: Optional[str] = "KBlueLeaf/TIPO-500M"  # Model to use (auto-load if needed)
     tag_length: str = "short"  # very_short, short, long, very_long
     nl_length: str = "short"  # very_short, short, long, very_long
-    temperature: float = 1.0
-    top_p: float = 0.95
-    top_k: int = 50
+    temperature: float = 0.5
+    top_p: float = 0.9
+    top_k: int = 40
     max_new_tokens: int = 256
     # Output formatting options
     category_order: Optional[List[str]] = None  # Order of categories in output

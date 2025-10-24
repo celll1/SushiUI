@@ -470,13 +470,24 @@ class TIPOManager:
             'long_nl': tipo_parsed.get('long_nl', ''),
         }
 
+        # Global deduplication across ALL categories and fields (case-insensitive)
+        # This ensures that a tag like "original" doesn't appear in both general_tags and copyright field
+        seen_lower = set()
+
+        # First, collect all tags from string fields (artist, copyright, characters) to avoid duplicates
+        for field in ['artist', 'copyright', 'characters']:
+            field_value = tipo_parsed.get(field, '')
+            if field_value:
+                # Split by comma if multiple values
+                field_tags = [t.strip() for t in field_value.split(',') if t.strip()]
+                for tag in field_tags:
+                    seen_lower.add(tag.lower())
+
         # Merge tags from both sources, preserving order and removing duplicates
         for category in ['special_tags', 'quality_tags', 'rating_tags', 'meta_tags', 'general_tags']:
             input_tags = input_parsed.get(category, [])
             tipo_tags = tipo_parsed.get(category, [])
 
-            # Combine and deduplicate (case-insensitive)
-            seen_lower = set()
             combined = []
 
             # Add input tags first (preserve user's original tags)
@@ -486,7 +497,7 @@ class TIPOManager:
                     seen_lower.add(tag_lower)
                     combined.append(tag)
 
-            # Add TIPO tags
+            # Add TIPO tags (skip if already seen in ANY category)
             for tag in tipo_tags:
                 tag_lower = tag.lower()
                 if tag_lower not in seen_lower:

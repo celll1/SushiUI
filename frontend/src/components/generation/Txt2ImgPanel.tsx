@@ -536,7 +536,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               }}
               enableWeightControl={true}
             />
-            <div className="absolute top-0 right-0 flex items-center gap-1 px-2 py-1">
+            <div className="absolute -top-1 right-0 flex items-center gap-1 px-2 py-1">
               <button
                 onClick={handleGenerateTIPO}
                 disabled={isGeneratingTIPO || isGenerating}

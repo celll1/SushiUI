@@ -1024,7 +1024,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               }}
               enableWeightControl={true}
             />
-            <div className="absolute top-0 right-0 flex items-center gap-1 px-2 py-1">
+            <div className="absolute -top-1 right-0 flex items-center gap-1 px-2 py-1">
               <button
                 onClick={handleGenerateTIPO}
                 disabled={isGeneratingTIPO || isGenerating}

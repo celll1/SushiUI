@@ -33,12 +33,23 @@ class TIPOManager:
             # Check if tipo-kgen is installed
             try:
                 import kgen.models as models
-                import kgen.executor.tipo as tipo_executor
+                from kgen.executor.tipo import TipoExecutor
                 from kgen.formatter import seperate_tags
 
-                # Store for later use
-                self.kgen_models = models
-                self.tipo_executor = tipo_executor
+                print("[TIPO] Using tipo-kgen library")
+
+                # Load model and tokenizer through kgen
+                self.model, self.tokenizer = models.load_model(
+                    model_name,
+                    device=self.device
+                )
+
+                # Create TIPO executor
+                self.tipo_executor = TipoExecutor(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    device=self.device
+                )
                 self.seperate_tags = seperate_tags
 
             except ImportError:

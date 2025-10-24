@@ -15,6 +15,7 @@ omegaconf>=2.3.0
 peft>=0.7.0  # Required for LoRA support
 sentencepiece>=0.2.0  # Required for TIPO tokenizer
 protobuf>=4.21.0  # Required for TIPO model support
+tipo-kgen>=0.1.0  # TIPO prompt optimization library
 
 # Image Processing
 Pillow>=10.2.0

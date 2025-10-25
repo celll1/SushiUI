@@ -33,7 +33,7 @@ class TIPOManager:
             # Check if tipo-kgen is installed
             try:
                 import kgen.models as models
-                from kgen.executor.tipo import TipoExecutor
+                from kgen.executor.tipo import tipo_runner, parse_tipo_request, parse_tipo_result
                 from kgen.formatter import seperate_tags
 
                 print("[TIPO] Using tipo-kgen library")
@@ -44,16 +44,16 @@ class TIPOManager:
                     device=self.device
                 )
 
-                # Create TIPO executor
-                self.tipo_executor = TipoExecutor(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    device=self.device
-                )
+                # Store kgen functions for use in generation
+                self.tipo_runner = tipo_runner
+                self.parse_tipo_request = parse_tipo_request
+                self.parse_tipo_result = parse_tipo_result
                 self.seperate_tags = seperate_tags
 
-            except ImportError:
-                print("[TIPO] Warning: tipo-kgen package not installed")
+                print("[TIPO] tipo-kgen initialized successfully")
+
+            except ImportError as e:
+                print(f"[TIPO] Warning: tipo-kgen package not installed or import failed: {e}")
                 print("[TIPO] Install with: pip install tipo-kgen")
                 print("[TIPO] Falling back to transformers-only mode")
 
@@ -109,7 +109,7 @@ class TIPOManager:
 
         try:
             # Check if using tipo-kgen
-            if hasattr(self, 'tipo_executor'):
+            if hasattr(self, 'tipo_runner'):
                 return self._generate_with_kgen(
                     input_prompt, tag_length, nl_length,
                     temperature, top_p, top_k, max_new_tokens, **kwargs
@@ -138,6 +138,13 @@ class TIPOManager:
     ) -> str:
         """Generate using tipo-kgen library"""
         try:
+            from kgen.generate import generate
+            from kgen.metainfo import TARGET
+            import time
+
+            print(f"[TIPO KGen] Input: '{input_prompt}'")
+            print(f"[TIPO KGen] Tag length: {tag_length}, NL length: {nl_length}")
+
             # Parse input as tags or natural language
             # If comma-separated, treat as tags; otherwise as natural language
             if ',' in input_prompt:
@@ -148,22 +155,29 @@ class TIPOManager:
                 nl_prompt = input_prompt
 
             # Parse request
-            meta, operations, general, nl_prompt_parsed = self.tipo_executor.parse_tipo_request(
+            meta, operations, general, nl_prompt_parsed = self.parse_tipo_request(
                 self.seperate_tags(tags) if tags else [],
                 nl_prompt,
                 tag_length_target=tag_length,
+                nl_length_target=nl_length,
                 generate_extra_nl_prompt=not nl_prompt
             )
 
-            # Run TIPO
-            result, timing = self.tipo_executor.tipo_runner(
+            print(f"[TIPO KGen] Parsed - meta: {len(meta)}, operations: {len(operations)}, general: {len(general)}, nl: {nl_prompt_parsed}")
+
+            # Run TIPO runner (model is already loaded globally by kgen.models.load_model)
+            start_time = time.time()
+            result, _ = self.tipo_runner(
                 meta, operations, general, nl_prompt_parsed,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k
             )
+            timing = time.time() - start_time
 
-            print(f"[TIPO] Generation took {timing:.2f}s")
+            print(f"[TIPO KGen] Generation took {timing:.2f}s")
+            print(f"[TIPO KGen] Result: {result[:200]}...")
+
             return result
 
         except Exception as e:

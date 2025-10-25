@@ -462,6 +462,9 @@ class DiffusionPipelineManager:
             cn_pipeline.control_images = control_images
             cn_pipeline.controlnet_configs = controlnet_images
 
+            # Ensure all pipeline components are on the correct device
+            cn_pipeline = cn_pipeline.to(self.device)
+
             print(f"ControlNet pipeline created with {len(controlnets)} ControlNet(s)")
             return cn_pipeline
 

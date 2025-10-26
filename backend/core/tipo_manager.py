@@ -38,13 +38,18 @@ class TIPOManager:
 
                 print("[TIPO] Using tipo-kgen library")
 
-                # Load model and tokenizer through kgen
-                self.model, self.tokenizer = models.load_model(
+                # Load model and tokenizer through kgen (sets global variables)
+                models.load_model(
                     model_name,
                     device=self.device
                 )
 
-                # Store kgen functions for use in generation
+                # Access the global model and tokenizer from kgen.models
+                self.model = models.text_model
+                self.tokenizer = models.tokenizer
+
+                # Store kgen modules and functions for use in generation
+                self.kgen_models = models
                 self.tipo_runner = tipo_runner
                 self.parse_tipo_request = parse_tipo_request
                 self.parse_tipo_result = parse_tipo_result

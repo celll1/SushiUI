@@ -851,6 +851,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // Add to gallery
         setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
 
+        // Notify parent component
+        if (onImageGenerated) {
+          onImageGenerated(imageUrl);
+        }
+
         if (isMounted) {
           localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
         }

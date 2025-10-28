@@ -159,9 +159,19 @@ class TIPOManager:
                 tags = []
                 nl_prompt = input_prompt
 
+            # Separate tags into categories using kgen
+            if tags:
+                tag_map = self.seperate_tags(tags)
+            else:
+                # Empty tag map for natural language only
+                tag_map = {
+                    'artist': [], 'characters': [], 'copyrights': [],
+                    'meta': [], 'special': [], 'quality': [], 'rating': [], 'general': []
+                }
+
             # Parse request
             meta, operations, general, nl_prompt_parsed = self.parse_tipo_request(
-                self.seperate_tags(tags) if tags else [],
+                tag_map,
                 nl_prompt,
                 tag_length_target=tag_length,
                 nl_length_target=nl_length,

@@ -4,13 +4,32 @@ class WebSocketClient {
   private ws: WebSocket | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private backendPort: number = 8000; // Default port
 
-  connect() {
+  async fetchBackendPort(): Promise<number> {
+    try {
+      // Try to get port info from backend's port-info endpoint
+      const response = await fetch('/api/port-info');
+      if (response.ok) {
+        const data = await response.json();
+        return data.port;
+      }
+    } catch (error) {
+      console.log('[WebSocket] Could not fetch backend port, using default:', error);
+    }
+    return 8000; // Default fallback
+  }
+
+  async connect() {
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
 
-    const wsUrl = `ws://localhost:8000/ws/progress`;
+    // Fetch backend port if not already fetched
+    this.backendPort = await this.fetchBackendPort();
+
+    const wsUrl = `ws://localhost:${this.backendPort}/ws/progress`;
+    console.log(`[WebSocket] Connecting to ${wsUrl}`);
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {

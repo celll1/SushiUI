@@ -1569,3 +1569,19 @@ async def unload_tipo_model():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/port-info")
+async def get_port_info():
+    """Get backend server port information"""
+    import json
+    port_info_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".port_info")
+
+    try:
+        if os.path.exists(port_info_file):
+            with open(port_info_file, 'r') as f:
+                port_info = json.load(f)
+                return port_info
+    except Exception as e:
+        print(f"[API] Error reading port info: {e}")
+
+    # Fallback to default
+    return {"port": 8000, "host": "localhost"}

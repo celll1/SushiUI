@@ -65,6 +65,7 @@ temp/
 last_model.json
 model_hash_cache.json
 .requirements_hash
+backend/.port_info
 
 # 要件定義
 sd-app-requirements.md

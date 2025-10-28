@@ -80,12 +80,45 @@ else:
 async def root():
     return {"message": "Stable Diffusion WebUI API", "version": "0.1.0"}
 
+def find_available_port(start_port: int, max_attempts: int = 10) -> int:
+    """Find an available port starting from start_port"""
+    import socket
+
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((settings.host, port))
+                return port
+        except OSError:
+            print(f"[Server] Port {port} is already in use, trying next port...")
+            continue
+
+    raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
+
+def save_port_info(port: int):
+    """Save port info to file for frontend to read"""
+    import json
+    port_info_file = os.path.join(os.path.dirname(__file__), ".port_info")
+    with open(port_info_file, "w") as f:
+        json.dump({"port": port, "host": settings.host}, f)
+    print(f"[Server] Port info saved to {port_info_file}")
+
 if __name__ == "__main__":
     import uvicorn
+
+    # Find available port
+    actual_port = find_available_port(settings.port)
+
+    if actual_port != settings.port:
+        print(f"[Server] Port {settings.port} is in use, using port {actual_port} instead")
+
+    # Save port info for frontend
+    save_port_info(actual_port)
+
     uvicorn.run(
         app,
         host=settings.host,
-        port=settings.port,
+        port=actual_port,
         timeout_keep_alive=600,  # Keep connections alive for 10 minutes
         timeout_graceful_shutdown=30,  # 30 seconds for graceful shutdown
     )

@@ -9,7 +9,7 @@ interface FloatingGalleryProps {
 }
 
 export default function FloatingGallery({ images, maxImages }: FloatingGalleryProps) {
-  const [viewerImage, setViewerImage] = useState<string | null>(null);
+  const [viewerImageIndex, setViewerImageIndex] = useState<number | null>(null);
 
   // Limit to most recent images
   const displayImages = images.slice(-maxImages);
@@ -17,6 +17,16 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
   if (displayImages.length === 0) {
     return null;
   }
+
+  const handleNavigate = (direction: 'prev' | 'next') => {
+    if (viewerImageIndex === null) return;
+
+    if (direction === 'prev' && viewerImageIndex > 0) {
+      setViewerImageIndex(viewerImageIndex - 1);
+    } else if (direction === 'next' && viewerImageIndex < displayImages.length - 1) {
+      setViewerImageIndex(viewerImageIndex + 1);
+    }
+  };
 
   return (
     <>
@@ -26,7 +36,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
             <div
               key={`${image.timestamp}-${index}`}
               className="flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
-              onDoubleClick={() => setViewerImage(image.url)}
+              onDoubleClick={() => setViewerImageIndex(index)}
             >
               <img
                 src={image.url}
@@ -38,10 +48,13 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
         </div>
       </div>
 
-      {viewerImage && (
+      {viewerImageIndex !== null && (
         <ImageViewer
-          imageUrl={viewerImage}
-          onClose={() => setViewerImage(null)}
+          imageUrl={displayImages[viewerImageIndex].url}
+          onClose={() => setViewerImageIndex(null)}
+          onNavigate={handleNavigate}
+          hasPrev={viewerImageIndex > 0}
+          hasNext={viewerImageIndex < displayImages.length - 1}
         />
       )}
     </>

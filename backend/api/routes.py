@@ -1491,10 +1491,7 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             tipo_manager.load_model(request.model_name)
             auto_loaded = True
 
-        # Parse input tags to preserve them
-        input_parsed = tipo_manager.parse_input_tags(request.input_prompt)
-
-        # Generate raw TIPO output
+        # Generate TIPO output
         raw_output = tipo_manager.generate_prompt(
             input_prompt=request.input_prompt,
             tag_length=request.tag_length,
@@ -1505,28 +1502,40 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             max_new_tokens=request.max_new_tokens
         )
 
-        # Parse TIPO output into structured format
-        tipo_parsed = tipo_manager.parse_tipo_output(raw_output)
-
-        # Merge input tags with TIPO generated tags
-        merged_parsed = tipo_manager.merge_tags(input_parsed, tipo_parsed)
-
-        # Format according to user preferences
-        if request.category_order and request.enabled_categories:
-            formatted_prompt = tipo_manager.format_prompt_from_parsed(
-                merged_parsed,
-                request.category_order,
-                request.enabled_categories
-            )
+        # Check if using tipo-kgen (already formatted output)
+        if hasattr(tipo_manager, 'tipo_runner'):
+            # tipo-kgen returns already formatted output, use directly
+            formatted_prompt = raw_output
+            print("[TIPO] Using tipo-kgen formatted output directly")
         else:
-            # Default order if not specified - following TIPO's category structure
-            default_order = ['special', 'quality', 'rating', 'artist', 'copyright', 'characters', 'meta', 'general']
-            default_enabled = {cat: True for cat in default_order}
-            formatted_prompt = tipo_manager.format_prompt_from_parsed(
-                merged_parsed,
-                default_order,
-                default_enabled
-            )
+            # Transformers-only mode: need to parse, merge, and format
+            print("[TIPO] Using transformers mode: parsing and formatting output")
+
+            # Parse input tags to preserve them
+            input_parsed = tipo_manager.parse_input_tags(request.input_prompt)
+
+            # Parse TIPO output into structured format
+            tipo_parsed = tipo_manager.parse_tipo_output(raw_output)
+
+            # Merge input tags with TIPO generated tags
+            merged_parsed = tipo_manager.merge_tags(input_parsed, tipo_parsed)
+
+            # Format according to user preferences
+            if request.category_order and request.enabled_categories:
+                formatted_prompt = tipo_manager.format_prompt_from_parsed(
+                    merged_parsed,
+                    request.category_order,
+                    request.enabled_categories
+                )
+            else:
+                # Default order if not specified - following TIPO's category structure
+                default_order = ['special', 'quality', 'rating', 'artist', 'copyright', 'characters', 'meta', 'general']
+                default_enabled = {cat: True for cat in default_order}
+                formatted_prompt = tipo_manager.format_prompt_from_parsed(
+                    merged_parsed,
+                    default_order,
+                    default_enabled
+                )
 
         # Auto-unload model to free VRAM if we auto-loaded it
         if auto_loaded:

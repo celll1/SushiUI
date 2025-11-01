@@ -192,13 +192,17 @@ class TIPOManager:
 
             print(f"[TIPO KGen] Generation took {timing:.2f}s")
             print(f"[TIPO KGen] Result type: {type(result)}")
-            print(f"[TIPO KGen] Result: {result}")
+            print(f"[TIPO KGen] Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
 
             # Format result using kgen's apply_format if it's a dict
             if isinstance(result, dict):
                 from kgen.formatter import apply_format
-                # Use default TIPO format
-                formatted_result = apply_format(result)
+
+                # Default TIPO format string (tag-only mode)
+                # This matches the z-tipo-extension default format
+                format_string = """<|special|>, <|characters|>, <|copyrights|>, <|artist|>, <|general|>, <|quality|>, <|meta|>, <|rating|>"""
+
+                formatted_result = apply_format(result, format_string)
                 print(f"[TIPO KGen] Formatted result: {formatted_result[:200]}...")
                 return formatted_result
             else:

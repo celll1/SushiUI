@@ -1542,13 +1542,19 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             print(f"[TIPO] Auto-unloading model to free VRAM")
             tipo_manager.unload_model()
 
-        return {
+        # Build response
+        response = {
             "status": "success",
             "original_prompt": request.input_prompt,
             "raw_output": raw_output,
-            "parsed": merged_parsed,
             "generated_prompt": formatted_prompt
         }
+
+        # Add parsed data only if using transformers mode
+        if not hasattr(tipo_manager, 'tipo_runner'):
+            response["parsed"] = merged_parsed
+
+        return response
     except Exception as e:
         # Make sure to unload if we auto-loaded and hit an error
         if auto_loaded and tipo_manager.loaded:

@@ -1502,11 +1502,26 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             max_new_tokens=request.max_new_tokens
         )
 
-        # Check if using tipo-kgen (already formatted output)
-        if hasattr(tipo_manager, 'tipo_runner'):
-            # tipo-kgen returns already formatted output, use directly
-            formatted_prompt = raw_output
-            print("[TIPO] Using tipo-kgen formatted output directly")
+        # Check if using tipo-kgen (returns dict)
+        if hasattr(tipo_manager, 'tipo_runner') and isinstance(raw_output, dict):
+            # tipo-kgen returns a dict, format according to user preferences
+            print("[TIPO] Using tipo-kgen mode: formatting result dict")
+
+            if request.category_order and request.enabled_categories:
+                formatted_prompt = tipo_manager.format_kgen_result(
+                    raw_output,
+                    request.category_order,
+                    request.enabled_categories
+                )
+            else:
+                # Default order if not specified
+                default_order = ['rating', 'quality', 'special', 'copyright', 'characters', 'artist', 'general', 'meta', 'short_nl', 'long_nl']
+                default_enabled = {cat: True for cat in default_order}
+                formatted_prompt = tipo_manager.format_kgen_result(
+                    raw_output,
+                    default_order,
+                    default_enabled
+                )
         else:
             # Transformers-only mode: need to parse, merge, and format
             print("[TIPO] Using transformers mode: parsing and formatting output")

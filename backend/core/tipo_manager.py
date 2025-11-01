@@ -194,19 +194,9 @@ class TIPOManager:
             print(f"[TIPO KGen] Result type: {type(result)}")
             print(f"[TIPO KGen] Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
 
-            # Format result using kgen's apply_format if it's a dict
-            if isinstance(result, dict):
-                from kgen.formatter import apply_format
-
-                # Default TIPO format string (tag-only mode)
-                # This matches the z-tipo-extension default format
-                format_string = """<|special|>, <|characters|>, <|copyrights|>, <|artist|>, <|general|>, <|quality|>, <|meta|>, <|rating|>"""
-
-                formatted_result = apply_format(result, format_string)
-                print(f"[TIPO KGen] Formatted result: {formatted_result[:200]}...")
-                return formatted_result
-            else:
-                return str(result)
+            # Return the result dict directly for formatting by the API layer
+            # This allows custom category ordering to be applied
+            return result
 
         except Exception as e:
             print(f"[TIPO] KGen generation failed: {e}")
@@ -710,6 +700,66 @@ class TIPOManager:
         result = ', '.join(parts)
         print(f"[TIPO Format DEBUG] Final output: {len(parts)} parts, {len(result)} chars")
         print(f"[TIPO Format DEBUG] First 200 chars: {result[:200]}")
+
+        return result
+
+    def format_kgen_result(
+        self,
+        kgen_result: Dict[str, Any],
+        order: List[str],
+        enabled_categories: Dict[str, bool]
+    ) -> str:
+        """Format tipo-kgen result dict according to user preferences
+
+        Args:
+            kgen_result: Result dict from tipo-kgen (has keys like 'special', 'general', 'rating', etc.)
+            order: List of category names in desired order
+            enabled_categories: Dict mapping category names to whether they're enabled
+
+        Returns:
+            Formatted prompt string
+        """
+        print(f"[TIPO KGen Format] Formatting with order: {order}")
+        print(f"[TIPO KGen Format] Enabled categories: {enabled_categories}")
+
+        parts = []
+
+        # Map frontend category names to kgen result keys
+        category_map = {
+            'rating': 'rating',
+            'quality': 'quality',
+            'special': 'special',
+            'copyright': 'copyrights',  # Note: plural in kgen
+            'characters': 'characters',
+            'artist': 'artist',
+            'general': 'general',
+            'meta': 'meta',
+            'short_nl': 'generated',  # Short NL from generated field
+            'long_nl': 'extended'     # Long NL from extended field
+        }
+
+        for category in order:
+            if not enabled_categories.get(category, True):
+                print(f"[TIPO KGen Format] Skipping disabled category: {category}")
+                continue
+
+            kgen_key = category_map.get(category)
+            if not kgen_key:
+                continue
+
+            value = kgen_result.get(kgen_key, [])
+
+            # Handle list values (most categories)
+            if isinstance(value, list) and value:
+                parts.extend(value)
+                print(f"[TIPO KGen Format] Added {len(value)} items from {category}")
+            # Handle string values (NL fields)
+            elif isinstance(value, str) and value:
+                parts.append(value)
+                print(f"[TIPO KGen Format] Added string from {category}")
+
+        result = ', '.join(parts)
+        print(f"[TIPO KGen Format] Final output: {len(parts)} parts, {len(result)} chars")
 
         return result
 

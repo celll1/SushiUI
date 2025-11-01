@@ -182,7 +182,7 @@ class TIPOManager:
 
             # Run TIPO runner (model is already loaded globally by kgen.models.load_model)
             start_time = time.time()
-            result, _ = self.tipo_runner(
+            result, timing_info = self.tipo_runner(
                 meta, operations, general, nl_prompt_parsed,
                 temperature=temperature,
                 top_p=top_p,
@@ -191,9 +191,18 @@ class TIPOManager:
             timing = time.time() - start_time
 
             print(f"[TIPO KGen] Generation took {timing:.2f}s")
-            print(f"[TIPO KGen] Result: {result[:200]}...")
+            print(f"[TIPO KGen] Result type: {type(result)}")
+            print(f"[TIPO KGen] Result: {result}")
 
-            return result
+            # Format result using kgen's apply_format if it's a dict
+            if isinstance(result, dict):
+                from kgen.formatter import apply_format
+                # Use default TIPO format
+                formatted_result = apply_format(result)
+                print(f"[TIPO KGen] Formatted result: {formatted_result[:200]}...")
+                return formatted_result
+            else:
+                return str(result)
 
         except Exception as e:
             print(f"[TIPO] KGen generation failed: {e}")

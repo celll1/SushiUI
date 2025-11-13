@@ -994,6 +994,33 @@ def custom_inpaint_sampling_loop(
         image = vae.decode(latents).sample
 
     image = (image / 2 + 0.5).clamp(0, 1)
+
+    # Apply pixel-space mask blending for non-inpaint UNets
+    # This preserves the original image exactly in non-masked regions
+    if not is_inpaint_unet and t_start_override == 0:
+        print("[CustomSampling] Applying pixel-space mask blending for exact preservation")
+
+        # Convert original init_image to tensor in same format as decoded image
+        if isinstance(init_image, Image.Image):
+            original_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+            original_tensor = original_tensor.permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+            # Normalize to [-1, 1] then back to [0, 1]
+            original_tensor = original_tensor * 2.0 - 1.0
+            original_tensor = (original_tensor / 2 + 0.5).clamp(0, 1)
+        else:
+            original_tensor = init_image
+
+        # Resize mask to image dimensions if needed
+        mask_pixel = torch.nn.functional.interpolate(
+            mask_tensor.to(device=device, dtype=dtype),
+            size=(image.shape[2], image.shape[3]),
+            mode="nearest"
+        )
+
+        # Blend: keep original where mask=0, use generated where mask=1
+        image = (1 - mask_pixel) * original_tensor + mask_pixel * image
+        print("[CustomSampling] Pixel-space blending completed")
+
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     image = (image * 255).round().astype("uint8")
 

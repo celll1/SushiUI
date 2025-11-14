@@ -13,10 +13,12 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
+import GenerationQueue from "../common/GenerationQueue";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
+import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -443,9 +445,36 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const handleGenerate = async () => {
+  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
+
+  // Add generation request to queue
+  const handleAddToQueue = () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
+      return;
+    }
+
+    addToQueue({
+      type: "txt2img",
+      params: { ...params },
+      prompt: params.prompt,
+    });
+  };
+
+  // Process queue - automatically start next item
+  const processQueueRef = useRef<() => Promise<void>>();
+
+  const processQueue = useCallback(async () => {
+    console.log("[Txt2Img] processQueue called, isGenerating:", isGenerating);
+    if (isGenerating) {
+      console.log("[Txt2Img] Already generating, skipping");
+      return;
+    }
+
+    const nextItem = startNextInQueue();
+    console.log("[Txt2Img] Next item from queue:", nextItem);
+    if (!nextItem) {
+      console.log("[Txt2Img] No items in queue");
       return;
     }
 
@@ -454,12 +483,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     setIsGenerating(true);
     setProgress(0);
-    setTotalSteps(params.steps || 20);
+    setTotalSteps(nextItem.params.steps || 20);
     setPreviewImage(null);
     setGeneratedImage(null);
 
     try {
-      const result = await generateTxt2Img(params);
+      const result = await generateTxt2Img(nextItem.params as GenerationParams);
       const imageUrl = `/outputs/${result.image.filename}`;
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
@@ -471,8 +500,19 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onImageGenerated(imageUrl);
       }
 
-      // Don't update seed parameter to keep -1 for continuous random generation
-      // The actual seed is saved in the database/metadata
+      // Reset state first, then complete item
+      console.log("[Txt2Img] Generation complete, resetting state and completing item");
+      setIsGenerating(false);
+      setProgress(0);
+      completeCurrentItem();
+
+      // Wait briefly for state to propagate, then trigger next
+      setTimeout(() => {
+        console.log("[Txt2Img] Triggering next queue item");
+        if (processQueueRef.current) {
+          processQueueRef.current();
+        }
+      }, 100);
     } catch (error: any) {
       console.error("Generation failed:", error);
       console.log("Error details:", {
@@ -481,8 +521,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         responseDetail: error?.response?.data?.detail,
       });
 
-      // Only show alert for non-cancellation errors
-      // Check error.message, error.response.data.detail, and stringified error
+      // Check if cancelled
       const errorStr = JSON.stringify(error);
       const errorMessage = error?.message || "";
       const errorDetail = error?.response?.data?.detail || "";
@@ -491,7 +530,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
-      // If cancelled and restore setting is enabled, restore previous image
       if (isCancelled) {
         const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
         if (shouldRestore && previousImage) {
@@ -501,26 +539,57 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       } else {
         alert("Generation failed. Please check console for details.");
       }
-    } finally {
+
+      // Reset state first, then fail item
+      console.log("[Txt2Img] Generation failed, resetting state and failing item");
+      setIsGenerating(false);
+      setProgress(0);
+      failCurrentItem();
+
+      // Wait briefly for state to propagate, then trigger next
       setTimeout(() => {
-        setIsGenerating(false);
-        setProgress(0);
-      }, 500);
+        console.log("[Txt2Img] Triggering next queue item after failure");
+        if (processQueueRef.current) {
+          processQueueRef.current();
+        }
+      }, 100);
     }
-  };
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem]);
+
+  processQueueRef.current = processQueue;
+
+  // Auto-start queue processing when queue has pending items and not currently generating
+  useEffect(() => {
+    const hasPendingItems = queue.some(item => item.status === "pending");
+    const isCurrentItemNull = currentItem === null;
+
+    console.log("[Txt2Img] Queue effect:", {
+      hasPendingItems,
+      isCurrentItemNull,
+      isGenerating,
+      queueLength: queue.length,
+      queue: queue,
+      currentItem: currentItem
+    });
+
+    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
+      console.log("[Txt2Img] Auto-starting queue processing");
+      processQueue();
+    }
+  }, [queue, currentItem, isGenerating, processQueue]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter' && !isGenerating) {
+      if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
-        handleGenerate();
+        handleAddToQueue();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params, isGenerating]);
+  }, [params]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -768,16 +837,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       {/* Preview Panel */}
       <div>
         <Card title="Preview">
-          <div className="space-y-2">
-            {/* Action Buttons */}
-            <div className="flex gap-2">
+          <div className="flex gap-2 h-[800px]">
+            {/* Left: Preview and Controls */}
+            <div className="flex-1 flex flex-col space-y-2">
+              {/* Action Buttons */}
+              <div className="flex gap-2">
               <Button
-                onClick={handleGenerate}
-                disabled={isGenerating}
+                onClick={handleAddToQueue}
                 className="flex-1"
                 size="lg"
               >
-                {isGenerating ? "Generating..." : "Generate"}
+                {isGenerating ? "Add to Queue" : "Generate"}
               </Button>
               {isGenerating && (
                 <Button
@@ -786,13 +856,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       await cancelGeneration();
                       setIsGenerating(false);
                       setProgress(0);
+                      // Move to next in queue after cancelling
+                      failCurrentItem();
+                      setTimeout(() => processQueue(), 600);
                     } catch (error) {
                       console.error("Failed to cancel generation:", error);
                     }
                   }}
                   variant="secondary"
                   size="lg"
-                  title="Cancel generation"
+                  title="Cancel generation and move to next"
                 >
                   Cancel
                 </Button>
@@ -905,6 +978,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 </div>
               </div>
             )}
+            </div>
+
+            {/* Right: Generation Queue */}
+            <div className="w-80">
+              <GenerationQueue />
+            </div>
           </div>
         </Card>
       </div>

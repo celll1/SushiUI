@@ -7,6 +7,7 @@ import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
+import GenerationQueue from "@/components/common/GenerationQueue";
 
 export default function GeneratePage() {
   const searchParams = useSearchParams();

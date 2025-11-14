@@ -10,6 +10,7 @@ import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 export default function SettingsPage() {
   const [isRestarting, setIsRestarting] = useState(false);
   const [storageInfo, setStorageInfo] = useState({ used: 0, quota: 0 });
+  const [restoreOnCancel, setRestoreOnCancel] = useState(false);
 
   const updateStorageInfo = () => {
     if (typeof window !== 'undefined' && 'storage' in navigator && 'estimate' in navigator.storage) {
@@ -101,6 +102,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     updateStorageInfo();
+    // Load restore_on_cancel setting from localStorage
+    if (typeof window !== 'undefined') {
+      setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
+    }
   }, []);
 
   const formatBytes = (bytes: number) => {
@@ -291,6 +296,38 @@ export default function SettingsPage() {
                   <p className="text-xs text-gray-500 mt-1">
                     Maximum number of recent images to keep in the floating gallery. Older images will be removed automatically. Default: 30
                   </p>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Generation Behavior">
+            <div className="space-y-4">
+              <p className="text-gray-400 text-sm mb-4">
+                Configure how the UI behaves during and after generation.
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="restore_on_cancel"
+                    checked={restoreOnCancel}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setRestoreOnCancel(newValue);
+                      localStorage.setItem('restore_image_on_cancel', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="restore_on_cancel" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Restore previous image on generation cancel
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      When enabled, cancelling a generation will restore the previously completed image instead of showing the intermediate TAESD preview. Disable this if you want to see the generation progress at the point of cancellation.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

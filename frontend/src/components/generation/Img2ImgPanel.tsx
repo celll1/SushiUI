@@ -648,6 +648,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
+    // Save current image before starting new generation
+    const previousImage = generatedImage;
+
     setIsGenerating(true);
     setProgress(0);
     const denoisingStrength = params.denoising_strength || 0.75;
@@ -696,7 +699,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
-      if (!isCancelled) {
+      // If cancelled and restore setting is enabled, restore previous image
+      if (isCancelled) {
+        const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
+        if (shouldRestore && previousImage) {
+          setGeneratedImage(previousImage);
+          setPreviewImage(null);
+        }
+      } else {
         alert("Generation failed. Please check console for details.");
       }
     } finally {

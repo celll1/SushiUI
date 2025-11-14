@@ -11,6 +11,8 @@ export default function SettingsPage() {
   const [isRestarting, setIsRestarting] = useState(false);
   const [storageInfo, setStorageInfo] = useState({ used: 0, quota: 0 });
   const [restoreOnCancel, setRestoreOnCancel] = useState(false);
+  const [resolutionStep, setResolutionStep] = useState(64);
+  const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
 
   const updateStorageInfo = () => {
     if (typeof window !== 'undefined' && 'storage' in navigator && 'estimate' in navigator.storage) {
@@ -102,9 +104,19 @@ export default function SettingsPage() {
 
   useEffect(() => {
     updateStorageInfo();
-    // Load restore_on_cancel setting from localStorage
+    // Load settings from localStorage
     if (typeof window !== 'undefined') {
       setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
+
+      const savedResolutionStep = localStorage.getItem('resolution_step');
+      if (savedResolutionStep) {
+        setResolutionStep(parseInt(savedResolutionStep));
+      }
+
+      const savedShowAspectRatioPresets = localStorage.getItem('show_aspect_ratio_presets');
+      if (savedShowAspectRatioPresets !== null) {
+        setShowAspectRatioPresets(savedShowAspectRatioPresets === 'true');
+      }
     }
   }, []);
 
@@ -326,6 +338,58 @@ export default function SettingsPage() {
                     </label>
                     <p className="text-xs text-gray-500 mt-1">
                       When enabled, cancelling a generation will restore the previously completed image instead of showing the intermediate TAESD preview. Disable this if you want to see the generation progress at the point of cancellation.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="resolution_step" className="text-sm font-medium text-gray-300">
+                    Resolution slider step size
+                  </label>
+                  <div className="flex items-center space-x-4">
+                    <input
+                      type="number"
+                      id="resolution_step"
+                      value={resolutionStep}
+                      onChange={(e) => {
+                        let value = parseInt(e.target.value);
+                        // Ensure it's a multiple of 8
+                        if (value < 8) value = 8;
+                        if (value % 8 !== 0) {
+                          value = Math.round(value / 8) * 8;
+                        }
+                        setResolutionStep(value);
+                        localStorage.setItem('resolution_step', value.toString());
+                      }}
+                      min="8"
+                      step="8"
+                      className="w-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <span className="text-sm text-gray-400">pixels (must be multiple of 8)</span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Controls the step size for width and height sliders in generation panels. Default is 64.
+                  </p>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="show_aspect_ratio_presets"
+                    checked={showAspectRatioPresets}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setShowAspectRatioPresets(newValue);
+                      localStorage.setItem('show_aspect_ratio_presets', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="show_aspect_ratio_presets" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Show aspect ratio preset buttons
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      When enabled, shows quick aspect ratio preset buttons in generation panels to instantly set resolution based on common aspect ratios (16:9, 4:3, 1:1, etc).
                     </p>
                   </div>
                 </div>

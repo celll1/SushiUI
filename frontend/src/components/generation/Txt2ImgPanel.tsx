@@ -193,6 +193,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(savedPreview);
     }
 
+    // Load resolution step and aspect ratio presets settings
+    const savedResolutionStep = localStorage.getItem('resolution_step');
+    if (savedResolutionStep) {
+      setResolutionStep(parseInt(savedResolutionStep));
+    }
+
+    const savedShowAspectRatioPresets = localStorage.getItem('show_aspect_ratio_presets');
+    if (savedShowAspectRatioPresets !== null) {
+      setShowAspectRatioPresets(savedShowAspectRatioPresets === 'true');
+    }
+
   }, []);
 
   // Load samplers and schedule types when model is loaded
@@ -448,6 +459,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const [resolutionStep, setResolutionStep] = useState(64);
+  const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
 
   // Add generation request to queue
   const handleAddToQueue = () => {
@@ -700,23 +713,91 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <Slider
-                label="Width"
-                min={64}
-                max={2048}
-                step={64}
-                value={params.width}
-                onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
-              />
-              <Slider
-                label="Height"
-                min={64}
-                max={2048}
-                step={64}
-                value={params.height}
-                onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
-              />
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <Slider
+                  label="Width"
+                  min={64}
+                  max={2048}
+                  step={resolutionStep}
+                  value={params.width}
+                  onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                />
+                <Slider
+                  label="Height"
+                  min={64}
+                  max={2048}
+                  step={resolutionStep}
+                  value={params.height}
+                  onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                />
+              </div>
+
+              {showAspectRatioPresets && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-sm font-medium text-gray-300">Aspect Ratio Presets</label>
+                    <div className="flex gap-2">
+                      <span className="text-xs text-gray-400">Base on:</span>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="aspect_base_txt2img"
+                          value="width"
+                          defaultChecked
+                          className="w-3 h-3"
+                        />
+                        <span className="text-xs text-gray-300">Width</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="aspect_base_txt2img"
+                          value="height"
+                          className="w-3 h-3"
+                        />
+                        <span className="text-xs text-gray-300">Height</span>
+                      </label>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-5 gap-2">
+                    {[
+                      { label: "1:1", ratio: 1 / 1 },
+                      { label: "4:3", ratio: 4 / 3 },
+                      { label: "3:4", ratio: 3 / 4 },
+                      { label: "16:9", ratio: 16 / 9 },
+                      { label: "9:16", ratio: 9 / 16 },
+                      { label: "21:9", ratio: 21 / 9 },
+                      { label: "9:21", ratio: 9 / 21 },
+                      { label: "3:2", ratio: 3 / 2 },
+                      { label: "2:3", ratio: 2 / 3 },
+                      { label: "5:4", ratio: 5 / 4 },
+                    ].map((preset) => (
+                      <button
+                        key={preset.label}
+                        onClick={() => {
+                          const baseOn = (document.querySelector('input[name="aspect_base_txt2img"]:checked') as HTMLInputElement)?.value || 'width';
+                          let newWidth: number, newHeight: number;
+
+                          if (baseOn === 'width') {
+                            newWidth = params.width;
+                            newHeight = Math.round(params.width / preset.ratio / 8) * 8;
+                          } else {
+                            newHeight = params.height;
+                            newWidth = Math.round(params.height * preset.ratio / 8) * 8;
+                          }
+
+                          setParams({ ...params, width: newWidth, height: newHeight });
+                        }}
+                        className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                        title={`Aspect ratio ${preset.label}`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <Select

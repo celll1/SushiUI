@@ -8,6 +8,7 @@ import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
+import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 export default function GeneratePage() {
   const searchParams = useSearchParams();
@@ -15,6 +16,7 @@ export default function GeneratePage() {
   const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint">("txt2img");
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
+  const { setGenerateForever } = useGenerationQueue();
 
   useEffect(() => {
     if (tabParam === "img2img") {
@@ -31,6 +33,11 @@ export default function GeneratePage() {
       setMaxGalleryImages(parseInt(savedMaxImages));
     }
   }, []);
+
+  // Stop generate forever when switching panels
+  useEffect(() => {
+    setGenerateForever(false);
+  }, [activeTab, setGenerateForever]);
 
   const handleImageGenerated = (imageUrl: string) => {
     setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);

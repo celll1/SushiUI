@@ -23,6 +23,8 @@ interface GenerationQueueContextType {
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
   clearQueue: () => void;
+  generateForever: boolean;
+  setGenerateForever: (enabled: boolean) => void;
 }
 
 const GenerationQueueContext = createContext<GenerationQueueContextType | undefined>(undefined);
@@ -30,6 +32,7 @@ const GenerationQueueContext = createContext<GenerationQueueContextType | undefi
 export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentItem, setCurrentItem] = useState<QueueItem | null>(null);
+  const [generateForever, setGenerateForever] = useState<boolean>(false);
 
   const addToQueue = useCallback((item: Omit<QueueItem, "id" | "status" | "addedAt">) => {
     const newItem: QueueItem = {
@@ -109,6 +112,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         completeCurrentItem,
         failCurrentItem,
         clearQueue,
+        generateForever,
+        setGenerateForever,
       }}
     >
       {children}

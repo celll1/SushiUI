@@ -445,7 +445,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
+  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const [showForeverMenu, setShowForeverMenu] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
 
   // Add generation request to queue
   const handleAddToQueue = () => {
@@ -569,14 +571,22 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       isGenerating,
       queueLength: queue.length,
       queue: queue,
-      currentItem: currentItem
+      currentItem: currentItem,
+      generateForever
     });
+
+    // If generate forever is enabled and queue is empty, add new item
+    if (generateForever && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt) {
+      console.log("[Txt2Img] Generate forever: Adding new item to queue");
+      handleAddToQueue();
+      return;
+    }
 
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       console.log("[Txt2Img] Auto-starting queue processing");
       processQueue();
     }
-  }, [queue, currentItem, isGenerating, processQueue]);
+  }, [queue, currentItem, isGenerating, processQueue, generateForever, params]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
@@ -841,14 +851,44 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             {/* Left: Preview and Controls */}
             <div className="flex-1 flex flex-col space-y-2">
               {/* Action Buttons */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 relative">
               <Button
                 onClick={handleAddToQueue}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenuPosition({ x: e.clientX, y: e.clientY });
+                  setShowForeverMenu(true);
+                }}
                 className="flex-1"
                 size="lg"
               >
-                {isGenerating ? "Add to Queue" : "Generate"}
+                {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
               </Button>
+
+              {/* Right-click menu for generate forever */}
+              {showForeverMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowForeverMenu(false)}
+                  />
+                  <div
+                    className="fixed z-50 bg-gray-800 border border-gray-600 rounded shadow-lg py-1"
+                    style={{ left: menuPosition.x, top: menuPosition.y }}
+                  >
+                    <button
+                      onClick={() => {
+                        setGenerateForever(!generateForever);
+                        setShowForeverMenu(false);
+                      }}
+                      className="w-full px-4 py-2 text-left hover:bg-gray-700 flex items-center gap-2"
+                    >
+                      <span className="w-4">{generateForever ? "✓" : ""}</span>
+                      <span>Generate Forever</span>
+                    </button>
+                  </div>
+                </>
+              )}
               {isGenerating && (
                 <Button
                   onClick={async () => {
@@ -856,6 +896,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       await cancelGeneration();
                       setIsGenerating(false);
                       setProgress(0);
+                      // Stop generate forever when cancelling
+                      setGenerateForever(false);
                       // Move to next in queue after cancelling
                       failCurrentItem();
                       setTimeout(() => processQueue(), 600);

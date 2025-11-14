@@ -680,8 +680,36 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [resolutionStep, setResolutionStep] = useState(64);
   const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
   const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
-  const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([]);
-  const [fixedResolutionPresets, setFixedResolutionPresets] = useState<Array<{ width: number; height: number }>>([]);
+  const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([
+    { label: "1:1", ratio: 1 / 1 },
+    { label: "4:3", ratio: 4 / 3 },
+    { label: "3:4", ratio: 3 / 4 },
+    { label: "16:9", ratio: 16 / 9 },
+    { label: "9:16", ratio: 9 / 16 },
+    { label: "21:9", ratio: 21 / 9 },
+    { label: "9:21", ratio: 9 / 21 },
+    { label: "3:2", ratio: 3 / 2 },
+    { label: "2:3", ratio: 2 / 3 },
+    { label: "5:4", ratio: 5 / 4 },
+  ]);
+  const [fixedResolutionPresets, setFixedResolutionPresets] = useState<Array<{ width: number; height: number }>>([
+    { width: 768, height: 1152 },
+    { width: 1152, height: 768 },
+    { width: 1248, height: 720 },
+    { width: 720, height: 1248 },
+    { width: 960, height: 1344 },
+    { width: 1344, height: 960 },
+    { width: 1024, height: 1152 },
+    { width: 1152, height: 1024 },
+    { width: 1024, height: 1024 },
+    { width: 896, height: 1152 },
+    { width: 1152, height: 896 },
+    { width: 832, height: 1216 },
+    { width: 1216, height: 832 },
+    { width: 640, height: 1536 },
+    { width: 1536, height: 640 },
+    { width: 512, height: 512 },
+  ]);
 
   // Add generation request to queue
   const handleAddToQueue = async () => {

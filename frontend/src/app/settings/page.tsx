@@ -7,6 +7,39 @@ import Button from "@/components/common/Button";
 import DirectorySettings from "@/components/settings/DirectorySettings";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 
+// Default presets
+const DEFAULT_ASPECT_RATIO_PRESETS = [
+  { label: "1:1", ratio: 1 / 1 },
+  { label: "4:3", ratio: 4 / 3 },
+  { label: "3:4", ratio: 3 / 4 },
+  { label: "16:9", ratio: 16 / 9 },
+  { label: "9:16", ratio: 9 / 16 },
+  { label: "21:9", ratio: 21 / 9 },
+  { label: "9:21", ratio: 9 / 21 },
+  { label: "3:2", ratio: 3 / 2 },
+  { label: "2:3", ratio: 2 / 3 },
+  { label: "5:4", ratio: 5 / 4 },
+];
+
+const DEFAULT_FIXED_RESOLUTION_PRESETS = [
+  { width: 768, height: 1152 },
+  { width: 1152, height: 768 },
+  { width: 1248, height: 720 },
+  { width: 720, height: 1248 },
+  { width: 960, height: 1344 },
+  { width: 1344, height: 960 },
+  { width: 1024, height: 1152 },
+  { width: 1152, height: 1024 },
+  { width: 1024, height: 1024 },
+  { width: 896, height: 1152 },
+  { width: 1152, height: 896 },
+  { width: 832, height: 1216 },
+  { width: 1216, height: 832 },
+  { width: 640, height: 1536 },
+  { width: 1536, height: 640 },
+  { width: 512, height: 512 },
+];
+
 export default function SettingsPage() {
   const [isRestarting, setIsRestarting] = useState(false);
   const [storageInfo, setStorageInfo] = useState({ used: 0, quota: 0 });
@@ -14,6 +47,8 @@ export default function SettingsPage() {
   const [resolutionStep, setResolutionStep] = useState(64);
   const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
   const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
+  const [aspectRatioPresets, setAspectRatioPresets] = useState(DEFAULT_ASPECT_RATIO_PRESETS);
+  const [fixedResolutionPresets, setFixedResolutionPresets] = useState(DEFAULT_FIXED_RESOLUTION_PRESETS);
 
   const updateStorageInfo = () => {
     if (typeof window !== 'undefined' && 'storage' in navigator && 'estimate' in navigator.storage) {
@@ -123,6 +158,25 @@ export default function SettingsPage() {
       if (savedShowFixedResolutionPresets !== null) {
         setShowFixedResolutionPresets(savedShowFixedResolutionPresets === 'true');
       }
+
+      // Load custom presets
+      const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
+      if (savedAspectRatioPresets) {
+        try {
+          setAspectRatioPresets(JSON.parse(savedAspectRatioPresets));
+        } catch (e) {
+          console.error('Failed to parse aspect ratio presets:', e);
+        }
+      }
+
+      const savedFixedResolutionPresets = localStorage.getItem('fixed_resolution_presets');
+      if (savedFixedResolutionPresets) {
+        try {
+          setFixedResolutionPresets(JSON.parse(savedFixedResolutionPresets));
+        } catch (e) {
+          console.error('Failed to parse fixed resolution presets:', e);
+        }
+      }
     }
   }, []);
 
@@ -132,6 +186,76 @@ export default function SettingsPage() {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  // Aspect ratio preset management
+  const handleAddAspectRatioPreset = () => {
+    const label = prompt("Enter aspect ratio label (e.g., '16:9'):");
+    if (!label) return;
+
+    const ratioStr = prompt("Enter aspect ratio as width:height (e.g., '16:9'):");
+    if (!ratioStr) return;
+
+    const [w, h] = ratioStr.split(':').map(n => parseFloat(n.trim()));
+    if (isNaN(w) || isNaN(h) || w <= 0 || h <= 0) {
+      alert("Invalid ratio format. Please use format like '16:9'");
+      return;
+    }
+
+    const newPresets = [...aspectRatioPresets, { label, ratio: w / h }];
+    setAspectRatioPresets(newPresets);
+    localStorage.setItem('aspect_ratio_presets', JSON.stringify(newPresets));
+  };
+
+  const handleRemoveAspectRatioPreset = (index: number) => {
+    const newPresets = aspectRatioPresets.filter((_, i) => i !== index);
+    setAspectRatioPresets(newPresets);
+    localStorage.setItem('aspect_ratio_presets', JSON.stringify(newPresets));
+  };
+
+  const handleRestoreAspectRatioDefaults = () => {
+    if (!confirm("Restore default aspect ratio presets?")) return;
+    setAspectRatioPresets(DEFAULT_ASPECT_RATIO_PRESETS);
+    localStorage.setItem('aspect_ratio_presets', JSON.stringify(DEFAULT_ASPECT_RATIO_PRESETS));
+  };
+
+  // Fixed resolution preset management
+  const handleAddFixedResolutionPreset = () => {
+    const widthStr = prompt("Enter width (must be multiple of 8):");
+    if (!widthStr) return;
+    let width = parseInt(widthStr);
+    if (isNaN(width) || width < 8) {
+      alert("Invalid width");
+      return;
+    }
+    // Round to nearest multiple of 8
+    width = Math.round(width / 8) * 8;
+
+    const heightStr = prompt("Enter height (must be multiple of 8):");
+    if (!heightStr) return;
+    let height = parseInt(heightStr);
+    if (isNaN(height) || height < 8) {
+      alert("Invalid height");
+      return;
+    }
+    // Round to nearest multiple of 8
+    height = Math.round(height / 8) * 8;
+
+    const newPresets = [...fixedResolutionPresets, { width, height }];
+    setFixedResolutionPresets(newPresets);
+    localStorage.setItem('fixed_resolution_presets', JSON.stringify(newPresets));
+  };
+
+  const handleRemoveFixedResolutionPreset = (index: number) => {
+    const newPresets = fixedResolutionPresets.filter((_, i) => i !== index);
+    setFixedResolutionPresets(newPresets);
+    localStorage.setItem('fixed_resolution_presets', JSON.stringify(newPresets));
+  };
+
+  const handleRestoreFixedResolutionDefaults = () => {
+    if (!confirm("Restore default fixed resolution presets?")) return;
+    setFixedResolutionPresets(DEFAULT_FIXED_RESOLUTION_PRESETS);
+    localStorage.setItem('fixed_resolution_presets', JSON.stringify(DEFAULT_FIXED_RESOLUTION_PRESETS));
   };
 
   return (
@@ -420,6 +544,80 @@ export default function SettingsPage() {
                       When enabled, shows fixed resolution preset buttons in generation panels (e.g., 1024×1024, 768×1152, etc) to quickly set common resolution combinations.
                     </p>
                   </div>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Resolution Presets">
+            <div className="space-y-6">
+              <p className="text-gray-400 text-sm mb-4">
+                Customize aspect ratio and fixed resolution presets shown in generation panels.
+              </p>
+
+              {/* Aspect Ratio Presets */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-200">Aspect Ratio Presets</h3>
+                  <div className="flex gap-2">
+                    <Button onClick={handleAddAspectRatioPreset} size="sm" variant="secondary">
+                      Add
+                    </Button>
+                    <Button onClick={handleRestoreAspectRatioDefaults} size="sm" variant="secondary">
+                      Restore Defaults
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-5 gap-2">
+                  {aspectRatioPresets.map((preset, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded border border-gray-700"
+                    >
+                      <span className="text-sm text-gray-300 flex-1">{preset.label}</span>
+                      <button
+                        onClick={() => handleRemoveAspectRatioPreset(index)}
+                        className="text-red-400 hover:text-red-300 text-xs"
+                        title="Remove"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fixed Resolution Presets */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-200">Fixed Resolution Presets</h3>
+                  <div className="flex gap-2">
+                    <Button onClick={handleAddFixedResolutionPreset} size="sm" variant="secondary">
+                      Add
+                    </Button>
+                    <Button onClick={handleRestoreFixedResolutionDefaults} size="sm" variant="secondary">
+                      Restore Defaults
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-6 gap-2">
+                  {fixedResolutionPresets.map((preset, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded border border-gray-700"
+                    >
+                      <span className="text-xs text-gray-300 flex-1">
+                        {preset.width}×{preset.height}
+                      </span>
+                      <button
+                        onClick={() => handleRemoveFixedResolutionPreset(index)}
+                        className="text-red-400 hover:text-red-300 text-xs"
+                        title="Remove"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

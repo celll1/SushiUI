@@ -209,6 +209,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setShowFixedResolutionPresets(savedShowFixedResolutionPresets === 'true');
     }
 
+    // Load custom presets
+    const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
+    if (savedAspectRatioPresets) {
+      try {
+        setAspectRatioPresets(JSON.parse(savedAspectRatioPresets));
+      } catch (e) {
+        console.error('Failed to parse aspect ratio presets:', e);
+      }
+    }
+
+    const savedFixedResolutionPresets = localStorage.getItem('fixed_resolution_presets');
+    if (savedFixedResolutionPresets) {
+      try {
+        setFixedResolutionPresets(JSON.parse(savedFixedResolutionPresets));
+      } catch (e) {
+        console.error('Failed to parse fixed resolution presets:', e);
+      }
+    }
+
   }, []);
 
   // Load samplers and schedule types when model is loaded
@@ -467,6 +486,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [resolutionStep, setResolutionStep] = useState(64);
   const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
   const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
+  const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([]);
+  const [fixedResolutionPresets, setFixedResolutionPresets] = useState<Array<{ width: number; height: number }>>([]);
 
   // Add generation request to queue
   const handleAddToQueue = () => {
@@ -767,18 +788,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     </div>
                   </div>
                   <div className="grid grid-cols-5 gap-2">
-                    {[
-                      { label: "1:1", ratio: 1 / 1 },
-                      { label: "4:3", ratio: 4 / 3 },
-                      { label: "3:4", ratio: 3 / 4 },
-                      { label: "16:9", ratio: 16 / 9 },
-                      { label: "9:16", ratio: 9 / 16 },
-                      { label: "21:9", ratio: 21 / 9 },
-                      { label: "9:21", ratio: 9 / 21 },
-                      { label: "3:2", ratio: 3 / 2 },
-                      { label: "2:3", ratio: 2 / 3 },
-                      { label: "5:4", ratio: 5 / 4 },
-                    ].map((preset) => (
+                    {aspectRatioPresets.map((preset) => (
                       <button
                         key={preset.label}
                         onClick={() => {
@@ -809,24 +819,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
                   <div className="grid grid-cols-6 gap-2">
-                    {[
-                      { width: 768, height: 1152 },
-                      { width: 1152, height: 768 },
-                      { width: 1248, height: 720 },
-                      { width: 720, height: 1248 },
-                      { width: 960, height: 1344 },
-                      { width: 1344, height: 960 },
-                      { width: 1024, height: 1152 },
-                      { width: 1152, height: 1024 },
-                      { width: 1024, height: 1024 },
-                      { width: 896, height: 1152 },
-                      { width: 1152, height: 896 },
-                      { width: 832, height: 1216 },
-                      { width: 1216, height: 832 },
-                      { width: 640, height: 1536 },
-                      { width: 1536, height: 640 },
-                      { width: 512, height: 512 },
-                    ].map((preset) => (
+                    {fixedResolutionPresets.map((preset) => (
                       <button
                         key={`${preset.width}x${preset.height}`}
                         onClick={() => setParams({ ...params, width: preset.width, height: preset.height })}

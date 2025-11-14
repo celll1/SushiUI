@@ -1367,30 +1367,45 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </div>
         </Card>
 
-        <div className="flex gap-2">
-          <Button
-            onClick={handleGenerate}
-            disabled={isGenerating}
-            className="flex-1"
-            size="lg"
-          >
-            {isGenerating ? "Generating..." : "Generate"}
-          </Button>
-          <Button
-            onClick={resetToDefault}
-            disabled={isGenerating}
-            variant="secondary"
-            size="lg"
-          >
-            Reset
-          </Button>
-        </div>
       </div>
 
       {/* Preview Panel */}
       <div>
         <Card title="Preview">
           <div className="space-y-2">
+            {/* Action Buttons */}
+            <div className="flex gap-2">
+              <Button
+                onClick={handleGenerate}
+                disabled={isGenerating}
+                className="flex-1"
+                size="lg"
+              >
+                {isGenerating ? "Generating..." : "Generate"}
+              </Button>
+              {isGenerating && (
+                <Button
+                  onClick={() => {
+                    setIsGenerating(false);
+                    setProgress(0);
+                  }}
+                  variant="secondary"
+                  size="lg"
+                  title="Cancel generation"
+                >
+                  Cancel
+                </Button>
+              )}
+              <Button
+                onClick={resetToDefault}
+                disabled={isGenerating}
+                variant="secondary"
+                size="lg"
+              >
+                Reset
+              </Button>
+            </div>
+
             {isGenerating && (
               <div className="space-y-1">
                 <div className="flex justify-between text-xs text-gray-400">

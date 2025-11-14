@@ -42,6 +42,9 @@ class DiffusionPipelineManager:
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
+        # Cancellation flag
+        self.cancel_requested = False
+
         # Auto-load last used model on startup
         self._auto_load_last_model()
 
@@ -1693,6 +1696,15 @@ class DiffusionPipelineManager:
                 image = ext.process_after_generation(image, params)
 
         return image, seed
+
+    def cancel_generation(self):
+        """Request cancellation of current generation"""
+        self.cancel_requested = True
+        print("[Pipeline] Generation cancellation requested")
+
+    def reset_cancel_flag(self):
+        """Reset cancellation flag before starting new generation"""
+        self.cancel_requested = False
 
 # Global pipeline manager instance
 pipeline_manager = DiffusionPipelineManager()

@@ -13,7 +13,7 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
-import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt } from "@/utils/api";
+import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
@@ -461,6 +461,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+      setPreviewImage(null);
 
       // Notify parent component
       if (onImageGenerated) {
@@ -469,14 +470,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Don't update seed parameter to keep -1 for continuous random generation
       // The actual seed is saved in the database/metadata
-    } catch (error) {
+    } catch (error: any) {
       console.error("Generation failed:", error);
-      alert("Generation failed. Please check console for details.");
+      console.log("Error details:", {
+        message: error?.message,
+        responseData: error?.response?.data,
+        responseDetail: error?.response?.data?.detail,
+      });
+
+      // Only show alert for non-cancellation errors
+      // Check error.message, error.response.data.detail, and stringified error
+      const errorStr = JSON.stringify(error);
+      const errorMessage = error?.message || "";
+      const errorDetail = error?.response?.data?.detail || "";
+      const isCancelled =
+        errorMessage.toLowerCase().includes("cancel") ||
+        errorDetail.toLowerCase().includes("cancel") ||
+        errorStr.toLowerCase().includes("cancel");
+
+      if (!isCancelled) {
+        alert("Generation failed. Please check console for details.");
+      }
     } finally {
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);
-        setPreviewImage(null);
       }, 500);
     }
   };
@@ -753,9 +771,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </Button>
               {isGenerating && (
                 <Button
-                  onClick={() => {
-                    setIsGenerating(false);
-                    setProgress(0);
+                  onClick={async () => {
+                    try {
+                      await cancelGeneration();
+                      setIsGenerating(false);
+                      setProgress(0);
+                    } catch (error) {
+                      console.error("Failed to cancel generation:", error);
+                    }
                   }}
                   variant="secondary"
                   size="lg"

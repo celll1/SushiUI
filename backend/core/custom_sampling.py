@@ -186,6 +186,12 @@ def custom_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
+        # Check for cancellation
+        from core.pipeline import pipeline_manager
+        if pipeline_manager.cancel_requested:
+            print("[CustomSampling] Generation cancelled by user")
+            raise RuntimeError("Generation cancelled by user")
+
         # Check if prompt should be updated at this step
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(i)
@@ -503,6 +509,12 @@ def custom_img2img_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
+        # Check for cancellation
+        from core.pipeline import pipeline_manager
+        if pipeline_manager.cancel_requested:
+            print("[CustomSampling] Generation cancelled by user")
+            raise RuntimeError("Generation cancelled by user")
+
         # Check if prompt should be updated
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)
@@ -842,6 +854,12 @@ def custom_inpaint_sampling_loop(
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     for i, t in enumerate(timesteps):
+        # Check for cancellation
+        from core.pipeline import pipeline_manager
+        if pipeline_manager.cancel_requested:
+            print("[CustomSampling] Generation cancelled by user")
+            raise RuntimeError("Generation cancelled by user")
+
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)
             if new_embeds is not None:

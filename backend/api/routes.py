@@ -83,6 +83,9 @@ class Img2ImgRequest(GenerationParams):
 async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db)):
     """Generate image from text"""
     try:
+        # Reset cancellation flag before starting new generation
+        pipeline_manager.reset_cancel_flag()
+
         # Generate image
         params = request.dict()
         # Log params without large base64 data
@@ -290,6 +293,9 @@ async def generate_img2img(
 ):
     """Generate image from image"""
     try:
+        # Reset cancellation flag before starting new generation
+        pipeline_manager.reset_cancel_flag()
+
         # Load input image
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
@@ -520,6 +526,9 @@ async def generate_inpaint(
 ):
     """Generate inpainted image"""
     try:
+        # Reset cancellation flag before starting new generation
+        pipeline_manager.reset_cancel_flag()
+
         # Load input image and mask
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
@@ -1596,6 +1605,15 @@ async def unload_tipo_model():
     try:
         tipo_manager.unload_model()
         return {"status": "success", "loaded": False}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/cancel")
+async def cancel_generation():
+    """Cancel ongoing generation"""
+    try:
+        pipeline_manager.cancel_generation()
+        return {"status": "success", "message": "Generation cancellation requested"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

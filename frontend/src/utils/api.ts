@@ -560,4 +560,9 @@ export const unloadTIPOModel = async () => {
   return response.data;
 };
 
+export const cancelGeneration = async () => {
+  const response = await api.post("/cancel");
+  return response.data;
+};
+
 export default api;

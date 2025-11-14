@@ -15,7 +15,7 @@ import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
-import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
@@ -847,6 +847,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setGeneratedImage(imageUrl);
         setGeneratedImageSeed(result.actual_seed);
         setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+        setPreviewImage(null);
 
         // Add to gallery
         setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
@@ -862,14 +863,31 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       } else {
         alert("Generation failed");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Generation error:", error);
-      alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
+      console.log("Error details:", {
+        message: error?.message,
+        responseData: error?.response?.data,
+        responseDetail: error?.response?.data?.detail,
+      });
+
+      // Only show alert for non-cancellation errors
+      // Check error.message, error.response.data.detail, and stringified error
+      const errorStr = JSON.stringify(error);
+      const errorMessage = error?.message || "";
+      const errorDetail = error?.response?.data?.detail || "";
+      const isCancelled =
+        errorMessage.toLowerCase().includes("cancel") ||
+        errorDetail.toLowerCase().includes("cancel") ||
+        errorStr.toLowerCase().includes("cancel");
+
+      if (!isCancelled) {
+        alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
+      }
     } finally {
       setTimeout(() => {
         setIsGenerating(false);
         setProgress(0);
-        setPreviewImage(null);
       }, 500);
     }
   };
@@ -1385,9 +1403,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </Button>
               {isGenerating && (
                 <Button
-                  onClick={() => {
-                    setIsGenerating(false);
-                    setProgress(0);
+                  onClick={async () => {
+                    try {
+                      await cancelGeneration();
+                      setIsGenerating(false);
+                      setProgress(0);
+                    } catch (error) {
+                      console.error("Failed to cancel generation:", error);
+                    }
                   }}
                   variant="secondary"
                   size="lg"

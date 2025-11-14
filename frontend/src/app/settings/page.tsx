@@ -13,6 +13,7 @@ export default function SettingsPage() {
   const [restoreOnCancel, setRestoreOnCancel] = useState(false);
   const [resolutionStep, setResolutionStep] = useState(64);
   const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
+  const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
 
   const updateStorageInfo = () => {
     if (typeof window !== 'undefined' && 'storage' in navigator && 'estimate' in navigator.storage) {
@@ -116,6 +117,11 @@ export default function SettingsPage() {
       const savedShowAspectRatioPresets = localStorage.getItem('show_aspect_ratio_presets');
       if (savedShowAspectRatioPresets !== null) {
         setShowAspectRatioPresets(savedShowAspectRatioPresets === 'true');
+      }
+
+      const savedShowFixedResolutionPresets = localStorage.getItem('show_fixed_resolution_presets');
+      if (savedShowFixedResolutionPresets !== null) {
+        setShowFixedResolutionPresets(savedShowFixedResolutionPresets === 'true');
       }
     }
   }, []);
@@ -389,7 +395,29 @@ export default function SettingsPage() {
                       Show aspect ratio preset buttons
                     </label>
                     <p className="text-xs text-gray-500 mt-1">
-                      When enabled, shows quick aspect ratio preset buttons in generation panels to instantly set resolution based on common aspect ratios (16:9, 4:3, 1:1, etc).
+                      When enabled, shows quick aspect ratio preset buttons in generation panels to set resolution based on common aspect ratios (16:9, 4:3, 1:1, etc) while keeping current width or height.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="show_fixed_resolution_presets"
+                    checked={showFixedResolutionPresets}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setShowFixedResolutionPresets(newValue);
+                      localStorage.setItem('show_fixed_resolution_presets', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="show_fixed_resolution_presets" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Show fixed resolution preset buttons
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      When enabled, shows fixed resolution preset buttons in generation panels (e.g., 1024×1024, 768×1152, etc) to quickly set common resolution combinations.
                     </p>
                   </div>
                 </div>

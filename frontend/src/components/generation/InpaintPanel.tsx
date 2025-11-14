@@ -264,6 +264,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       if (savedShowAspectRatioPresets !== null) {
         setShowAspectRatioPresets(savedShowAspectRatioPresets === 'true');
       }
+
+      const savedShowFixedResolutionPresets = localStorage.getItem('show_fixed_resolution_presets');
+      if (savedShowFixedResolutionPresets !== null) {
+        setShowFixedResolutionPresets(savedShowFixedResolutionPresets === 'true');
+      }
     };
 
     loadInitialData();
@@ -806,6 +811,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
   const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
+  const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
 
   // Add generation request to queue
   const handleAddToQueue = () => {
@@ -1373,6 +1379,41 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                             title={`Aspect ratio ${preset.label}`}
                           >
                             {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {showFixedResolutionPresets && (
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
+                      <div className="grid grid-cols-6 gap-2">
+                        {[
+                          { width: 768, height: 1152 },
+                          { width: 1152, height: 768 },
+                          { width: 1248, height: 720 },
+                          { width: 720, height: 1248 },
+                          { width: 960, height: 1344 },
+                          { width: 1344, height: 960 },
+                          { width: 1024, height: 1152 },
+                          { width: 1152, height: 1024 },
+                          { width: 1024, height: 1024 },
+                          { width: 896, height: 1152 },
+                          { width: 1152, height: 896 },
+                          { width: 832, height: 1216 },
+                          { width: 1216, height: 832 },
+                          { width: 640, height: 1536 },
+                          { width: 1536, height: 640 },
+                          { width: 512, height: 512 },
+                        ].map((preset) => (
+                          <button
+                            key={`${preset.width}x${preset.height}`}
+                            onClick={() => setParams({ ...params, width: preset.width, height: preset.height })}
+                            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                            title={`${preset.width}×${preset.height}`}
+                          >
+                            {preset.width}×{preset.height}
                           </button>
                         ))}
                       </div>

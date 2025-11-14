@@ -15,10 +15,12 @@ import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
+import GenerationQueue from "../common/GenerationQueue";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { useStartup } from "@/contexts/StartupContext";
+import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 interface InpaintParams {
   prompt: string;
@@ -788,7 +790,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const handleGenerate = async () => {
+  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
+
+  // Add generation request to queue
+  const handleAddToQueue = () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
       return;
@@ -804,38 +809,64 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return;
     }
 
+    addToQueue({
+      type: "inpaint",
+      params: { ...params },
+      inputImage: inputImagePreview,
+      maskImage: maskImage,
+      prompt: params.prompt,
+    });
+  };
+
+  // Process queue - automatically start next item
+  const processQueueRef = useRef<() => Promise<void>>();
+
+  const processQueue = useCallback(async () => {
+    console.log("[Inpaint] processQueue called, isGenerating:", isGenerating);
+    if (isGenerating) {
+      console.log("[Inpaint] Already generating, skipping");
+      return;
+    }
+
+    const nextItem = startNextInQueue();
+    console.log("[Inpaint] Next item from queue:", nextItem);
+    if (!nextItem || nextItem.type !== "inpaint") {
+      console.log("[Inpaint] No inpaint items in queue");
+      return;
+    }
+
     // Save current image before starting new generation
     const previousImage = generatedImage;
 
     setIsGenerating(true);
     setProgress(0);
-    const denoisingStrength = params.denoising_strength || 0.75;
-    const actualSteps = Math.ceil((params.steps || 20) * denoisingStrength);
+    const denoisingStrength = nextItem.params.denoising_strength || 0.75;
+    const actualSteps = Math.ceil((nextItem.params.steps || 20) * denoisingStrength);
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
 
     try {
       const apiParams: ApiInpaintParams = {
-        prompt: params.prompt,
-        negative_prompt: params.negative_prompt,
-        steps: params.steps,
-        cfg_scale: params.cfg_scale,
-        sampler: params.sampler,
-        schedule_type: params.schedule_type,
-        seed: params.seed,
-        width: params.width,
-        height: params.height,
-        denoising_strength: params.denoising_strength,
-        mask_blur: params.mask_blur,
-        inpaint_full_res: params.inpaint_full_res,
-        inpaint_full_res_padding: params.inpaint_full_res_padding,
-        inpaint_fill_mode: params.inpaint_fill_mode,
-        inpaint_fill_strength: params.inpaint_fill_strength,
-        resize_mode: params.resize_mode,
-        resampling_method: params.resampling_method,
-        loras: params.loras,
-        controlnets: params.controlnets,
+        prompt: nextItem.params.prompt,
+        negative_prompt: nextItem.params.negative_prompt,
+        steps: nextItem.params.steps,
+        cfg_scale: nextItem.params.cfg_scale,
+        sampler: nextItem.params.sampler,
+        schedule_type: nextItem.params.schedule_type,
+        seed: nextItem.params.seed,
+        width: nextItem.params.width,
+        height: nextItem.params.height,
+        denoising_strength: nextItem.params.denoising_strength,
+        mask_blur: nextItem.params.mask_blur,
+        inpaint_full_res: nextItem.params.inpaint_full_res,
+        inpaint_full_res_padding: nextItem.params.inpaint_full_res_padding,
+        inpaint_fill_mode: nextItem.params.inpaint_fill_mode,
+        inpaint_fill_strength: nextItem.params.inpaint_fill_strength,
+        resize_mode: nextItem.params.resize_mode,
+        resampling_method: nextItem.params.resampling_method,
+        loras: nextItem.params.loras,
+        controlnets: nextItem.params.controlnets,
       };
 
       console.log('[Inpaint] Generating with params:', {
@@ -843,7 +874,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         controlnets: apiParams.controlnets?.length || 0,
       });
 
-      const result = await generateInpaint(apiParams, inputImagePreview, maskImage);
+      const result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);
 
       if (result.success) {
         const imageUrl = `/outputs/${result.image.filename}`;
@@ -863,8 +894,32 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         if (isMounted) {
           localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
         }
+
+        // Reset state first, then complete item
+        console.log("[Inpaint] Generation complete, resetting state and completing item");
+        setIsGenerating(false);
+        setProgress(0);
+        completeCurrentItem();
+
+        // Wait briefly for state to propagate, then trigger next
+        setTimeout(() => {
+          console.log("[Inpaint] Triggering next queue item");
+          if (processQueueRef.current) {
+            processQueueRef.current();
+          }
+        }, 100);
       } else {
         alert("Generation failed");
+        // Reset state first, then fail item
+        setIsGenerating(false);
+        setProgress(0);
+        failCurrentItem();
+
+        setTimeout(() => {
+          if (processQueueRef.current) {
+            processQueueRef.current();
+          }
+        }, 100);
       }
     } catch (error: any) {
       console.error("Generation error:", error);
@@ -874,8 +929,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         responseDetail: error?.response?.data?.detail,
       });
 
-      // Only show alert for non-cancellation errors
-      // Check error.message, error.response.data.detail, and stringified error
+      // Check if cancelled
       const errorStr = JSON.stringify(error);
       const errorMessage = error?.message || "";
       const errorDetail = error?.response?.data?.detail || "";
@@ -884,7 +938,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
-      // If cancelled and restore setting is enabled, restore previous image
       if (isCancelled) {
         const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
         if (shouldRestore && previousImage) {
@@ -894,26 +947,57 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       } else {
         alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
       }
-    } finally {
+
+      // Reset state first, then fail item
+      console.log("[Inpaint] Generation failed, resetting state and failing item");
+      setIsGenerating(false);
+      setProgress(0);
+      failCurrentItem();
+
+      // Wait briefly for state to propagate, then trigger next
       setTimeout(() => {
-        setIsGenerating(false);
-        setProgress(0);
-      }, 500);
+        console.log("[Inpaint] Triggering next queue item after failure");
+        if (processQueueRef.current) {
+          processQueueRef.current();
+        }
+      }, 100);
     }
-  };
+  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem]);
+
+  processQueueRef.current = processQueue;
+
+  // Auto-start queue processing when queue has pending items and not currently generating
+  useEffect(() => {
+    const hasPendingItems = queue.some(item => item.status === "pending" && item.type === "inpaint");
+    const isCurrentItemNull = currentItem === null;
+
+    console.log("[Inpaint] Queue effect:", {
+      hasPendingItems,
+      isCurrentItemNull,
+      isGenerating,
+      queueLength: queue.length,
+      queue: queue,
+      currentItem: currentItem
+    });
+
+    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
+      console.log("[Inpaint] Auto-starting queue processing");
+      processQueue();
+    }
+  }, [queue, currentItem, isGenerating, processQueue]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter' && !isGenerating) {
+      if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
-        handleGenerate();
+        handleAddToQueue();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params, isGenerating, inputImage, inputImagePreview, maskImage]);
+  }, [params, inputImage, inputImagePreview, maskImage]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1400,83 +1484,87 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       {/* Preview Panel */}
       <div>
         <Card title="Preview">
-          <div className="space-y-2">
-            {/* Action Buttons */}
-            <div className="flex gap-2">
-              <Button
-                onClick={handleGenerate}
-                disabled={isGenerating}
-                className="flex-1"
-                size="lg"
-              >
-                {isGenerating ? "Generating..." : "Generate"}
-              </Button>
-              {isGenerating && (
+          <div className="flex gap-2 h-[800px]">
+            {/* Left: Preview and Controls */}
+            <div className="flex-1 flex flex-col space-y-2">
+              {/* Action Buttons */}
+              <div className="flex gap-2">
                 <Button
-                  onClick={async () => {
-                    try {
-                      await cancelGeneration();
-                      setIsGenerating(false);
-                      setProgress(0);
-                    } catch (error) {
-                      console.error("Failed to cancel generation:", error);
-                    }
-                  }}
+                  onClick={handleAddToQueue}
+                  className="flex-1"
+                  size="lg"
+                >
+                  {isGenerating ? "Add to Queue" : "Generate"}
+                </Button>
+                {isGenerating && (
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await cancelGeneration();
+                        setIsGenerating(false);
+                        setProgress(0);
+                        // Move to next in queue after cancelling
+                        failCurrentItem();
+                        setTimeout(() => processQueue(), 600);
+                      } catch (error) {
+                        console.error("Failed to cancel generation:", error);
+                      }
+                    }}
+                    variant="secondary"
+                    size="lg"
+                    title="Cancel generation and move to next"
+                  >
+                    Cancel
+                  </Button>
+                )}
+                <Button
+                  onClick={resetToDefault}
+                  disabled={isGenerating}
                   variant="secondary"
                   size="lg"
-                  title="Cancel generation"
                 >
-                  Cancel
+                  Reset
                 </Button>
-              )}
-              <Button
-                onClick={resetToDefault}
-                disabled={isGenerating}
-                variant="secondary"
-                size="lg"
-              >
-                Reset
-              </Button>
-            </div>
-
-            {isGenerating && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>Generating...</span>
-                  <span>{progress}/{totalSteps} steps</span>
-                </div>
-                <div className="w-full bg-gray-700 rounded-full h-2">
-                  <div
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-200"
-                    style={{ width: `${(progress / totalSteps) * 100}%` }}
-                  />
-                </div>
               </div>
-            )}
-            <div
-              className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
-              onDoubleClick={() => {
-                if (generatedImage) {
-                  setPreviewViewerOpen(true);
-                }
-              }}
-            >
-              {generatedImage ? (
-                <img
-                  src={generatedImage}
-                  alt="Generated"
-                  className="max-w-full max-h-full rounded-lg"
-                />
-              ) : previewImage ? (
-                <img
-                  src={`data:image/jpeg;base64,${previewImage}`}
-                  alt="Preview"
-                  className="max-w-full max-h-full rounded-lg opacity-80"
-                />
-              ) : (
-                <p className="text-gray-500">No image generated yet</p>
+
+              {isGenerating && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-gray-400">
+                    <span>Generating...</span>
+                    <span>{progress}/{totalSteps} steps</span>
+                  </div>
+                  <div className="w-full bg-gray-700 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-200"
+                      style={{ width: `${(progress / totalSteps) * 100}%` }}
+                    />
+                  </div>
+                </div>
               )}
-            </div>
+              <div
+                className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+                onDoubleClick={() => {
+                  if (generatedImage) {
+                    setPreviewViewerOpen(true);
+                  }
+                }}
+              >
+                {generatedImage ? (
+                  <img
+                    src={generatedImage}
+                    alt="Generated"
+                    className="max-w-full max-h-full rounded-lg"
+                  />
+                ) : previewImage ? (
+                  <img
+                    src={`data:image/jpeg;base64,${previewImage}`}
+                    alt="Preview"
+                    className="max-w-full max-h-full rounded-lg opacity-80"
+                  />
+                ) : (
+                  <p className="text-gray-500">No image generated yet</p>
+                )}
+              </div>
             {generatedImage && (
               <div className="space-y-3 mt-4">
                 <div className="flex flex-wrap gap-2 text-sm">
@@ -1537,6 +1625,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </div>
               </div>
             )}
+            </div>
+
+            {/* Right: Generation Queue */}
+            <div className="w-60">
+              <GenerationQueue />
+            </div>
           </div>
         </Card>
       </div>

@@ -18,13 +18,11 @@ export default function GenerationQueue() {
         {queue.length > 0 && (
           <Button
             onClick={() => {
-              if (confirm("Clear all completed and failed items?")) {
-                queue.forEach((item) => {
-                  if (item.status === "completed" || item.status === "failed") {
-                    removeFromQueue(item.id);
-                  }
-                });
-              }
+              queue.forEach((item) => {
+                if (item.status === "completed" || item.status === "failed") {
+                  removeFromQueue(item.id);
+                }
+              });
             }}
             variant="secondary"
             size="sm"

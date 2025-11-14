@@ -981,7 +981,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
 
             {/* Right: Generation Queue */}
-            <div className="w-80">
+            <div className="w-60">
               <GenerationQueue />
             </div>
           </div>

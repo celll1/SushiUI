@@ -34,10 +34,11 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
     loadTemplates();
   }, []);
 
-  const loadTemplates = () => {
-    const allTemplates = getAllTemplates();
+  const loadTemplates = async () => {
+    const allTemplates = await getAllTemplates();
     setTemplates(allTemplates);
-    setCategories(["All", ...getCategories()]);
+    const allCategories = await getCategories();
+    setCategories(["All", ...allCategories]);
   };
 
   // Filter templates by category and search query
@@ -53,7 +54,7 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
     return matchesCategory && matchesSearch;
   });
 
-  const handleSaveTemplate = () => {
+  const handleSaveTemplate = async () => {
     if (!currentPrompt.trim()) {
       alert("Current prompt is empty");
       return;
@@ -69,26 +70,26 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
         minute: '2-digit'
       }).replace(/\//g, '-')}`;
 
-    saveTemplate(templateName, currentPrompt, newTemplateCategory);
+    await saveTemplate(templateName, currentPrompt, newTemplateCategory);
     setNewTemplateName("");
     setNewTemplateCategory("General");
     setIsCreating(false);
-    loadTemplates();
+    await loadTemplates();
   };
 
-  const handleDeleteTemplate = (id: string) => {
+  const handleDeleteTemplate = async (id: string) => {
     if (confirm("Are you sure you want to delete this template?")) {
-      deleteTemplate(id);
-      loadTemplates();
+      await deleteTemplate(id);
+      await loadTemplates();
     }
   };
 
-  const handleRenameTemplate = (id: string) => {
+  const handleRenameTemplate = async (id: string) => {
     if (!editingName.trim()) return;
-    updateTemplate(id, { name: editingName });
+    await updateTemplate(id, { name: editingName });
     setEditingId(null);
     setEditingName("");
-    loadTemplates();
+    await loadTemplates();
   };
 
   const startEditing = (template: Template) => {

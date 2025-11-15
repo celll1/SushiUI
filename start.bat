@@ -64,12 +64,34 @@ if !INSTALL_DEPS!==1 (
     echo [INFO] Backend dependencies are up to date
 )
 
-:: Check if frontend dependencies are installed
+:: Check if frontend dependencies need to be installed/updated
 echo [INFO] Checking frontend dependencies...
-if exist "frontend\node_modules" (
-    echo [INFO] Frontend dependencies already installed
+set INSTALL_FRONTEND=0
+
+:: Check if node_modules exists
+if not exist "frontend\node_modules" (
+    set INSTALL_FRONTEND=1
 ) else (
-    echo [INFO] Installing frontend dependencies...
+    :: Check if .package_hash exists
+    if not exist "frontend\.package_hash" (
+        set INSTALL_FRONTEND=1
+    ) else (
+        :: Calculate current package.json hash
+        for /f %%A in ('certutil -hashfile frontend\package.json SHA256 ^| findstr /v "hash"') do set CURRENT_PKG_HASH=%%A
+
+        :: Read stored hash
+        set /p STORED_PKG_HASH=<frontend\.package_hash
+
+        :: Compare hashes
+        if not "!CURRENT_PKG_HASH!"=="!STORED_PKG_HASH!" (
+            echo [INFO] package.json has been updated
+            set INSTALL_FRONTEND=1
+        )
+    )
+)
+
+if !INSTALL_FRONTEND!==1 (
+    echo [INFO] Installing/updating frontend dependencies...
     cd frontend
     call npm install
     if errorlevel 1 (
@@ -78,8 +100,14 @@ if exist "frontend\node_modules" (
         pause
         exit /b 1
     )
+
+    :: Store hash of package.json
+    for /f %%A in ('certutil -hashfile package.json SHA256 ^| findstr /v "hash"') do echo %%A > .package_hash
+
     cd ..
     echo [SUCCESS] Frontend dependencies installed
+) else (
+    echo [INFO] Frontend dependencies are up to date
 )
 
 :: Create necessary directories

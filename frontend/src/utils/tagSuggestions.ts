@@ -321,11 +321,17 @@ export function replaceCurrentTag(
 
   // Build new text with proper spacing
   const trimmedBefore = beforeTag.trimEnd();
+  const trimmedAfter = afterTag.trimStart();
+
   const needsSpaceBefore = trimmedBefore.length > 0 && !trimmedBefore.endsWith(",") && !trimmedBefore.endsWith("\n");
   const prefix = needsSpaceBefore ? trimmedBefore + ", " : trimmedBefore + (trimmedBefore.length > 0 && trimmedBefore.endsWith(",") ? " " : "");
 
-  const newText = prefix + formattedTag + afterTag;
-  const newCursorPos = prefix.length + formattedTag.length;
+  // Add comma after tag if there's content after (not at end of string)
+  const needsCommaAfter = trimmedAfter.length > 0 && !trimmedAfter.startsWith(",") && !trimmedAfter.startsWith("\n");
+  const suffix = needsCommaAfter ? ", " + trimmedAfter : trimmedAfter;
+
+  const newText = prefix + formattedTag + suffix;
+  const newCursorPos = prefix.length + formattedTag.length + (needsCommaAfter ? 2 : 0);
 
   return {
     text: newText,

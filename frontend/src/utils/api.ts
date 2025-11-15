@@ -585,6 +585,7 @@ export interface TaggerStatusResponse {
   loaded: boolean;
   model_path: string | null;
   tag_mapping_path: string | null;
+  model_version: string | null;
 }
 
 export const loadTaggerModel = async (
@@ -609,12 +610,16 @@ export const loadTaggerModel = async (
 export const predictTags = async (
   image_base64: string,
   gen_threshold: number = 0.45,
-  char_threshold: number = 0.45
+  char_threshold: number = 0.45,
+  model_version: string = "cl_tagger_1_02",
+  auto_unload: boolean = true
 ): Promise<TaggerPredictionsResponse> => {
   const response = await api.post("/tagger/predict", {
     image_base64,
     gen_threshold,
     char_threshold,
+    model_version,
+    auto_unload,
   });
   return response.data;
 };

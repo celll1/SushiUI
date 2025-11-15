@@ -1649,6 +1649,8 @@ class TaggerRequest(BaseModel):
     image_base64: str
     gen_threshold: float = 0.45
     char_threshold: float = 0.45
+    model_version: str = "cl_tagger_1_02"
+    auto_unload: bool = True
 
 class TaggerLoadModelRequest(BaseModel):
     model_path: Optional[str] = None
@@ -1698,24 +1700,25 @@ async def predict_tags(request: TaggerRequest):
         image_base64: Base64 encoded image
         gen_threshold: Threshold for general tags (default: 0.45)
         char_threshold: Threshold for character/copyright/artist tags (default: 0.45)
+        model_version: Model version to use (default: cl_tagger_1_02)
+        auto_unload: Whether to unload model after prediction to free VRAM (default: True)
 
     Returns:
         Dictionary with categorized tags and confidences
     """
     try:
-        if not tagger_manager.loaded:
-            raise HTTPException(status_code=400, detail="Tagger model not loaded")
-
         # Decode base64 image
         import base64
         image_data = base64.b64decode(request.image_base64)
         image = Image.open(io.BytesIO(image_data))
 
-        # Predict tags
+        # Predict tags (auto-loads model if needed)
         predictions = tagger_manager.predict(
             image,
             gen_threshold=request.gen_threshold,
-            char_threshold=request.char_threshold
+            char_threshold=request.char_threshold,
+            model_version=request.model_version,
+            auto_unload=request.auto_unload
         )
 
         return {
@@ -1733,7 +1736,8 @@ async def get_tagger_status():
     return {
         "loaded": tagger_manager.loaded,
         "model_path": tagger_manager.model_path,
-        "tag_mapping_path": tagger_manager.tag_mapping_path
+        "tag_mapping_path": tagger_manager.tag_mapping_path,
+        "model_version": tagger_manager.model_version
     }
 
 @router.post("/tagger/unload")

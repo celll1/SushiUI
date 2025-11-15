@@ -28,8 +28,14 @@ const DEFAULT_THRESHOLDS: CategoryThreshold[] = [
   { id: "model", label: "Model", threshold: 0.45, enabled: true },
 ];
 
+const MODEL_VERSIONS = [
+  { value: "cl_tagger_1_00", label: "v1.00" },
+  { value: "cl_tagger_1_01", label: "v1.01" },
+  { value: "cl_tagger_1_02", label: "v1.02 (Latest)" },
+];
+
 const STORAGE_KEY_THRESHOLDS = "tagger_thresholds";
-const STORAGE_KEY_CATEGORY_ORDER = "tagger_category_order";
+const STORAGE_KEY_MODEL_VERSION = "tagger_model_version";
 
 export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt }: ImageTaggerPanelProps) {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -47,6 +53,7 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
   const [categoryThresholds, setCategoryThresholds] = useState<CategoryThreshold[]>(DEFAULT_THRESHOLDS);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [selectedModelVersion, setSelectedModelVersion] = useState<string>("cl_tagger_1_02");
 
   // Load saved settings
   useEffect(() => {
@@ -60,6 +67,12 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
       } catch (error) {
         console.error("Failed to load thresholds:", error);
       }
+    }
+
+    // Load model version
+    const savedVersion = localStorage.getItem(STORAGE_KEY_MODEL_VERSION);
+    if (savedVersion) {
+      setSelectedModelVersion(savedVersion);
     }
   }, []);
 
@@ -169,10 +182,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
 
   const handlePredictTags = async () => {
     if (!imageBase64) return;
-    if (!modelLoaded) {
-      setError("Please load the model first");
-      return;
-    }
 
     setIsTagging(true);
     setError(null);
@@ -182,7 +191,14 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
       const genThreshold = categoryThresholds.find(c => c.id === "general")?.threshold || 0.45;
       const charThreshold = categoryThresholds.find(c => c.id === "character")?.threshold || 0.45;
 
-      const response = await predictTags(imageBase64, genThreshold, charThreshold);
+      // Auto-loads model if needed, auto-unloads after prediction
+      const response = await predictTags(
+        imageBase64,
+        genThreshold,
+        charThreshold,
+        selectedModelVersion,
+        true  // auto_unload to free VRAM
+      );
       setPredictions(response.predictions);
 
       // Auto-select all tags by default
@@ -191,6 +207,9 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
         categoryTags.forEach(([tag, _]) => allTags.add(tag));
       });
       setSelectedTags(allTags);
+
+      // Save selected model version
+      localStorage.setItem(STORAGE_KEY_MODEL_VERSION, selectedModelVersion);
     } catch (err: any) {
       console.error("[Tagger] Prediction failed:", err);
       setError(err.response?.data?.detail || err.message || "Failed to predict tags");
@@ -345,16 +364,20 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     <div ref={taggerContainerRef} className="grid grid-cols-3 gap-4 h-full" tabIndex={-1}>
       {/* Left Column: Image Upload */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-200">Image</h3>
-          {!modelLoaded && (
-            <Button onClick={handleLoadModel} variant="secondary" className="text-xs px-2 py-1">
-              Load Model
-            </Button>
-          )}
-          {modelLoaded && (
-            <span className="text-xs text-green-400">✓ Loaded</span>
-          )}
+        <h3 className="text-sm font-semibold text-gray-200">Image</h3>
+
+        {/* Model Version Selector */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Model Version</label>
+          <select
+            value={selectedModelVersion}
+            onChange={(e) => setSelectedModelVersion(e.target.value)}
+            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
+          >
+            {MODEL_VERSIONS.map(v => (
+              <option key={v.value} value={v.value}>{v.label}</option>
+            ))}
+          </select>
         </div>
 
         {/* Drag & Drop Area */}
@@ -394,7 +417,7 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
         <Button
           onClick={handlePredictTags}
           variant="primary"
-          disabled={!imageBase64 || isTagging || !modelLoaded}
+          disabled={!imageBase64 || isTagging}
           className="w-full"
         >
           {isTagging ? "Tagging..." : "Predict Tags"}

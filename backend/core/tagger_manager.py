@@ -22,6 +22,7 @@ class TaggerManager:
         self.tag_to_category = None
         self.model_path = None
         self.tag_mapping_path = None
+        self.model_version = None
         self.loaded = False
 
     def _download_from_huggingface(
@@ -148,8 +149,9 @@ class TaggerManager:
 
             self.model_path = model_path
             self.tag_mapping_path = tag_mapping_path
+            self.model_version = model_version
             self.loaded = True
-            print("[Tagger] Model loaded successfully")
+            print(f"[Tagger] Model loaded successfully (version: {model_version})")
 
         except Exception as e:
             print(f"[Tagger] Failed to load model: {e}")
@@ -325,7 +327,9 @@ class TaggerManager:
         self,
         image: Image.Image,
         gen_threshold: float = 0.45,
-        char_threshold: float = 0.45
+        char_threshold: float = 0.45,
+        model_version: str = "cl_tagger_1_02",
+        auto_unload: bool = True
     ) -> Dict[str, List[Tuple[str, float]]]:
         """Predict tags for an image
 
@@ -333,12 +337,20 @@ class TaggerManager:
             image: PIL Image object
             gen_threshold: Threshold for general tags
             char_threshold: Threshold for character/copyright/artist tags
+            model_version: Model version to use (loads if not already loaded)
+            auto_unload: Whether to unload model after prediction to free VRAM
 
         Returns:
             Dictionary with categorized tags and confidences
         """
-        if not self.loaded:
-            raise RuntimeError("Model not loaded")
+        # Auto-load model if not loaded or different version
+        if not self.loaded or self.model_version != model_version:
+            print(f"[Tagger] Auto-loading model version: {model_version}")
+            self.load_model(
+                use_huggingface=True,
+                repo_id="cella110n/cl_tagger",
+                model_version=model_version
+            )
 
         # Preprocess image
         input_data = self._preprocess_image(image)
@@ -364,6 +376,11 @@ class TaggerManager:
 
         # Get tags
         predictions = self._get_tags(outputs[0], gen_threshold, char_threshold)
+
+        # Auto-unload to free VRAM
+        if auto_unload:
+            print("[Tagger] Auto-unloading model to free VRAM")
+            self.unload_model()
 
         return predictions
 

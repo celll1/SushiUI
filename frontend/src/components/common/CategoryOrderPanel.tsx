@@ -162,7 +162,7 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
       </div>
 
       <div className="bg-gray-800 rounded-lg p-4">
-        <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
           {categories.map((category, index) => (
             <div
               key={category.id}
@@ -172,7 +172,7 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
-              className={`flex items-center gap-3 p-3 rounded-lg transition-all cursor-move ${
+              className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg transition-all cursor-move min-w-[100px] ${
                 draggedIndex === index
                   ? "opacity-50 bg-gray-600"
                   : dragOverIndex === index
@@ -183,7 +183,7 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
               {/* Drag Handle Icon */}
               <div className="text-gray-400">
                 <svg
-                  className="w-5 h-5"
+                  className="w-4 h-4"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -197,17 +197,8 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
                 </svg>
               </div>
 
-              {/* Enable/Disable Checkbox */}
-              <input
-                type="checkbox"
-                checked={category.enabled}
-                onChange={() => toggleCategory(index)}
-                className="w-5 h-5 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
-                title={category.enabled ? "Disable category" : "Enable category"}
-              />
-
               {/* Category Label */}
-              <div className="flex-1">
+              <div className="text-center">
                 <span
                   className={`text-sm font-medium ${
                     category.enabled ? "text-gray-200" : "text-gray-500"
@@ -215,10 +206,16 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
                 >
                   {category.label}
                 </span>
-                {!category.enabled && (
-                  <span className="ml-2 text-xs text-gray-500">(Disabled)</span>
-                )}
               </div>
+
+              {/* Enable/Disable Checkbox */}
+              <input
+                type="checkbox"
+                checked={category.enabled}
+                onChange={() => toggleCategory(index)}
+                className="w-4 h-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                title={category.enabled ? "Disable category" : "Enable category"}
+              />
             </div>
           ))}
         </div>

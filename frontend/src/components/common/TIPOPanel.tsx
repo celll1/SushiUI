@@ -4,8 +4,27 @@ import { useState, useRef } from "react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import { generateTIPOPrompt, TIPOGenerateResponse } from "@/utils/api";
-import { getCategoryOrder } from "./CategoryOrderPanel";
+import { getCategoryOrder, TagCategory } from "./CategoryOrderPanel";
 import { reorderPromptByCategory } from "@/utils/tagCategorization";
+
+// TIPO-specific category mapping
+const TIPO_CATEGORY_MAP: Record<string, string> = {
+  "rating": "rating",
+  "quality": "quality",
+  "count": "special", // TIPO returns count tags in "special"
+  "character": "characters",
+  "copyright": "copyrights",
+  "artist": "artist",
+  "general": "general",
+  "meta": "meta",
+};
+
+interface TIPOCategoryOrder {
+  id: string;
+  label: string;
+  enabled: boolean;
+  randomize?: boolean;
+}
 
 interface TIPOPanelProps {
   onInsert: (content: string) => void;
@@ -38,6 +57,62 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
     top_k: initialSettings.top_k,
     max_new_tokens: initialSettings.max_new_tokens,
   });
+
+  // Category order settings (from CategoryOrderPanel)
+  const [categoryOrder, setCategoryOrder] = useState<TIPOCategoryOrder[]>(() => {
+    const savedOrder = getCategoryOrder();
+    return savedOrder.map(cat => ({
+      id: cat.id,
+      label: cat.label,
+      enabled: cat.enabled,
+      randomize: cat.randomize || false,
+    }));
+  });
+
+  // Reorder TIPO output based on category order
+  const reorderTIPOOutput = (rawOutput: any): string => {
+    if (!rawOutput || typeof rawOutput !== 'object') return '';
+
+    const tagsByCategory: Record<string, string[]> = {};
+
+    // Extract tags from TIPO output structure
+    for (const [tipoKey, content] of Object.entries(rawOutput)) {
+      // Skip non-array fields and special fields
+      if (!Array.isArray(content) || tipoKey === 'target' || tipoKey === 'tag' || tipoKey === 'extended') {
+        continue;
+      }
+
+      // Map TIPO category to our category system
+      let categoryId = tipoKey;
+      for (const [ourCat, tipoCat] of Object.entries(TIPO_CATEGORY_MAP)) {
+        if (tipoCat === tipoKey) {
+          categoryId = ourCat;
+          break;
+        }
+      }
+
+      if (content.length > 0) {
+        tagsByCategory[categoryId] = content as string[];
+      }
+    }
+
+    // Reorder based on category order
+    const orderedTags: string[] = [];
+    for (const { id, enabled, randomize } of categoryOrder) {
+      if (enabled && tagsByCategory[id]) {
+        let tags = [...tagsByCategory[id]];
+
+        // Apply randomization if enabled
+        if (randomize) {
+          tags = tags.sort(() => Math.random() - 0.5);
+        }
+
+        orderedTags.push(...tags);
+      }
+    }
+
+    return orderedTags.join(', ');
+  };
 
   const handleGenerate = async () => {
     if (!inputPrompt.trim()) {
@@ -74,11 +149,12 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
       console.log('[TIPO Panel] Response:', response);
       console.log('[TIPO Panel] Parsed type:', typeof response.parsed);
       console.log('[TIPO Panel] Parsed value:', response.parsed);
+      console.log('[TIPO Panel] Raw output:', response.raw_output);
 
       setResult(response);
 
-      // Reorder the generated prompt using category order
-      const reordered = await reorderPromptByCategory(response.generated_prompt, categoryOrder);
+      // Reorder the TIPO output using our category order
+      const reordered = reorderTIPOOutput(response.raw_output);
       setReorderedOutput(reordered);
 
     } catch (err: any) {
@@ -229,6 +305,76 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                 className="w-full"
               />
             </div>
+          </div>
+        </details>
+
+        {/* Category Order */}
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-300">
+            Output Category Order
+          </summary>
+          <div className="mt-2">
+            <div className="flex flex-wrap gap-2">
+              {categoryOrder.map((category, index) => (
+                <div
+                  key={category.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', index.toString());
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const dragIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                    if (dragIndex === index) return;
+
+                    const newOrder = [...categoryOrder];
+                    const [removed] = newOrder.splice(dragIndex, 1);
+                    newOrder.splice(index, 0, removed);
+                    setCategoryOrder(newOrder);
+                  }}
+                  className={`px-3 py-2 rounded-lg border cursor-move transition-colors ${
+                    category.enabled
+                      ? 'bg-gray-700 border-gray-600 hover:border-gray-500'
+                      : 'bg-gray-800 border-gray-700 opacity-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={category.enabled}
+                      onChange={(e) => {
+                        const newOrder = [...categoryOrder];
+                        newOrder[index].enabled = e.target.checked;
+                        setCategoryOrder(newOrder);
+                      }}
+                      className="w-3 h-3"
+                    />
+                    <span className="text-xs text-gray-300">{category.label}</span>
+                    <label className="flex items-center gap-1 ml-2">
+                      <input
+                        type="checkbox"
+                        checked={category.randomize}
+                        onChange={(e) => {
+                          const newOrder = [...categoryOrder];
+                          newOrder[index].randomize = e.target.checked;
+                          setCategoryOrder(newOrder);
+                        }}
+                        className="w-3 h-3"
+                      />
+                      <span className="text-xs text-gray-400">🎲</span>
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Drag to reorder • Check to enable • 🎲 to randomize within category
+            </p>
           </div>
         </details>
       </div>

@@ -164,20 +164,80 @@ class TaggerManager:
         with open(mapping_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        # Parse the new format: {"0": {"tag": "...", "category": "..."}, ...}
+        names = []
+        rating_indices = []
+        general_indices = []
+        artist_indices = []
+        character_indices = []
+        copyright_indices = []
+        meta_indices = []
+        quality_indices = []
+        model_indices = []
+
+        # Category name mapping (case-insensitive)
+        category_map = {
+            'rating': 'rating',
+            'general': 'general',
+            'artist': 'artist',
+            'character': 'character',
+            'copyright': 'copyright',
+            'meta': 'meta',
+            'quality': 'quality',
+            'model': 'model'
+        }
+
+        # Sort by index to ensure correct order
+        for idx_str in sorted(data.keys(), key=int):
+            idx = int(idx_str)
+            item = data[idx_str]
+            tag = item['tag']
+            category = item['category'].lower()
+
+            names.append(tag)
+
+            # Map to category lists
+            if category == 'rating':
+                rating_indices.append(idx)
+            elif category == 'general':
+                general_indices.append(idx)
+            elif category == 'artist':
+                artist_indices.append(idx)
+            elif category == 'character':
+                character_indices.append(idx)
+            elif category == 'copyright':
+                copyright_indices.append(idx)
+            elif category == 'meta':
+                meta_indices.append(idx)
+            elif category == 'quality':
+                quality_indices.append(idx)
+            elif category == 'model':
+                model_indices.append(idx)
+
         # Create LabelData structure
         class LabelData:
-            def __init__(self, data):
-                self.names = data['names']
-                self.rating = np.array(data['rating'], dtype=np.int64)
-                self.general = np.array(data['general'], dtype=np.int64)
-                self.artist = np.array(data.get('artist', []), dtype=np.int64)
-                self.character = np.array(data['character'], dtype=np.int64)
-                self.copyright = np.array(data['copyright'], dtype=np.int64)
-                self.meta = np.array(data.get('meta', []), dtype=np.int64)
-                self.quality = np.array(data.get('quality', []), dtype=np.int64)
-                self.model = np.array(data.get('model', []), dtype=np.int64)
+            def __init__(self, names, rating, general, artist, character, copyright, meta, quality, model):
+                self.names = names
+                self.rating = rating
+                self.general = general
+                self.artist = artist
+                self.character = character
+                self.copyright = copyright
+                self.meta = meta
+                self.quality = quality
+                self.model = model
 
-        labels = LabelData(data)
+        labels = LabelData(
+            names,
+            np.array(rating_indices, dtype=np.int64),
+            np.array(general_indices, dtype=np.int64),
+            np.array(artist_indices, dtype=np.int64),
+            np.array(character_indices, dtype=np.int64),
+            np.array(copyright_indices, dtype=np.int64),
+            np.array(meta_indices, dtype=np.int64),
+            np.array(quality_indices, dtype=np.int64),
+            np.array(model_indices, dtype=np.int64)
+        )
 
         # Create idx_to_tag mapping
         idx_to_tag = {i: tag for i, tag in enumerate(labels.names)}

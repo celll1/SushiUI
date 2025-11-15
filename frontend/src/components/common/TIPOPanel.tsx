@@ -5,7 +5,7 @@ import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import { generateTIPOPrompt, TIPOGenerateResponse } from "@/utils/api";
 import { getCategoryOrder } from "./CategoryOrderPanel";
-import { reorderTagsByCategory } from "@/utils/tagCategorization";
+import { reorderPromptByCategory } from "@/utils/tagCategorization";
 
 interface TIPOPanelProps {
   onInsert: (content: string) => void;
@@ -74,7 +74,7 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
       setResult(response);
 
       // Reorder the generated prompt using category order
-      const reordered = reorderTagsByCategory(response.generated_prompt, categoryOrder);
+      const reordered = await reorderPromptByCategory(response.generated_prompt, categoryOrder);
       setReorderedOutput(reordered);
 
     } catch (err: any) {

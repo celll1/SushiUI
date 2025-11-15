@@ -19,6 +19,7 @@ const DEFAULT_CATEGORIES: TagCategory[] = [
   { id: "artist", label: "Artist", enabled: true },
   { id: "meta", label: "Meta", enabled: true },
   { id: "model", label: "Model", enabled: true },
+  { id: "unknown", label: "Unknown", enabled: true },
 ];
 
 const STORAGE_KEY = "tag_category_order";

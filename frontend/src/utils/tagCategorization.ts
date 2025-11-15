@@ -74,7 +74,7 @@ async function buildTagCategoryCache(): Promise<Record<string, string>> {
  */
 function determineTagCategory(tag: string, cache: Record<string, string>): string {
   const normalizedTag = tag.toLowerCase().replace(/[_\s]/g, "_");
-  return cache[normalizedTag] || "general";
+  return cache[normalizedTag] || "unknown";
 }
 
 /**

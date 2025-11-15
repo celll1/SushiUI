@@ -51,7 +51,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const [history, setHistory] = useState<Array<{ text: string; cursorPos: number }>>([]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const isUndoRedoRef = useRef(false); // Flag to prevent adding to history during undo/redo
-  const hasInitializedHistory = useRef(false);
+  const lastValueRef = useRef<string>(""); // Track last value to detect external changes
 
   // Expose the internal textarea ref to parent components
   useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
@@ -185,14 +185,36 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }, 300); // Increased delay to 300ms
   };
 
-  // Initialize history with current value (only once)
+  // Track external changes to value (e.g., from "send to", initial load, etc.)
   useEffect(() => {
-    if (!hasInitializedHistory.current && value !== undefined) {
-      hasInitializedHistory.current = true;
-      setHistory([{ text: value, cursorPos: 0 }]);
-      setHistoryIndex(0);
+    // Check if value changed externally (not from undo/redo or user operations)
+    if (value !== lastValueRef.current && !isUndoRedoRef.current) {
+      const textarea = internalTextareaRef.current;
+      const cursorPos = textarea?.selectionStart || 0;
+
+      // If history is empty, initialize it
+      if (history.length === 0) {
+        setHistory([{ text: value, cursorPos }]);
+        setHistoryIndex(0);
+        lastValueRef.current = value;
+      } else {
+        // Value changed externally, add as new history entry
+        // This handles "send to" and other external updates
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push({ text: value, cursorPos });
+
+        if (newHistory.length > 50) {
+          newHistory.shift();
+          setHistoryIndex(49);
+        } else {
+          setHistoryIndex(newHistory.length - 1);
+        }
+
+        setHistory(newHistory);
+        lastValueRef.current = value;
+      }
     }
-  }, [value]);
+  }, [value, history, historyIndex]);
 
   // Add new state to history after an operation
   const addToHistory = (text: string, cursorPos: number) => {
@@ -200,6 +222,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       // Don't add to history if this is from undo/redo
       return;
     }
+
+    lastValueRef.current = text; // Update last value tracker
 
     setHistory((prevHistory) => {
       // Remove any entries after current index (when user makes new change after undo)
@@ -224,6 +248,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     const prevState = history[historyIndex - 1];
     isUndoRedoRef.current = true;
+    lastValueRef.current = prevState.text; // Update last value tracker
 
     const textarea = internalTextareaRef.current;
     if (textarea && textarea.tagName === "TEXTAREA") {
@@ -252,6 +277,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     const nextState = history[historyIndex + 1];
     isUndoRedoRef.current = true;
+    lastValueRef.current = nextState.text; // Update last value tracker
 
     const textarea = internalTextareaRef.current;
     if (textarea && textarea.tagName === "TEXTAREA") {

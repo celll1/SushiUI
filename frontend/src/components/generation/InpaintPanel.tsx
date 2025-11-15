@@ -288,6 +288,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           console.error('Failed to parse fixed resolution presets:', e);
         }
       }
+
+      // Load panel visibility settings
+      const savedVisibility = localStorage.getItem('inpaint_visibility');
+      if (savedVisibility) {
+        try {
+          setVisibility(JSON.parse(savedVisibility));
+        } catch (e) {
+          console.error('Failed to parse inpaint visibility:', e);
+        }
+      }
     };
 
     loadInitialData();
@@ -862,6 +872,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     { width: 512, height: 512 },
   ]);
 
+  // Panel visibility settings
+  const [visibility, setVisibility] = useState({
+    lora: true,
+    controlnet: true,
+    aspectRatioPresets: true,
+    fixedResolutionPresets: true,
+  });
+
   // Add generation request to queue
   const handleAddToQueue = () => {
     if (!params.prompt) {
@@ -1082,21 +1100,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       {/* Parameters Panel */}
       <div className="space-y-4">
         <ModelSelector />
-
-        <LoRASelector
-          value={params.loras || []}
-          onChange={(loras) => setParams({ ...params, loras })}
-          disabled={isGenerating}
-          storageKey="inpaint_lora_collapsed"
-        />
-
-        <ControlNetSelector
-          value={params.controlnets || []}
-          onChange={(controlnets) => setParams({ ...params, controlnets })}
-          disabled={isGenerating}
-          storageKey="inpaint_controlnet_collapsed"
-          inputImagePreview={inputImagePreview}
-        />
 
         <Card
           title="Input Image"
@@ -1368,7 +1371,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     />
                   </div>
 
-                  {showAspectRatioPresets && (
+                  {visibility.aspectRatioPresets && showAspectRatioPresets && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <label className="block text-sm font-medium text-gray-300">Aspect Ratio Presets</label>
@@ -1423,7 +1426,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     </div>
                   )}
 
-                  {showFixedResolutionPresets && (
+                  {visibility.fixedResolutionPresets && showFixedResolutionPresets && (
                     <div className="space-y-2">
                       <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
                       <div className="grid grid-cols-6 gap-2">
@@ -1632,6 +1635,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </div>
         </Card>
 
+        {visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => setParams({ ...params, loras })}
+            disabled={isGenerating}
+            storageKey="inpaint_lora_collapsed"
+          />
+        )}
+
+        {visibility.controlnet && (
+          <ControlNetSelector
+            value={params.controlnets || []}
+            onChange={(controlnets) => setParams({ ...params, controlnets })}
+            disabled={isGenerating}
+            storageKey="inpaint_controlnet_collapsed"
+            inputImagePreview={inputImagePreview}
+          />
+        )}
       </div>
 
       {/* Preview Panel */}

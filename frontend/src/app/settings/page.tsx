@@ -50,6 +50,26 @@ export default function SettingsPage() {
   const [aspectRatioPresets, setAspectRatioPresets] = useState(DEFAULT_ASPECT_RATIO_PRESETS);
   const [fixedResolutionPresets, setFixedResolutionPresets] = useState(DEFAULT_FIXED_RESOLUTION_PRESETS);
 
+  // Panel visibility settings
+  const [txt2imgVisibility, setTxt2imgVisibility] = useState({
+    lora: true,
+    controlnet: true,
+    aspectRatioPresets: true,
+    fixedResolutionPresets: true,
+  });
+  const [img2imgVisibility, setImg2imgVisibility] = useState({
+    lora: true,
+    controlnet: true,
+    aspectRatioPresets: true,
+    fixedResolutionPresets: true,
+  });
+  const [inpaintVisibility, setInpaintVisibility] = useState({
+    lora: true,
+    controlnet: true,
+    aspectRatioPresets: true,
+    fixedResolutionPresets: true,
+  });
+
   const updateStorageInfo = () => {
     if (typeof window !== 'undefined' && 'storage' in navigator && 'estimate' in navigator.storage) {
       navigator.storage.estimate().then(estimate => {
@@ -175,6 +195,34 @@ export default function SettingsPage() {
           setFixedResolutionPresets(JSON.parse(savedFixedResolutionPresets));
         } catch (e) {
           console.error('Failed to parse fixed resolution presets:', e);
+        }
+      }
+
+      // Load panel visibility settings
+      const savedTxt2imgVisibility = localStorage.getItem('txt2img_visibility');
+      if (savedTxt2imgVisibility) {
+        try {
+          setTxt2imgVisibility(JSON.parse(savedTxt2imgVisibility));
+        } catch (e) {
+          console.error('Failed to parse txt2img visibility:', e);
+        }
+      }
+
+      const savedImg2imgVisibility = localStorage.getItem('img2img_visibility');
+      if (savedImg2imgVisibility) {
+        try {
+          setImg2imgVisibility(JSON.parse(savedImg2imgVisibility));
+        } catch (e) {
+          console.error('Failed to parse img2img visibility:', e);
+        }
+      }
+
+      const savedInpaintVisibility = localStorage.getItem('inpaint_visibility');
+      if (savedInpaintVisibility) {
+        try {
+          setInpaintVisibility(JSON.parse(savedInpaintVisibility));
+        } catch (e) {
+          console.error('Failed to parse inpaint visibility:', e);
         }
       }
     }
@@ -618,6 +666,191 @@ export default function SettingsPage() {
                       </button>
                     </div>
                   ))}
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Panel Visibility Settings">
+            <div className="space-y-6">
+              <p className="text-gray-400 text-sm mb-4">
+                Control which features are visible in each generation panel.
+              </p>
+
+              {/* Txt2Img Panel */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-200">Text to Image Panel</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={txt2imgVisibility.lora}
+                      onChange={(e) => {
+                        const newVisibility = { ...txt2imgVisibility, lora: e.target.checked };
+                        setTxt2imgVisibility(newVisibility);
+                        localStorage.setItem('txt2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show LoRA</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={txt2imgVisibility.controlnet}
+                      onChange={(e) => {
+                        const newVisibility = { ...txt2imgVisibility, controlnet: e.target.checked };
+                        setTxt2imgVisibility(newVisibility);
+                        localStorage.setItem('txt2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show ControlNet</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={txt2imgVisibility.aspectRatioPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...txt2imgVisibility, aspectRatioPresets: e.target.checked };
+                        setTxt2imgVisibility(newVisibility);
+                        localStorage.setItem('txt2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Aspect Ratio Presets</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={txt2imgVisibility.fixedResolutionPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...txt2imgVisibility, fixedResolutionPresets: e.target.checked };
+                        setTxt2imgVisibility(newVisibility);
+                        localStorage.setItem('txt2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Fixed Resolution Presets</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Img2Img Panel */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-200">Image to Image Panel</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={img2imgVisibility.lora}
+                      onChange={(e) => {
+                        const newVisibility = { ...img2imgVisibility, lora: e.target.checked };
+                        setImg2imgVisibility(newVisibility);
+                        localStorage.setItem('img2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show LoRA</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={img2imgVisibility.controlnet}
+                      onChange={(e) => {
+                        const newVisibility = { ...img2imgVisibility, controlnet: e.target.checked };
+                        setImg2imgVisibility(newVisibility);
+                        localStorage.setItem('img2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show ControlNet</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={img2imgVisibility.aspectRatioPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...img2imgVisibility, aspectRatioPresets: e.target.checked };
+                        setImg2imgVisibility(newVisibility);
+                        localStorage.setItem('img2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Aspect Ratio Presets</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={img2imgVisibility.fixedResolutionPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...img2imgVisibility, fixedResolutionPresets: e.target.checked };
+                        setImg2imgVisibility(newVisibility);
+                        localStorage.setItem('img2img_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Fixed Resolution Presets</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Inpaint Panel */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-200">Inpaint Panel</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={inpaintVisibility.lora}
+                      onChange={(e) => {
+                        const newVisibility = { ...inpaintVisibility, lora: e.target.checked };
+                        setInpaintVisibility(newVisibility);
+                        localStorage.setItem('inpaint_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show LoRA</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={inpaintVisibility.controlnet}
+                      onChange={(e) => {
+                        const newVisibility = { ...inpaintVisibility, controlnet: e.target.checked };
+                        setInpaintVisibility(newVisibility);
+                        localStorage.setItem('inpaint_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show ControlNet</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={inpaintVisibility.aspectRatioPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...inpaintVisibility, aspectRatioPresets: e.target.checked };
+                        setInpaintVisibility(newVisibility);
+                        localStorage.setItem('inpaint_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Aspect Ratio Presets</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={inpaintVisibility.fixedResolutionPresets}
+                      onChange={(e) => {
+                        const newVisibility = { ...inpaintVisibility, fixedResolutionPresets: e.target.checked };
+                        setInpaintVisibility(newVisibility);
+                        localStorage.setItem('inpaint_visibility', JSON.stringify(newVisibility));
+                      }}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-300">Show Fixed Resolution Presets</span>
+                  </label>
                 </div>
               </div>
             </div>

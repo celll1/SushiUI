@@ -228,6 +228,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }
     }
 
+    // Load panel visibility settings
+    const savedVisibility = localStorage.getItem('txt2img_visibility');
+    if (savedVisibility) {
+      try {
+        setVisibility(JSON.parse(savedVisibility));
+      } catch (e) {
+        console.error('Failed to parse txt2img visibility:', e);
+      }
+    }
+
   }, []);
 
   // Load samplers and schedule types when model is loaded
@@ -517,6 +527,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     { width: 512, height: 512 },
   ]);
 
+  // Panel visibility settings
+  const [visibility, setVisibility] = useState({
+    lora: true,
+    controlnet: true,
+    aspectRatioPresets: true,
+    fixedResolutionPresets: true,
+  });
+
   // Add generation request to queue
   const handleAddToQueue = () => {
     if (!params.prompt) {
@@ -675,26 +693,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       <div className="space-y-4">
         <ModelSelector />
 
-        <LoRASelector
-          value={params.loras || []}
-          onChange={(loras) => {
-            console.log("[Txt2Img] LoRA onChange called with:", loras);
-            setParams({ ...params, loras });
-          }}
-          disabled={isGenerating}
-          storageKey="txt2img_lora_collapsed"
-        />
-
-        <ControlNetSelector
-          value={params.controlnets || []}
-          onChange={(controlnets) => {
-            console.log("[Txt2Img] ControlNet onChange called with:", controlnets);
-            setParams({ ...params, controlnets });
-          }}
-          disabled={isGenerating}
-          storageKey="txt2img_controlnet_collapsed"
-        />
-
         <Card title="Prompt">
           <div className="relative">
             <TextareaWithTagSuggestions
@@ -788,7 +786,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 />
               </div>
 
-              {showAspectRatioPresets && (
+              {visibility.aspectRatioPresets && showAspectRatioPresets && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="block text-sm font-medium text-gray-300">Aspect Ratio Presets</label>
@@ -843,7 +841,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 </div>
               )}
 
-              {showFixedResolutionPresets && (
+              {visibility.fixedResolutionPresets && showFixedResolutionPresets && (
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
                   <div className="grid grid-cols-6 gap-2">
@@ -985,6 +983,30 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
         </Card>
+
+        {visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => {
+              console.log("[Txt2Img] LoRA onChange called with:", loras);
+              setParams({ ...params, loras });
+            }}
+            disabled={isGenerating}
+            storageKey="txt2img_lora_collapsed"
+          />
+        )}
+
+        {visibility.controlnet && (
+          <ControlNetSelector
+            value={params.controlnets || []}
+            onChange={(controlnets) => {
+              console.log("[Txt2Img] ControlNet onChange called with:", controlnets);
+              setParams({ ...params, controlnets });
+            }}
+            disabled={isGenerating}
+            storageKey="txt2img_controlnet_collapsed"
+          />
+        )}
       </div>
 
       {/* Preview Panel */}

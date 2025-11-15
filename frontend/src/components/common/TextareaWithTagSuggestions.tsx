@@ -336,6 +336,25 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       return;
     }
 
+    // Ctrl+Home: Move cursor to start
+    if (e.ctrlKey && e.key === "Home") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      textarea.selectionStart = 0;
+      textarea.selectionEnd = 0;
+      return;
+    }
+
+    // Ctrl+End: Move cursor to end
+    if (e.ctrlKey && e.key === "End") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const endPos = textarea.value.length;
+      textarea.selectionStart = endPos;
+      textarea.selectionEnd = endPos;
+      return;
+    }
+
     // Ctrl+Shift+Left: Swap tag with previous tag
     if (e.ctrlKey && e.shiftKey && e.key === "ArrowLeft") {
       e.preventDefault();

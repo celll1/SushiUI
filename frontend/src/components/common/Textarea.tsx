@@ -179,6 +179,29 @@ export default function Textarea({
       onKeyDown(e);
     }
 
+    // Ctrl+Home: Move cursor to start
+    if (e.ctrlKey && e.key === "Home") {
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      if (textarea) {
+        textarea.selectionStart = 0;
+        textarea.selectionEnd = 0;
+      }
+      return;
+    }
+
+    // Ctrl+End: Move cursor to end
+    if (e.ctrlKey && e.key === "End") {
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      if (textarea) {
+        const endPos = textarea.value.length;
+        textarea.selectionStart = endPos;
+        textarea.selectionEnd = endPos;
+      }
+      return;
+    }
+
     // Ctrl+Up/Down for weight adjustment
     if (enableWeightControl && e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();

@@ -26,6 +26,7 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
   const [newTemplateCategory, setNewTemplateCategory] = useState("General");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Load templates and categories
   useEffect(() => {
@@ -38,9 +39,18 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
     setCategories(["All", ...getCategories()]);
   };
 
-  const filteredTemplates = selectedCategory === "All"
-    ? templates
-    : templates.filter(t => t.category === selectedCategory);
+  // Filter templates by category and search query
+  const filteredTemplates = templates.filter(template => {
+    // Category filter
+    const matchesCategory = selectedCategory === "All" || template.category === selectedCategory;
+
+    // Search filter (search in name and content)
+    const matchesSearch = searchQuery.trim() === "" ||
+      template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      template.content.toLowerCase().includes(searchQuery.toLowerCase());
+
+    return matchesCategory && matchesSearch;
+  });
 
   const handleSaveTemplate = () => {
     if (!currentPrompt.trim()) {
@@ -121,6 +131,16 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
           </Button>
         </div>
       )}
+
+      {/* Search Box */}
+      <div>
+        <Input
+          label="Search Templates"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search by name or content..."
+        />
+      </div>
 
       {/* Category Filter */}
       <div className="flex gap-2 flex-wrap">

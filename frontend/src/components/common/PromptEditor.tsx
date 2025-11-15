@@ -4,6 +4,7 @@ import { useState, useRef, ChangeEvent } from "react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
+import CategoryOrderPanel from "./CategoryOrderPanel";
 
 interface PromptEditorProps {
   initialPrompt: string;
@@ -12,7 +13,7 @@ interface PromptEditorProps {
   onClose: () => void;
 }
 
-type PanelType = "main" | "template" | "wildcard" | "tipo" | "tagger";
+type PanelType = "main" | "template" | "category" | "wildcard" | "tipo" | "tagger";
 
 export default function PromptEditor({
   initialPrompt,
@@ -136,6 +137,16 @@ export default function PromptEditor({
             Templates
           </button>
           <button
+            onClick={() => setActivePanel("category")}
+            className={`w-full text-left px-3 py-2 rounded ${
+              activePanel === "category"
+                ? "bg-blue-600 text-white"
+                : "text-gray-300 hover:bg-gray-700"
+            }`}
+          >
+            Category Order
+          </button>
+          <button
             onClick={() => setActivePanel("wildcard")}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "wildcard"
@@ -229,6 +240,7 @@ export default function PromptEditor({
                 </p>
                 <ul className="list-disc list-inside mt-2 space-y-1 text-gray-400">
                   <li>Templates: Save and reuse prompt templates</li>
+                  <li>Category Order: Configure tag category order for TIPO and suggestions</li>
                   <li>Wildcards: Use random tag replacement</li>
                   <li>TIPO: AI-powered tag interpolation</li>
                   <li>Image Tagger: Extract tags from images</li>
@@ -240,6 +252,19 @@ export default function PromptEditor({
               <TemplatePanel
                 currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
                 onInsert={handleInsertTemplate}
+              />
+            )}
+
+            {activePanel === "category" && (
+              <CategoryOrderPanel
+                currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
+                onApplyOrder={(reordered) => {
+                  if (activePromptType === "positive") {
+                    setPrompt(reordered);
+                  } else {
+                    setNegativePrompt(reordered);
+                  }
+                }}
               />
             )}
 

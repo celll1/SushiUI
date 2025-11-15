@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getTIPOStatus, loadTIPOModel, unloadTIPOModel } from "@/utils/api";
+import { getCategoryOrder } from "./CategoryOrderPanel";
 
 interface TIPODialogProps {
   isOpen: boolean;
@@ -37,7 +38,16 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
 
   useEffect(() => {
     if (isOpen) {
-      setLocalSettings(settings);
+      // Load category order from CategoryOrderPanel settings
+      const categoryOrder = getCategoryOrder();
+      setLocalSettings({
+        ...settings,
+        categories: categoryOrder.map(cat => ({
+          id: cat.id,
+          label: cat.label,
+          enabled: cat.enabled,
+        })),
+      });
       loadStatus();
     }
   }, [isOpen, settings]);
@@ -185,36 +195,20 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
                 <input
                   type="checkbox"
                   checked={category.enabled}
-                  onChange={() => {
-                    const newCategories = [...localSettings.categories];
-                    newCategories[index].enabled = !newCategories[index].enabled;
-                    setLocalSettings({ ...localSettings, categories: newCategories });
-                  }}
-                  className="w-4 h-4"
+                  disabled
+                  className="w-4 h-4 opacity-50 cursor-not-allowed"
                 />
                 <span className="flex-1 text-sm text-gray-300">{category.label}</span>
-                <div className="flex gap-1">
+                <div className="flex gap-1 opacity-50">
                   <button
-                    onClick={() => {
-                      if (index === 0) return;
-                      const newCategories = [...localSettings.categories];
-                      [newCategories[index - 1], newCategories[index]] = [newCategories[index], newCategories[index - 1]];
-                      setLocalSettings({ ...localSettings, categories: newCategories });
-                    }}
-                    disabled={index === 0}
-                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs cursor-not-allowed"
                   >
                     ↑
                   </button>
                   <button
-                    onClick={() => {
-                      if (index === localSettings.categories.length - 1) return;
-                      const newCategories = [...localSettings.categories];
-                      [newCategories[index], newCategories[index + 1]] = [newCategories[index + 1], newCategories[index]];
-                      setLocalSettings({ ...localSettings, categories: newCategories });
-                    }}
-                    disabled={index === localSettings.categories.length - 1}
-                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs cursor-not-allowed"
                   >
                     ↓
                   </button>
@@ -223,7 +217,8 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
             ))}
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Check to enable, use arrows to reorder. Tags will be output in this order.
+            Category order is configured in Prompt Editor → Category Order panel.
+            This is a read-only view.
           </p>
         </div>
 

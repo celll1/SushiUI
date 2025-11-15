@@ -281,7 +281,9 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
             </label>
             <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 max-h-40 overflow-y-auto">
               <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words">
-                {result.raw_output}
+                {typeof result.raw_output === 'string'
+                  ? result.raw_output
+                  : JSON.stringify(result.raw_output, null, 2)}
               </pre>
             </div>
           </div>

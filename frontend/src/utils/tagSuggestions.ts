@@ -457,3 +457,112 @@ export function deleteTagAtCursor(
     cursorPos: finalCursorPos,
   };
 }
+
+/**
+ * Get all tags in the text as an array
+ * @param text - Full text content
+ * @returns Array of tag objects with start/end positions and content
+ */
+export function getAllTags(text: string): Array<{ start: number; end: number; tag: string }> {
+  const tags: Array<{ start: number; end: number; tag: string }> = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    // Skip delimiters and spaces
+    while (pos < text.length && (text[pos] === ',' || text[pos] === '\n' || text[pos] === ' ')) {
+      pos++;
+    }
+
+    if (pos >= text.length) break;
+
+    // Found start of a tag
+    const start = pos;
+
+    // Find end of tag (next delimiter)
+    while (pos < text.length && text[pos] !== ',' && text[pos] !== '\n') {
+      pos++;
+    }
+
+    const end = pos;
+    const segment = text.substring(start, end);
+    const tag = segment.trim();
+
+    if (tag.length > 0) {
+      tags.push({ start, end, tag });
+    }
+  }
+
+  return tags;
+}
+
+/**
+ * Swap tag at cursor position with adjacent tag (left or right)
+ * @param text - Full text content
+ * @param cursorPos - Cursor position
+ * @param direction - 'left' or 'right'
+ * @returns Object with new text and cursor position, or null if cannot swap
+ */
+export function swapTagWithAdjacent(
+  text: string,
+  cursorPos: number,
+  direction: 'left' | 'right'
+): { text: string; cursorPos: number } | null {
+  // Get all tags
+  const tags = getAllTags(text);
+
+  if (tags.length < 2) {
+    return null; // Need at least 2 tags to swap
+  }
+
+  // Find the tag containing the cursor
+  let currentTagIndex = -1;
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i];
+    // Check if cursor is within this tag (including whitespace around it)
+    if (cursorPos >= tag.start && cursorPos <= tag.end) {
+      currentTagIndex = i;
+      break;
+    }
+  }
+
+  if (currentTagIndex === -1) {
+    return null; // Cursor not in a tag
+  }
+
+  // Determine the tag to swap with
+  const swapIndex = direction === 'left' ? currentTagIndex - 1 : currentTagIndex + 1;
+
+  if (swapIndex < 0 || swapIndex >= tags.length) {
+    return null; // No tag to swap with
+  }
+
+  const currentTag = tags[currentTagIndex];
+  const swapTag = tags[swapIndex];
+
+  // Determine the order of tags in the text
+  const firstTag = currentTagIndex < swapIndex ? currentTag : swapTag;
+  const secondTag = currentTagIndex < swapIndex ? swapTag : currentTag;
+
+  // Extract parts of the text
+  const before = text.substring(0, firstTag.start);
+  const between = text.substring(firstTag.end, secondTag.start);
+  const after = text.substring(secondTag.end);
+
+  // Build new text with swapped tags
+  const newText = before + secondTag.tag + between + firstTag.tag + after;
+
+  // Calculate new cursor position (keep cursor in the same tag, which has moved)
+  let newCursorPos: number;
+  if (currentTagIndex < swapIndex) {
+    // Current tag moved right
+    newCursorPos = before.length + secondTag.tag.length + between.length + (cursorPos - currentTag.start);
+  } else {
+    // Current tag moved left
+    newCursorPos = before.length + (cursorPos - currentTag.start);
+  }
+
+  return {
+    text: newText,
+    cursorPos: newCursorPos,
+  };
+}

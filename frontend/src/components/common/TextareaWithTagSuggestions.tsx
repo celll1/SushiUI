@@ -8,6 +8,7 @@ import {
   getCurrentTag,
   replaceCurrentTag,
   deleteTagAtCursor,
+  swapTagWithAdjacent,
 } from "@/utils/tagSuggestions";
 
 interface TagSuggestion {
@@ -52,6 +53,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const [historyIndex, setHistoryIndex] = useState(0);
   const isUndoRedoRef = useRef(false); // Flag to prevent adding to history during undo/redo
   const lastValueRef = useRef<string>(""); // Track last value to detect external changes
+  const isTagOperationRef = useRef(false); // Flag to prevent double history during tag operations
 
   // Expose the internal textarea ref to parent components
   useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
@@ -187,8 +189,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
   // Track external changes to value (e.g., from "send to", initial load, etc.)
   useEffect(() => {
-    // Check if value changed externally (not from undo/redo or user operations)
-    if (value !== lastValueRef.current && !isUndoRedoRef.current) {
+    // Check if value changed externally (not from undo/redo or tag operations)
+    if (value !== lastValueRef.current && !isUndoRedoRef.current && !isTagOperationRef.current) {
       const textarea = internalTextareaRef.current;
       const cursorPos = textarea?.selectionStart || 0;
 
@@ -320,6 +322,70 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (e.ctrlKey && e.shiftKey && e.key === "Z") {
       e.preventDefault();
       handleRedo();
+      return;
+    }
+
+    // Ctrl+Shift+Left: Swap tag with previous tag
+    if (e.ctrlKey && e.shiftKey && e.key === "ArrowLeft") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const cursorPos = textarea.selectionStart;
+
+      const result = swapTagWithAdjacent(value, cursorPos, 'left');
+
+      if (result) {
+        isTagOperationRef.current = true;
+        lastValueRef.current = result.text;
+
+        // Create synthetic event for onChange
+        const syntheticEvent = {
+          target: { ...textarea, value: result.text },
+          currentTarget: { ...textarea, value: result.text },
+        } as ChangeEvent<HTMLTextAreaElement>;
+
+        onChange(syntheticEvent);
+
+        // Add new state to history AFTER swap
+        setTimeout(() => {
+          textarea.selectionStart = result.cursorPos;
+          textarea.selectionEnd = result.cursorPos;
+          addToHistory(result.text, result.cursorPos);
+          isTagOperationRef.current = false;
+        }, 0);
+      }
+
+      return;
+    }
+
+    // Ctrl+Shift+Right: Swap tag with next tag
+    if (e.ctrlKey && e.shiftKey && e.key === "ArrowRight") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const cursorPos = textarea.selectionStart;
+
+      const result = swapTagWithAdjacent(value, cursorPos, 'right');
+
+      if (result) {
+        isTagOperationRef.current = true;
+        lastValueRef.current = result.text;
+
+        // Create synthetic event for onChange
+        const syntheticEvent = {
+          target: { ...textarea, value: result.text },
+          currentTarget: { ...textarea, value: result.text },
+        } as ChangeEvent<HTMLTextAreaElement>;
+
+        onChange(syntheticEvent);
+
+        // Add new state to history AFTER swap
+        setTimeout(() => {
+          textarea.selectionStart = result.cursorPos;
+          textarea.selectionEnd = result.cursorPos;
+          addToHistory(result.text, result.cursorPos);
+          isTagOperationRef.current = false;
+        }, 0);
+      }
+
       return;
     }
 

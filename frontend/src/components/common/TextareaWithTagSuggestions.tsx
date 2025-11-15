@@ -9,6 +9,8 @@ import {
   replaceCurrentTag,
   deleteTagAtCursor,
   swapTagWithAdjacent,
+  jumpToNextDelimiter,
+  jumpToPreviousDelimiter,
 } from "@/utils/tagSuggestions";
 
 interface TagSuggestion {
@@ -385,6 +387,32 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
           isTagOperationRef.current = false;
         }, 0);
       }
+
+      return;
+    }
+
+    // Ctrl+Left: Jump to previous delimiter
+    if (e.ctrlKey && !e.shiftKey && e.key === "ArrowLeft") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const cursorPos = textarea.selectionStart;
+
+      const newPos = jumpToPreviousDelimiter(value, cursorPos);
+      textarea.selectionStart = newPos;
+      textarea.selectionEnd = newPos;
+
+      return;
+    }
+
+    // Ctrl+Right: Jump to next delimiter
+    if (e.ctrlKey && !e.shiftKey && e.key === "ArrowRight") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const cursorPos = textarea.selectionStart;
+
+      const newPos = jumpToNextDelimiter(value, cursorPos);
+      textarea.selectionStart = newPos;
+      textarea.selectionEnd = newPos;
 
       return;
     }

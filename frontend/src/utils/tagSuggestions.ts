@@ -566,3 +566,65 @@ export function swapTagWithAdjacent(
     cursorPos: newCursorPos,
   };
 }
+
+/**
+ * Jump to the next delimiter position (right after comma/newline)
+ * @param text - Full text content
+ * @param cursorPos - Current cursor position
+ * @returns New cursor position
+ */
+export function jumpToNextDelimiter(text: string, cursorPos: number): number {
+  // Search forward for next delimiter
+  for (let i = cursorPos; i < text.length; i++) {
+    if (text[i] === ',' || text[i] === '\n') {
+      // Found delimiter, move to position after it
+      let pos = i + 1;
+      // Skip spaces
+      while (pos < text.length && text[pos] === ' ') {
+        pos++;
+      }
+      return pos;
+    }
+  }
+
+  // No delimiter found, go to end
+  return text.length;
+}
+
+/**
+ * Jump to the previous delimiter position (right after comma/newline)
+ * @param text - Full text content
+ * @param cursorPos - Current cursor position
+ * @returns New cursor position
+ */
+export function jumpToPreviousDelimiter(text: string, cursorPos: number): number {
+  // First, check if we're already at the start of a tag (right after delimiter)
+  // If so, jump to the previous tag start
+
+  // Skip backwards past any spaces before cursor
+  let searchPos = cursorPos - 1;
+  while (searchPos > 0 && text[searchPos] === ' ') {
+    searchPos--;
+  }
+
+  // If we're right after a delimiter, skip it to go to previous tag
+  if (searchPos >= 0 && (text[searchPos] === ',' || text[searchPos] === '\n')) {
+    searchPos--;
+  }
+
+  // Search backward for previous delimiter
+  for (let i = searchPos; i >= 0; i--) {
+    if (text[i] === ',' || text[i] === '\n') {
+      // Found delimiter, move to position after it
+      let pos = i + 1;
+      // Skip spaces
+      while (pos < text.length && text[pos] === ' ') {
+        pos++;
+      }
+      return pos;
+    }
+  }
+
+  // No delimiter found, go to start
+  return 0;
+}

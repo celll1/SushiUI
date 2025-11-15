@@ -314,7 +314,7 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
             Output Category Order
           </summary>
           <div className="mt-2">
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-2">
               {categoryOrder.map((category, index) => (
                 <div
                   key={category.id}
@@ -337,42 +337,74 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                     newOrder.splice(index, 0, removed);
                     setCategoryOrder(newOrder);
                   }}
-                  className={`px-2 py-1 rounded border cursor-move transition-colors flex items-center gap-1.5 ${
-                    category.enabled
-                      ? 'bg-gray-700 border-gray-600 hover:border-gray-500'
-                      : 'bg-gray-800 border-gray-700 opacity-50'
-                  }`}
+                  className="flex flex-col items-center gap-2 px-4 py-3 rounded-lg transition-all cursor-move min-w-[100px] bg-gray-700 hover:bg-gray-650"
                 >
-                  <input
-                    type="checkbox"
-                    checked={category.enabled}
-                    onChange={(e) => {
-                      const newOrder = [...categoryOrder];
-                      newOrder[index].enabled = e.target.checked;
-                      setCategoryOrder(newOrder);
-                    }}
-                    className="w-2.5 h-2.5"
-                    title="Enable"
-                  />
-                  <span className="text-[10px] text-gray-300 font-medium whitespace-nowrap">
-                    {category.label}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={category.randomize}
-                    onChange={(e) => {
-                      const newOrder = [...categoryOrder];
-                      newOrder[index].randomize = e.target.checked;
-                      setCategoryOrder(newOrder);
-                    }}
-                    className="w-2.5 h-2.5"
-                    title="Randomize"
-                  />
+                  {/* Drag Handle Icon */}
+                  <div className="text-gray-400">
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 8h16M4 16h16"
+                      />
+                    </svg>
+                  </div>
+
+                  {/* Category Label */}
+                  <div className="text-center">
+                    <span
+                      className={`text-sm font-medium ${
+                        category.enabled ? "text-gray-200" : "text-gray-500"
+                      }`}
+                    >
+                      {category.label}
+                    </span>
+                  </div>
+
+                  {/* Control Buttons */}
+                  <div className="flex flex-col gap-1">
+                    {/* Enable/Disable Checkbox */}
+                    <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={category.enabled}
+                        onChange={(e) => {
+                          const newOrder = [...categoryOrder];
+                          newOrder[index].enabled = e.target.checked;
+                          setCategoryOrder(newOrder);
+                        }}
+                        className="w-3 h-3 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                      />
+                      <span>Enable</span>
+                    </label>
+
+                    {/* Randomize Checkbox */}
+                    <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={category.randomize || false}
+                        onChange={(e) => {
+                          const newOrder = [...categoryOrder];
+                          newOrder[index].randomize = e.target.checked;
+                          setCategoryOrder(newOrder);
+                        }}
+                        disabled={!category.enabled}
+                        className="w-3 h-3 rounded border-gray-500 text-green-600 focus:ring-green-500 focus:ring-offset-gray-800 disabled:opacity-30"
+                      />
+                      <span className={!category.enabled ? "opacity-30" : ""}>Random</span>
+                    </label>
+                  </div>
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-gray-500 mt-1.5">
-              Drag to reorder • Left: enable • Right: randomize
+            <p className="text-xs text-gray-500 mt-2">
+              Drag and drop cards to reorder • Enable: Include in output • Random: Randomize order within category
             </p>
           </div>
         </details>

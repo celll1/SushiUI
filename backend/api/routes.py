@@ -19,6 +19,7 @@ from core.lora_manager import lora_manager
 from core.controlnet_manager import controlnet_manager
 from core.controlnet_preprocessor import controlnet_preprocessor
 from core.tipo_manager import tipo_manager
+from core.tagger_manager import tagger_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -1638,3 +1639,89 @@ async def get_port_info():
 
     # Fallback to default
     return {"port": 8000, "host": "localhost"}
+
+
+# ============================================================================
+# Image Tagger Endpoints
+# ============================================================================
+
+class TaggerRequest(BaseModel):
+    image_base64: str
+    gen_threshold: float = 0.45
+    char_threshold: float = 0.45
+
+class TaggerLoadModelRequest(BaseModel):
+    model_path: str
+    tag_mapping_path: str
+    use_gpu: bool = True
+
+@router.post("/tagger/load-model")
+async def load_tagger_model(request: TaggerLoadModelRequest):
+    """Load image tagger model"""
+    try:
+        tagger_manager.load_model(
+            request.model_path,
+            request.tag_mapping_path,
+            request.use_gpu
+        )
+        return {
+            "status": "success",
+            "loaded": tagger_manager.loaded
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tagger/predict")
+async def predict_tags(request: TaggerRequest):
+    """Predict tags for an image
+
+    Args:
+        image_base64: Base64 encoded image
+        gen_threshold: Threshold for general tags (default: 0.45)
+        char_threshold: Threshold for character/copyright/artist tags (default: 0.45)
+
+    Returns:
+        Dictionary with categorized tags and confidences
+    """
+    try:
+        if not tagger_manager.loaded:
+            raise HTTPException(status_code=400, detail="Tagger model not loaded")
+
+        # Decode base64 image
+        import base64
+        image_data = base64.b64decode(request.image_base64)
+        image = Image.open(io.BytesIO(image_data))
+
+        # Predict tags
+        predictions = tagger_manager.predict(
+            image,
+            gen_threshold=request.gen_threshold,
+            char_threshold=request.char_threshold
+        )
+
+        return {
+            "status": "success",
+            "predictions": predictions
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/tagger/status")
+async def get_tagger_status():
+    """Get tagger model status"""
+    return {
+        "loaded": tagger_manager.loaded,
+        "model_path": tagger_manager.model_path,
+        "tag_mapping_path": tagger_manager.tag_mapping_path
+    }
+
+@router.post("/tagger/unload")
+async def unload_tagger_model():
+    """Unload tagger model"""
+    try:
+        tagger_manager.unload_model()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

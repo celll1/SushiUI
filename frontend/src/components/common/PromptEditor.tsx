@@ -7,6 +7,7 @@ import TemplatePanel from "./TemplatePanel";
 import CategoryOrderPanel from "./CategoryOrderPanel";
 import WildcardPanel from "./WildcardPanel";
 import TIPOPanel, { TIPOPanelRef } from "./TIPOPanel";
+import ImageTaggerPanel from "./ImageTaggerPanel";
 import { TIPOSettings } from "./TIPODialog";
 
 interface PromptEditorProps {
@@ -422,10 +423,7 @@ export default function PromptEditor({
             )}
 
             {activePanel === "tagger" && (
-              <div className="text-gray-300">
-                <h3 className="text-lg font-semibold mb-4">Image Tagger</h3>
-                <p className="text-gray-400">Image tagger functionality coming soon...</p>
-              </div>
+              <ImageTaggerPanel onInsert={handleInsertTemplate} />
             )}
           </div>
         </div>

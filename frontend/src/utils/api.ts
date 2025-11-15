@@ -566,4 +566,61 @@ export const cancelGeneration = async () => {
   return response.data;
 };
 
+// Image Tagger API
+export interface TaggerPredictionsResponse {
+  status: string;
+  predictions: {
+    rating: [string, number][];
+    general: [string, number][];
+    artist: [string, number][];
+    character: [string, number][];
+    copyright: [string, number][];
+    meta: [string, number][];
+    quality: [string, number][];
+    model: [string, number][];
+  };
+}
+
+export interface TaggerStatusResponse {
+  loaded: boolean;
+  model_path: string | null;
+  tag_mapping_path: string | null;
+}
+
+export const loadTaggerModel = async (
+  model_path: string,
+  tag_mapping_path: string,
+  use_gpu: boolean = true
+) => {
+  const response = await api.post("/tagger/load-model", {
+    model_path,
+    tag_mapping_path,
+    use_gpu,
+  });
+  return response.data;
+};
+
+export const predictTags = async (
+  image_base64: string,
+  gen_threshold: number = 0.45,
+  char_threshold: number = 0.45
+): Promise<TaggerPredictionsResponse> => {
+  const response = await api.post("/tagger/predict", {
+    image_base64,
+    gen_threshold,
+    char_threshold,
+  });
+  return response.data;
+};
+
+export const getTaggerStatus = async (): Promise<TaggerStatusResponse> => {
+  const response = await api.get("/tagger/status");
+  return response.data;
+};
+
+export const unloadTaggerModel = async () => {
+  const response = await api.post("/tagger/unload");
+  return response.data;
+};
+
 export default api;

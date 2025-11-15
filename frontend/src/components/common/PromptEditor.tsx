@@ -423,7 +423,11 @@ export default function PromptEditor({
             )}
 
             {activePanel === "tagger" && (
-              <ImageTaggerPanel onInsert={handleInsertTemplate} />
+              <ImageTaggerPanel
+                onInsert={handleInsertTemplate}
+                onOverwrite={handleOverwriteTemplate}
+                currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
+              />
             )}
           </div>
         </div>

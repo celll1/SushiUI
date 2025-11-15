@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Button from "./Button";
 import Input from "./Input";
+import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import {
   getAllTemplates,
   saveTemplate,
@@ -132,31 +133,32 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
         </div>
       )}
 
-      {/* Search Box */}
-      <div>
-        <Input
-          label="Search Templates"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search by name or content..."
-        />
-      </div>
-
-      {/* Category Filter */}
-      <div className="flex gap-2 flex-wrap">
-        {categories.map(category => (
-          <button
-            key={category}
-            onClick={() => setSelectedCategory(category)}
-            className={`px-3 py-1 rounded text-sm ${
-              selectedCategory === category
-                ? "bg-blue-600 text-white"
-                : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-            }`}
-          >
-            {category}
-          </button>
-        ))}
+      {/* Category Filter and Search */}
+      <div className="flex items-start gap-2">
+        <div className="flex gap-2 flex-wrap flex-1">
+          {categories.map(category => (
+            <button
+              key={category}
+              onClick={() => setSelectedCategory(category)}
+              className={`px-3 py-1 rounded text-sm ${
+                selectedCategory === category
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+              }`}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+        <div className="w-64">
+          <TextareaWithTagSuggestions
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search..."
+            rows={1}
+            enableWeightControl={false}
+          />
+        </div>
       </div>
 
       {/* Template List */}

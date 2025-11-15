@@ -1651,24 +1651,43 @@ class TaggerRequest(BaseModel):
     char_threshold: float = 0.45
 
 class TaggerLoadModelRequest(BaseModel):
-    model_path: str
-    tag_mapping_path: str
+    model_path: Optional[str] = None
+    tag_mapping_path: Optional[str] = None
     use_gpu: bool = True
+    use_huggingface: bool = True
+    repo_id: str = "cella110n/cl_tagger"
+    model_version: str = "cl_tagger_1_02"
 
 @router.post("/tagger/load-model")
 async def load_tagger_model(request: TaggerLoadModelRequest):
-    """Load image tagger model"""
+    """Load image tagger model
+
+    Args:
+        model_path: Path to ONNX model file (optional if use_huggingface=True)
+        tag_mapping_path: Path to tag mapping JSON file (optional if use_huggingface=True)
+        use_gpu: Whether to use GPU acceleration
+        use_huggingface: Whether to download from Hugging Face Hub (default: True)
+        repo_id: Hugging Face repository ID (default: cella110n/cl_tagger)
+        model_version: Model version subdirectory (default: cl_tagger_1_02)
+    """
     try:
         tagger_manager.load_model(
-            request.model_path,
-            request.tag_mapping_path,
-            request.use_gpu
+            model_path=request.model_path,
+            tag_mapping_path=request.tag_mapping_path,
+            use_gpu=request.use_gpu,
+            use_huggingface=request.use_huggingface,
+            repo_id=request.repo_id,
+            model_version=request.model_version
         )
         return {
             "status": "success",
-            "loaded": tagger_manager.loaded
+            "loaded": tagger_manager.loaded,
+            "model_path": tagger_manager.model_path,
+            "tag_mapping_path": tagger_manager.tag_mapping_path
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/tagger/predict")

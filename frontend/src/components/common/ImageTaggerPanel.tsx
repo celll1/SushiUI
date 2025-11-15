@@ -37,11 +37,16 @@ export default function ImageTaggerPanel({ onInsert }: ImageTaggerPanelProps) {
   const handleLoadModel = async () => {
     try {
       setError(null);
-      // Default model path - user should configure this
-      const modelPath = "D:/celll1/tagutl/cl_tagger_1_02/model.onnx";
-      const tagMappingPath = "D:/celll1/tagutl/cl_tagger_1_02/selected_tags.json";
-
-      await loadTaggerModel(modelPath, tagMappingPath, true);
+      // Use Hugging Face model by default (no paths needed)
+      // Model will be downloaded from https://huggingface.co/cella110n/cl_tagger
+      await loadTaggerModel(
+        undefined,  // model_path - will download from HF
+        undefined,  // tag_mapping_path - will download from HF
+        true,       // use_gpu
+        true,       // use_huggingface
+        "cella110n/cl_tagger",  // repo_id
+        "cl_tagger_1_02"  // model_version (latest)
+      );
       setModelLoaded(true);
     } catch (err: any) {
       console.error("[Tagger] Failed to load model:", err);

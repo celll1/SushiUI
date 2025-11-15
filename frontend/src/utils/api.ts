@@ -588,14 +588,20 @@ export interface TaggerStatusResponse {
 }
 
 export const loadTaggerModel = async (
-  model_path: string,
-  tag_mapping_path: string,
-  use_gpu: boolean = true
+  model_path?: string,
+  tag_mapping_path?: string,
+  use_gpu: boolean = true,
+  use_huggingface: boolean = true,
+  repo_id: string = "cella110n/cl_tagger",
+  model_version: string = "cl_tagger_1_02"
 ) => {
   const response = await api.post("/tagger/load-model", {
     model_path,
     tag_mapping_path,
     use_gpu,
+    use_huggingface,
+    repo_id,
+    model_version,
   });
   return response.data;
 };

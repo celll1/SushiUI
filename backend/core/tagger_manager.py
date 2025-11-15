@@ -24,20 +24,75 @@ class TaggerManager:
         self.tag_mapping_path = None
         self.loaded = False
 
+    def _download_from_huggingface(
+        self,
+        repo_id: str = "cella110n/cl_tagger",
+        model_version: str = "cl_tagger_1_02"
+    ) -> Tuple[str, str]:
+        """Download model files from Hugging Face Hub
+
+        Args:
+            repo_id: Hugging Face repository ID
+            model_version: Model version subdirectory (e.g., cl_tagger_1_02)
+
+        Returns:
+            Tuple of (model_path, tag_mapping_path)
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+
+            print(f"[Tagger] Downloading model from Hugging Face: {repo_id}/{model_version}")
+
+            # Download model from subdirectory
+            model_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=f"{model_version}/model.onnx",
+                cache_dir=None  # Use default cache directory
+            )
+            print(f"[Tagger] Model downloaded to: {model_path}")
+
+            # Download tag mapping from subdirectory
+            tag_mapping_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=f"{model_version}/selected_tags.json",
+                cache_dir=None
+            )
+            print(f"[Tagger] Tag mapping downloaded to: {tag_mapping_path}")
+
+            return model_path, tag_mapping_path
+
+        except ImportError:
+            raise RuntimeError("huggingface_hub is not installed. Please install it with: pip install huggingface_hub")
+        except Exception as e:
+            raise RuntimeError(f"Failed to download from Hugging Face: {e}")
+
     def load_model(
         self,
-        model_path: str,
-        tag_mapping_path: str,
-        use_gpu: bool = True
+        model_path: str = None,
+        tag_mapping_path: str = None,
+        use_gpu: bool = True,
+        use_huggingface: bool = True,
+        repo_id: str = "cella110n/cl_tagger",
+        model_version: str = "cl_tagger_1_02"
     ):
         """Load ONNX tagger model
 
         Args:
-            model_path: Path to ONNX model file
-            tag_mapping_path: Path to tag mapping JSON file
+            model_path: Path to ONNX model file (optional if use_huggingface=True)
+            tag_mapping_path: Path to tag mapping JSON file (optional if use_huggingface=True)
             use_gpu: Whether to use GPU acceleration
+            use_huggingface: Whether to download from Hugging Face Hub
+            repo_id: Hugging Face repository ID (default: cella110n/cl_tagger)
+            model_version: Model version subdirectory (default: cl_tagger_1_02)
         """
         try:
+            # Download from Hugging Face if paths not provided
+            if use_huggingface and (model_path is None or tag_mapping_path is None):
+                model_path, tag_mapping_path = self._download_from_huggingface(repo_id, model_version)
+
+            if model_path is None or tag_mapping_path is None:
+                raise ValueError("model_path and tag_mapping_path must be provided or use_huggingface must be True")
+
             print(f"[Tagger] Loading ONNX model: {model_path}")
 
             # Check if model is FP16

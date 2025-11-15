@@ -20,13 +20,24 @@ interface TIPOPanelProps {
   };
 }
 
-export default function TIPOPanel({ onInsert, tipoSettings }: TIPOPanelProps) {
+export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: TIPOPanelProps) {
   const [inputPrompt, setInputPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [result, setResult] = useState<TIPOGenerateResponse | null>(null);
   const [reorderedOutput, setReorderedOutput] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Local settings state (editable in this panel)
+  const [localSettings, setLocalSettings] = useState({
+    model_name: initialSettings.model_name,
+    tag_length: initialSettings.tag_length,
+    nl_length: initialSettings.nl_length,
+    temperature: initialSettings.temperature,
+    top_p: initialSettings.top_p,
+    top_k: initialSettings.top_k,
+    max_new_tokens: initialSettings.max_new_tokens,
+  });
 
   const handleGenerate = async () => {
     if (!inputPrompt.trim()) {
@@ -46,16 +57,16 @@ export default function TIPOPanel({ onInsert, tipoSettings }: TIPOPanelProps) {
         return acc;
       }, {} as Record<string, boolean>);
 
-      // Call TIPO API
+      // Call TIPO API with local settings
       const response = await generateTIPOPrompt({
         input_prompt: inputPrompt.trim(),
-        model_name: tipoSettings.model_name,
-        tag_length: tipoSettings.tag_length,
-        nl_length: tipoSettings.nl_length,
-        temperature: tipoSettings.temperature,
-        top_p: tipoSettings.top_p,
-        top_k: tipoSettings.top_k,
-        max_new_tokens: tipoSettings.max_new_tokens,
+        model_name: localSettings.model_name,
+        tag_length: localSettings.tag_length,
+        nl_length: localSettings.nl_length,
+        temperature: localSettings.temperature,
+        top_p: localSettings.top_p,
+        top_k: localSettings.top_k,
+        max_new_tokens: localSettings.max_new_tokens,
         category_order: categoryOrderIds,
         enabled_categories: enabledCategories,
       });
@@ -91,6 +102,131 @@ export default function TIPOPanel({ onInsert, tipoSettings }: TIPOPanelProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-gray-200">TIPO - Tag Inference & Prompt Optimization</h3>
+      </div>
+
+      {/* Settings Section */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-gray-300">Generation Settings</h4>
+
+        <div className="grid grid-cols-2 gap-3">
+          {/* Model Selection */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Model</label>
+            <select
+              value={localSettings.model_name}
+              onChange={(e) => setLocalSettings({ ...localSettings, model_name: e.target.value })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+            >
+              <option value="KBlueLeaf/TIPO-500M">TIPO-500M</option>
+              <option value="KBlueLeaf/TIPO-500M-ft">TIPO-500M-ft</option>
+              <option value="KBlueLeaf/TIPO-200M">TIPO-200M</option>
+              <option value="KBlueLeaf/TIPO-200M-ft2">TIPO-200M-ft2</option>
+              <option value="KBlueLeaf/TIPO-200M-ft">TIPO-200M-ft</option>
+            </select>
+          </div>
+
+          {/* Tag Length */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Tag Length</label>
+            <select
+              value={localSettings.tag_length}
+              onChange={(e) => setLocalSettings({ ...localSettings, tag_length: e.target.value })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+            >
+              <option value="very_short">Very Short</option>
+              <option value="short">Short</option>
+              <option value="long">Long</option>
+              <option value="very_long">Very Long</option>
+            </select>
+          </div>
+
+          {/* NL Length */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">NL Length</label>
+            <select
+              value={localSettings.nl_length}
+              onChange={(e) => setLocalSettings({ ...localSettings, nl_length: e.target.value })}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+            >
+              <option value="very_short">Very Short</option>
+              <option value="short">Short</option>
+              <option value="long">Long</option>
+              <option value="very_long">Very Long</option>
+            </select>
+          </div>
+
+          {/* Max Tokens */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Max Tokens: {localSettings.max_new_tokens}
+            </label>
+            <input
+              type="range"
+              min="50"
+              max="512"
+              step="10"
+              value={localSettings.max_new_tokens}
+              onChange={(e) => setLocalSettings({ ...localSettings, max_new_tokens: parseInt(e.target.value) })}
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        {/* Advanced Settings */}
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-300">
+            Advanced Settings
+          </summary>
+          <div className="mt-2 space-y-2">
+            {/* Temperature */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Temperature: {localSettings.temperature.toFixed(2)}
+              </label>
+              <input
+                type="range"
+                min="0.1"
+                max="2.0"
+                step="0.1"
+                value={localSettings.temperature}
+                onChange={(e) => setLocalSettings({ ...localSettings, temperature: parseFloat(e.target.value) })}
+                className="w-full"
+              />
+            </div>
+
+            {/* Top P */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Top P: {localSettings.top_p.toFixed(2)}
+              </label>
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                value={localSettings.top_p}
+                onChange={(e) => setLocalSettings({ ...localSettings, top_p: parseFloat(e.target.value) })}
+                className="w-full"
+              />
+            </div>
+
+            {/* Top K */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Top K: {localSettings.top_k}
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="100"
+                step="1"
+                value={localSettings.top_k}
+                onChange={(e) => setLocalSettings({ ...localSettings, top_k: parseInt(e.target.value) })}
+                className="w-full"
+              />
+            </div>
+          </div>
+        </details>
       </div>
 
       {/* Input Section */}

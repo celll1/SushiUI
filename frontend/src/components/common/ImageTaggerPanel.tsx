@@ -54,6 +54,8 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [selectedModelVersion, setSelectedModelVersion] = useState<string>("cl_tagger_1_02");
+  const [globalThresholdMode, setGlobalThresholdMode] = useState<boolean>(false);
+  const [globalThreshold, setGlobalThreshold] = useState<number>(0.45);
 
   // Load saved settings
   useEffect(() => {
@@ -280,6 +282,16 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     saveThresholds(newThresholds);
   };
 
+  const updateGlobalThreshold = (threshold: number) => {
+    setGlobalThreshold(threshold);
+    // Apply to all categories
+    const newThresholds = categoryThresholds.map(cat => ({
+      ...cat,
+      threshold: threshold
+    }));
+    saveThresholds(newThresholds);
+  };
+
   const toggleCategory = (index: number) => {
     const newThresholds = [...categoryThresholds];
     newThresholds[index].enabled = !newThresholds[index].enabled;
@@ -433,13 +445,42 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
       {/* Middle Column: Category Thresholds & Order */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-200">Category Settings</h3>
-          <Button onClick={resetThresholds} variant="secondary" className="text-xs px-2 py-1">
-            Reset
-          </Button>
+          <h3 className="text-sm font-semibold text-gray-200">Thresholds</h3>
+          <div className="flex gap-1">
+            <Button
+              onClick={() => setGlobalThresholdMode(!globalThresholdMode)}
+              variant={globalThresholdMode ? "primary" : "secondary"}
+              className="text-xs px-2 py-1"
+            >
+              {globalThresholdMode ? "Global" : "Individual"}
+            </Button>
+            <Button onClick={resetThresholds} variant="secondary" className="text-xs px-2 py-1">
+              Reset
+            </Button>
+          </div>
         </div>
 
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto">
+        {/* Global Threshold Mode */}
+        {globalThresholdMode && (
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-300 whitespace-nowrap">All:</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={globalThreshold}
+                onChange={(e) => updateGlobalThreshold(parseFloat(e.target.value))}
+                className="flex-1 h-1"
+              />
+              <span className="text-xs text-gray-400 w-10 text-right">{globalThreshold.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Individual Thresholds */}
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-2 space-y-1 max-h-[calc(100vh-350px)] overflow-y-auto">
           {categoryThresholds.map((cat, index) => (
             <div
               key={cat.id}
@@ -449,27 +490,22 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
               onDragLeave={handleCategoryDragLeave}
               onDrop={(e) => handleCategoryDrop(e, index)}
               onDragEnd={handleCategoryDragEnd}
-              className={`bg-gray-700 rounded p-2 cursor-move transition-all ${
+              className={`flex items-center gap-2 px-2 py-1 rounded cursor-move transition-all ${
                 draggedIndex === index ? 'opacity-50' : ''
               } ${
-                dragOverIndex === index ? 'border-2 border-blue-500' : 'border border-gray-600'
+                dragOverIndex === index ? 'bg-blue-700' : 'hover:bg-gray-700'
               }`}
             >
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 text-xs">⋮⋮</span>
-                  <input
-                    type="checkbox"
-                    checked={cat.enabled}
-                    onChange={() => toggleCategory(index)}
-                    className="cursor-pointer"
-                  />
-                  <span className={`text-xs font-medium ${cat.enabled ? 'text-gray-200' : 'text-gray-500'}`}>
-                    {cat.label}
-                  </span>
-                </div>
-                <span className="text-xs text-gray-400">{cat.threshold.toFixed(2)}</span>
-              </div>
+              <span className="text-gray-500 text-xs">⋮⋮</span>
+              <input
+                type="checkbox"
+                checked={cat.enabled}
+                onChange={() => toggleCategory(index)}
+                className="cursor-pointer"
+              />
+              <span className={`text-xs font-medium w-16 ${cat.enabled ? 'text-gray-200' : 'text-gray-500'}`}>
+                {cat.label}
+              </span>
               <input
                 type="range"
                 min="0"
@@ -477,9 +513,10 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
                 step="0.05"
                 value={cat.threshold}
                 onChange={(e) => updateThreshold(index, parseFloat(e.target.value))}
-                disabled={!cat.enabled}
-                className="w-full h-1"
+                disabled={!cat.enabled || globalThresholdMode}
+                className="flex-1 h-1"
               />
+              <span className="text-xs text-gray-400 w-10 text-right">{cat.threshold.toFixed(2)}</span>
             </div>
           ))}
         </div>

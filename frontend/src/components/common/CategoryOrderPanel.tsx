@@ -32,13 +32,22 @@ interface CategoryOrderPanelProps {
 export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: CategoryOrderPanelProps) {
   const [categories, setCategories] = useState<TagCategory[]>(DEFAULT_CATEGORIES);
   const [isReordering, setIsReordering] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
-  // Load saved order from localStorage
+  // Load saved order from localStorage with migration
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved);
+        const parsed: TagCategory[] = JSON.parse(saved);
+
+        // Migrate: add "unknown" category if it doesn't exist
+        const hasUnknown = parsed.some(cat => cat.id === "unknown");
+        if (!hasUnknown) {
+          parsed.push({ id: "unknown", label: "Unknown", enabled: true });
+        }
+
         setCategories(parsed);
       }
     } catch (error) {
@@ -59,26 +68,6 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
   const toggleCategory = (index: number) => {
     const newCategories = [...categories];
     newCategories[index].enabled = !newCategories[index].enabled;
-    saveOrder(newCategories);
-  };
-
-  const moveUp = (index: number) => {
-    if (index === 0) return;
-    const newCategories = [...categories];
-    [newCategories[index - 1], newCategories[index]] = [
-      newCategories[index],
-      newCategories[index - 1],
-    ];
-    saveOrder(newCategories);
-  };
-
-  const moveDown = (index: number) => {
-    if (index === categories.length - 1) return;
-    const newCategories = [...categories];
-    [newCategories[index], newCategories[index + 1]] = [
-      newCategories[index + 1],
-      newCategories[index],
-    ];
     saveOrder(newCategories);
   };
 
@@ -106,6 +95,43 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
     } finally {
       setIsReordering(false);
     }
+  };
+
+  // Drag and Drop handlers
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+
+    const newCategories = [...categories];
+    const [draggedItem] = newCategories.splice(draggedIndex, 1);
+    newCategories.splice(dropIndex, 0, draggedItem);
+
+    saveOrder(newCategories);
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
   };
 
   return (
@@ -140,8 +166,37 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
           {categories.map((category, index) => (
             <div
               key={category.id}
-              className="flex items-center gap-3 bg-gray-700 p-3 rounded-lg hover:bg-gray-650 transition-colors"
+              draggable
+              onDragStart={() => handleDragStart(index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, index)}
+              onDragEnd={handleDragEnd}
+              className={`flex items-center gap-3 p-3 rounded-lg transition-all cursor-move ${
+                draggedIndex === index
+                  ? "opacity-50 bg-gray-600"
+                  : dragOverIndex === index
+                  ? "bg-blue-700 border-2 border-blue-500"
+                  : "bg-gray-700 hover:bg-gray-650"
+              }`}
             >
+              {/* Drag Handle Icon */}
+              <div className="text-gray-400">
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 8h16M4 16h16"
+                  />
+                </svg>
+              </div>
+
               {/* Enable/Disable Checkbox */}
               <input
                 type="checkbox"
@@ -164,26 +219,6 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
                   <span className="ml-2 text-xs text-gray-500">(Disabled)</span>
                 )}
               </div>
-
-              {/* Move Buttons */}
-              <div className="flex gap-1">
-                <button
-                  onClick={() => moveUp(index)}
-                  disabled={index === 0}
-                  className="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  title="Move up"
-                >
-                  ↑
-                </button>
-                <button
-                  onClick={() => moveDown(index)}
-                  disabled={index === categories.length - 1}
-                  className="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  title="Move down"
-                >
-                  ↓
-                </button>
-              </div>
             </div>
           ))}
         </div>
@@ -193,7 +228,7 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
             <strong>Usage:</strong>
           </p>
           <ul className="list-disc list-inside space-y-1">
-            <li>Use ↑/↓ buttons to reorder categories</li>
+            <li>Drag and drop cards to reorder categories</li>
             <li>Uncheck categories to exclude them from reordering</li>
             <li>Click "Apply to Current Prompt" to reorder tags in the prompt above</li>
             <li>Category order also affects TIPO tag generation output</li>
@@ -214,7 +249,15 @@ export function getCategoryOrder(): TagCategory[] {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      return JSON.parse(saved);
+      const parsed: TagCategory[] = JSON.parse(saved);
+
+      // Migrate: add "unknown" category if it doesn't exist
+      const hasUnknown = parsed.some(cat => cat.id === "unknown");
+      if (!hasUnknown) {
+        parsed.push({ id: "unknown", label: "Unknown", enabled: true });
+      }
+
+      return parsed;
     }
   } catch (error) {
     console.error("Failed to load category order:", error);

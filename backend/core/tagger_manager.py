@@ -316,6 +316,14 @@ class TaggerManager:
             np.exp(x) / (1 + np.exp(x))
         )
 
+    def _normalize_tag(self, tag: str) -> str:
+        """Normalize tag format: underscores to spaces, unescape parentheses"""
+        # Replace underscores with spaces
+        tag = tag.replace('_', ' ')
+        # Unescape parentheses: \( -> (, \) -> )
+        tag = tag.replace('\\(', '(').replace('\\)', ')')
+        return tag
+
     def _get_tags(
         self,
         probs: np.ndarray,
@@ -334,51 +342,60 @@ class TaggerManager:
             "model": []
         }
 
-        # Rating tags (use max)
-        for idx in self.labels.rating:
-            results["rating"].append((self.labels.names[idx], float(probs[idx])))
-        results["rating"].sort(key=lambda x: x[1], reverse=True)
+        # Rating tags - select only the highest confidence tag
+        if len(self.labels.rating) > 0:
+            rating_probs = [(idx, probs[idx]) for idx in self.labels.rating]
+            max_idx, max_prob = max(rating_probs, key=lambda x: x[1])
+            normalized_tag = self._normalize_tag(self.labels.names[max_idx])
+            results["rating"].append((normalized_tag, float(max_prob)))
+
+        # Quality tags - select only the highest confidence tag
+        if len(self.labels.quality) > 0:
+            quality_probs = [(idx, probs[idx]) for idx in self.labels.quality]
+            max_idx, max_prob = max(quality_probs, key=lambda x: x[1])
+            normalized_tag = self._normalize_tag(self.labels.names[max_idx])
+            results["quality"].append((normalized_tag, float(max_prob)))
 
         # Character tags
         for idx in self.labels.character:
             if probs[idx] >= char_threshold:
-                results["character"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["character"].append((normalized_tag, float(probs[idx])))
         results["character"].sort(key=lambda x: x[1], reverse=True)
 
         # General tags
         for idx in self.labels.general:
             if probs[idx] >= gen_threshold:
-                results["general"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["general"].append((normalized_tag, float(probs[idx])))
         results["general"].sort(key=lambda x: x[1], reverse=True)
 
         # Copyright tags
         for idx in self.labels.copyright:
             if probs[idx] >= char_threshold:
-                results["copyright"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["copyright"].append((normalized_tag, float(probs[idx])))
         results["copyright"].sort(key=lambda x: x[1], reverse=True)
 
         # Artist tags
         for idx in self.labels.artist:
             if probs[idx] >= char_threshold:
-                results["artist"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["artist"].append((normalized_tag, float(probs[idx])))
         results["artist"].sort(key=lambda x: x[1], reverse=True)
 
         # Meta tags
         for idx in self.labels.meta:
             if probs[idx] >= gen_threshold:
-                results["meta"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["meta"].append((normalized_tag, float(probs[idx])))
         results["meta"].sort(key=lambda x: x[1], reverse=True)
-
-        # Quality tags
-        for idx in self.labels.quality:
-            if probs[idx] >= gen_threshold:
-                results["quality"].append((self.labels.names[idx], float(probs[idx])))
-        results["quality"].sort(key=lambda x: x[1], reverse=True)
 
         # Model tags
         for idx in self.labels.model:
             if probs[idx] >= gen_threshold:
-                results["model"].append((self.labels.names[idx], float(probs[idx])))
+                normalized_tag = self._normalize_tag(self.labels.names[idx])
+                results["model"].append((normalized_tag, float(probs[idx])))
         results["model"].sort(key=lambda x: x[1], reverse=True)
 
         return results

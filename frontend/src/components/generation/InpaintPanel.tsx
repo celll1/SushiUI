@@ -260,16 +260,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setResolutionStep(parseInt(savedResolutionStep));
       }
 
-      const savedShowAspectRatioPresets = localStorage.getItem('show_aspect_ratio_presets');
-      if (savedShowAspectRatioPresets !== null) {
-        setShowAspectRatioPresets(savedShowAspectRatioPresets === 'true');
-      }
-
-      const savedShowFixedResolutionPresets = localStorage.getItem('show_fixed_resolution_presets');
-      if (savedShowFixedResolutionPresets !== null) {
-        setShowFixedResolutionPresets(savedShowFixedResolutionPresets === 'true');
-      }
-
       // Load custom presets
       const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
       if (savedAspectRatioPresets) {
@@ -839,8 +829,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
-  const [showAspectRatioPresets, setShowAspectRatioPresets] = useState(true);
-  const [showFixedResolutionPresets, setShowFixedResolutionPresets] = useState(true);
   const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([
     { label: "1:1", ratio: 1 / 1 },
     { label: "4:3", ratio: 4 / 3 },
@@ -1371,7 +1359,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     />
                   </div>
 
-                  {visibility.aspectRatioPresets && showAspectRatioPresets && (
+                  {visibility.aspectRatioPresets && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <label className="block text-sm font-medium text-gray-300">Aspect Ratio Presets</label>
@@ -1426,7 +1414,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     </div>
                   )}
 
-                  {visibility.fixedResolutionPresets && showFixedResolutionPresets && (
+                  {visibility.fixedResolutionPresets && (
                     <div className="space-y-2">
                       <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
                       <div className="grid grid-cols-6 gap-2">

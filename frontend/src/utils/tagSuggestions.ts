@@ -342,6 +342,7 @@ export function replaceCurrentTag(
 /**
  * Delete the tag at cursor position (Ctrl+Backspace functionality)
  * Handles tags separated by commas, newlines, or spaces between tags
+ * Removes the tag and one adjacent delimiter to avoid double commas
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @returns Object with new text and new cursor position
@@ -352,23 +353,28 @@ export function deleteTagAtCursor(
 ): { text: string; cursorPos: number } {
   // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
+  let startDelimiterPos = -1;
   let startDelimiter = '';
   while (start >= 0) {
     const char = text[start];
     if (char === ',' || char === '\n') {
+      startDelimiterPos = start;
       startDelimiter = char;
-      start++; // Move past the delimiter
       break;
     }
     start--;
   }
-  if (start < 0) {
-    start = 0;
+
+  // Find the tag content start (after delimiter and whitespace)
+  let tagStart = startDelimiterPos >= 0 ? startDelimiterPos + 1 : 0;
+  while (tagStart < text.length && text[tagStart] === ' ') {
+    tagStart++;
   }
 
   // Find the end: search forwards from cursor
   // Stop at comma, newline, OR if we encounter a space followed by a non-space
   let end = cursorPos;
+  let endDelimiterPos = -1;
   let endDelimiter = '';
   let foundSpace = false;
   while (end < text.length) {
@@ -376,8 +382,8 @@ export function deleteTagAtCursor(
 
     // Check for comma or newline
     if (char === ',' || char === '\n') {
+      endDelimiterPos = end;
       endDelimiter = char;
-      end++; // Include the delimiter
       break;
     }
 
@@ -386,34 +392,40 @@ export function deleteTagAtCursor(
       foundSpace = true;
     } else if (foundSpace) {
       // Found non-space after space - this is likely start of next tag
-      // Don't include the delimiter in this case
-      while (end > cursorPos && text[end - 1] === ' ') {
-        end--;
-      }
       break;
     }
 
     end++;
   }
 
-  // Extract before and after
-  const before = text.substring(0, start).trimEnd();
-  const after = text.substring(end).trimStart();
+  // Determine deletion range
+  // Strategy: delete the tag and ONE adjacent delimiter (prefer trailing delimiter)
+  let deleteStart: number;
+  let deleteEnd: number;
 
-  // Determine separator: if original had newline, preserve it; otherwise use comma
-  let separator = "";
-  if (before.length > 0 && after.length > 0) {
-    // If the tag was preceded or followed by a newline, use newline
-    if (startDelimiter === '\n' || endDelimiter === '\n') {
-      separator = "\n";
-    } else {
-      separator = ", ";
+  if (endDelimiterPos >= 0) {
+    // Has trailing delimiter - delete tag and trailing delimiter (including following whitespace)
+    deleteStart = startDelimiterPos >= 0 ? startDelimiterPos + 1 : 0;
+    deleteEnd = endDelimiterPos + 1;
+    // Skip whitespace after the delimiter
+    while (deleteEnd < text.length && text[deleteEnd] === ' ') {
+      deleteEnd++;
     }
+  } else if (startDelimiterPos >= 0) {
+    // No trailing delimiter but has leading delimiter - delete leading delimiter and tag
+    deleteStart = startDelimiterPos;
+    deleteEnd = end;
+  } else {
+    // No delimiters (only tag in string) - delete entire tag
+    deleteStart = 0;
+    deleteEnd = end;
   }
 
   // Build new text
-  const newText = before + separator + after;
-  const newCursorPos = before.length + separator.length;
+  const before = text.substring(0, deleteStart);
+  const after = text.substring(deleteEnd);
+  const newText = before + after;
+  const newCursorPos = deleteStart;
 
   return {
     text: newText,

@@ -71,6 +71,10 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
         enabled_categories: enabledCategories,
       });
 
+      console.log('[TIPO Panel] Response:', response);
+      console.log('[TIPO Panel] Parsed type:', typeof response.parsed);
+      console.log('[TIPO Panel] Parsed value:', response.parsed);
+
       setResult(response);
 
       // Reorder the generated prompt using category order
@@ -288,42 +292,10 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
               <label className="block text-sm font-medium text-gray-300">
                 Parsed by Category
               </label>
-              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 space-y-2">
-                {Object.entries(result.parsed)
-                  .map(([category, content]) => {
-                    // Skip null/undefined/empty content
-                    if (content === null || content === undefined || content === '') {
-                      return null;
-                    }
-
-                    // Format content based on type
-                    let displayContent: string;
-                    if (Array.isArray(content)) {
-                      if (content.length === 0) return null;
-                      displayContent = content.join(", ");
-                    } else if (typeof content === 'object') {
-                      // Handle nested objects
-                      displayContent = JSON.stringify(content, null, 2);
-                      if (displayContent === '{}' || displayContent === '[]') {
-                        return null;
-                      }
-                    } else {
-                      displayContent = String(content);
-                      if (!displayContent.trim()) return null;
-                    }
-
-                    return (
-                      <div key={category} className="flex gap-2">
-                        <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
-                          {category}:
-                        </span>
-                        <span className="text-xs text-gray-300 break-words whitespace-pre-wrap">
-                          {displayContent}
-                        </span>
-                      </div>
-                    );
-                  })
-                  .filter(Boolean)}
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words">
+                  {JSON.stringify(result.parsed, null, 2)}
+                </pre>
               </div>
             </div>
           )}

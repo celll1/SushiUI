@@ -14,6 +14,7 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
+import PromptEditor from "../common/PromptEditor";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
@@ -87,6 +88,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
 
   const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -523,6 +525,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     fixedResolutionPresets: true,
   });
 
+  // Open prompt editor
+  const handleOpenPromptEditor = () => {
+    setIsPromptEditorOpen(true);
+  };
+
+  // Save prompts from editor
+  const handleSavePrompts = (prompt: string, negativePrompt: string) => {
+    setParams({ ...params, prompt, negative_prompt: negativePrompt });
+  };
+
   // Add generation request to queue
   const handleAddToQueue = () => {
     if (!params.prompt) {
@@ -695,6 +707,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   promptTextareaRef.current = e.target as HTMLTextAreaElement;
                 }
               }}
+              onDoubleClick={handleOpenPromptEditor}
               enableWeightControl={true}
             />
             <div className="absolute -top-1 right-0 flex items-center gap-1 px-2 py-1">
@@ -726,6 +739,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               rows={3}
               value={params.negative_prompt}
               onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+              onDoubleClick={handleOpenPromptEditor}
               enableWeightControl={true}
             />
             <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1 pointer-events-none">
@@ -1198,6 +1212,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         settings={tipoSettings}
         onSettingsChange={setTipoSettings}
       />
+
+      {/* Prompt Editor */}
+      {isPromptEditorOpen && (
+        <PromptEditor
+          initialPrompt={params.prompt}
+          initialNegativePrompt={params.negative_prompt}
+          onSave={handleSavePrompts}
+          onClose={() => setIsPromptEditorOpen(false)}
+        />
+      )}
     </div>
   );
 }

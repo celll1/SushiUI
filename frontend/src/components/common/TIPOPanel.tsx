@@ -289,16 +289,28 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                 Parsed by Category
               </label>
               <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 space-y-2">
-                {Object.entries(result.parsed).map(([category, content]) => (
-                  <div key={category} className="flex gap-2">
-                    <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
-                      {category}:
-                    </span>
-                    <span className="text-xs text-gray-300 break-words">
-                      {Array.isArray(content) ? content.join(", ") : content}
-                    </span>
-                  </div>
-                ))}
+                {Object.entries(result.parsed).map(([category, content]) => {
+                  // Format content based on type
+                  let displayContent: string;
+                  if (Array.isArray(content)) {
+                    displayContent = content.join(", ");
+                  } else if (typeof content === 'object' && content !== null) {
+                    displayContent = JSON.stringify(content);
+                  } else {
+                    displayContent = String(content);
+                  }
+
+                  return (
+                    <div key={category} className="flex gap-2">
+                      <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
+                        {category}:
+                      </span>
+                      <span className="text-xs text-gray-300 break-words">
+                        {displayContent}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

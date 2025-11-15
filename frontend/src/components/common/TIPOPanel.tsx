@@ -314,7 +314,7 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
             Output Category Order
           </summary>
           <div className="mt-2">
-            <div className="grid grid-cols-6 gap-1.5">
+            <div className="flex flex-wrap gap-1">
               {categoryOrder.map((category, index) => (
                 <div
                   key={category.id}
@@ -337,39 +337,37 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                     newOrder.splice(index, 0, removed);
                     setCategoryOrder(newOrder);
                   }}
-                  className={`aspect-square p-1.5 rounded border cursor-move transition-colors flex flex-col items-center justify-center ${
+                  className={`px-2 py-1 rounded border cursor-move transition-colors flex items-center gap-1.5 ${
                     category.enabled
                       ? 'bg-gray-700 border-gray-600 hover:border-gray-500'
                       : 'bg-gray-800 border-gray-700 opacity-50'
                   }`}
                 >
-                  <span className="text-[10px] text-gray-300 font-medium text-center mb-1 leading-tight">
+                  <input
+                    type="checkbox"
+                    checked={category.enabled}
+                    onChange={(e) => {
+                      const newOrder = [...categoryOrder];
+                      newOrder[index].enabled = e.target.checked;
+                      setCategoryOrder(newOrder);
+                    }}
+                    className="w-2.5 h-2.5"
+                    title="Enable"
+                  />
+                  <span className="text-[10px] text-gray-300 font-medium whitespace-nowrap">
                     {category.label}
                   </span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={category.enabled}
-                      onChange={(e) => {
-                        const newOrder = [...categoryOrder];
-                        newOrder[index].enabled = e.target.checked;
-                        setCategoryOrder(newOrder);
-                      }}
-                      className="w-2.5 h-2.5"
-                      title="Enable"
-                    />
-                    <input
-                      type="checkbox"
-                      checked={category.randomize}
-                      onChange={(e) => {
-                        const newOrder = [...categoryOrder];
-                        newOrder[index].randomize = e.target.checked;
-                        setCategoryOrder(newOrder);
-                      }}
-                      className="w-2.5 h-2.5"
-                      title="Randomize"
-                    />
-                  </div>
+                  <input
+                    type="checkbox"
+                    checked={category.randomize}
+                    onChange={(e) => {
+                      const newOrder = [...categoryOrder];
+                      newOrder[index].randomize = e.target.checked;
+                      setCategoryOrder(newOrder);
+                    }}
+                    className="w-2.5 h-2.5"
+                    title="Randomize"
+                  />
                 </div>
               ))}
             </div>

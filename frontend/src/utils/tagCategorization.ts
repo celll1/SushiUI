@@ -2,7 +2,7 @@
  * Tag categorization utilities for reordering prompts by category
  */
 
-import { TagData } from "./tagSuggestions";
+import { loadAllTags } from "./tagSuggestions";
 
 interface CategorizedTag {
   tag: string;
@@ -22,51 +22,59 @@ const SPECIAL_TAGS: Record<string, string> = {
   bad_quality: "quality",
   worst_quality: "quality",
   masterpiece: "quality",
-  // Add more special tags as needed
 };
 
-/**
- * Load tag category data from backend
- */
-async function loadCategoryData(category: string): Promise<TagData> {
-  try {
-    const response = await fetch(`http://localhost:8000/api/taglist/${category}`);
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch (error) {
-    console.error(`Failed to load ${category} tags:`, error);
-  }
-  return {};
-}
+// Cache for tag-to-category mapping
+let tagCategoryCache: Record<string, string> | null = null;
 
 /**
- * Determine the category of a tag
+ * Build tag-to-category mapping from loaded tag lists
  */
-async function determineTagCategory(tag: string): Promise<string> {
-  const normalizedTag = tag.toLowerCase().replace(/[_\s]/g, "_");
-
-  // Check special tags first
-  if (SPECIAL_TAGS[normalizedTag]) {
-    return SPECIAL_TAGS[normalizedTag];
+async function buildTagCategoryCache(): Promise<Record<string, string>> {
+  if (tagCategoryCache) {
+    return tagCategoryCache;
   }
 
-  // Check each category
+  // Ensure all tag lists are loaded
+  await loadAllTags();
+
+  tagCategoryCache = {};
+
+  // Add special tags
+  for (const [tag, category] of Object.entries(SPECIAL_TAGS)) {
+    tagCategoryCache[tag] = category;
+  }
+
+  // Load tag lists from backend (already cached in tagSuggestions)
   const categories = ["general", "character", "copyright", "artist", "meta", "model"];
 
   for (const category of categories) {
-    const tagData = await loadCategoryData(category);
-
-    // Check if tag exists in this category
-    for (const categoryTag of Object.keys(tagData)) {
-      if (categoryTag.toLowerCase() === normalizedTag) {
-        return category;
+    try {
+      const response = await fetch(`http://localhost:8000/api/taglist/${category}`);
+      if (response.ok) {
+        const tagData: Record<string, number> = await response.json();
+        for (const tag of Object.keys(tagData)) {
+          const normalizedTag = tag.toLowerCase().replace(/[_\s]/g, "_");
+          // Don't overwrite special tags
+          if (!tagCategoryCache[normalizedTag]) {
+            tagCategoryCache[normalizedTag] = category;
+          }
+        }
       }
+    } catch (error) {
+      console.error(`Failed to load ${category} tags:`, error);
     }
   }
 
-  // Default to general if not found
-  return "general";
+  return tagCategoryCache;
+}
+
+/**
+ * Determine the category of a tag (fast, uses cache)
+ */
+function determineTagCategory(tag: string, cache: Record<string, string>): string {
+  const normalizedTag = tag.toLowerCase().replace(/[_\s]/g, "_");
+  return cache[normalizedTag] || "general";
 }
 
 /**
@@ -82,12 +90,13 @@ function parseTags(prompt: string): string[] {
 /**
  * Categorize all tags in a prompt
  */
-export async function categorizeTags(prompt: string): Promise<CategorizedTag[]> {
+async function categorizeTags(prompt: string): Promise<CategorizedTag[]> {
+  const cache = await buildTagCategoryCache();
   const tags = parseTags(prompt);
   const categorized: CategorizedTag[] = [];
 
   for (const tag of tags) {
-    const category = await determineTagCategory(tag);
+    const category = determineTagCategory(tag, cache);
     categorized.push({ tag, category });
   }
 
@@ -97,7 +106,7 @@ export async function categorizeTags(prompt: string): Promise<CategorizedTag[]> 
 /**
  * Reorder tags based on category order
  */
-export function reorderTagsByCategory(
+function reorderTagsByCategory(
   categorizedTags: CategorizedTag[],
   categoryOrder: Array<{ id: string; enabled: boolean }>
 ): string {

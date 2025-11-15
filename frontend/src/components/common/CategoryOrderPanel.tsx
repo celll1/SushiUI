@@ -8,19 +8,20 @@ export interface TagCategory {
   id: string;
   label: string;
   enabled: boolean;
+  randomize?: boolean;
 }
 
 const DEFAULT_CATEGORIES: TagCategory[] = [
-  { id: "rating", label: "Rating", enabled: true },
-  { id: "quality", label: "Quality", enabled: true },
-  { id: "count", label: "Count", enabled: true },
-  { id: "general", label: "General", enabled: true },
-  { id: "character", label: "Character", enabled: true },
-  { id: "copyright", label: "Copyright", enabled: true },
-  { id: "artist", label: "Artist", enabled: true },
-  { id: "meta", label: "Meta", enabled: true },
-  { id: "model", label: "Model", enabled: true },
-  { id: "unknown", label: "Unknown", enabled: true },
+  { id: "rating", label: "Rating", enabled: true, randomize: false },
+  { id: "quality", label: "Quality", enabled: true, randomize: false },
+  { id: "count", label: "Count", enabled: true, randomize: false },
+  { id: "general", label: "General", enabled: true, randomize: false },
+  { id: "character", label: "Character", enabled: true, randomize: false },
+  { id: "copyright", label: "Copyright", enabled: true, randomize: false },
+  { id: "artist", label: "Artist", enabled: true, randomize: false },
+  { id: "meta", label: "Meta", enabled: true, randomize: false },
+  { id: "model", label: "Model", enabled: true, randomize: false },
+  { id: "unknown", label: "Unknown", enabled: true, randomize: false },
 ];
 
 const STORAGE_KEY = "tag_category_order";
@@ -77,6 +78,12 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
   const toggleCategory = (index: number) => {
     const newCategories = [...categories];
     newCategories[index].enabled = !newCategories[index].enabled;
+    saveOrder(newCategories);
+  };
+
+  const toggleRandomize = (index: number) => {
+    const newCategories = [...categories];
+    newCategories[index].randomize = !newCategories[index].randomize;
     saveOrder(newCategories);
   };
 
@@ -217,14 +224,31 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
                 </span>
               </div>
 
-              {/* Enable/Disable Checkbox */}
-              <input
-                type="checkbox"
-                checked={category.enabled}
-                onChange={() => toggleCategory(index)}
-                className="w-4 h-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
-                title={category.enabled ? "Disable category" : "Enable category"}
-              />
+              {/* Control Buttons */}
+              <div className="flex flex-col gap-1">
+                {/* Enable/Disable Checkbox */}
+                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={category.enabled}
+                    onChange={() => toggleCategory(index)}
+                    className="w-3 h-3 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                  />
+                  <span>Enable</span>
+                </label>
+
+                {/* Randomize Checkbox */}
+                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={category.randomize || false}
+                    onChange={() => toggleRandomize(index)}
+                    disabled={!category.enabled}
+                    className="w-3 h-3 rounded border-gray-500 text-green-600 focus:ring-green-500 focus:ring-offset-gray-800 disabled:opacity-30"
+                  />
+                  <span className={!category.enabled ? "opacity-30" : ""}>Random</span>
+                </label>
+              </div>
             </div>
           ))}
         </div>
@@ -235,7 +259,8 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
           </p>
           <ul className="list-disc list-inside space-y-1">
             <li>Drag and drop cards to reorder categories</li>
-            <li>Uncheck categories to exclude them from reordering</li>
+            <li>Enable: Include category in reordering</li>
+            <li>Random: Randomize tag order within category</li>
             <li>Click "Apply to Current Prompt" to reorder tags in the prompt above</li>
             <li>Category order also affects TIPO tag generation output</li>
             <li>Changes are saved automatically to localStorage</li>

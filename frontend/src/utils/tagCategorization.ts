@@ -131,11 +131,23 @@ async function categorizeTags(prompt: string): Promise<CategorizedTag[]> {
 }
 
 /**
+ * Shuffle array (Fisher-Yates algorithm)
+ */
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+/**
  * Reorder tags based on category order
  */
 function reorderTagsByCategory(
   categorizedTags: CategorizedTag[],
-  categoryOrder: Array<{ id: string; enabled: boolean }>
+  categoryOrder: Array<{ id: string; enabled: boolean; randomize?: boolean }>
 ): string {
   // Group tags by category
   const tagsByCategory: Record<string, string[]> = {};
@@ -150,9 +162,10 @@ function reorderTagsByCategory(
   // Reorder based on category order
   const orderedTags: string[] = [];
 
-  for (const { id, enabled } of categoryOrder) {
+  for (const { id, enabled, randomize } of categoryOrder) {
     if (enabled && tagsByCategory[id]) {
-      orderedTags.push(...tagsByCategory[id]);
+      const tags = randomize ? shuffleArray(tagsByCategory[id]) : tagsByCategory[id];
+      orderedTags.push(...tags);
     }
   }
 
@@ -172,7 +185,7 @@ function reorderTagsByCategory(
  */
 export async function reorderPromptByCategory(
   prompt: string,
-  categoryOrder: Array<{ id: string; enabled: boolean }>
+  categoryOrder: Array<{ id: string; enabled: boolean; randomize?: boolean }>
 ): Promise<string> {
   if (!prompt.trim()) {
     return prompt;

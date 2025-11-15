@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, ChangeEvent } from "react";
+import { useState, useRef, ChangeEvent, useEffect } from "react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
@@ -25,9 +25,11 @@ export default function PromptEditor({
   const [negativePrompt, setNegativePrompt] = useState(initialNegativePrompt);
   const [activePanel, setActivePanel] = useState<PanelType>("main");
   const [activePromptType, setActivePromptType] = useState<"positive" | "negative">("positive");
+  const [cursorPosition, setCursorPosition] = useState<number>(0);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
 
   const handleSave = () => {
     onSave(prompt, negativePrompt);
@@ -42,6 +44,49 @@ export default function PromptEditor({
     setNegativePrompt(e.target.value);
   };
 
+  // Track cursor position
+  const updateCursorPosition = () => {
+    const textarea = activePromptType === "positive"
+      ? promptTextareaRef.current
+      : negativePromptTextareaRef.current;
+
+    if (textarea) {
+      setCursorPosition(textarea.selectionStart);
+    }
+  };
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Only handle when no input/textarea (except our prompts) is focused
+      const activeElement = document.activeElement;
+      const isInputFocused = activeElement instanceof HTMLInputElement ||
+        (activeElement instanceof HTMLTextAreaElement &&
+         activeElement !== promptTextareaRef.current &&
+         activeElement !== negativePromptTextareaRef.current);
+
+      if (isInputFocused) return;
+
+      // Ctrl+key shortcuts - focus the active prompt textarea
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+        const textarea = activePromptType === "positive"
+          ? promptTextareaRef.current
+          : negativePromptTextareaRef.current;
+
+        if (textarea) {
+          textarea.focus();
+          // Let the textarea's own handler deal with the key
+        }
+      }
+    };
+
+    const container = editorContainerRef.current;
+    if (container) {
+      container.addEventListener('keydown', handleGlobalKeyDown);
+      return () => container.removeEventListener('keydown', handleGlobalKeyDown);
+    }
+  }, [activePromptType]);
+
   const handleInsertTemplate = (content: string) => {
     const textarea = activePromptType === "positive"
       ? promptTextareaRef.current
@@ -50,7 +95,7 @@ export default function PromptEditor({
     if (!textarea) return;
 
     const currentValue = activePromptType === "positive" ? prompt : negativePrompt;
-    const cursorPos = textarea.selectionStart || 0;
+    const cursorPos = cursorPosition || textarea.selectionStart || 0;
 
     // Insert template at cursor position with proper formatting
     const before = currentValue.substring(0, cursorPos);
@@ -92,14 +137,32 @@ export default function PromptEditor({
       if (textarea) {
         textarea.selectionStart = newCursorPos;
         textarea.selectionEnd = newCursorPos;
+        setCursorPosition(newCursorPos);
         textarea.focus();
       }
     }, 0);
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
-      {/* Header */}
+    <>
+      <style jsx global>{`
+        /* Keep caret visible even when textarea is not focused */
+        .prompt-editor-textarea textarea {
+          caret-color: #60a5fa;
+        }
+
+        /* Highlight the active prompt editor with a subtle glow */
+        .prompt-editor-textarea textarea:not(:focus) {
+          box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.3);
+        }
+
+        .prompt-editor-textarea textarea:focus {
+          outline: 2px solid rgba(96, 165, 250, 0.6);
+          outline-offset: -2px;
+        }
+      `}</style>
+      <div ref={editorContainerRef} className="fixed inset-0 z-50 bg-gray-900 flex flex-col" tabIndex={-1}>
+        {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700 bg-gray-800">
         <h2 className="text-xl font-semibold text-gray-100">Prompt Editor</h2>
         <div className="flex gap-2">
@@ -213,9 +276,12 @@ export default function PromptEditor({
                 label="Positive Prompt"
                 value={prompt}
                 onChange={handlePromptChange}
+                onSelect={updateCursorPosition}
+                onClick={updateCursorPosition}
+                onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
                 rows={8}
-                className="font-mono"
+                className="font-mono prompt-editor-textarea"
               />
             ) : (
               <TextareaWithTagSuggestions
@@ -223,9 +289,12 @@ export default function PromptEditor({
                 label="Negative Prompt"
                 value={negativePrompt}
                 onChange={handleNegativePromptChange}
+                onSelect={updateCursorPosition}
+                onClick={updateCursorPosition}
+                onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
                 rows={8}
-                className="font-mono"
+                className="font-mono prompt-editor-textarea"
               />
             )}
           </div>
@@ -306,5 +375,6 @@ export default function PromptEditor({
         </div>
       </div>
     </div>
+    </>
   );
 }

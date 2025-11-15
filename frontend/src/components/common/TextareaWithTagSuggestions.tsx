@@ -49,8 +49,9 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
   // Undo/Redo history management (max 50 entries)
   const [history, setHistory] = useState<Array<{ text: string; cursorPos: number }>>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [historyIndex, setHistoryIndex] = useState(0);
   const isUndoRedoRef = useRef(false); // Flag to prevent adding to history during undo/redo
+  const hasInitializedHistory = useRef(false);
 
   // Expose the internal textarea ref to parent components
   useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
@@ -184,7 +185,16 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }, 300); // Increased delay to 300ms
   };
 
-  // Add current state to history (for undo/redo)
+  // Initialize history with current value (only once)
+  useEffect(() => {
+    if (!hasInitializedHistory.current && value !== undefined) {
+      hasInitializedHistory.current = true;
+      setHistory([{ text: value, cursorPos: 0 }]);
+      setHistoryIndex(0);
+    }
+  }, [value]);
+
+  // Add new state to history after an operation
   const addToHistory = (text: string, cursorPos: number) => {
     if (isUndoRedoRef.current) {
       // Don't add to history if this is from undo/redo
@@ -199,11 +209,13 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       // Limit to 50 entries
       if (newHistory.length > 50) {
         newHistory.shift();
+        // Don't increment index if we removed from start
+        setHistoryIndex(49);
         return newHistory;
       }
+      setHistoryIndex(newHistory.length - 1);
       return newHistory;
     });
-    setHistoryIndex((prev) => Math.min(prev + 1, 49));
   };
 
   // Undo operation (Ctrl+Z)
@@ -291,9 +303,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       const textarea = e.currentTarget;
       const cursorPos = textarea.selectionStart;
 
-      // Add current state to history before deletion
-      addToHistory(value, cursorPos);
-
       const result = deleteTagAtCursor(value, cursorPos);
 
       // Create synthetic event for onChange
@@ -305,10 +314,11 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
       onChange(syntheticEvent);
 
-      // Set cursor position after state update
+      // Add new state to history AFTER deletion
       setTimeout(() => {
         textarea.selectionStart = result.cursorPos;
         textarea.selectionEnd = result.cursorPos;
+        addToHistory(result.text, result.cursorPos);
       }, 0);
 
       setSuggestions([]);
@@ -343,10 +353,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (textarea.tagName !== "TEXTAREA") return;
 
     const cursorPos = textarea.selectionStart;
-
-    // Add current state to history before accepting suggestion
-    addToHistory(value, cursorPos);
-
     const result = replaceCurrentTag(value, cursorPos, tag);
 
     // Create synthetic event for onChange
@@ -357,11 +363,12 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     onChange(syntheticEvent);
 
-    // Set cursor position and clear suggestions after state update
+    // Add new state to history AFTER accepting suggestion
     setTimeout(() => {
       textarea.selectionStart = result.cursorPos;
       textarea.selectionEnd = result.cursorPos;
       textarea.focus();
+      addToHistory(result.text, result.cursorPos);
     }, 0);
 
     setSuggestions([]);

@@ -6,6 +6,8 @@ import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
 import CategoryOrderPanel from "./CategoryOrderPanel";
 import WildcardPanel from "./WildcardPanel";
+import TIPOPanel from "./TIPOPanel";
+import { TIPOSettings } from "./TIPODialog";
 
 interface PromptEditorProps {
   initialPrompt: string;
@@ -27,6 +29,28 @@ export default function PromptEditor({
   const [activePanel, setActivePanel] = useState<PanelType>("main");
   const [activePromptType, setActivePromptType] = useState<"positive" | "negative">("positive");
   const [cursorPosition, setCursorPosition] = useState<number>(0);
+
+  // TIPO settings - load from localStorage or use defaults
+  const [tipoSettings] = useState<TIPOSettings>(() => {
+    const saved = localStorage.getItem("tipo_settings");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to parse TIPO settings from localStorage", e);
+      }
+    }
+    return {
+      model_name: "KBlueLeaf/TIPO-500M",
+      tag_length: "short",
+      nl_length: "short",
+      temperature: 0.5,
+      top_p: 0.9,
+      top_k: 40,
+      max_new_tokens: 256,
+      categories: [],
+    };
+  });
 
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -59,6 +83,9 @@ export default function PromptEditor({
   // Global keyboard shortcuts
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Only handle when on main panel
+      if (activePanel !== "main") return;
+
       // Only handle when no input/textarea (except our prompts) is focused
       const activeElement = document.activeElement;
       const isInputFocused = activeElement instanceof HTMLInputElement ||
@@ -86,7 +113,7 @@ export default function PromptEditor({
       container.addEventListener('keydown', handleGlobalKeyDown);
       return () => container.removeEventListener('keydown', handleGlobalKeyDown);
     }
-  }, [activePromptType]);
+  }, [activePromptType, activePanel]);
 
   const handleInsertTemplate = (content: string) => {
     const textarea = activePromptType === "positive"
@@ -343,10 +370,10 @@ export default function PromptEditor({
             )}
 
             {activePanel === "tipo" && (
-              <div className="text-gray-300">
-                <h3 className="text-lg font-semibold mb-4">TIPO (Tag Interpolation)</h3>
-                <p className="text-gray-400">TIPO functionality coming soon...</p>
-              </div>
+              <TIPOPanel
+                onInsert={handleInsertTemplate}
+                tipoSettings={tipoSettings}
+              />
             )}
 
             {activePanel === "tagger" && (

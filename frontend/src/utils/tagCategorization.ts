@@ -143,6 +143,36 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 /**
+ * Sort count tags: numeric tags first (by number), then non-numeric tags
+ * e.g., "1girl", "2girls", "solo" -> "1girl", "solo", "2girls"
+ */
+function sortCountTags(tags: string[]): string[] {
+  return [...tags].sort((a, b) => {
+    // Extract leading number from tag
+    const numA = a.match(/^(\d+)/);
+    const numB = b.match(/^(\d+)/);
+
+    // Both have numbers: sort by number
+    if (numA && numB) {
+      return parseInt(numA[1]) - parseInt(numB[1]);
+    }
+
+    // Only a has number: a comes first
+    if (numA && !numB) {
+      return -1;
+    }
+
+    // Only b has number: b comes first
+    if (!numA && numB) {
+      return 1;
+    }
+
+    // Neither has number: keep original order
+    return 0;
+  });
+}
+
+/**
  * Reorder tags based on category order
  */
 function reorderTagsByCategory(
@@ -164,7 +194,15 @@ function reorderTagsByCategory(
 
   for (const { id, enabled, randomize } of categoryOrder) {
     if (enabled && tagsByCategory[id]) {
-      const tags = randomize ? shuffleArray(tagsByCategory[id]) : tagsByCategory[id];
+      let tags = tagsByCategory[id];
+
+      // Special handling for "count" category
+      if (id === "count" && !randomize) {
+        tags = sortCountTags(tags);
+      } else if (randomize) {
+        tags = shuffleArray(tags);
+      }
+
       orderedTags.push(...tags);
     }
   }

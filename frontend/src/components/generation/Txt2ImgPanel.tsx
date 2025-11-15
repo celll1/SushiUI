@@ -536,16 +536,27 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   };
 
   // Add generation request to queue
-  const handleAddToQueue = () => {
+  const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
       return;
     }
 
+    // Import wildcard replacement function dynamically
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+
+    // Replace wildcards in prompts
+    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+
     addToQueue({
       type: "txt2img",
-      params: { ...params },
-      prompt: params.prompt,
+      params: {
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      },
+      prompt: processedPrompt,
     });
   };
 

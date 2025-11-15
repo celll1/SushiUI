@@ -869,7 +869,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   });
 
   // Add generation request to queue
-  const handleAddToQueue = () => {
+  const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
       return;
@@ -885,12 +885,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return;
     }
 
+    // Import wildcard replacement function dynamically
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+
+    // Replace wildcards in prompts
+    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+
     addToQueue({
       type: "inpaint",
-      params: { ...params },
+      params: {
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      },
       inputImage: inputImagePreview,
       maskImage: maskImage,
-      prompt: params.prompt,
+      prompt: processedPrompt,
     });
   };
 

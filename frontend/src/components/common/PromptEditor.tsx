@@ -5,6 +5,7 @@ import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
 import CategoryOrderPanel from "./CategoryOrderPanel";
+import WildcardPanel from "./WildcardPanel";
 
 interface PromptEditorProps {
   initialPrompt: string;
@@ -338,10 +339,7 @@ export default function PromptEditor({
             )}
 
             {activePanel === "wildcard" && (
-              <div className="text-gray-300">
-                <h3 className="text-lg font-semibold mb-4">Wildcard Editor</h3>
-                <p className="text-gray-400">Wildcard functionality coming soon...</p>
-              </div>
+              <WildcardPanel onInsert={handleInsertTemplate} />
             )}
 
             {activePanel === "tipo" && (

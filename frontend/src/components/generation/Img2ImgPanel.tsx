@@ -748,11 +748,22 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
+    // Import wildcard replacement function dynamically
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+
+    // Replace wildcards in prompts
+    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+
     addToQueue({
       type: "img2img",
-      params: { ...params },
+      params: {
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      },
       inputImage: imageBase64,
-      prompt: params.prompt,
+      prompt: processedPrompt,
     });
   };
 

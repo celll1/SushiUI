@@ -47,6 +47,11 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Undo/Redo history management (max 50 entries)
+  const [history, setHistory] = useState<Array<{ text: string; cursorPos: number }>>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const isUndoRedoRef = useRef(false); // Flag to prevent adding to history during undo/redo
+
   // Expose the internal textarea ref to parent components
   useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
 
@@ -179,6 +184,84 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }, 300); // Increased delay to 300ms
   };
 
+  // Add current state to history (for undo/redo)
+  const addToHistory = (text: string, cursorPos: number) => {
+    if (isUndoRedoRef.current) {
+      // Don't add to history if this is from undo/redo
+      return;
+    }
+
+    setHistory((prevHistory) => {
+      // Remove any entries after current index (when user makes new change after undo)
+      const newHistory = prevHistory.slice(0, historyIndex + 1);
+      // Add new entry
+      newHistory.push({ text, cursorPos });
+      // Limit to 50 entries
+      if (newHistory.length > 50) {
+        newHistory.shift();
+        return newHistory;
+      }
+      return newHistory;
+    });
+    setHistoryIndex((prev) => Math.min(prev + 1, 49));
+  };
+
+  // Undo operation (Ctrl+Z)
+  const handleUndo = () => {
+    if (historyIndex <= 0) return; // Nothing to undo
+
+    const prevState = history[historyIndex - 1];
+    isUndoRedoRef.current = true;
+
+    const textarea = internalTextareaRef.current;
+    if (textarea && textarea.tagName === "TEXTAREA") {
+      // Create synthetic event for onChange
+      const syntheticEvent = {
+        target: { ...textarea, value: prevState.text },
+        currentTarget: { ...textarea, value: prevState.text },
+      } as ChangeEvent<HTMLTextAreaElement>;
+
+      onChange(syntheticEvent);
+
+      // Set cursor position
+      setTimeout(() => {
+        textarea.selectionStart = prevState.cursorPos;
+        textarea.selectionEnd = prevState.cursorPos;
+        isUndoRedoRef.current = false;
+      }, 0);
+    }
+
+    setHistoryIndex((prev) => prev - 1);
+  };
+
+  // Redo operation (Ctrl+Shift+Z)
+  const handleRedo = () => {
+    if (historyIndex >= history.length - 1) return; // Nothing to redo
+
+    const nextState = history[historyIndex + 1];
+    isUndoRedoRef.current = true;
+
+    const textarea = internalTextareaRef.current;
+    if (textarea && textarea.tagName === "TEXTAREA") {
+      // Create synthetic event for onChange
+      const syntheticEvent = {
+        target: { ...textarea, value: nextState.text },
+        currentTarget: { ...textarea, value: nextState.text },
+      } as ChangeEvent<HTMLTextAreaElement>;
+
+      onChange(syntheticEvent);
+
+      // Set cursor position
+      setTimeout(() => {
+        textarea.selectionStart = nextState.cursorPos;
+        textarea.selectionEnd = nextState.cursorPos;
+        isUndoRedoRef.current = false;
+      }, 0);
+    }
+
+    setHistoryIndex((prev) => prev + 1);
+  };
+
   // Handle text change
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     onChange(e);
@@ -188,11 +271,29 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
   // Handle key down for navigation and shortcuts
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl+Z: Undo
+    if (e.ctrlKey && !e.shiftKey && e.key === "z") {
+      e.preventDefault();
+      handleUndo();
+      return;
+    }
+
+    // Ctrl+Shift+Z: Redo
+    if (e.ctrlKey && e.shiftKey && e.key === "Z") {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
+
     // Ctrl+Backspace: Delete tag at cursor
     if (e.ctrlKey && e.key === "Backspace") {
       e.preventDefault();
       const textarea = e.currentTarget;
       const cursorPos = textarea.selectionStart;
+
+      // Add current state to history before deletion
+      addToHistory(value, cursorPos);
+
       const result = deleteTagAtCursor(value, cursorPos);
 
       // Create synthetic event for onChange
@@ -242,6 +343,10 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (textarea.tagName !== "TEXTAREA") return;
 
     const cursorPos = textarea.selectionStart;
+
+    // Add current state to history before accepting suggestion
+    addToHistory(value, cursorPos);
+
     const result = replaceCurrentTag(value, cursorPos, tag);
 
     // Create synthetic event for onChange

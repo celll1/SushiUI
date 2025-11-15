@@ -180,7 +180,9 @@ export async function searchTags(
 
 /**
  * Get the current tag being typed at cursor position
- * Handles tags separated by commas or newlines
+ * Handles tags separated by commas, newlines, or spaces between tags
+ * Special handling: if user is inserting a new tag between existing tags (e.g., "whi red eyes"),
+ * only the part before the space is considered as the current tag
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @returns The tag being typed, or empty string
@@ -191,7 +193,7 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     return "";
   }
 
-  // Find the start: search backwards for comma or newline
+  // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
   while (start >= 0) {
     const char = text[start];
@@ -205,13 +207,31 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     start = 0;
   }
 
-  // Find the end: search forwards for comma or newline
+  // Find the end: search forwards from cursor
+  // Stop at comma, newline, OR if we encounter a space followed by a non-space
+  // (indicating the start of another tag)
   let end = cursorPos;
+  let foundSpace = false;
   while (end < text.length) {
     const char = text[end];
+
+    // Always stop at comma or newline
     if (char === ',' || char === '\n') {
       break;
     }
+
+    // Track spaces
+    if (char === ' ') {
+      foundSpace = true;
+    } else if (foundSpace) {
+      // Found non-space after space - this is likely start of next tag
+      // Go back to the space
+      while (end > cursorPos && text[end - 1] === ' ') {
+        end--;
+      }
+      break;
+    }
+
     end++;
   }
 
@@ -240,7 +260,7 @@ export function getCurrentTag(text: string, cursorPos: number): string {
 
 /**
  * Replace the current tag at cursor position with a new tag
- * Handles tags separated by commas or newlines
+ * Handles tags separated by commas, newlines, or spaces between tags
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @param newTag - New tag to insert (will be formatted for display)
@@ -251,7 +271,7 @@ export function replaceCurrentTag(
   cursorPos: number,
   newTag: string
 ): { text: string; cursorPos: number } {
-  // Find the start: search backwards for comma or newline
+  // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
   while (start >= 0) {
     const char = text[start];
@@ -265,13 +285,30 @@ export function replaceCurrentTag(
     start = 0;
   }
 
-  // Find the end: search forwards for comma or newline
+  // Find the end: search forwards from cursor
+  // Stop at comma, newline, OR if we encounter a space followed by a non-space
   let end = cursorPos;
+  let foundSpace = false;
   while (end < text.length) {
     const char = text[end];
+
+    // Always stop at comma or newline
     if (char === ',' || char === '\n') {
       break;
     }
+
+    // Track spaces
+    if (char === ' ') {
+      foundSpace = true;
+    } else if (foundSpace) {
+      // Found non-space after space - this is likely start of next tag
+      // Go back to the space
+      while (end > cursorPos && text[end - 1] === ' ') {
+        end--;
+      }
+      break;
+    }
+
     end++;
   }
 
@@ -298,7 +335,7 @@ export function replaceCurrentTag(
 
 /**
  * Delete the tag at cursor position (Ctrl+Backspace functionality)
- * Handles tags separated by commas or newlines
+ * Handles tags separated by commas, newlines, or spaces between tags
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @returns Object with new text and new cursor position
@@ -307,7 +344,7 @@ export function deleteTagAtCursor(
   text: string,
   cursorPos: number
 ): { text: string; cursorPos: number } {
-  // Find the start: search backwards for comma or newline
+  // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
   let startDelimiter = '';
   while (start >= 0) {
@@ -323,16 +360,33 @@ export function deleteTagAtCursor(
     start = 0;
   }
 
-  // Find the end: search forwards for comma or newline
+  // Find the end: search forwards from cursor
+  // Stop at comma, newline, OR if we encounter a space followed by a non-space
   let end = cursorPos;
   let endDelimiter = '';
+  let foundSpace = false;
   while (end < text.length) {
     const char = text[end];
+
+    // Check for comma or newline
     if (char === ',' || char === '\n') {
       endDelimiter = char;
       end++; // Include the delimiter
       break;
     }
+
+    // Track spaces
+    if (char === ' ') {
+      foundSpace = true;
+    } else if (foundSpace) {
+      // Found non-space after space - this is likely start of next tag
+      // Don't include the delimiter in this case
+      while (end > cursorPos && text[end - 1] === ' ') {
+        end--;
+      }
+      break;
+    }
+
     end++;
   }
 

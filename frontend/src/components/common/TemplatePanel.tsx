@@ -48,8 +48,15 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
       return;
     }
 
-    // Use "Untitled(id)" if name is empty
-    const templateName = newTemplateName.trim() || `Untitled(${Date.now()})`;
+    // Use "Untitled(date-time)" if name is empty
+    const templateName = newTemplateName.trim() ||
+      `Untitled ${new Date().toLocaleString('ja-JP', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).replace(/\//g, '-')}`;
 
     saveTemplate(templateName, currentPrompt, newTemplateCategory);
     setNewTemplateName("");

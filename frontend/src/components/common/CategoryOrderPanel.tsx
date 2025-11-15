@@ -13,6 +13,7 @@ export interface TagCategory {
 const DEFAULT_CATEGORIES: TagCategory[] = [
   { id: "rating", label: "Rating", enabled: true },
   { id: "quality", label: "Quality", enabled: true },
+  { id: "count", label: "Count", enabled: true },
   { id: "general", label: "General", enabled: true },
   { id: "character", label: "Character", enabled: true },
   { id: "copyright", label: "Copyright", enabled: true },
@@ -46,6 +47,14 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
         const hasUnknown = parsed.some(cat => cat.id === "unknown");
         if (!hasUnknown) {
           parsed.push({ id: "unknown", label: "Unknown", enabled: true });
+        }
+
+        // Migrate: add "count" category if it doesn't exist (insert after quality)
+        const hasCount = parsed.some(cat => cat.id === "count");
+        if (!hasCount) {
+          const qualityIndex = parsed.findIndex(cat => cat.id === "quality");
+          const insertIndex = qualityIndex >= 0 ? qualityIndex + 1 : 2;
+          parsed.splice(insertIndex, 0, { id: "count", label: "Count", enabled: true });
         }
 
         setCategories(parsed);
@@ -252,6 +261,14 @@ export function getCategoryOrder(): TagCategory[] {
       const hasUnknown = parsed.some(cat => cat.id === "unknown");
       if (!hasUnknown) {
         parsed.push({ id: "unknown", label: "Unknown", enabled: true });
+      }
+
+      // Migrate: add "count" category if it doesn't exist (insert after quality)
+      const hasCount = parsed.some(cat => cat.id === "count");
+      if (!hasCount) {
+        const qualityIndex = parsed.findIndex(cat => cat.id === "quality");
+        const insertIndex = qualityIndex >= 0 ? qualityIndex + 1 : 2;
+        parsed.splice(insertIndex, 0, { id: "count", label: "Count", enabled: true });
       }
 
       return parsed;

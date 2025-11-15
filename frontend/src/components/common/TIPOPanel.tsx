@@ -290,22 +290,26 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
               </label>
               <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 space-y-2">
                 {Object.entries(result.parsed)
-                  .filter(([_, content]) => content !== null && content !== undefined && content !== '')
                   .map(([category, content]) => {
+                    // Skip null/undefined/empty content
+                    if (content === null || content === undefined || content === '') {
+                      return null;
+                    }
+
                     // Format content based on type
                     let displayContent: string;
                     if (Array.isArray(content)) {
+                      if (content.length === 0) return null;
                       displayContent = content.join(", ");
-                    } else if (typeof content === 'object' && content !== null) {
+                    } else if (typeof content === 'object') {
                       // Handle nested objects
                       displayContent = JSON.stringify(content, null, 2);
+                      if (displayContent === '{}' || displayContent === '[]') {
+                        return null;
+                      }
                     } else {
                       displayContent = String(content);
-                    }
-
-                    // Skip empty content
-                    if (!displayContent || displayContent === '[]' || displayContent === '{}') {
-                      return null;
+                      if (!displayContent.trim()) return null;
                     }
 
                     return (
@@ -313,12 +317,13 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                         <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
                           {category}:
                         </span>
-                        <span className="text-xs text-gray-300 break-words">
+                        <span className="text-xs text-gray-300 break-words whitespace-pre-wrap">
                           {displayContent}
                         </span>
                       </div>
                     );
-                  })}
+                  })
+                  .filter(Boolean)}
               </div>
             </div>
           )}

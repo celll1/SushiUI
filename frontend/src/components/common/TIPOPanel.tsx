@@ -283,34 +283,42 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
           </div>
 
           {/* Parsed Categories */}
-          {result.parsed && Object.keys(result.parsed).length > 0 && (
+          {result.parsed && typeof result.parsed === 'object' && (
             <div className="space-y-2">
               <label className="block text-sm font-medium text-gray-300">
                 Parsed by Category
               </label>
               <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 space-y-2">
-                {Object.entries(result.parsed).map(([category, content]) => {
-                  // Format content based on type
-                  let displayContent: string;
-                  if (Array.isArray(content)) {
-                    displayContent = content.join(", ");
-                  } else if (typeof content === 'object' && content !== null) {
-                    displayContent = JSON.stringify(content);
-                  } else {
-                    displayContent = String(content);
-                  }
+                {Object.entries(result.parsed)
+                  .filter(([_, content]) => content !== null && content !== undefined && content !== '')
+                  .map(([category, content]) => {
+                    // Format content based on type
+                    let displayContent: string;
+                    if (Array.isArray(content)) {
+                      displayContent = content.join(", ");
+                    } else if (typeof content === 'object' && content !== null) {
+                      // Handle nested objects
+                      displayContent = JSON.stringify(content, null, 2);
+                    } else {
+                      displayContent = String(content);
+                    }
 
-                  return (
-                    <div key={category} className="flex gap-2">
-                      <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
-                        {category}:
-                      </span>
-                      <span className="text-xs text-gray-300 break-words">
-                        {displayContent}
-                      </span>
-                    </div>
-                  );
-                })}
+                    // Skip empty content
+                    if (!displayContent || displayContent === '[]' || displayContent === '{}') {
+                      return null;
+                    }
+
+                    return (
+                      <div key={category} className="flex gap-2">
+                        <span className="text-xs font-semibold text-blue-400 min-w-[80px]">
+                          {category}:
+                        </span>
+                        <span className="text-xs text-gray-300 break-words">
+                          {displayContent}
+                        </span>
+                      </div>
+                    );
+                  })}
               </div>
             </div>
           )}

@@ -43,17 +43,15 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
     : templates.filter(t => t.category === selectedCategory);
 
   const handleSaveTemplate = () => {
-    if (!newTemplateName.trim()) {
-      alert("Please enter a template name");
-      return;
-    }
-
     if (!currentPrompt.trim()) {
       alert("Current prompt is empty");
       return;
     }
 
-    saveTemplate(newTemplateName, currentPrompt, newTemplateCategory);
+    // Use "Untitled(id)" if name is empty
+    const templateName = newTemplateName.trim() || `Untitled(${Date.now()})`;
+
+    saveTemplate(templateName, currentPrompt, newTemplateCategory);
     setNewTemplateName("");
     setNewTemplateCategory("General");
     setIsCreating(false);

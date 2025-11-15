@@ -168,85 +168,102 @@ export default function PromptEditor({
         </div>
 
         {/* Center - Main Editor */}
-        <div className="flex-1 flex flex-col p-6 overflow-auto">
-          {activePanel === "main" && (
-            <div className="space-y-4">
-              {/* Prompt Type Selector */}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setActivePromptType("positive")}
-                  className={`px-4 py-2 rounded ${
-                    activePromptType === "positive"
-                      ? "bg-green-600 text-white"
-                      : "bg-gray-700 text-gray-300"
-                  }`}
-                >
-                  Positive Prompt
-                </button>
-                <button
-                  onClick={() => setActivePromptType("negative")}
-                  className={`px-4 py-2 rounded ${
-                    activePromptType === "negative"
-                      ? "bg-red-600 text-white"
-                      : "bg-gray-700 text-gray-300"
-                  }`}
-                >
-                  Negative Prompt
-                </button>
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Top: Prompt Editor (Always visible) */}
+          <div className="border-b border-gray-700 p-6 bg-gray-850">
+            {/* Prompt Type Selector */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setActivePromptType("positive")}
+                className={`px-4 py-2 rounded ${
+                  activePromptType === "positive"
+                    ? "bg-green-600 text-white"
+                    : "bg-gray-700 text-gray-300"
+                }`}
+              >
+                Positive Prompt
+              </button>
+              <button
+                onClick={() => setActivePromptType("negative")}
+                className={`px-4 py-2 rounded ${
+                  activePromptType === "negative"
+                    ? "bg-red-600 text-white"
+                    : "bg-gray-700 text-gray-300"
+                }`}
+              >
+                Negative Prompt
+              </button>
+            </div>
+
+            {/* Prompt Editor */}
+            {activePromptType === "positive" ? (
+              <TextareaWithTagSuggestions
+                ref={promptTextareaRef}
+                label="Positive Prompt"
+                value={prompt}
+                onChange={handlePromptChange}
+                enableWeightControl={true}
+                rows={8}
+                className="font-mono"
+              />
+            ) : (
+              <TextareaWithTagSuggestions
+                ref={negativePromptTextareaRef}
+                label="Negative Prompt"
+                value={negativePrompt}
+                onChange={handleNegativePromptChange}
+                enableWeightControl={true}
+                rows={8}
+                className="font-mono"
+              />
+            )}
+          </div>
+
+          {/* Bottom: Panel Content (Scrollable) */}
+          <div className="flex-1 overflow-auto p-6">
+            {activePanel === "main" && (
+              <div className="text-gray-300">
+                <h3 className="text-lg font-semibold mb-4">Main Editor</h3>
+                <p className="text-gray-400">
+                  Edit your prompts above. Use the panels on the left to access additional tools:
+                </p>
+                <ul className="list-disc list-inside mt-2 space-y-1 text-gray-400">
+                  <li>Templates: Save and reuse prompt templates</li>
+                  <li>Wildcards: Use random tag replacement</li>
+                  <li>TIPO: AI-powered tag interpolation</li>
+                  <li>Image Tagger: Extract tags from images</li>
+                </ul>
               </div>
+            )}
 
-              {/* Prompt Editor */}
-              {activePromptType === "positive" ? (
-                <TextareaWithTagSuggestions
-                  ref={promptTextareaRef}
-                  label="Positive Prompt"
-                  value={prompt}
-                  onChange={handlePromptChange}
-                  enableWeightControl={true}
-                  rows={20}
-                  className="font-mono"
-                />
-              ) : (
-                <TextareaWithTagSuggestions
-                  ref={negativePromptTextareaRef}
-                  label="Negative Prompt"
-                  value={negativePrompt}
-                  onChange={handleNegativePromptChange}
-                  enableWeightControl={true}
-                  rows={20}
-                  className="font-mono"
-                />
-              )}
-            </div>
-          )}
+            {activePanel === "template" && (
+              <TemplatePanel
+                currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
+                onInsert={handleInsertTemplate}
+              />
+            )}
 
-          {activePanel === "template" && (
-            <TemplatePanel
-              currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
-              onInsert={handleInsertTemplate}
-            />
-          )}
+            {activePanel === "wildcard" && (
+              <div className="text-gray-300">
+                <h3 className="text-lg font-semibold mb-4">Wildcard Editor</h3>
+                <p className="text-gray-400">Wildcard functionality coming soon...</p>
+              </div>
+            )}
 
-          {activePanel === "wildcard" && (
-            <div className="text-gray-300">
-              <h3 className="text-lg font-semibold mb-4">Wildcard Editor</h3>
-              <p className="text-gray-400">Wildcard functionality coming soon...</p>
-            </div>
-          )}
+            {activePanel === "tipo" && (
+              <div className="text-gray-300">
+                <h3 className="text-lg font-semibold mb-4">TIPO (Tag Interpolation)</h3>
+                <p className="text-gray-400">TIPO functionality coming soon...</p>
+              </div>
+            )}
 
-          {activePanel === "tipo" && (
-            <div className="text-gray-300">
-              <h3 className="text-lg font-semibold mb-4">TIPO (Tag Interpolation)</h3>
-              <p className="text-gray-400">TIPO functionality coming soon...</p>
-            </div>
-          )}
-
-          {activePanel === "tagger" && (
-            <div className="text-gray-300">
-              <h3 className="text-lg font-semibold mb-4">Image Tagger</h3>
-              <p className="text-gray-400">Image tagger functionality coming soon...</p>
-            </div>
-          )}
+            {activePanel === "tagger" && (
+              <div className="text-gray-300">
+                <h3 className="text-lg font-semibold mb-4">Image Tagger</h3>
+                <p className="text-gray-400">Image tagger functionality coming soon...</p>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right Sidebar - Quick Info/Help */}

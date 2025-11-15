@@ -83,9 +83,6 @@ export default function PromptEditor({
   // Global keyboard shortcuts
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Only handle when on main panel
-      if (activePanel !== "main") return;
-
       // Only handle when no input/textarea (except our prompts) is focused
       const activeElement = document.activeElement;
       const isInputFocused = activeElement instanceof HTMLInputElement ||
@@ -113,7 +110,7 @@ export default function PromptEditor({
       container.addEventListener('keydown', handleGlobalKeyDown);
       return () => container.removeEventListener('keydown', handleGlobalKeyDown);
     }
-  }, [activePromptType, activePanel]);
+  }, [activePromptType]);
 
   const handleInsertTemplate = (content: string) => {
     const textarea = activePromptType === "positive"

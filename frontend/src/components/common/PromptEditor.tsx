@@ -203,6 +203,27 @@ export default function PromptEditor({
     }, 0);
   };
 
+  const handleOverwriteTemplate = (content: string) => {
+    if (activePromptType === "positive") {
+      setPrompt(content);
+    } else {
+      setNegativePrompt(content);
+    }
+
+    // Focus textarea
+    const textarea = activePromptType === "positive"
+      ? promptTextareaRef.current
+      : negativePromptTextareaRef.current;
+
+    setTimeout(() => {
+      if (textarea) {
+        textarea.focus();
+        textarea.selectionStart = content.length;
+        textarea.selectionEnd = content.length;
+      }
+    }, 0);
+  };
+
   return (
     <>
       <style jsx global>{`

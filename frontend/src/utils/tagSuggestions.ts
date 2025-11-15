@@ -351,8 +351,13 @@ export function deleteTagAtCursor(
   text: string,
   cursorPos: number
 ): { text: string; cursorPos: number } {
-  // Find tag boundaries using the same logic as getCurrentTag
-  // Find the start: search backwards for comma, newline, or start of string
+  // Delete ALL content between delimiters (comma or newline)
+  // This treats the entire segment as one tag, regardless of spaces
+  // Examples:
+  // - "novel illustration" → delete entire tag
+  // - "whi red eyes" → delete entire segment (even if incomplete)
+
+  // Find the start: search backwards from cursor for comma, newline, or start of string
   let tagSegmentStart = cursorPos - 1;
   while (tagSegmentStart >= 0) {
     const char = text[tagSegmentStart];
@@ -366,27 +371,14 @@ export function deleteTagAtCursor(
     tagSegmentStart = 0;
   }
 
-  // Find the end: search forwards from cursor
-  // Stop at comma, newline, OR if we encounter a space followed by a non-space
-  let tagSegmentEnd = cursorPos;
-  let foundSpace = false;
+  // Find the end: search forwards from tag start to next delimiter
+  // Delete EVERYTHING between delimiters
+  let tagSegmentEnd = tagSegmentStart;
   while (tagSegmentEnd < text.length) {
     const char = text[tagSegmentEnd];
 
-    // Always stop at comma or newline
+    // Only stop at comma or newline
     if (char === ',' || char === '\n') {
-      break;
-    }
-
-    // Track spaces to detect tag boundaries
-    if (char === ' ') {
-      foundSpace = true;
-    } else if (foundSpace) {
-      // Found non-space after space - this is likely start of next tag
-      // Go back to the space
-      while (tagSegmentEnd > cursorPos && text[tagSegmentEnd - 1] === ' ') {
-        tagSegmentEnd--;
-      }
       break;
     }
 

@@ -507,6 +507,7 @@ export interface TIPOGenerateRequest {
   top_p?: number;
   top_k?: number;
   max_new_tokens?: number;
+  ban_tags?: string;  // Comma-separated tags to exclude from generation
   category_order?: string[];
   enabled_categories?: Record<string, boolean>;
 }

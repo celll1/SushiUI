@@ -1084,6 +1084,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if Image Editor is open (global check for all Image Editors)
+      if (document.body.dataset.imageEditorOpen) return;
+
       if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
         handleAddToQueue();

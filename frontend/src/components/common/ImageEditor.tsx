@@ -30,6 +30,14 @@ interface HistoryState {
 }
 
 export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mode = "edit", initialMaskUrl }: ImageEditorProps) {
+  // Set global flag when Image Editor is mounted
+  useEffect(() => {
+    document.body.dataset.imageEditorOpen = "true";
+    return () => {
+      delete document.body.dataset.imageEditorOpen;
+    };
+  }, []);
+
   // Canvas refs - we'll use Map to store multiple layer canvases
   const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer (not editable)
   const layerCanvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map()); // Editable layers

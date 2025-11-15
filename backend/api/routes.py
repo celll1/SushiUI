@@ -1451,6 +1451,7 @@ class TIPOGenerateRequest(BaseModel):
     top_p: float = 0.9
     top_k: int = 40
     max_new_tokens: int = 256
+    ban_tags: str = ""  # Comma-separated list of tags to exclude from generation
     # Output formatting options
     category_order: Optional[List[str]] = None  # Order of categories in output
     enabled_categories: Optional[Dict[str, bool]] = None  # Which categories to include
@@ -1508,7 +1509,8 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             temperature=request.temperature,
             top_p=request.top_p,
             top_k=request.top_k,
-            max_new_tokens=request.max_new_tokens
+            max_new_tokens=request.max_new_tokens,
+            ban_tags=request.ban_tags
         )
 
         # Check if using tipo-kgen (returns dict)
@@ -1516,9 +1518,12 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             # tipo-kgen returns a dict, format according to user preferences
             print("[TIPO] Using tipo-kgen mode: formatting result dict")
 
+            # Merge input tags with TIPO output to preserve user input
+            merged_output = tipo_manager.merge_kgen_with_input(request.input_prompt, raw_output)
+
             if request.category_order and request.enabled_categories:
                 formatted_prompt = tipo_manager.format_kgen_result(
-                    raw_output,
+                    merged_output,
                     request.category_order,
                     request.enabled_categories
                 )
@@ -1527,7 +1532,7 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
                 default_order = ['rating', 'quality', 'special', 'copyright', 'characters', 'artist', 'general', 'meta', 'short_nl', 'long_nl']
                 default_enabled = {cat: True for cat in default_order}
                 formatted_prompt = tipo_manager.format_kgen_result(
-                    raw_output,
+                    merged_output,
                     default_order,
                     default_enabled
                 )

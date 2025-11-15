@@ -688,6 +688,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if Prompt Editor or Image Editor is open
+      if (isPromptEditorOpen || document.body.dataset.imageEditorOpen) return;
+
       if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
         handleAddToQueue();
@@ -696,7 +699,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params]);
+  }, [params, isPromptEditorOpen]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

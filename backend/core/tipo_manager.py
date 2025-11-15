@@ -150,6 +150,11 @@ class TIPOManager:
             print(f"[TIPO KGen] Input: '{input_prompt}'")
             print(f"[TIPO KGen] Tag length: {tag_length}, NL length: {nl_length}")
 
+            # Extract ban_tags from kwargs
+            ban_tags = kwargs.get('ban_tags', '')
+            if ban_tags:
+                print(f"[TIPO KGen] BAN_TAGS: '{ban_tags}'")
+
             # Parse input as tags or natural language
             # If comma-separated, treat as tags; otherwise as natural language
             if ',' in input_prompt:
@@ -180,13 +185,24 @@ class TIPOManager:
 
             print(f"[TIPO KGen] Parsed - meta: {len(meta)}, operations: {len(operations)}, general: {len(general)}, nl: {nl_prompt_parsed}")
 
+            # Prepare BAN_TAGS for tipo_runner
+            ban_tags_list = [t.strip() for t in ban_tags.split(',') if t.strip()] if ban_tags else []
+
             # Run TIPO runner (model is already loaded globally by kgen.models.load_model)
             start_time = time.time()
+
+            # tipo_runner accepts BAN_TAGS as a keyword argument
+            tipo_kwargs = {
+                'temperature': temperature,
+                'top_p': top_p,
+                'top_k': top_k
+            }
+            if ban_tags_list:
+                tipo_kwargs['BAN_TAGS'] = ban_tags_list
+
             result, timing_info = self.tipo_runner(
                 meta, operations, general, nl_prompt_parsed,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k
+                **tipo_kwargs
             )
             timing = time.time() - start_time
 
@@ -703,6 +719,89 @@ class TIPOManager:
 
         return result
 
+    def merge_kgen_with_input(
+        self,
+        input_prompt: str,
+        kgen_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Merge input tags with TIPO-KGen output to preserve user input
+
+        Args:
+            input_prompt: Original input prompt
+            kgen_result: Result dict from TIPO-KGen
+
+        Returns:
+            Merged result dict with input tags preserved
+        """
+        # Parse input tags
+        if ',' in input_prompt:
+            input_tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
+        else:
+            # Single tag or natural language
+            input_tags = [input_prompt.strip()] if input_prompt.strip() else []
+
+        if not input_tags:
+            return kgen_result
+
+        # Use kgen's tag separator if available
+        if hasattr(self, 'seperate_tags'):
+            input_tag_map = self.seperate_tags(input_tags)
+        else:
+            # Fallback: simple categorization
+            input_tag_map = {
+                'artist': [], 'characters': [], 'copyrights': [],
+                'meta': [], 'special': [], 'quality': [], 'rating': [], 'general': input_tags
+            }
+
+        print(f"[TIPO Merge] Input tag map: {input_tag_map}")
+
+        # Create a copy of kgen_result to modify
+        merged = dict(kgen_result)
+
+        # Track seen tags (case-insensitive) to avoid duplicates
+        seen_lower = set()
+
+        # First, collect all existing tags from kgen_result
+        for key, value in kgen_result.items():
+            if isinstance(value, list):
+                for tag in value:
+                    if isinstance(tag, str):
+                        seen_lower.add(tag.lower())
+
+        print(f"[TIPO Merge] Existing tags in kgen output: {len(seen_lower)}")
+
+        # Merge input tags into their respective categories
+        # Priority: input tags come first (prepend)
+        for category, input_category_tags in input_tag_map.items():
+            if not input_category_tags:
+                continue
+
+            # Map category name to kgen key
+            kgen_key = category
+            if category == 'copyrights':
+                kgen_key = 'copyrights'
+            elif category == 'characters':
+                kgen_key = 'characters'
+
+            # Get existing tags in this category from kgen
+            existing_tags = merged.get(kgen_key, [])
+            if not isinstance(existing_tags, list):
+                existing_tags = []
+
+            # Prepend input tags that aren't already present (case-insensitive check)
+            new_tags = []
+            for tag in input_category_tags:
+                if tag.lower() not in seen_lower:
+                    new_tags.append(tag)
+                    seen_lower.add(tag.lower())
+                    print(f"[TIPO Merge] Adding input tag '{tag}' to {kgen_key}")
+
+            # Prepend new input tags to existing kgen tags
+            if new_tags:
+                merged[kgen_key] = new_tags + existing_tags
+
+        return merged
+
     def format_kgen_result(
         self,
         kgen_result: Dict[str, Any],
@@ -729,7 +828,10 @@ class TIPOManager:
             'rating': 'rating',
             'quality': 'quality',
             'special': 'special',
+            'count': 'special',  # count tags (1girl, etc.) are in special
             'copyright': 'copyrights',  # Note: plural in kgen
+            'copyrights': 'copyrights',  # Support both singular and plural
+            'character': 'characters',  # Support both singular and plural
             'characters': 'characters',
             'artist': 'artist',
             'general': 'general',

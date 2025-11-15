@@ -6,7 +6,7 @@ import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
 import CategoryOrderPanel from "./CategoryOrderPanel";
 import WildcardPanel from "./WildcardPanel";
-import TIPOPanel from "./TIPOPanel";
+import TIPOPanel, { TIPOPanelRef } from "./TIPOPanel";
 import { TIPOSettings } from "./TIPODialog";
 
 interface PromptEditorProps {
@@ -55,6 +55,7 @@ export default function PromptEditor({
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const negativePromptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const tipoPanelRef = useRef<TIPOPanelRef>(null);
 
   const handleSave = () => {
     onSave(prompt, negativePrompt);
@@ -92,6 +93,39 @@ export default function PromptEditor({
 
       if (isInputFocused) return;
 
+      // TIPO Panel shortcuts (work globally when TIPO panel is active)
+      if (activePanel === "tipo" && tipoPanelRef.current) {
+        console.log('[PromptEditor] In TIPO panel, ref exists:', !!tipoPanelRef.current);
+        // Ctrl+Enter: Insert TIPO result
+        if (e.ctrlKey && e.key === "Enter" && !e.shiftKey) {
+          const hasResult = tipoPanelRef.current?.hasResult();
+          console.log('[PromptEditor] Ctrl+Enter pressed, hasResult:', hasResult);
+          if (hasResult) {
+            e.preventDefault();
+            console.log('[PromptEditor] Calling insertResult');
+            tipoPanelRef.current.insertResult();
+            return;
+          }
+        }
+        // Ctrl+Shift+Enter: Overwrite with TIPO result
+        if (e.ctrlKey && e.shiftKey && e.key === "Enter") {
+          const hasResult = tipoPanelRef.current?.hasResult();
+          console.log('[PromptEditor] Ctrl+Shift+Enter pressed, hasResult:', hasResult);
+          if (hasResult) {
+            e.preventDefault();
+            console.log('[PromptEditor] Calling overwriteResult');
+            tipoPanelRef.current.overwriteResult();
+            return;
+          }
+        }
+        // Ctrl+M: Copy from main to TIPO input
+        if (e.ctrlKey && e.key === "m") {
+          e.preventDefault();
+          tipoPanelRef.current.copyFromMain();
+          return;
+        }
+      }
+
       // Ctrl+key shortcuts - focus the active prompt textarea
       if (e.ctrlKey && !e.shiftKey && !e.altKey) {
         const textarea = activePromptType === "positive"
@@ -110,7 +144,7 @@ export default function PromptEditor({
       container.addEventListener('keydown', handleGlobalKeyDown);
       return () => container.removeEventListener('keydown', handleGlobalKeyDown);
     }
-  }, [activePromptType]);
+  }, [activePromptType, activePanel]);
 
   const handleInsertTemplate = (content: string) => {
     const textarea = activePromptType === "positive"
@@ -186,7 +220,11 @@ export default function PromptEditor({
           outline-offset: -2px;
         }
       `}</style>
-      <div ref={editorContainerRef} className="fixed inset-0 z-50 bg-gray-900 flex flex-col" tabIndex={-1}>
+      <div
+        ref={editorContainerRef}
+        className="fixed inset-0 z-50 bg-gray-900 flex flex-col"
+        tabIndex={-1}
+      >
         {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700 bg-gray-800">
         <h2 className="text-xl font-semibold text-gray-100">Prompt Editor</h2>
@@ -368,7 +406,17 @@ export default function PromptEditor({
 
             {activePanel === "tipo" && (
               <TIPOPanel
+                ref={tipoPanelRef}
                 onInsert={handleInsertTemplate}
+                onOverwrite={(content) => {
+                  // Overwrite the active prompt (positive or negative)
+                  if (activePromptType === "positive") {
+                    setPrompt(content);
+                  } else {
+                    setNegativePrompt(content);
+                  }
+                }}
+                currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
                 tipoSettings={tipoSettings}
               />
             )}

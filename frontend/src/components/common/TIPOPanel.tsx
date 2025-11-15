@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, forwardRef, useImperativeHandle, useCallback } from "react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import { generateTIPOPrompt, TIPOGenerateResponse } from "@/utils/api";
@@ -28,6 +28,8 @@ interface TIPOCategoryOrder {
 
 interface TIPOPanelProps {
   onInsert: (content: string) => void;
+  onOverwrite: (content: string) => void;
+  currentPrompt: string;
   tipoSettings: {
     model_name: string;
     tag_length: string;
@@ -39,13 +41,21 @@ interface TIPOPanelProps {
   };
 }
 
-export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: TIPOPanelProps) {
+export interface TIPOPanelRef {
+  hasResult: () => boolean;
+  insertResult: () => void;
+  overwriteResult: () => void;
+  copyFromMain: () => void;
+}
+
+const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwrite, currentPrompt, tipoSettings: initialSettings }, ref) => {
   const [inputPrompt, setInputPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [result, setResult] = useState<TIPOGenerateResponse | null>(null);
   const [reorderedOutput, setReorderedOutput] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
 
   // Local settings state (editable in this panel)
   const [localSettings, setLocalSettings] = useState({
@@ -57,6 +67,9 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
     top_k: initialSettings.top_k,
     max_new_tokens: initialSettings.max_new_tokens,
   });
+
+  // BAN_TAGS state (comma-separated tags to exclude)
+  const [banTags, setBanTags] = useState("monochrome, grayscale");
 
   // Category order settings (from CategoryOrderPanel)
   const [categoryOrder, setCategoryOrder] = useState<TIPOCategoryOrder[]>(() => {
@@ -142,6 +155,7 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
         top_p: localSettings.top_p,
         top_k: localSettings.top_k,
         max_new_tokens: localSettings.max_new_tokens,
+        ban_tags: banTags.trim(),
         category_order: categoryOrderIds,
         enabled_categories: enabledCategories,
       });
@@ -157,6 +171,19 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
       const reordered = reorderTIPOOutput(response.raw_output);
       setReorderedOutput(reordered);
 
+      // Blur input prompt (remove focus)
+      if (textareaRef.current) {
+        textareaRef.current.blur();
+      }
+
+      // Auto-scroll to result after generation and focus it
+      setTimeout(() => {
+        if (resultRef.current) {
+          resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          resultRef.current.focus();
+        }
+      }, 100);
+
     } catch (err: any) {
       console.error("[TIPO] Generation failed:", err);
       setError(err.response?.data?.detail || err.message || "Failed to generate TIPO prompt");
@@ -165,11 +192,27 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
     }
   };
 
-  const handleInsert = () => {
+  const handleInsert = useCallback(() => {
     if (reorderedOutput) {
       onInsert(reorderedOutput);
     }
-  };
+  }, [reorderedOutput, onInsert]);
+
+  const handleOverwrite = useCallback(() => {
+    if (reorderedOutput) {
+      onOverwrite(reorderedOutput);
+    }
+  }, [reorderedOutput, onOverwrite]);
+
+  const handleCopyFromMain = useCallback(() => {
+    setInputPrompt(currentPrompt);
+    // Focus on input prompt
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    }, 0);
+  }, [currentPrompt]);
 
   const handleClear = () => {
     setInputPrompt("");
@@ -177,6 +220,14 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
     setReorderedOutput("");
     setError(null);
   };
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    hasResult: () => !!reorderedOutput,
+    insertResult: handleInsert,
+    overwriteResult: handleOverwrite,
+    copyFromMain: handleCopyFromMain,
+  }), [reorderedOutput, handleInsert, handleOverwrite, handleCopyFromMain]);
 
   return (
     <div className="space-y-4">
@@ -305,6 +356,20 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                 className="w-full"
               />
             </div>
+
+            {/* BAN_TAGS */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                BAN_TAGS (comma-separated tags to exclude)
+              </label>
+              <TextareaWithTagSuggestions
+                value={banTags}
+                onChange={(e) => setBanTags(e.target.value)}
+                placeholder="e.g., monochrome, grayscale"
+                rows={2}
+                enableWeightControl={false}
+              />
+            </div>
           </div>
         </details>
 
@@ -412,14 +477,37 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
 
       {/* Input Section */}
       <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-300">
-          Input Prompt
-        </label>
+        <div className="flex items-center justify-between">
+          <label className="block text-sm font-medium text-gray-300">
+            Input Prompt
+          </label>
+          <Button
+            onClick={handleCopyFromMain}
+            variant="secondary"
+            className="text-xs py-1 px-2"
+          >
+            Copy from Main (Ctrl+M)
+          </Button>
+        </div>
         <TextareaWithTagSuggestions
           ref={textareaRef}
           value={inputPrompt}
           onChange={(e) => setInputPrompt(e.target.value)}
-          placeholder="Enter tags or natural language description... (e.g., 1girl, red hair, standing in garden)"
+          onKeyDown={(e) => {
+            // Ctrl+Enter: Start generation
+            if (e.ctrlKey && e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (inputPrompt.trim() && !isGenerating) {
+                handleGenerate();
+              }
+            }
+            // Ctrl+M: Copy from main
+            if (e.ctrlKey && e.key === "m") {
+              e.preventDefault();
+              handleCopyFromMain();
+            }
+          }}
+          placeholder="Enter tags or natural language description... (Ctrl+Enter to generate)"
           rows={3}
           enableWeightControl={false}
         />
@@ -429,7 +517,7 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
             variant="primary"
             disabled={isGenerating || !inputPrompt.trim()}
           >
-            {isGenerating ? "Generating..." : "Generate"}
+            {isGenerating ? "Generating..." : "Generate (Ctrl+Enter)"}
           </Button>
           <Button
             onClick={handleClear}
@@ -450,7 +538,23 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
 
       {/* Results Section */}
       {result && (
-        <div className="space-y-4">
+        <div
+          className="space-y-4"
+          ref={resultRef}
+          tabIndex={-1}
+          onKeyDown={(e) => {
+            // Ctrl+Enter: Insert
+            if (e.ctrlKey && e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleInsert();
+            }
+            // Ctrl+Shift+Enter: Overwrite
+            if (e.ctrlKey && e.shiftKey && e.key === "Enter") {
+              e.preventDefault();
+              handleOverwrite();
+            }
+          }}
+        >
           {/* Raw Output */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-gray-300">
@@ -489,12 +593,20 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
                 {reorderedOutput}
               </p>
             </div>
-            <Button
-              onClick={handleInsert}
-              variant="primary"
-            >
-              Insert into Prompt
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleInsert}
+                variant="primary"
+              >
+                Insert (Ctrl+Enter)
+              </Button>
+              <Button
+                onClick={handleOverwrite}
+                variant="secondary"
+              >
+                Overwrite (Ctrl+Shift+Enter)
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -514,4 +626,8 @@ export default function TIPOPanel({ onInsert, tipoSettings: initialSettings }: T
       </div>
     </div>
   );
-}
+});
+
+TIPOPanel.displayName = "TIPOPanel";
+
+export default TIPOPanel;

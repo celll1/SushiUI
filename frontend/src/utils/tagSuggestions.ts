@@ -180,6 +180,7 @@ export async function searchTags(
 
 /**
  * Get the current tag being typed at cursor position
+ * Handles tags separated by commas or newlines
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @returns The tag being typed, or empty string
@@ -190,21 +191,31 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     return "";
   }
 
-  // Find the start of the current tag (after the last comma or start of string)
-  let start = text.lastIndexOf(",", cursorPos - 1);
-  if (start === -1) {
+  // Find the start: search backwards for comma or newline
+  let start = cursorPos - 1;
+  while (start >= 0) {
+    const char = text[start];
+    if (char === ',' || char === '\n') {
+      start++; // Move past the delimiter
+      break;
+    }
+    start--;
+  }
+  if (start < 0) {
     start = 0;
-  } else {
-    start += 1; // Move past the comma
   }
 
-  // Find the end of the current tag (before the next comma or end of string)
-  let end = text.indexOf(",", cursorPos);
-  if (end === -1) {
-    end = text.length;
+  // Find the end: search forwards for comma or newline
+  let end = cursorPos;
+  while (end < text.length) {
+    const char = text[end];
+    if (char === ',' || char === '\n') {
+      break;
+    }
+    end++;
   }
 
-  // Extract the raw segment
+  // Extract the segment containing the cursor
   const segment = text.substring(start, end);
 
   // Trim to get the actual tag
@@ -229,6 +240,7 @@ export function getCurrentTag(text: string, cursorPos: number): string {
 
 /**
  * Replace the current tag at cursor position with a new tag
+ * Handles tags separated by commas or newlines
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @param newTag - New tag to insert (will be formatted for display)
@@ -239,13 +251,28 @@ export function replaceCurrentTag(
   cursorPos: number,
   newTag: string
 ): { text: string; cursorPos: number } {
-  // Find the start of the current tag
-  let start = text.lastIndexOf(",", cursorPos - 1) + 1;
+  // Find the start: search backwards for comma or newline
+  let start = cursorPos - 1;
+  while (start >= 0) {
+    const char = text[start];
+    if (char === ',' || char === '\n') {
+      start++; // Move past the delimiter
+      break;
+    }
+    start--;
+  }
+  if (start < 0) {
+    start = 0;
+  }
 
-  // Find the end of the current tag
-  let end = text.indexOf(",", cursorPos);
-  if (end === -1) {
-    end = text.length;
+  // Find the end: search forwards for comma or newline
+  let end = cursorPos;
+  while (end < text.length) {
+    const char = text[end];
+    if (char === ',' || char === '\n') {
+      break;
+    }
+    end++;
   }
 
   // Get the current tag position
@@ -257,8 +284,8 @@ export function replaceCurrentTag(
 
   // Build new text with proper spacing
   const trimmedBefore = beforeTag.trimEnd();
-  const needsSpaceBefore = trimmedBefore.length > 0 && !trimmedBefore.endsWith(",");
-  const prefix = needsSpaceBefore ? trimmedBefore + ", " : trimmedBefore + (trimmedBefore.length > 0 ? " " : "");
+  const needsSpaceBefore = trimmedBefore.length > 0 && !trimmedBefore.endsWith(",") && !trimmedBefore.endsWith("\n");
+  const prefix = needsSpaceBefore ? trimmedBefore + ", " : trimmedBefore + (trimmedBefore.length > 0 && trimmedBefore.endsWith(",") ? " " : "");
 
   const newText = prefix + formattedTag + afterTag;
   const newCursorPos = prefix.length + formattedTag.length;
@@ -271,6 +298,7 @@ export function replaceCurrentTag(
 
 /**
  * Delete the tag at cursor position (Ctrl+Backspace functionality)
+ * Handles tags separated by commas or newlines
  * @param text - Full text content
  * @param cursorPos - Cursor position
  * @returns Object with new text and new cursor position
@@ -279,29 +307,53 @@ export function deleteTagAtCursor(
   text: string,
   cursorPos: number
 ): { text: string; cursorPos: number } {
-  // Find the start of the current tag
-  let start = text.lastIndexOf(",", cursorPos - 1);
-  if (start === -1) {
+  // Find the start: search backwards for comma or newline
+  let start = cursorPos - 1;
+  let startDelimiter = '';
+  while (start >= 0) {
+    const char = text[start];
+    if (char === ',' || char === '\n') {
+      startDelimiter = char;
+      start++; // Move past the delimiter
+      break;
+    }
+    start--;
+  }
+  if (start < 0) {
     start = 0;
-  } else {
-    start += 1; // Move past the comma
   }
 
-  // Find the end of the current tag (including the trailing comma if present)
-  let end = text.indexOf(",", cursorPos);
-  if (end === -1) {
-    end = text.length;
-  } else {
-    end += 1; // Include the comma
+  // Find the end: search forwards for comma or newline
+  let end = cursorPos;
+  let endDelimiter = '';
+  while (end < text.length) {
+    const char = text[end];
+    if (char === ',' || char === '\n') {
+      endDelimiter = char;
+      end++; // Include the delimiter
+      break;
+    }
+    end++;
   }
 
   // Extract before and after
   const before = text.substring(0, start).trimEnd();
   const after = text.substring(end).trimStart();
 
+  // Determine separator: if original had newline, preserve it; otherwise use comma
+  let separator = "";
+  if (before.length > 0 && after.length > 0) {
+    // If the tag was preceded or followed by a newline, use newline
+    if (startDelimiter === '\n' || endDelimiter === '\n') {
+      separator = "\n";
+    } else {
+      separator = ", ";
+    }
+  }
+
   // Build new text
-  const newText = before + (before.length > 0 && after.length > 0 ? ", " : "") + after;
-  const newCursorPos = before.length + (before.length > 0 && after.length > 0 ? 2 : 0);
+  const newText = before + separator + after;
+  const newCursorPos = before.length + separator.length;
 
   return {
     text: newText,

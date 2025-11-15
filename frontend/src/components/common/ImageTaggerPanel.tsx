@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Button from "./Button";
 import { predictTags, loadTaggerModel, getTaggerStatus, TaggerPredictionsResponse } from "@/utils/api";
 
@@ -21,9 +21,9 @@ export default function ImageTaggerPanel({ onInsert }: ImageTaggerPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Check tagger status on mount
-  useState(() => {
+  useEffect(() => {
     checkTaggerStatus();
-  });
+  }, []);
 
   const checkTaggerStatus = async () => {
     try {

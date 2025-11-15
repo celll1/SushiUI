@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Button from "./Button";
 import Input from "./Input";
+import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import {
   getAllWildcardGroups,
   createWildcardGroup,
@@ -70,6 +71,7 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
 
   const handleAddEntry = async () => {
     if (!selectedGroupId || !newEntryContent.trim()) {
+      if (!selectedGroupId) return;
       alert("Entry content cannot be empty");
       return;
     }
@@ -77,6 +79,14 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
     await addWildcardEntry(selectedGroupId, newEntryContent.trim());
     setNewEntryContent("");
     await loadGroups();
+
+    // Blur the textarea to prevent suggestion from appearing
+    const textarea = document.activeElement as HTMLTextAreaElement;
+    if (textarea && textarea.tagName === "TEXTAREA") {
+      textarea.blur();
+      // Refocus after a brief delay to allow suggestions to clear
+      setTimeout(() => textarea.focus(), 50);
+    }
   };
 
   const handleUpdateEntry = async (entryId: string) => {
@@ -86,14 +96,18 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
     setEditingEntryId(null);
     setEditingEntryContent("");
     await loadGroups();
+
+    // Blur to prevent suggestion from appearing
+    const textarea = document.activeElement as HTMLTextAreaElement;
+    if (textarea && textarea.tagName === "TEXTAREA") {
+      textarea.blur();
+    }
   };
 
   const handleDeleteEntry = async (entryId: string) => {
     if (!selectedGroupId) return;
-    if (confirm("Are you sure you want to delete this entry?")) {
-      await deleteWildcardEntry(selectedGroupId, entryId);
-      await loadGroups();
-    }
+    await deleteWildcardEntry(selectedGroupId, entryId);
+    await loadGroups();
   };
 
   const handleInsertWildcard = (groupName: string) => {
@@ -199,15 +213,18 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
             <>
               {/* Add Entry Form */}
               <div className="bg-gray-800 p-3 rounded-lg border border-gray-700">
-                <Input
+                <TextareaWithTagSuggestions
                   value={newEntryContent}
                   onChange={(e) => setNewEntryContent(e.target.value)}
-                  placeholder="e.g., red, blue hair, standing in garden"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if (e.ctrlKey && e.key === "Enter") {
+                      e.preventDefault();
                       handleAddEntry();
                     }
                   }}
+                  placeholder="e.g., red, blue hair, standing in garden (Ctrl+Enter to add)"
+                  rows={1}
+                  enableWeightControl={false}
                 />
                 <Button onClick={handleAddEntry} variant="primary" size="sm" className="mt-2">
                   Add Entry
@@ -228,17 +245,20 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
                     >
                       {editingEntryId === entry.id ? (
                         <div className="space-y-2">
-                          <Input
+                          <TextareaWithTagSuggestions
                             value={editingEntryContent}
                             onChange={(e) => setEditingEntryContent(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") handleUpdateEntry(entry.id);
-                              if (e.key === "Escape") {
+                              if (e.ctrlKey && e.key === "Enter") {
+                                e.preventDefault();
+                                handleUpdateEntry(entry.id);
+                              } else if (e.key === "Escape") {
                                 setEditingEntryId(null);
                                 setEditingEntryContent("");
                               }
                             }}
-                            autoFocus
+                            rows={1}
+                            enableWeightControl={false}
                           />
                           <div className="flex gap-2">
                             <Button

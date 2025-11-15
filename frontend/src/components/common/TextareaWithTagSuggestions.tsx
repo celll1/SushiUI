@@ -41,6 +41,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   onChange,
   enableWeightControl = false,
   rows = 4,
+  onKeyDown: externalOnKeyDown,
   ...props
 }, forwardedRef) => {
   const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
@@ -313,6 +314,14 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
   // Handle key down for navigation and shortcuts
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Call external onKeyDown if provided
+    if (externalOnKeyDown) {
+      externalOnKeyDown(e);
+      // If external handler prevented default or stopped propagation, respect that
+      if (e.defaultPrevented) {
+        return;
+      }
+    }
     // Ctrl+Z: Undo
     if (e.ctrlKey && !e.shiftKey && e.key === "z") {
       e.preventDefault();

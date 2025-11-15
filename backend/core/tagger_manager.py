@@ -55,7 +55,7 @@ class TaggerManager:
             # Download tag mapping from subdirectory
             tag_mapping_path = hf_hub_download(
                 repo_id=repo_id,
-                filename=f"{model_version}/selected_tags.json",
+                filename=f"{model_version}/tag_mapping.json",
                 cache_dir=None
             )
             print(f"[Tagger] Tag mapping downloaded to: {tag_mapping_path}")

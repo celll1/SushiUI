@@ -3,6 +3,7 @@
 import { useState, useRef, ChangeEvent } from "react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
+import TemplatePanel from "./TemplatePanel";
 
 interface PromptEditorProps {
   initialPrompt: string;
@@ -38,6 +39,61 @@ export default function PromptEditor({
 
   const handleNegativePromptChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     setNegativePrompt(e.target.value);
+  };
+
+  const handleInsertTemplate = (content: string) => {
+    const textarea = activePromptType === "positive"
+      ? promptTextareaRef.current
+      : negativePromptTextareaRef.current;
+
+    if (!textarea) return;
+
+    const currentValue = activePromptType === "positive" ? prompt : negativePrompt;
+    const cursorPos = textarea.selectionStart || 0;
+
+    // Insert template at cursor position with proper formatting
+    const before = currentValue.substring(0, cursorPos);
+    const after = currentValue.substring(cursorPos);
+
+    const trimmedBefore = before.trimEnd();
+    const trimmedAfter = after.trimStart();
+
+    let prefix = "";
+    let suffix = "";
+
+    // Add delimiter before template if needed
+    if (trimmedBefore.length > 0 && !trimmedBefore.endsWith(",") && !trimmedBefore.endsWith("\n")) {
+      prefix = trimmedBefore + ", ";
+    } else if (trimmedBefore.length > 0 && trimmedBefore.endsWith(",")) {
+      prefix = trimmedBefore + " ";
+    } else {
+      prefix = trimmedBefore;
+    }
+
+    // Add delimiter after template if needed
+    if (trimmedAfter.length > 0 && !trimmedAfter.startsWith(",") && !trimmedAfter.startsWith("\n")) {
+      suffix = ", " + trimmedAfter;
+    } else {
+      suffix = trimmedAfter;
+    }
+
+    const newValue = prefix + content + suffix;
+    const newCursorPos = prefix.length + content.length;
+
+    if (activePromptType === "positive") {
+      setPrompt(newValue);
+    } else {
+      setNegativePrompt(newValue);
+    }
+
+    // Set cursor position after insertion
+    setTimeout(() => {
+      if (textarea) {
+        textarea.selectionStart = newCursorPos;
+        textarea.selectionEnd = newCursorPos;
+        textarea.focus();
+      }
+    }, 0);
   };
 
   return (
@@ -165,10 +221,10 @@ export default function PromptEditor({
           )}
 
           {activePanel === "template" && (
-            <div className="text-gray-300">
-              <h3 className="text-lg font-semibold mb-4">Template Manager</h3>
-              <p className="text-gray-400">Template functionality coming soon...</p>
-            </div>
+            <TemplatePanel
+              currentPrompt={activePromptType === "positive" ? prompt : negativePrompt}
+              onInsert={handleInsertTemplate}
+            />
           )}
 
           {activePanel === "wildcard" && (

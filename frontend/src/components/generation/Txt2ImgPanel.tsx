@@ -1054,6 +1054,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           mode="txt2img"
           mainWidth={params.width}
           mainHeight={params.height}
+          samplers={samplers}
+          scheduleTypes={scheduleTypes}
         />
       </div>
 

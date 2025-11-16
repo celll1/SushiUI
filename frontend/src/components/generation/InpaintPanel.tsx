@@ -1686,6 +1686,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           mode="inpaint"
           mainWidth={params.width || 1024}
           mainHeight={params.height || 1024}
+          samplers={samplers}
+          scheduleTypes={scheduleTypes}
         />
       </div>
 

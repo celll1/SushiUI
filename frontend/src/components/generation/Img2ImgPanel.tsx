@@ -1409,6 +1409,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           mode="img2img"
           mainWidth={params.width || 1024}
           mainHeight={params.height || 1024}
+          samplers={samplers}
+          scheduleTypes={scheduleTypes}
         />
       </div>
 

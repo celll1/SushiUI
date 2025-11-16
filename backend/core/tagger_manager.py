@@ -299,12 +299,22 @@ class TaggerManager:
         # Resize
         image = image.resize(target_size, Image.BICUBIC)
 
-        # Convert to numpy array and normalize
-        image_array = np.array(image).astype(np.float32) / 255.0
+        # Convert to numpy array (HWC format, RGB)
+        image_array = np.array(image, dtype=np.float32) / 255.0
 
-        # Add batch dimension and convert to NCHW format
-        image_array = np.transpose(image_array, (2, 0, 1))  # HWC to CHW
-        image_array = np.expand_dims(image_array, axis=0)  # Add batch dimension
+        # Convert to CHW format
+        image_array = image_array.transpose(2, 0, 1)  # HWC to CHW
+
+        # Convert RGB to BGR (model expects BGR)
+        image_array = image_array[::-1, :, :]
+
+        # Normalize with mean=0.5, std=0.5
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        image_array = (image_array - mean) / std
+
+        # Add batch dimension
+        image_array = np.expand_dims(image_array, axis=0)
 
         return image_array
 

@@ -605,8 +605,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         height: step.height || mainParams.height,
         denoising_strength: step.denoisingStrength,
         img2img_fix_steps: step.doFullSteps,
-        resize_mode: step.upscaleMethod === "latent" ? "latent" : "image",
-        resampling_method: "lanczos",
+        resize_mode: step.resizeMode,
+        resampling_method: step.resamplingMethod,
       };
 
       // Use custom settings or inherit from main

@@ -16,7 +16,8 @@ export interface LoopGenerationStep {
   height?: number;
   scale?: number;
   linkAspectRatio: boolean;
-  upscaleMethod: "image" | "latent";
+  resizeMode: "image" | "latent";
+  resamplingMethod: "lanczos" | "bilinear" | "nearest";
 
   // Generation settings
   denoisingStrength: number;
@@ -69,7 +70,8 @@ export default function LoopGenerationPanel({
       sizeMode: "absolute",
       scale: 1.0,
       linkAspectRatio: true,
-      upscaleMethod: "latent",
+      resizeMode: "latent",
+      resamplingMethod: "lanczos",
       denoisingStrength: 0.5,
       doFullSteps: true,  // Default ON
       useMainSettings: true,
@@ -324,16 +326,28 @@ export default function LoopGenerationPanel({
                   </div>
                 )}
 
-                <div className="mt-2">
-                  <label className="block text-xs text-gray-400 mb-1">Upscale Method</label>
-                  <select
-                    value={step.upscaleMethod}
-                    onChange={(e) => updateStep(step.id, { upscaleMethod: e.target.value as "image" | "latent" })}
-                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs"
-                  >
-                    <option value="latent">Latent (faster, reuses latent)</option>
-                    <option value="image">Image (decode → upscale → encode)</option>
-                  </select>
+                <div className="mt-2 space-y-2">
+                  <Select
+                    label="Resize Mode"
+                    options={[
+                      { value: "latent", label: "Resize Latent" },
+                      { value: "image", label: "Resize Image" },
+                    ]}
+                    value={step.resizeMode}
+                    onChange={(value) => updateStep(step.id, { resizeMode: value as "image" | "latent" })}
+                  />
+                  {step.resizeMode === "image" && (
+                    <Select
+                      label="Resampling Method"
+                      options={[
+                        { value: "lanczos", label: "Lanczos" },
+                        { value: "bilinear", label: "Bilinear" },
+                        { value: "nearest", label: "Nearest (Pixelated)" },
+                      ]}
+                      value={step.resamplingMethod}
+                      onChange={(value) => updateStep(step.id, { resamplingMethod: value as "lanczos" | "bilinear" | "nearest" })}
+                    />
+                  )}
                 </div>
               </div>
 

@@ -190,7 +190,7 @@ export default function LoopGenerationPanel({
 
       {config.enabled && config.steps.length === 0 && (
         <div className="text-xs text-gray-400 text-center py-4">
-          No loop steps configured. Click "Add Step" to create one.
+          No loop steps configured. Click &quot;Add Step&quot; to create one.
         </div>
       )}
 

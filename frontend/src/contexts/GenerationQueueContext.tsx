@@ -12,6 +12,9 @@ export interface QueueItem {
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;
   prompt: string; // For display purposes
+  loopGroupId?: string; // ID to group loop steps together
+  loopStepIndex?: number; // Index of this step in the loop sequence
+  isLoopStep?: boolean; // Whether this is a loop step (vs main generation)
 }
 
 interface GenerationQueueContextType {
@@ -49,10 +52,32 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startNextInQueue = useCallback(() => {
-    // Find next pending item from current queue state (synchronous)
-    const nextItem = queue.find((item) => item.status === "pending");
     console.log("[QueueContext] startNextInQueue - current queue:", queue);
-    console.log("[QueueContext] Found next item:", nextItem);
+    console.log("[QueueContext] currentItem:", currentItem);
+
+    let nextItem: QueueItem | undefined;
+
+    // If current item is part of a loop group, prioritize next step in same group
+    if (currentItem?.loopGroupId) {
+      const currentLoopGroupId = currentItem.loopGroupId;
+      const currentLoopStepIndex = currentItem.loopStepIndex ?? -1;
+
+      // Find next step in the same loop group
+      nextItem = queue.find((item) =>
+        item.status === "pending" &&
+        item.loopGroupId === currentLoopGroupId &&
+        (item.loopStepIndex ?? 0) === currentLoopStepIndex + 1
+      );
+
+      console.log("[QueueContext] Looking for next loop step in group:", currentLoopGroupId, "after index:", currentLoopStepIndex);
+      console.log("[QueueContext] Found loop step:", nextItem);
+    }
+
+    // If no loop step found, get next pending item in queue order
+    if (!nextItem) {
+      nextItem = queue.find((item) => item.status === "pending");
+      console.log("[QueueContext] Found next pending item:", nextItem);
+    }
 
     if (nextItem) {
       const updatedItem = { ...nextItem, status: "generating" as const };
@@ -72,7 +97,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     console.log("[QueueContext] No pending items found, setting currentItem to null");
     setCurrentItem(null);
     return null;
-  }, [queue]);
+  }, [queue, currentItem]);
 
   const completeCurrentItem = useCallback(() => {
     if (!currentItem) return;

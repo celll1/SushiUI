@@ -848,7 +848,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
@@ -915,6 +915,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
 
+    // Create loop group ID if loop generation is enabled
+    const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
+
     addToQueue({
       type: "inpaint",
       params: {
@@ -925,8 +928,93 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       inputImage: inputImagePreview,
       maskImage: maskImage,
       prompt: processedPrompt,
+      loopGroupId,
+      loopStepIndex: loopGroupId ? -1 : undefined,
+      isLoopStep: false,
     });
+
+    // If loop generation is enabled, add all loop steps immediately
+    if (loopGenerationConfig.enabled && loopGroupId) {
+      await addLoopStepsToQueueImmediate({
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      } as InpaintParams, loopGroupId, maskImage);
+    }
   };
+
+  // Add loop generation steps to queue immediately (without base image URL)
+  const addLoopStepsToQueueImmediate = useCallback(async (mainParams: InpaintParams, loopGroupId: string, maskImageData: string) => {
+    if (!loopGenerationConfig.enabled || loopGenerationConfig.steps.length === 0) {
+      return;
+    }
+
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+    const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
+
+    for (let i = 0; i < enabledSteps.length; i++) {
+      const step = enabledSteps[i];
+
+      // Prepare params for this loop step
+      const stepParams: any = {
+        prompt: mainParams.prompt,
+        negative_prompt: mainParams.negative_prompt,
+        width: step.width || mainParams.width,
+        height: step.height || mainParams.height,
+        denoising_strength: step.denoisingStrength,
+        img2img_fix_steps: step.doFullSteps,
+        resize_mode: step.resizeMode,
+        resampling_method: step.resamplingMethod,
+        mask_blur: mainParams.mask_blur,
+        inpaint_full_res: mainParams.inpaint_full_res,
+        inpaint_full_res_padding: mainParams.inpaint_full_res_padding,
+        inpaint_fill_mode: mainParams.inpaint_fill_mode,
+        inpaint_fill_strength: mainParams.inpaint_fill_strength,
+      };
+
+      // Use custom settings or inherit from main
+      if (step.useMainSettings) {
+        stepParams.steps = mainParams.steps;
+        stepParams.cfg_scale = mainParams.cfg_scale;
+        stepParams.sampler = mainParams.sampler;
+        stepParams.schedule_type = mainParams.schedule_type;
+        stepParams.seed = mainParams.seed;
+        stepParams.ancestral_seed = mainParams.ancestral_seed;
+      } else {
+        stepParams.steps = step.steps || 20;
+        stepParams.cfg_scale = step.cfgScale || 7;
+        stepParams.sampler = step.sampler || mainParams.sampler;
+        stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
+        stepParams.seed = step.seed ?? -1;
+        stepParams.ancestral_seed = step.ancestralSeed ?? -1;
+      }
+
+      stepParams.loras = mainParams.loras || [];
+      stepParams.controlnets = mainParams.controlnets || [];
+      stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
+      stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
+
+      const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
+      const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
+
+      addToQueue({
+        type: "inpaint",
+        params: {
+          ...stepParams,
+          prompt: processedPrompt,
+          negative_prompt: processedNegativePrompt,
+        },
+        inputImage: "", // Will be set when previous step completes
+        maskImage: step.keepMask ? maskImageData : "", // Use same mask if keepMask is enabled
+        prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
+        loopGroupId,
+        loopStepIndex: i,
+        isLoopStep: true,
+      });
+    }
+
+    console.log(`[Inpaint] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
+  }, [loopGenerationConfig, addToQueue]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -1005,6 +1093,22 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
         }
 
+        // If this item has a loop group, update the next loop step's input image
+        if (nextItem.loopGroupId !== undefined) {
+          const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
+
+          // Find the next loop step in the same group
+          const nextLoopStep = queue.find((item) =>
+            item.loopGroupId === nextItem.loopGroupId &&
+            item.loopStepIndex === nextLoopStepIndex
+          );
+
+          if (nextLoopStep) {
+            console.log(`[Inpaint] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
+            updateQueueItem(nextLoopStep.id, { inputImage: imageUrl });
+          }
+        }
+
         // Reset state first, then complete item
         console.log("[Inpaint] Generation complete, resetting state and completing item");
         setIsGenerating(false);
@@ -1072,7 +1176,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         }
       }, 100);
     }
-  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem]);
+  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
 
   processQueueRef.current = processQueue;
 

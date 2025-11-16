@@ -697,7 +697,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   };
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
@@ -778,6 +778,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
 
+    // Create loop group ID if loop generation is enabled
+    const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
+
     addToQueue({
       type: "img2img",
       params: {
@@ -787,8 +790,87 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       },
       inputImage: imageBase64,
       prompt: processedPrompt,
+      loopGroupId,
+      loopStepIndex: loopGroupId ? -1 : undefined,
+      isLoopStep: false,
     });
+
+    // If loop generation is enabled, add all loop steps immediately
+    if (loopGenerationConfig.enabled && loopGroupId) {
+      await addLoopStepsToQueueImmediate({
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      } as Img2ImgParams, loopGroupId);
+    }
   };
+
+  // Add loop generation steps to queue immediately (without base image URL)
+  const addLoopStepsToQueueImmediate = useCallback(async (mainParams: Img2ImgParams, loopGroupId: string) => {
+    if (!loopGenerationConfig.enabled || loopGenerationConfig.steps.length === 0) {
+      return;
+    }
+
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+    const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
+
+    for (let i = 0; i < enabledSteps.length; i++) {
+      const step = enabledSteps[i];
+
+      // Prepare params for this loop step
+      const stepParams: any = {
+        prompt: mainParams.prompt,
+        negative_prompt: mainParams.negative_prompt,
+        width: step.width || mainParams.width,
+        height: step.height || mainParams.height,
+        denoising_strength: step.denoisingStrength,
+        img2img_fix_steps: step.doFullSteps,
+        resize_mode: step.resizeMode,
+        resampling_method: step.resamplingMethod,
+      };
+
+      // Use custom settings or inherit from main
+      if (step.useMainSettings) {
+        stepParams.steps = mainParams.steps;
+        stepParams.cfg_scale = mainParams.cfg_scale;
+        stepParams.sampler = mainParams.sampler;
+        stepParams.schedule_type = mainParams.schedule_type;
+        stepParams.seed = mainParams.seed;
+        stepParams.ancestral_seed = mainParams.ancestral_seed;
+      } else {
+        stepParams.steps = step.steps || 20;
+        stepParams.cfg_scale = step.cfgScale || 7;
+        stepParams.sampler = step.sampler || mainParams.sampler;
+        stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
+        stepParams.seed = step.seed ?? -1;
+        stepParams.ancestral_seed = step.ancestralSeed ?? -1;
+      }
+
+      stepParams.loras = mainParams.loras || [];
+      stepParams.controlnets = mainParams.controlnets || [];
+      stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
+      stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
+
+      const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
+      const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
+
+      addToQueue({
+        type: "img2img",
+        params: {
+          ...stepParams,
+          prompt: processedPrompt,
+          negative_prompt: processedNegativePrompt,
+        },
+        inputImage: "", // Will be set when previous step completes
+        prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
+        loopGroupId,
+        loopStepIndex: i,
+        isLoopStep: true,
+      });
+    }
+
+    console.log(`[Img2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
+  }, [loopGenerationConfig, addToQueue]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -819,7 +901,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setGeneratedImage(null);
 
     try {
-      const result = await generateImg2Img(nextItem.params, nextItem.inputImage!);
+      // For loop steps, use the input image or fall back to previous image
+      const inputImageToUse = nextItem.inputImage || previousImage;
+      if (!inputImageToUse) {
+        throw new Error("No input image available for img2img generation");
+      }
+
+      const result = await generateImg2Img(nextItem.params, inputImageToUse);
       const imageUrl = `/outputs/${result.image.filename}`;
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
@@ -828,6 +916,22 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       if (onImageGenerated) {
         onImageGenerated(imageUrl);
+      }
+
+      // If this item has a loop group, update the next loop step's input image
+      if (nextItem.loopGroupId !== undefined) {
+        const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
+
+        // Find the next loop step in the same group
+        const nextLoopStep = queue.find((item) =>
+          item.loopGroupId === nextItem.loopGroupId &&
+          item.loopStepIndex === nextLoopStepIndex
+        );
+
+        if (nextLoopStep) {
+          console.log(`[Img2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
+          updateQueueItem(nextLoopStep.id, { inputImage: imageUrl });
+        }
       }
 
       // Reset state first, then complete item
@@ -884,7 +988,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }
       }, 100);
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
 
   processQueueRef.current = processQueue;
 

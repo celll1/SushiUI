@@ -17,7 +17,7 @@ export interface LoopGenerationStep {
   scale?: number;
   linkAspectRatio: boolean;
   resizeMode: "image" | "latent";
-  resamplingMethod: "lanczos" | "bilinear" | "nearest";
+  resamplingMethod: "lanczos" | "bicubic" | "bilinear" | "nearest";
 
   // Generation settings
   denoisingStrength: number;
@@ -326,28 +326,27 @@ export default function LoopGenerationPanel({
                   </div>
                 )}
 
-                <div className="mt-2 space-y-2">
+                <div className="mt-2 grid grid-cols-2 gap-4">
                   <Select
                     label="Resize Mode"
                     options={[
-                      { value: "latent", label: "Resize Latent" },
                       { value: "image", label: "Resize Image" },
+                      { value: "latent", label: "Resize Latent" },
                     ]}
                     value={step.resizeMode}
                     onChange={(e) => updateStep(step.id, { resizeMode: e.target.value as "image" | "latent" })}
                   />
-                  {step.resizeMode === "image" && (
-                    <Select
-                      label="Resampling Method"
-                      options={[
-                        { value: "lanczos", label: "Lanczos" },
-                        { value: "bilinear", label: "Bilinear" },
-                        { value: "nearest", label: "Nearest (Pixelated)" },
-                      ]}
-                      value={step.resamplingMethod}
-                      onChange={(e) => updateStep(step.id, { resamplingMethod: e.target.value as "lanczos" | "bilinear" | "nearest" })}
-                    />
-                  )}
+                  <Select
+                    label="Resampling Method"
+                    options={[
+                      { value: "lanczos", label: "Lanczos (High Quality)" },
+                      { value: "bicubic", label: "Bicubic" },
+                      { value: "bilinear", label: "Bilinear" },
+                      { value: "nearest", label: "Nearest (Pixelated)" },
+                    ]}
+                    value={step.resamplingMethod}
+                    onChange={(e) => updateStep(step.id, { resamplingMethod: e.target.value as "lanczos" | "bicubic" | "bilinear" | "nearest" })}
+                  />
                 </div>
               </div>
 

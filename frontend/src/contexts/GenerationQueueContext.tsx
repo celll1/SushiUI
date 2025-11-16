@@ -22,6 +22,7 @@ interface GenerationQueueContextType {
   currentItem: QueueItem | null;
   addToQueue: (item: Omit<QueueItem, "id" | "status" | "addedAt">) => void;
   removeFromQueue: (id: string) => void;
+  updateQueueItem: (id: string, updates: Partial<QueueItem>) => void;
   startNextInQueue: () => QueueItem | null;
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
@@ -49,6 +50,14 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
   const removeFromQueue = useCallback((id: string) => {
     setQueue((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const updateQueueItem = useCallback((id: string, updates: Partial<QueueItem>) => {
+    setQueue((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, ...updates } : item
+      )
+    );
   }, []);
 
   const startNextInQueue = useCallback(() => {
@@ -133,6 +142,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         currentItem,
         addToQueue,
         removeFromQueue,
+        updateQueueItem,
         startNextInQueue,
         completeCurrentItem,
         failCurrentItem,

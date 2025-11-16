@@ -612,7 +612,8 @@ export const predictTags = async (
   gen_threshold: number = 0.45,
   char_threshold: number = 0.45,
   model_version: string = "cl_tagger_1_02",
-  auto_unload: boolean = true
+  auto_unload: boolean = true,
+  thresholds?: { [key: string]: number }
 ): Promise<TaggerPredictionsResponse> => {
   const response = await api.post("/tagger/predict", {
     image_base64,
@@ -620,6 +621,7 @@ export const predictTags = async (
     char_threshold,
     model_version,
     auto_unload,
+    thresholds,
   });
   return response.data;
 };

@@ -189,7 +189,13 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     setError(null);
 
     try {
-      // Use general threshold for general tags, character threshold for others
+      // Build individual thresholds dict
+      const thresholds: { [key: string]: number } = {};
+      categoryThresholds.forEach(cat => {
+        thresholds[cat.id] = cat.threshold;
+      });
+
+      // Use general threshold for general tags, character threshold for others (fallback)
       const genThreshold = categoryThresholds.find(c => c.id === "general")?.threshold || 0.45;
       const charThreshold = categoryThresholds.find(c => c.id === "character")?.threshold || 0.45;
 
@@ -199,7 +205,8 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
         genThreshold,
         charThreshold,
         selectedModelVersion,
-        true  // auto_unload to free VRAM
+        true,  // auto_unload to free VRAM
+        thresholds  // individual category thresholds
       );
       setPredictions(response.predictions);
 

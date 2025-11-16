@@ -1651,6 +1651,8 @@ class TaggerRequest(BaseModel):
     char_threshold: float = 0.45
     model_version: str = "cl_tagger_1_02"
     auto_unload: bool = True
+    # Individual category thresholds (optional, overrides gen_threshold/char_threshold)
+    thresholds: Optional[Dict[str, float]] = None
 
 class TaggerLoadModelRequest(BaseModel):
     model_path: Optional[str] = None
@@ -1718,7 +1720,8 @@ async def predict_tags(request: TaggerRequest):
             gen_threshold=request.gen_threshold,
             char_threshold=request.char_threshold,
             model_version=request.model_version,
-            auto_unload=request.auto_unload
+            auto_unload=request.auto_unload,
+            thresholds=request.thresholds
         )
 
         return {

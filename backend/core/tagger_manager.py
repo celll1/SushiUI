@@ -338,9 +338,35 @@ class TaggerManager:
         self,
         probs: np.ndarray,
         gen_threshold: float = 0.45,
-        char_threshold: float = 0.45
+        char_threshold: float = 0.45,
+        thresholds: Optional[Dict[str, float]] = None
     ) -> Dict[str, List[Tuple[str, float]]]:
-        """Extract tags from probabilities"""
+        """Extract tags from probabilities
+
+        Args:
+            probs: Probability array from model
+            gen_threshold: Default threshold for general tags
+            char_threshold: Default threshold for character/copyright/artist tags
+            thresholds: Optional dict with individual thresholds per category
+        """
+        # Get individual thresholds or use defaults
+        if thresholds:
+            rating_th = thresholds.get("rating", 0.0)  # Not used (always select max)
+            quality_th = thresholds.get("quality", 0.0)  # Not used (always select max)
+            character_th = thresholds.get("character", char_threshold)
+            copyright_th = thresholds.get("copyright", char_threshold)
+            artist_th = thresholds.get("artist", char_threshold)
+            general_th = thresholds.get("general", gen_threshold)
+            meta_th = thresholds.get("meta", gen_threshold)
+            model_th = thresholds.get("model", gen_threshold)
+        else:
+            character_th = char_threshold
+            copyright_th = char_threshold
+            artist_th = char_threshold
+            general_th = gen_threshold
+            meta_th = gen_threshold
+            model_th = gen_threshold
+
         results = {
             "rating": [],
             "general": [],
@@ -368,42 +394,42 @@ class TaggerManager:
 
         # Character tags
         for idx in self.labels.character:
-            if probs[idx] >= char_threshold:
+            if probs[idx] >= character_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["character"].append((normalized_tag, float(probs[idx])))
         results["character"].sort(key=lambda x: x[1], reverse=True)
 
         # General tags
         for idx in self.labels.general:
-            if probs[idx] >= gen_threshold:
+            if probs[idx] >= general_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["general"].append((normalized_tag, float(probs[idx])))
         results["general"].sort(key=lambda x: x[1], reverse=True)
 
         # Copyright tags
         for idx in self.labels.copyright:
-            if probs[idx] >= char_threshold:
+            if probs[idx] >= copyright_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["copyright"].append((normalized_tag, float(probs[idx])))
         results["copyright"].sort(key=lambda x: x[1], reverse=True)
 
         # Artist tags
         for idx in self.labels.artist:
-            if probs[idx] >= char_threshold:
+            if probs[idx] >= artist_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["artist"].append((normalized_tag, float(probs[idx])))
         results["artist"].sort(key=lambda x: x[1], reverse=True)
 
         # Meta tags
         for idx in self.labels.meta:
-            if probs[idx] >= gen_threshold:
+            if probs[idx] >= meta_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["meta"].append((normalized_tag, float(probs[idx])))
         results["meta"].sort(key=lambda x: x[1], reverse=True)
 
         # Model tags
         for idx in self.labels.model:
-            if probs[idx] >= gen_threshold:
+            if probs[idx] >= model_th:
                 normalized_tag = self._normalize_tag(self.labels.names[idx])
                 results["model"].append((normalized_tag, float(probs[idx])))
         results["model"].sort(key=lambda x: x[1], reverse=True)
@@ -416,7 +442,8 @@ class TaggerManager:
         gen_threshold: float = 0.45,
         char_threshold: float = 0.45,
         model_version: str = "cl_tagger_1_02",
-        auto_unload: bool = True
+        auto_unload: bool = True,
+        thresholds: Optional[Dict[str, float]] = None
     ) -> Dict[str, List[Tuple[str, float]]]:
         """Predict tags for an image
 
@@ -426,6 +453,7 @@ class TaggerManager:
             char_threshold: Threshold for character/copyright/artist tags
             model_version: Model version to use (loads if not already loaded)
             auto_unload: Whether to unload model after prediction to free VRAM
+            thresholds: Optional dict with individual thresholds per category
 
         Returns:
             Dictionary with categorized tags and confidences
@@ -462,7 +490,7 @@ class TaggerManager:
         outputs = self._stable_sigmoid(outputs)
 
         # Get tags
-        predictions = self._get_tags(outputs[0], gen_threshold, char_threshold)
+        predictions = self._get_tags(outputs[0], gen_threshold, char_threshold, thresholds)
 
         # Auto-unload to free VRAM
         if auto_unload:

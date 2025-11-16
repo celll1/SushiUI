@@ -505,7 +505,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
@@ -640,8 +640,30 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.ancestral_seed = step.ancestralSeed ?? -1;
       }
 
-      stepParams.loras = mainParams.loras || [];
-      stepParams.controlnets = mainParams.controlnets || [];
+      // Apply LoRA inheritance
+      stepParams.loras = step.useMainLoRAs ? (mainParams.loras || []) : [];
+
+      // Apply ControlNet inheritance
+      if (step.useMainControlNets) {
+        stepParams.controlnets = mainParams.controlnets || [];
+      } else {
+        // Use step's custom ControlNets, but filter out image_base64 for useLoopImage
+        console.log(`[Txt2Img] Loop step ${i}: Processing ${step.controlnets?.length || 0} ControlNets`);
+        stepParams.controlnets = (step.controlnets || []).map((cn, idx) => {
+          console.log(`[Txt2Img] ControlNet ${idx}: model=${cn.model_path}, useLoopImage=${cn.useLoopImage}, has_image=${!!cn.image_base64}`);
+          return {
+            ...cn,
+            // If useLoopImage is true, set image_base64 to empty (will be filled after generation)
+            image_base64: cn.useLoopImage ? "" : cn.image_base64,
+          };
+        });
+      }
+
+      // Force image resize mode if ControlNet is present
+      if (stepParams.controlnets.length > 0) {
+        stepParams.resize_mode = "image";
+      }
+
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
 
@@ -796,19 +818,71 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onImageGenerated(imageUrl);
       }
 
-      // If this item has a loop group, update the next loop step's input image
+      // If this item has a loop group, update the next loop step's input image and ControlNets
       if (nextItem.loopGroupId !== undefined) {
         const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
 
-        // Find the next loop step in the same group
-        const nextLoopStep = queue.find((item) =>
-          item.loopGroupId === nextItem.loopGroupId &&
-          item.loopStepIndex === nextLoopStepIndex
-        );
+        console.log(`[Txt2Img] Processing loop step completion:`, {
+          loopGroupId: nextItem.loopGroupId,
+          currentStepIndex: nextItem.loopStepIndex,
+          nextLoopStepIndex,
+        });
 
-        if (nextLoopStep) {
-          console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-          updateQueueItem(nextLoopStep.id, { inputImage: imageUrl });
+        // Update input image first
+        console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
+        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+
+        // Find step config to check if ControlNet processing is needed
+        const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
+        const stepConfig = enabledSteps[nextLoopStepIndex];
+
+        console.log(`[Txt2Img] Step config:`, {
+          hasStepConfig: !!stepConfig,
+          useMainControlNets: stepConfig?.useMainControlNets,
+          controlnetsCount: stepConfig?.controlnets?.length,
+        });
+
+        // Update ControlNet images if needed
+        if (stepConfig && !stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0) {
+          console.log(`[Txt2Img] Processing ${stepConfig.controlnets.length} ControlNet(s) for loop step ${nextLoopStepIndex}`);
+
+          // Fetch the generated image and convert to base64
+          const response = await fetch(imageUrl);
+          const blob = await response.blob();
+          const reader = new FileReader();
+
+          const imageBase64 = await new Promise<string>((resolve) => {
+            reader.onloadend = () => {
+              const base64 = reader.result as string;
+              // Remove data URL prefix to get just the base64 string
+              const base64String = base64.split(',')[1];
+              resolve(base64String);
+            };
+            reader.readAsDataURL(blob);
+          });
+
+          console.log(`[Txt2Img] Converted image to base64, length: ${imageBase64.length}`);
+
+          // Update ControlNets with useLoopImage enabled using callback to preserve existing params
+          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => {
+            const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
+              console.log(`[Txt2Img] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
+              if (cnConfig.useLoopImage) {
+                console.log(`[Txt2Img] Setting image_base64 for ControlNet ${idx}`);
+                return { ...cnConfig, image_base64: imageBase64 };
+              }
+              return cnConfig;
+            });
+
+            return {
+              params: {
+                ...item.params,
+                controlnets: updatedControlnets,
+              } as any,
+            };
+          });
+
+          console.log(`[Txt2Img] ControlNet images updated for loop step ${nextLoopStepIndex}`);
         }
       }
 

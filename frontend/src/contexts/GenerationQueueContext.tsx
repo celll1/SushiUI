@@ -23,6 +23,7 @@ interface GenerationQueueContextType {
   addToQueue: (item: Omit<QueueItem, "id" | "status" | "addedAt">) => void;
   removeFromQueue: (id: string) => void;
   updateQueueItem: (id: string, updates: Partial<QueueItem>) => void;
+  updateQueueItemByLoop: (loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => void;
   startNextInQueue: () => QueueItem | null;
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
@@ -58,6 +59,26 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         item.id === id ? { ...item, ...updates } : item
       )
     );
+  }, []);
+
+  const updateQueueItemByLoop = useCallback((loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => {
+    setQueue((prev) => {
+      const item = prev.find((item) =>
+        item.loopGroupId === loopGroupId &&
+        item.loopStepIndex === loopStepIndex
+      );
+
+      if (item) {
+        console.log(`[QueueContext] updateQueueItemByLoop: Found item with loopGroupId=${loopGroupId}, loopStepIndex=${loopStepIndex}`);
+        const actualUpdates = typeof updates === 'function' ? updates(item) : updates;
+        return prev.map((i) =>
+          i.id === item.id ? { ...i, ...actualUpdates } : i
+        );
+      } else {
+        console.log(`[QueueContext] updateQueueItemByLoop: Item not found with loopGroupId=${loopGroupId}, loopStepIndex=${loopStepIndex}`);
+        return prev;
+      }
+    });
   }, []);
 
   const startNextInQueue = useCallback(() => {
@@ -143,6 +164,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         addToQueue,
         removeFromQueue,
         updateQueueItem,
+        updateQueueItemByLoop,
         startNextInQueue,
         completeCurrentItem,
         failCurrentItem,

@@ -5,6 +5,7 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import Input from "../common/Input";
+import ControlNetSelector from "../common/ControlNetSelector";
 
 export interface LoopGenerationStep {
   id: string;
@@ -23,6 +24,8 @@ export interface LoopGenerationStep {
   denoisingStrength: number;
   doFullSteps: boolean;
   useMainSettings: boolean;
+  useMainLoRAs: boolean; // Inherit LoRAs from main generation
+  useMainControlNets: boolean; // Inherit ControlNets from main generation
   steps?: number;
   cfgScale?: number;
   sampler?: string;
@@ -31,7 +34,19 @@ export interface LoopGenerationStep {
   ancestralSeed?: number;
 
   // ControlNet
-  controlnets: any[]; // TODO: Define proper type
+  controlnets: Array<{
+    model_path: string;
+    image_base64?: string;
+    useLoopImage: boolean; // Use generated image from loop vs custom image
+    strength: number;
+    start_step: number;
+    end_step: number;
+    layer_weights?: { [layerName: string]: number };
+    prompt?: string;
+    is_lllite: boolean;
+    preprocessor?: string;
+    enable_preprocessor: boolean;
+  }>;
 
   // Inpaint specific
   keepMask?: boolean;
@@ -75,6 +90,8 @@ export default function LoopGenerationPanel({
       denoisingStrength: 0.5,
       doFullSteps: true,  // Default ON
       useMainSettings: true,
+      useMainLoRAs: true, // Default: inherit LoRAs
+      useMainControlNets: false, // Default: don't inherit ControlNets (use loop image instead)
       controlnets: [],
       keepMask: mode === "inpaint",
     };
@@ -371,14 +388,34 @@ export default function LoopGenerationPanel({
                     />
                     <label className="text-xs text-gray-400">Do Full Steps (ignore denoising for step count)</label>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={step.useMainSettings}
-                      onChange={(e) => updateStep(step.id, { useMainSettings: e.target.checked })}
-                      className="cursor-pointer"
-                    />
-                    <label className="text-xs text-gray-400">Use Main Settings (steps, CFG, sampler, scheduler, seed)</label>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.useMainSettings}
+                        onChange={(e) => updateStep(step.id, { useMainSettings: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main Settings (steps, CFG, sampler, scheduler, seed)</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.useMainLoRAs}
+                        onChange={(e) => updateStep(step.id, { useMainLoRAs: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main LoRAs</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.useMainControlNets}
+                        onChange={(e) => updateStep(step.id, { useMainControlNets: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main ControlNets</label>
+                    </div>
                   </div>
 
                   {!step.useMainSettings && (
@@ -481,6 +518,71 @@ export default function LoopGenerationPanel({
                 </div>
               </div>
 
+              {/* ControlNet (only shown when not using main ControlNets) */}
+              {!step.useMainControlNets && (
+                <div>
+                  <h4 className="text-xs font-semibold text-gray-300 mb-2">ControlNet for Loop Step</h4>
+                  <div className="space-y-2">
+                    <ControlNetSelector
+                      value={step.controlnets.map(cn => ({
+                        model_path: cn.model_path,
+                        image_base64: cn.image_base64,
+                        strength: cn.strength,
+                        start_step: cn.start_step,
+                        end_step: cn.end_step,
+                        layer_weights: cn.layer_weights,
+                        prompt: cn.prompt,
+                        is_lllite: cn.is_lllite,
+                        preprocessor: cn.preprocessor,
+                        enable_preprocessor: cn.enable_preprocessor,
+                      }))}
+                      onChange={(controlnets) => {
+                        // Map ControlNets from selector and preserve useLoopImage flag by model_path
+                        const useLoopImageMap = new Map<string, boolean>();
+                        step.controlnets.forEach(cn => {
+                          useLoopImageMap.set(cn.model_path, cn.useLoopImage);
+                        });
+
+                        updateStep(step.id, {
+                          controlnets: controlnets.map((cn) => ({
+                            ...cn,
+                            // Use existing useLoopImage for same model, otherwise default to true
+                            useLoopImage: useLoopImageMap.get(cn.model_path) ?? true,
+                          }))
+                        });
+                      }}
+                      storageKey={`loop_controlnet_${step.id}`}
+                    />
+
+                    {step.controlnets.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={step.controlnets.every(cn => cn.useLoopImage ?? true)}
+                            onChange={(e) => {
+                              updateStep(step.id, {
+                                controlnets: step.controlnets.map(cn => ({
+                                  ...cn,
+                                  useLoopImage: e.target.checked,
+                                }))
+                              });
+                            }}
+                            className="cursor-pointer"
+                          />
+                          <label className="text-xs text-gray-400 cursor-pointer">
+                            Use loop output as ControlNet reference (uncheck to use custom images)
+                          </label>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          Note: Loop output image will be used at its original resolution (no upscaling). Applies to all {step.controlnets.length} ControlNet(s).
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Inpaint Specific */}
               {mode === "inpaint" && (
                 <div>
@@ -495,14 +597,6 @@ export default function LoopGenerationPanel({
                   </div>
                 </div>
               )}
-
-              {/* ControlNet Placeholder */}
-              <div>
-                <h4 className="text-xs font-semibold text-gray-300 mb-2">ControlNet</h4>
-                <div className="text-xs text-gray-500">
-                  ControlNet configuration (TODO)
-                </div>
-              </div>
             </div>
           )}
         </div>

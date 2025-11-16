@@ -817,12 +817,26 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     for (let i = 0; i < enabledSteps.length; i++) {
       const step = enabledSteps[i];
 
+      // Calculate size based on mode
+      let stepWidth: number;
+      let stepHeight: number;
+
+      if (step.sizeMode === "scale") {
+        // Scale mode: calculate from main params
+        stepWidth = Math.round(mainParams.width * (step.scale || 1.0));
+        stepHeight = Math.round(mainParams.height * (step.scale || 1.0));
+      } else {
+        // Absolute mode: use step's dimensions or fallback to main params
+        stepWidth = step.width || mainParams.width;
+        stepHeight = step.height || mainParams.height;
+      }
+
       // Prepare params for this loop step
       const stepParams: any = {
         prompt: mainParams.prompt,
         negative_prompt: mainParams.negative_prompt,
-        width: step.width || mainParams.width,
-        height: step.height || mainParams.height,
+        width: stepWidth,
+        height: stepHeight,
         denoising_strength: step.denoisingStrength,
         img2img_fix_steps: step.doFullSteps,
         resize_mode: step.resizeMode,
@@ -958,15 +972,60 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           hasStepConfig: !!stepConfig,
           useMainControlNets: stepConfig?.useMainControlNets,
           controlnetsCount: stepConfig?.controlnets?.length,
+          sizeMode: stepConfig?.sizeMode,
+          scale: stepConfig?.scale,
         });
 
+        // Fetch the generated image for ControlNet or size calculation
+        let imageBlob: Blob | null = null;
+        let imageWidth: number | null = null;
+        let imageHeight: number | null = null;
+
+        const needsImageData = stepConfig && (
+          (!stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0) ||
+          stepConfig.sizeMode === "scale"
+        );
+
+        if (needsImageData) {
+          const response = await fetch(imageUrl);
+          imageBlob = await response.blob();
+
+          // Load image to get dimensions for scale mode
+          if (stepConfig.sizeMode === "scale") {
+            const img = new Image();
+            const imageLoadPromise = new Promise<void>((resolve) => {
+              img.onload = () => {
+                imageWidth = img.width;
+                imageHeight = img.height;
+                resolve();
+              };
+            });
+            img.src = URL.createObjectURL(imageBlob);
+            await imageLoadPromise;
+            URL.revokeObjectURL(img.src);
+
+            // Update size based on scale
+            if (imageWidth && imageHeight && stepConfig.scale) {
+              const scaledWidth = Math.round(imageWidth * stepConfig.scale);
+              const scaledHeight = Math.round(imageHeight * stepConfig.scale);
+              console.log(`[Img2Img] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
+
+              updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => ({
+                params: {
+                  ...item.params,
+                  width: scaledWidth,
+                  height: scaledHeight,
+                } as any,
+              }));
+            }
+          }
+        }
+
         // Update ControlNet images if needed
-        if (stepConfig && !stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0) {
+        if (stepConfig && !stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0 && imageBlob) {
           console.log(`[Img2Img] Processing ${stepConfig.controlnets.length} ControlNet(s) for loop step ${nextLoopStepIndex}`);
 
-          // Fetch the generated image and convert to base64
-          const response = await fetch(imageUrl);
-          const blob = await response.blob();
+          // Convert to base64
           const reader = new FileReader();
 
           const imageBase64 = await new Promise<string>((resolve) => {
@@ -976,7 +1035,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               const base64String = base64.split(',')[1];
               resolve(base64String);
             };
-            reader.readAsDataURL(blob);
+            reader.readAsDataURL(imageBlob);
           });
 
           console.log(`[Img2Img] Converted image to base64, length: ${imageBase64.length}`);

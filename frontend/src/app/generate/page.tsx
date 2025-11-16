@@ -8,6 +8,7 @@ import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
+import GPUMonitor from "@/components/common/GPUMonitor";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 export default function GeneratePage() {
@@ -91,6 +92,9 @@ export default function GeneratePage() {
 
       {/* Floating Gallery - shared across all tabs */}
       <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
+
+      {/* GPU Monitor */}
+      <GPUMonitor />
     </div>
   );
 }

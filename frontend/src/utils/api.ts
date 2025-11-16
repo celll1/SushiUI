@@ -636,4 +636,26 @@ export const unloadTaggerModel = async () => {
   return response.data;
 };
 
+export interface GPUStats {
+  index: number;
+  name: string;
+  vram_used_gb: number;
+  vram_total_gb: number;
+  vram_percent: number;
+  gpu_utilization: number | null;
+  temperature: number | null;
+  power_watts: number | null;
+}
+
+export interface GPUStatsResponse {
+  available: boolean;
+  gpus?: GPUStats[];
+  error?: string;
+}
+
+export const getGPUStats = async (): Promise<GPUStatsResponse> => {
+  const response = await api.get("/system/gpu-stats");
+  return response.data;
+};
+
 export default api;

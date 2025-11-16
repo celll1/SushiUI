@@ -1751,3 +1751,97 @@ async def unload_tagger_model():
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/system/gpu-stats")
+async def get_gpu_stats():
+    """Get GPU statistics (VRAM, utilization, temperature)"""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return {
+                "available": False,
+                "error": "CUDA not available"
+            }
+
+        stats = []
+
+        # Try nvidia-smi first (most reliable method)
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.used,power.draw",
+                    "--format=csv,noheader,nounits"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 8:
+                        index = int(parts[0])
+                        name = parts[1]
+                        temp = int(parts[2]) if parts[2] and parts[2] != '[N/A]' else None
+                        gpu_util = int(parts[3]) if parts[3] and parts[3] != '[N/A]' else None
+                        mem_util = int(parts[4]) if parts[4] and parts[4] != '[N/A]' else None
+                        mem_total = float(parts[5]) / 1024 if parts[5] else 0  # Convert MiB to GiB
+                        mem_used = float(parts[6]) / 1024 if parts[6] else 0  # Convert MiB to GiB
+                        power = float(parts[7]) if parts[7] and parts[7] != '[N/A]' else None
+
+                        vram_percent = (mem_used / mem_total * 100) if mem_total > 0 else 0
+
+                        gpu_stats = {
+                            "index": index,
+                            "name": name,
+                            "vram_used_gb": round(mem_used, 2),
+                            "vram_total_gb": round(mem_total, 2),
+                            "vram_percent": round(vram_percent, 1),
+                            "gpu_utilization": gpu_util,
+                            "temperature": temp,
+                            "power_watts": round(power, 1) if power else None,
+                        }
+                        stats.append(gpu_stats)
+
+                print(f"[GPU Stats] nvidia-smi: {len(stats)} GPU(s) found")
+                return {
+                    "available": True,
+                    "gpus": stats
+                }
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"[GPU Stats] nvidia-smi failed ({e}), falling back to torch")
+
+        # Fallback to torch-only stats
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            mem_allocated = torch.cuda.memory_allocated(i) / (1024 ** 3)
+            mem_reserved = torch.cuda.memory_reserved(i) / (1024 ** 3)
+            mem_total = props.total_memory / (1024 ** 3)
+
+            stats.append({
+                "index": i,
+                "name": props.name,
+                "vram_used_gb": round(mem_allocated, 2),
+                "vram_total_gb": round(mem_total, 2),
+                "vram_percent": round((mem_allocated / mem_total) * 100, 1),
+                "gpu_utilization": None,
+                "temperature": None,
+                "power_watts": None,
+            })
+
+        return {
+            "available": True,
+            "gpus": stats
+        }
+
+    except Exception as e:
+        print(f"Error getting GPU stats: {e}")
+        return {
+            "available": False,
+            "error": str(e)
+        }

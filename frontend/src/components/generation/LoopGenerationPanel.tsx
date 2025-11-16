@@ -334,7 +334,7 @@ export default function LoopGenerationPanel({
                       { value: "image", label: "Resize Image" },
                     ]}
                     value={step.resizeMode}
-                    onChange={(value) => updateStep(step.id, { resizeMode: value as "image" | "latent" })}
+                    onChange={(e) => updateStep(step.id, { resizeMode: e.target.value as "image" | "latent" })}
                   />
                   {step.resizeMode === "image" && (
                     <Select
@@ -345,7 +345,7 @@ export default function LoopGenerationPanel({
                         { value: "nearest", label: "Nearest (Pixelated)" },
                       ]}
                       value={step.resamplingMethod}
-                      onChange={(value) => updateStep(step.id, { resamplingMethod: value as "lanczos" | "bilinear" | "nearest" })}
+                      onChange={(e) => updateStep(step.id, { resamplingMethod: e.target.value as "lanczos" | "bilinear" | "nearest" })}
                     />
                   )}
                 </div>
@@ -406,13 +406,13 @@ export default function LoopGenerationPanel({
                         <Select
                           label="Sampler"
                           value={step.sampler || ""}
-                          onChange={(value) => updateStep(step.id, { sampler: value })}
+                          onChange={(e) => updateStep(step.id, { sampler: e.target.value })}
                           options={samplers.map(s => ({ value: s.id, label: s.name }))}
                         />
                         <Select
                           label="Scheduler"
                           value={step.scheduleType || ""}
-                          onChange={(value) => updateStep(step.id, { scheduleType: value })}
+                          onChange={(e) => updateStep(step.id, { scheduleType: e.target.value })}
                           options={scheduleTypes.map(s => ({ value: s.id, label: s.name }))}
                         />
                       </div>

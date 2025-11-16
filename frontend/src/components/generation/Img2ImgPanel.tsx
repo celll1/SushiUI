@@ -15,6 +15,7 @@ import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
+import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -61,6 +62,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
 };
 
 const STORAGE_KEY = "img2img_params";
+const LOOP_GENERATION_STORAGE_KEY = "img2img_loop_generation";
 const PREVIEW_STORAGE_KEY = "img2img_preview";
 const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
 
@@ -116,6 +118,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
+    enabled: false,
+    steps: []
+  });
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -235,6 +241,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           console.error('Failed to parse img2img visibility:', e);
         }
       }
+
+      // Load loop generation config
+      const savedLoopGen = localStorage.getItem(LOOP_GENERATION_STORAGE_KEY);
+      if (savedLoopGen) {
+        try {
+          setLoopGenerationConfig(JSON.parse(savedLoopGen));
+        } catch (e) {
+          console.error('Failed to parse loop generation config:', e);
+        }
+      }
     };
 
     loadInitialData();
@@ -322,6 +338,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
     }
   }, [generatedImage, isMounted]);
+
+  // Save loop generation config to localStorage whenever it changes
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
+    }
+  }, [loopGenerationConfig, isMounted]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
@@ -1378,6 +1401,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             inputImagePreview={inputImagePreview}
           />
         )}
+
+        {/* Loop Generation */}
+        <LoopGenerationPanel
+          config={loopGenerationConfig}
+          onChange={setLoopGenerationConfig}
+          mode="img2img"
+          mainWidth={params.width || 1024}
+          mainHeight={params.height || 1024}
+        />
       </div>
 
       {/* Preview Panel */}

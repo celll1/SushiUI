@@ -16,6 +16,7 @@ import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
+import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -75,6 +76,7 @@ const DEFAULT_PARAMS: InpaintParams = {
 
 const STORAGE_KEY = "inpaint_params";
 const PREVIEW_STORAGE_KEY = "inpaint_preview";
+const LOOP_GENERATION_STORAGE_KEY = "inpaint_loop_generation";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 
@@ -134,6 +136,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
+    enabled: false,
+    steps: []
+  });
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -288,6 +294,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           console.error('Failed to parse inpaint visibility:', e);
         }
       }
+
+      // Load loop generation config
+      const savedLoopGen = localStorage.getItem(LOOP_GENERATION_STORAGE_KEY);
+      if (savedLoopGen) {
+        try {
+          setLoopGenerationConfig(JSON.parse(savedLoopGen));
+        } catch (e) {
+          console.error('Failed to parse loop generation config:', e);
+        }
+      }
     };
 
     loadInitialData();
@@ -403,6 +419,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
     }
   }, [generatedImage, isMounted]);
+
+  // Save loop generation config to localStorage whenever it changes
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
+    }
+  }, [loopGenerationConfig, isMounted]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
@@ -1655,6 +1678,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             inputImagePreview={inputImagePreview}
           />
         )}
+
+        {/* Loop Generation */}
+        <LoopGenerationPanel
+          config={loopGenerationConfig}
+          onChange={setLoopGenerationConfig}
+          mode="inpaint"
+          mainWidth={params.width || 1024}
+          mainHeight={params.height || 1024}
+        />
       </div>
 
       {/* Preview Panel */}

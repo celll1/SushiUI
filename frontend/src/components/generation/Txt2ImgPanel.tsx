@@ -15,6 +15,7 @@ import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
+import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { generateTxt2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
@@ -40,6 +41,7 @@ const DEFAULT_PARAMS: GenerationParams = {
 
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
+const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
@@ -89,6 +91,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
+  const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
+    enabled: false,
+    steps: []
+  });
 
   const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -230,6 +236,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }
     }
 
+    // Load loop generation config
+    const savedLoopGen = localStorage.getItem(LOOP_GENERATION_STORAGE_KEY);
+    if (savedLoopGen) {
+      try {
+        setLoopGenerationConfig(JSON.parse(savedLoopGen));
+      } catch (e) {
+        console.error('Failed to parse loop generation config:', e);
+      }
+    }
+
   }, []);
 
   // Load samplers and schedule types when model is loaded
@@ -260,6 +276,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
     }
   }, [generatedImage, isMounted]);
+
+  // Save loop generation config to localStorage whenever it changes
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
+    }
+  }, [loopGenerationConfig, isMounted]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
@@ -1023,6 +1046,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             storageKey="txt2img_controlnet_collapsed"
           />
         )}
+
+        {/* Loop Generation */}
+        <LoopGenerationPanel
+          config={loopGenerationConfig}
+          onChange={setLoopGenerationConfig}
+          mode="txt2img"
+          mainWidth={params.width}
+          mainHeight={params.height}
+        />
       </div>
 
       {/* Preview Panel */}

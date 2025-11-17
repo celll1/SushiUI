@@ -5,6 +5,7 @@ import Sidebar from "@/components/common/Sidebar";
 import Card from "@/components/common/Card";
 import Button from "@/components/common/Button";
 import DirectorySettings from "@/components/settings/DirectorySettings";
+import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 
 // Default presets
@@ -295,10 +296,11 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex h-screen">
-      <Sidebar />
-      <main className="flex-1 overflow-auto p-6">
-        <h1 className="text-2xl font-bold mb-6">Settings</h1>
+    <ProtectedRoute>
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto p-6">
+          <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
         <div className="space-y-6">
           <Card title="Server Control">
@@ -807,5 +809,6 @@ export default function SettingsPage() {
         </div>
       </main>
     </div>
+    </ProtectedRoute>
   );
 }

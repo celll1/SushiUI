@@ -31,6 +31,9 @@ onnxruntime-gpu>=1.16.0  # GPU support for ONNX inference
 sqlalchemy>=2.0.25
 alembic>=1.13.1
 
+# Authentication
+python-jose[cryptography]>=3.5.0  # JWT token handling
+
 # Utilities
 pydantic>=2.5.0
 pydantic-settings>=2.1.0

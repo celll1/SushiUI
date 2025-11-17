@@ -10,6 +10,36 @@ const api = axios.create({
   timeout: 600000, // 10 minutes in milliseconds
 });
 
+// Add auth token to requests if available (session storage - cleared on browser close)
+api.interceptors.request.use(
+  (config) => {
+    const token = sessionStorage.getItem("auth_token");
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Handle 401 errors (unauthorized)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token is invalid or expired
+      sessionStorage.removeItem("auth_token");
+      // Only redirect if not already on login page
+      if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
+        window.location.href = "/login";
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Helper function to load ControlNet images from temp storage
 const loadControlNetImages = async (
   controlnets: ControlNetConfig[] | undefined,

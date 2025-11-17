@@ -29,6 +29,7 @@ from core.schedulers import (
 from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names
 from config.settings import settings
 from api.websocket import manager
+from auth import create_access_token, verify_credentials, require_auth
 
 router = APIRouter()
 
@@ -36,6 +37,17 @@ router = APIRouter()
 executor = ThreadPoolExecutor(max_workers=1)
 
 # Pydantic models for requests
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+class AuthStatusResponse(BaseModel):
+    auth_enabled: bool
+    authenticated: bool = False
 class LoRAConfig(BaseModel):
     path: str
     strength: float = 1.0
@@ -1845,3 +1857,32 @@ async def get_gpu_stats():
             "available": False,
             "error": str(e)
         }
+
+# Authentication endpoints
+@router.get("/auth/status")
+async def get_auth_status():
+    """Get authentication status"""
+    return AuthStatusResponse(auth_enabled=settings.auth_enabled)
+
+@router.post("/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """Login endpoint - returns JWT token if credentials are valid"""
+    if not settings.auth_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Authentication is not enabled"
+        )
+
+    if not verify_credentials(request.username, request.password):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password"
+        )
+
+    access_token = create_access_token(request.username)
+    return LoginResponse(access_token=access_token)
+
+@router.get("/auth/verify")
+async def verify_auth(username: str = Depends(require_auth)):
+    """Verify authentication token"""
+    return {"authenticated": True, "username": username}

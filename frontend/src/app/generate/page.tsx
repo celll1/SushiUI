@@ -9,9 +9,18 @@ import InpaintPanel from "@/components/generation/InpaintPanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
 import GPUMonitor from "@/components/common/GPUMonitor";
+import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 export default function GeneratePage() {
+  return (
+    <ProtectedRoute>
+      <GeneratePageContent />
+    </ProtectedRoute>
+  );
+}
+
+function GeneratePageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
   const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint">("txt2img");

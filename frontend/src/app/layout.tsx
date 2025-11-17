@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { StartupProvider } from "@/contexts/StartupContext";
 import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
+import { AuthProvider } from "@/contexts/AuthContext";
 
 export const metadata: Metadata = {
   title: "SushiUI",
@@ -16,9 +17,11 @@ export default function RootLayout({
   return (
     <html lang="ja" className="dark">
       <body className="bg-gray-950 text-gray-100">
-        <StartupProvider>
-          <GenerationQueueProvider>{children}</GenerationQueueProvider>
-        </StartupProvider>
+        <AuthProvider>
+          <StartupProvider>
+            <GenerationQueueProvider>{children}</GenerationQueueProvider>
+          </StartupProvider>
+        </AuthProvider>
       </body>
     </html>
   );

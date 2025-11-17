@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     max_batch_size: int = 4
     device: str = "cuda"
 
+    # Authentication (optional)
+    auth_enabled: bool = False
+    auth_username: Optional[str] = None
+    auth_password: Optional[str] = None
+    jwt_secret_key: str = "change-this-secret-key-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expiration_hours: int = 24
+
     class Config:
         env_file = ".env"
 

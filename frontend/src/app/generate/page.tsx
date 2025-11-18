@@ -56,14 +56,14 @@ function GeneratePageContent() {
   return (
     <div className="flex h-screen">
       <Sidebar />
-      <main className="flex-1 overflow-auto p-6">
-        <h1 className="text-2xl font-bold mb-6">Generate</h1>
+      <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6">
+        <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Generate</h1>
 
         {/* Tabs */}
-        <div className="flex space-x-2 border-b border-gray-700 mb-6">
+        <div className="flex space-x-1 sm:space-x-2 border-b border-gray-700 mb-4 sm:mb-6 overflow-x-auto">
           <button
             onClick={() => setActiveTab("txt2img")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
               activeTab === "txt2img"
                 ? "border-b-2 border-blue-500 text-white"
                 : "text-gray-400 hover:text-white"
@@ -73,7 +73,7 @@ function GeneratePageContent() {
           </button>
           <button
             onClick={() => setActiveTab("img2img")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
               activeTab === "img2img"
                 ? "border-b-2 border-blue-500 text-white"
                 : "text-gray-400 hover:text-white"
@@ -83,7 +83,7 @@ function GeneratePageContent() {
           </button>
           <button
             onClick={() => setActiveTab("inpaint")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
               activeTab === "inpaint"
                 ? "border-b-2 border-blue-500 text-white"
                 : "text-gray-400 hover:text-white"

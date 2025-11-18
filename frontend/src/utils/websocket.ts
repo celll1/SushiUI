@@ -28,7 +28,10 @@ class WebSocketClient {
     // Fetch backend port if not already fetched
     this.backendPort = await this.fetchBackendPort();
 
-    const wsUrl = `ws://localhost:${this.backendPort}/ws/progress`;
+    // Use current hostname instead of hardcoded localhost for mobile compatibility
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${hostname}:${this.backendPort}/ws/progress`;
     console.log(`[WebSocket] Connecting to ${wsUrl}`);
     this.ws = new WebSocket(wsUrl);
 

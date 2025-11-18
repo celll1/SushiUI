@@ -1110,7 +1110,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
         <Card title="Parameters">
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Slider
                 label="Steps"
                 min={1}
@@ -1129,7 +1129,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
             </div>
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider
                   label="Width"
                   min={64}
@@ -1175,7 +1175,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       </label>
                     </div>
                   </div>
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                     {aspectRatioPresets.map((preset) => (
                       <button
                         key={preset.label}
@@ -1206,7 +1206,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               {visibility.fixedResolutionPresets && (
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
-                  <div className="grid grid-cols-6 gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                     {fixedResolutionPresets.map((preset) => (
                       <button
                         key={`${preset.width}x${preset.height}`}
@@ -1221,7 +1221,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Sampler"
                 options={samplers.map(s => ({ value: s.id, label: s.name }))}
@@ -1235,7 +1235,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Prompt Chunking Mode"
                 options={[
@@ -1261,7 +1261,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Seed
@@ -1529,7 +1529,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"

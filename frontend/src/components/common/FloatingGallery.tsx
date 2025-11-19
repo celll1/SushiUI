@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Image as ImageIcon } from "lucide-react";
 import ImageViewer from "./ImageViewer";
 
 interface FloatingGalleryProps {
@@ -10,6 +11,7 @@ interface FloatingGalleryProps {
 
 export default function FloatingGallery({ images, maxImages }: FloatingGalleryProps) {
   const [viewerImageIndex, setViewerImageIndex] = useState<number | null>(null);
+  const [isGalleryOpen, setIsGalleryOpen] = useState(false);
 
   // Limit to most recent images
   const displayImages = images.slice(-maxImages);
@@ -30,7 +32,28 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
 
   return (
     <>
-      <div className="fixed top-4 right-4 z-40 bg-gray-800 rounded-lg shadow-lg p-2 max-w-[60vw]">
+      {/* Mobile gallery toggle button */}
+      <button
+        onClick={() => setIsGalleryOpen(!isGalleryOpen)}
+        className="fixed top-4 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+        aria-label="Toggle gallery"
+      >
+        <ImageIcon className="h-5 w-5" />
+        {displayImages.length > 0 && (
+          <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+            {displayImages.length}
+          </span>
+        )}
+      </button>
+
+      {/* Gallery panel - collapsible on mobile, always visible on desktop */}
+      <div className={`
+        fixed top-4 right-4 z-40 bg-gray-800 rounded-lg shadow-lg p-2
+        transition-all duration-200 ease-in-out
+        ${isGalleryOpen ? 'translate-x-0' : 'translate-x-[calc(100%+1rem)]'}
+        lg:translate-x-0
+        max-w-[80vw] lg:max-w-[60vw]
+      `}>
         <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
           {displayImages.map((image, index) => (
             <div

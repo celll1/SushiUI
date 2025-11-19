@@ -12,6 +12,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { SlidersHorizontal, X } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
@@ -27,6 +28,7 @@ export default function ImageGrid() {
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   // Filter states
   const [filterTxt2Img, setFilterTxt2Img] = useState(true);
@@ -709,8 +711,34 @@ export default function ImageGrid() {
           )}
         </div>
       ) : (
-        <div className="flex gap-4">
+        <div className="relative">
+          {/* Mobile filter toggle button */}
+          <button
+            onClick={() => setIsFilterOpen(!isFilterOpen)}
+            className="fixed bottom-4 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+            aria-label="Toggle filters"
+          >
+            {isFilterOpen ? <X className="h-5 w-5" /> : <SlidersHorizontal className="h-5 w-5" />}
+          </button>
+
+          {/* Overlay for mobile filter panel */}
+          {isFilterOpen && (
+            <div
+              className="fixed inset-0 bg-black bg-opacity-50 z-30 lg:hidden"
+              onClick={() => setIsFilterOpen(false)}
+            />
+          )}
+
+          <div className="flex gap-4">
           {/* Left Sidebar - Filters */}
+          <div className={`
+            fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 z-40 lg:z-auto
+            transform transition-transform duration-200 ease-in-out
+            ${isFilterOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+            bg-gray-900 lg:bg-transparent
+            overflow-y-auto lg:overflow-visible
+            p-3 lg:p-0 pt-16 lg:pt-0
+          `}>
           <GalleryFilter
             filterTxt2Img={filterTxt2Img}
             setFilterTxt2Img={setFilterTxt2Img}
@@ -754,14 +782,18 @@ export default function ImageGrid() {
             imagesPerPage={imagesPerPage}
             loading={loading}
           />
+          </div>
 
           {/* Right Area - Image Grid */}
+          <div className="flex-1 w-full lg:w-auto">
           <ImageList
             images={filteredImages}
             gridColumns={gridColumns}
             onImageClick={setSelectedImage}
             loading={loading}
           />
+          </div>
+        </div>
         </div>
       )}
     </div>

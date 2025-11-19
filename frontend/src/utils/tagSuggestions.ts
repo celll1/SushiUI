@@ -52,7 +52,7 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
 
   try {
     console.log(`[TagSuggestions] Loading ${category} tags from API`);
-    const response = await fetch(`http://localhost:8000/api/taglist/${category}`);
+    const response = await fetch(`/api/taglist/${category}`);
     if (response.ok) {
       const data: TagData = await response.json();
       categories[category].tags = data;

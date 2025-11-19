@@ -495,8 +495,8 @@ export default function PromptEditor({
           </div>
         </div>
 
-        {/* Right Sidebar - Quick Info/Help */}
-        <div className="w-64 bg-gray-800 border-l border-gray-700 p-4 overflow-auto">
+        {/* Right Sidebar - Quick Info/Help (Desktop only) */}
+        <div className="hidden lg:block w-64 bg-gray-800 border-l border-gray-700 p-4 overflow-auto">
           <h3 className="text-sm font-semibold text-gray-300 mb-3">Keyboard Shortcuts</h3>
           <div className="space-y-2 text-xs text-gray-400">
             <div><kbd className="px-1 bg-gray-700 rounded">Ctrl+Z</kbd> Undo</div>

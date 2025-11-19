@@ -265,26 +265,26 @@ export default function PromptEditor({
       {/* Mobile: Overlay Buttons */}
       <button
         onClick={handleSave}
-        className="fixed top-4 right-4 z-[60] p-3 rounded-lg bg-green-600 hover:bg-green-700 text-white shadow-lg lg:hidden"
+        className="fixed portrait:top-4 portrait:right-4 landscape:bottom-4 landscape:right-4 z-[60] p-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white shadow-lg lg:hidden"
         aria-label="Save"
       >
-        <Check className="h-5 w-5" />
+        <Check className="h-4 w-4" />
       </button>
       <button
         onClick={onClose}
-        className="fixed top-4 right-16 z-[60] p-3 rounded-lg bg-gray-700 hover:bg-gray-600 text-white shadow-lg lg:hidden"
+        className="fixed portrait:top-4 portrait:right-14 landscape:bottom-4 landscape:right-14 z-[60] p-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white shadow-lg lg:hidden"
         aria-label="Cancel"
       >
-        <X className="h-5 w-5" />
+        <X className="h-4 w-4" />
       </button>
 
       {/* Mobile: Panel Toggle Button */}
       <button
         onClick={() => setIsPanelSidebarOpen(!isPanelSidebarOpen)}
-        className="fixed top-4 left-4 z-[60] p-3 rounded-lg bg-gray-800 text-white shadow-lg lg:hidden"
+        className="fixed top-4 left-4 z-[60] p-2.5 rounded-lg bg-gray-800 text-white shadow-lg lg:hidden"
         aria-label="Toggle panel menu"
       >
-        {isPanelSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        {isPanelSidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
       </button>
 
       {/* Mobile: Panel Sidebar Overlay */}
@@ -299,30 +299,30 @@ export default function PromptEditor({
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar - Panel Selection */}
         <div className={`
-          fixed lg:relative top-0 left-0 h-full w-48 z-50 lg:z-auto
+          fixed lg:relative top-0 left-0 h-full w-40 lg:w-48 z-50 lg:z-auto
           transform transition-transform duration-200 ease-in-out
           ${isPanelSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-          bg-gray-800 border-r border-gray-700 p-4 pt-20 lg:pt-4 space-y-2
+          bg-gray-800 border-r border-gray-700 p-3 lg:p-4 pt-16 lg:pt-4 space-y-1.5 lg:space-y-2
         `}>
           <button
             onClick={() => {
               setActivePanel("main");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "main"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
             }`}
           >
-            Main Editor
+            Main
           </button>
           <button
             onClick={() => {
               setActivePanel("template");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "template"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
@@ -335,20 +335,20 @@ export default function PromptEditor({
               setActivePanel("category");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "category"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
             }`}
           >
-            Category Order
+            Categories
           </button>
           <button
             onClick={() => {
               setActivePanel("wildcard");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "wildcard"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
@@ -361,7 +361,7 @@ export default function PromptEditor({
               setActivePanel("tipo");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "tipo"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
@@ -374,13 +374,13 @@ export default function PromptEditor({
               setActivePanel("tagger");
               setIsPanelSidebarOpen(false);
             }}
-            className={`w-full text-left px-3 py-2 rounded ${
+            className={`w-full text-left px-2 lg:px-3 py-1.5 lg:py-2 rounded text-sm lg:text-base ${
               activePanel === "tagger"
                 ? "bg-blue-600 text-white"
                 : "text-gray-300 hover:bg-gray-700"
             }`}
           >
-            Image Tagger
+            Tagger
           </button>
         </div>
 

@@ -30,6 +30,10 @@ export default function ImageGrid() {
   const [sendParameters, setSendParameters] = useState(true);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
+  // Swipe gesture detection
+  const [touchStart, setTouchStart] = useState<number | null>(null);
+  const [touchEnd, setTouchEnd] = useState<number | null>(null);
+
   // Filter states
   const [filterTxt2Img, setFilterTxt2Img] = useState(true);
   const [filterImg2Img, setFilterImg2Img] = useState(true);
@@ -379,6 +383,37 @@ export default function ImageGrid() {
     }
 
     router.push("/generate?tab=inpaint");
+  };
+
+  // Swipe gesture handlers
+  const minSwipeDistance = 50; // Minimum distance for a swipe
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    setTouchEnd(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEnd = () => {
+    if (!touchStart || !touchEnd) return;
+
+    const distance = touchStart - touchEnd;
+    const isLeftSwipe = distance > minSwipeDistance;
+    const isRightSwipe = distance < -minSwipeDistance;
+
+    // Only handle swipe if not viewing a specific image and not loading
+    if (!selectedImage && !loading) {
+      if (isLeftSwipe && currentPage * imagesPerPage < totalImages) {
+        // Swipe left = next page
+        setCurrentPage(currentPage + 1);
+      } else if (isRightSwipe && currentPage > 1) {
+        // Swipe right = previous page
+        setCurrentPage(currentPage - 1);
+      }
+    }
   };
 
   return (
@@ -785,7 +820,12 @@ export default function ImageGrid() {
           </div>
 
           {/* Right Area - Image Grid */}
-          <div className="flex-1 w-full lg:w-auto">
+          <div
+            className="flex-1 w-full lg:w-auto"
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+          >
           <ImageList
             images={filteredImages}
             gridColumns={gridColumns}

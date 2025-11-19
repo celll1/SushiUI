@@ -868,7 +868,40 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     // If multiple pointers are active (multi-touch), prevent drawing immediately
     if (activePointersRef.current.size > 1) {
       setIsPinching(true);
-      setIsDrawing(false);
+
+      // If we were drawing, check if stroke is significant enough to save
+      if (isDrawing) {
+        const activeLayer = layers.find(l => l.id === activeLayerId);
+        if (activeLayer && activeLayer.editable) {
+          const layerCanvas = getLayerCanvas(activeLayerId);
+          const layerCtx = layerCanvas?.getContext("2d");
+          if (layerCanvas && layerCtx) {
+            // Check if stroke has been drawing for a meaningful time (>100ms) or distance
+            const now = Date.now();
+            const drawingDuration = strokeStartRef.current ? now - strokeStartRef.current.time : 0;
+            const drawingDistance = strokeDistanceRef.current;
+
+            // Only save to history if stroke is significant (>100ms or >5px)
+            if (drawingDuration > 100 || drawingDistance > 5) {
+              // Apply alpha for pen tool if needed
+              if (tool === "pen") {
+                applyAlphaToStroke(layerCtx);
+                composeLayers();
+              }
+              saveToHistory(activeLayerId, layerCtx);
+            } else {
+              // Discard insignificant stroke - restore from snapshot
+              if (strokeSnapshotRef.current) {
+                layerCtx.putImageData(strokeSnapshotRef.current, 0, 0);
+                composeLayers();
+              }
+            }
+          }
+        }
+        setIsDrawing(false);
+        setIsTapering(false);
+      }
+
       return;
     }
 

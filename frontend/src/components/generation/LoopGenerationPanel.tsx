@@ -299,7 +299,7 @@ export default function LoopGenerationPanel({
 
                 {step.sizeMode === "absolute" ? (
                   <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <Slider
                         label="Width"
                         value={step.width || mainWidth}
@@ -343,7 +343,7 @@ export default function LoopGenerationPanel({
                   </div>
                 )}
 
-                <div className="mt-2 grid grid-cols-2 gap-4">
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Select
                     label="Resize Mode"
                     options={[
@@ -420,7 +420,7 @@ export default function LoopGenerationPanel({
 
                   {!step.useMainSettings && (
                     <div className="space-y-3 mt-2">
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <Slider
                           label="Steps"
                           value={step.steps || 20}
@@ -438,7 +438,7 @@ export default function LoopGenerationPanel({
                           step={0.5}
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <Select
                           label="Sampler"
                           value={step.sampler || ""}
@@ -452,7 +452,7 @@ export default function LoopGenerationPanel({
                           options={scheduleTypes.map(s => ({ value: s.id, label: s.name }))}
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-sm font-medium text-gray-300 mb-1">
                             Seed

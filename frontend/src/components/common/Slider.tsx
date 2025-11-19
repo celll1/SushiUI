@@ -78,7 +78,7 @@ export default function Slider({
           value={value}
           onChange={onChange}
           onWheel={handleWheel}
-          className="w-20 px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded-md text-white
+          className="w-16 sm:w-20 px-1 sm:px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded-md text-white
             focus:outline-none focus:ring-2 focus:ring-blue-500"
           {...props}
         />

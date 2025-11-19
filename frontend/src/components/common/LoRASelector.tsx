@@ -177,7 +177,7 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
             </div>
 
             {/* 2-Column Layout: Settings on left, Graph on right */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Left Column: Settings */}
               <div className="space-y-3">
                 {/* Strength Slider */}

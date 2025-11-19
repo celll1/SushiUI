@@ -147,7 +147,7 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Left: Group List */}
         <div className="space-y-2">
           <h4 className="text-sm font-semibold text-gray-300">Wildcard Groups</h4>

@@ -1385,9 +1385,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       {/* Preview Panel */}
       <div>
         <Card title="Preview">
-          <div className="flex gap-2 h-[800px]">
+          <div className="flex flex-col lg:flex-row gap-2 lg:h-[800px]">
             {/* Left: Preview and Controls */}
-            <div className="flex-1 flex flex-col space-y-2">
+            <div className="flex-1 flex flex-col space-y-2 min-w-0">
               {/* Action Buttons */}
               <div className="flex gap-2 relative">
               <Button
@@ -1475,7 +1475,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </div>
             )}
             <div
-              className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+              className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
               onDoubleClick={() => {
                 if (generatedImage) {
                   setPreviewViewerOpen(true);
@@ -1561,7 +1561,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
 
             {/* Right: Generation Queue */}
-            <div className="w-60">
+            <div className="w-full lg:w-60 lg:flex-shrink-0">
               <GenerationQueue />
             </div>
           </div>

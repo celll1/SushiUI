@@ -239,7 +239,7 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
       <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3">
         <h4 className="text-sm font-semibold text-gray-300">Generation Settings</h4>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {/* Model Selection */}
           <div>
             <label className="block text-xs text-gray-400 mb-1">Model</label>

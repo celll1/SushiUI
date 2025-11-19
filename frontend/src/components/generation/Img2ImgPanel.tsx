@@ -1311,7 +1311,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 Do full steps (ensures complete denoising regardless of strength)
               </label>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Resize Mode"
                 options={[
@@ -1333,7 +1333,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(e) => setParams({ ...params, resampling_method: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Slider
                 label="Steps"
                 min={1}
@@ -1378,7 +1378,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
               {sizeMode === "absolute" ? (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <Slider
                       label="Width"
                       min={64}
@@ -1424,7 +1424,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                           </label>
                         </div>
                       </div>
-                      <div className="grid grid-cols-5 gap-2">
+                      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                         {aspectRatioPresets.map((preset) => (
                           <button
                             key={preset.label}
@@ -1455,7 +1455,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   {visibility.fixedResolutionPresets && (
                     <div className="space-y-2">
                       <label className="block text-sm font-medium text-gray-300">Fixed Resolution Presets</label>
-                      <div className="grid grid-cols-6 gap-2">
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                         {fixedResolutionPresets.map((preset) => (
                           <button
                             key={`${preset.width}x${preset.height}`}
@@ -1488,7 +1488,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Sampler"
                 options={samplers.map(s => ({ value: s.id, label: s.name }))}
@@ -1502,7 +1502,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">
                   Seed
@@ -1583,7 +1583,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </p>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Prompt Chunking Mode"
                 options={[
@@ -1650,9 +1650,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       {/* Preview Panel */}
       <div>
         <Card title="Preview">
-          <div className="flex gap-2 h-[800px]">
+          <div className="flex flex-col lg:flex-row gap-2 lg:h-[800px]">
             {/* Left: Preview and Controls */}
-            <div className="flex-1 flex flex-col space-y-2">
+            <div className="flex-1 flex flex-col space-y-2 min-w-0">
               {/* Action Buttons */}
               <div className="flex gap-2 relative">
                 <Button
@@ -1740,7 +1740,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </div>
               )}
               <div
-                className="aspect-square bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+                className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
                 onDoubleClick={() => {
                   if (generatedImage) {
                     setPreviewViewerOpen(true);
@@ -1794,7 +1794,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -1826,7 +1826,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             </div>
 
             {/* Right: Generation Queue */}
-            <div className="w-60">
+            <div className="w-full lg:w-60 lg:flex-shrink-0">
               <GenerationQueue />
             </div>
           </div>

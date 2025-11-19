@@ -1580,7 +1580,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         {tool === "pen" && (
           <div className="space-y-2">
             <h3 className="text-sm font-semibold text-gray-300">Brush Type</h3>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <Button
                 onClick={() => setBrushType("normal")}
                 variant={brushType === "normal" ? "primary" : "secondary"}

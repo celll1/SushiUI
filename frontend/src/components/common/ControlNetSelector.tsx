@@ -627,7 +627,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             </div>
 
             {/* 2-column layout: Image on left, settings on right */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Left column: Control Image */}
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -827,7 +827,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 Preprocessor
               </label>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Left column: Enable checkbox and dropdown */}
                 <div className="space-y-2">
                   {/* Enable/Disable Preprocessor Checkbox */}

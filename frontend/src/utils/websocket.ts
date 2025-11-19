@@ -36,30 +36,33 @@ class WebSocketClient {
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
-      console.log("WebSocket connected");
+      console.log("[WebSocket] Connected successfully");
     };
 
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log("[WebSocket] Received message:", data);
         if (data.type === "progress") {
+          console.log(`[WebSocket] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}`);
           this.callbacks.forEach((callback) => {
             callback(data.step, data.total_steps, data.message, data.preview_image);
           });
         }
       } catch (error) {
-        console.error("Failed to parse WebSocket message:", error);
+        console.error("[WebSocket] Failed to parse message:", error, event.data);
       }
     };
 
     this.ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
+      console.error("[WebSocket] Error:", error);
     };
 
-    this.ws.onclose = () => {
-      console.log("WebSocket disconnected");
+    this.ws.onclose = (event) => {
+      console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason})`);
       // Auto-reconnect after 3 seconds
       this.reconnectTimer = setTimeout(() => {
+        console.log("[WebSocket] Attempting to reconnect...");
         this.connect();
       }, 3000);
     };

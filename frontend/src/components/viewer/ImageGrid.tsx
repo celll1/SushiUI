@@ -452,14 +452,14 @@ export default function ImageGrid() {
   return (
     <div>
       {selectedImage ? (
-        <div className="fixed inset-0 bg-gray-950 z-30">
+        <div className="h-full relative fixed inset-0 lg:relative bg-gray-950 lg:bg-transparent z-30 lg:z-auto">
           {/* Back button - Desktop */}
           <button
             onClick={() => {
               setSelectedImage(null);
               setIsDetailOpen(false);
             }}
-            className="hidden lg:flex items-center gap-2 text-blue-400 hover:text-blue-300 absolute top-4 left-4 z-50"
+            className="hidden lg:flex items-center gap-2 text-blue-400 hover:text-blue-300 mb-4"
           >
             <ArrowLeft className="h-5 w-5" />
             <span>Back to gallery</span>
@@ -494,7 +494,7 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:p-4">
+          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:h-auto">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
               fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
@@ -726,6 +726,35 @@ export default function ImageGrid() {
                       <span className="text-gray-300">Send parameters</span>
                     </label>
                   </div>
+
+                  {/* Desktop Send buttons */}
+                  <div className="hidden lg:grid grid-cols-3 gap-2 mt-3">
+                    <Button
+                      onClick={() => sendToTxt2Img(selectedImage)}
+                      variant="secondary"
+                      size="sm"
+                      disabled={!sendPrompt && !sendParameters}
+                      title="Send image not applicable for txt2img"
+                    >
+                      txt2img
+                    </Button>
+                    <Button
+                      onClick={() => sendToImg2Img(selectedImage)}
+                      variant="secondary"
+                      size="sm"
+                      disabled={!sendImage && !sendPrompt && !sendParameters}
+                    >
+                      img2img
+                    </Button>
+                    <Button
+                      onClick={() => sendToInpaint(selectedImage)}
+                      variant="secondary"
+                      size="sm"
+                      disabled={!sendImage && !sendPrompt && !sendParameters}
+                    >
+                      inpaint
+                    </Button>
+                  </div>
                 </div>
               </div>
               </Card>
@@ -801,34 +830,6 @@ export default function ImageGrid() {
               </div>
             </div>
           )}
-
-          {/* Desktop: Fixed bottom Send buttons */}
-          <div className="hidden lg:flex fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 gap-2">
-            <button
-              onClick={() => sendToTxt2Img(selectedImage)}
-              disabled={!sendPrompt && !sendParameters}
-              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Send to txt2img"
-            >
-              txt2img
-            </button>
-            <button
-              onClick={() => sendToImg2Img(selectedImage)}
-              disabled={!sendImage && !sendPrompt && !sendParameters}
-              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Send to img2img"
-            >
-              img2img
-            </button>
-            <button
-              onClick={() => sendToInpaint(selectedImage)}
-              disabled={!sendImage && !sendPrompt && !sendParameters}
-              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Send to inpaint"
-            >
-              inpaint
-            </button>
-          </div>
 
           {/* Mobile: Fixed bottom Send buttons */}
           <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 flex gap-2 lg:hidden">

@@ -243,10 +243,10 @@ export default function Textarea({
   return (
     <div className="space-y-1">
       {label && (
-        <label className="block text-sm font-medium text-gray-300">
+        <label className="block text-xs lg:text-sm font-medium text-gray-300">
           {label}
           {enableWeightControl && (
-            <span className="ml-2 text-xs text-gray-500">
+            <span className="ml-2 text-xs text-gray-500 hidden lg:inline">
               (Ctrl+↑/↓ to adjust weight)
             </span>
           )}

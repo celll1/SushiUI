@@ -56,7 +56,7 @@ function GeneratePageContent() {
   return (
     <div className="flex h-screen">
       <Sidebar />
-      <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6">
+      <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6 relative">
         <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Generate</h1>
 
         {/* Tabs */}

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Button from "./Button";
+import { Menu, X } from "lucide-react";
 
 interface ImageEditorProps {
   imageUrl: string;
@@ -83,6 +84,15 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const updatingSourceRef = useRef<'rgb' | 'hsl' | null>(null);
   const strokeSnapshotRef = useRef<ImageData | null>(null); // Snapshot before stroke starts
+
+  // Mobile UI state
+  const [isMobileToolbarOpen, setIsMobileToolbarOpen] = useState(false);
+  const [pinchDistance, setPinchDistance] = useState<number | null>(null);
+  const [pinchCenter, setPinchCenter] = useState<{ x: number; y: number } | null>(null);
+  const [isPinching, setIsPinching] = useState(false); // Flag to prevent drawing during pinch
+  const [isTwoFingerPanning, setIsTwoFingerPanning] = useState(false); // Flag for two-finger panning
+  const activePointersRef = useRef<Set<number>>(new Set()); // Track active pointer IDs
+  const lastTwoFingerCenterRef = useRef<{ x: number; y: number } | null>(null); // Track two-finger center for panning
 
   // Brush stroke tracking
   const strokeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -403,6 +413,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     const containerRect = container.getBoundingClientRect();
 
     // Screen coordinates relative to container
+    // Note: container already has the correct bounding box including pt-16 offset on mobile
     const screenX = e.clientX - containerRect.left - panOffset.x;
     const screenY = e.clientY - containerRect.top - panOffset.y;
 
@@ -848,6 +859,19 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Track active pointers
+    activePointersRef.current.add(e.pointerId);
+
+    // If multiple pointers are active (multi-touch), prevent drawing immediately
+    if (activePointersRef.current.size > 1) {
+      setIsPinching(true);
+      setIsDrawing(false);
+      return;
+    }
+
+    // Prevent drawing during pinch zoom
+    if (isPinching) return;
+
     const composite = compositeCanvasRef.current;
     const compositeCtx = composite?.getContext("2d");
     if (!composite || !compositeCtx) return;
@@ -1143,6 +1167,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   };
 
   const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
+    // Remove pointer from active set
+    if (e) {
+      activePointersRef.current.delete(e.pointerId);
+    }
+
+    // If no more active pointers, exit pinch mode
+    if (activePointersRef.current.size === 0) {
+      setIsPinching(false);
+    }
+
     if (isPanning) {
       setIsPanning(false);
     }
@@ -1192,7 +1226,17 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     }
   };
 
-  const handlePointerLeave = () => {
+  const handlePointerLeave = (e?: React.PointerEvent<HTMLCanvasElement>) => {
+    // Remove pointer from active set
+    if (e) {
+      activePointersRef.current.delete(e.pointerId);
+    }
+
+    // If no more active pointers, exit pinch mode
+    if (activePointersRef.current.size === 0) {
+      setIsPinching(false);
+    }
+
     setCursorPos(null);
 
     // If in tapering mode, complete the taper immediately
@@ -1476,12 +1520,126 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     }
   }, [tool]);
 
+  // Touch event handlers for pinch-to-zoom and two-finger panning
+  const handleTouchStart = useCallback((e: TouchEvent) => {
+    if (e.touches.length === 2) {
+      // Two fingers - start pinch zoom and potential panning
+      e.preventDefault(); // Prevent default behavior
+      setIsPinching(true);
+      setIsDrawing(false); // Stop any ongoing drawing
+
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(
+        touch2.clientX - touch1.clientX,
+        touch2.clientY - touch1.clientY
+      );
+      const centerX = (touch1.clientX + touch2.clientX) / 2;
+      const centerY = (touch1.clientY + touch2.clientY) / 2;
+
+      setPinchDistance(distance);
+      setPinchCenter({ x: centerX, y: centerY });
+      lastTwoFingerCenterRef.current = { x: centerX, y: centerY };
+    }
+  }, []);
+
+  const handleTouchMove = useCallback((e: TouchEvent) => {
+    if (e.touches.length === 2 && pinchDistance !== null && pinchCenter !== null && lastTwoFingerCenterRef.current) {
+      e.preventDefault(); // Prevent default pinch zoom behavior
+
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(
+        touch2.clientX - touch1.clientX,
+        touch2.clientY - touch1.clientY
+      );
+
+      const newCenterX = (touch1.clientX + touch2.clientX) / 2;
+      const newCenterY = (touch1.clientY + touch2.clientY) / 2;
+
+      // Calculate distance change ratio for pinch zoom
+      const distanceChangeRatio = distance / pinchDistance;
+
+      // If distance change is significant (> 5% change), it's a pinch zoom
+      // Otherwise, treat it as two-finger panning
+      const isPinchZoom = Math.abs(distanceChangeRatio - 1) > 0.05;
+
+      if (isPinchZoom) {
+        // Pinch zoom
+        const scale = distanceChangeRatio;
+        const newZoom = Math.max(0.1, Math.min(10, zoom * scale));
+
+        // Keep pinch center point fixed during zoom
+        const canvasX = (pinchCenter.x - panOffset.x) / zoom;
+        const canvasY = (pinchCenter.y - panOffset.y) / zoom;
+        const newPanX = pinchCenter.x - canvasX * newZoom;
+        const newPanY = pinchCenter.y - canvasY * newZoom;
+
+        setZoom(newZoom);
+        setPanOffset({ x: newPanX, y: newPanY });
+        setPinchDistance(distance);
+        setPinchCenter({ x: newCenterX, y: newCenterY });
+        lastTwoFingerCenterRef.current = { x: newCenterX, y: newCenterY };
+        setIsTwoFingerPanning(false);
+      } else {
+        // Two-finger panning (distance relatively stable)
+        setIsTwoFingerPanning(true);
+
+        const deltaX = newCenterX - lastTwoFingerCenterRef.current.x;
+        const deltaY = newCenterY - lastTwoFingerCenterRef.current.y;
+
+        setPanOffset({
+          x: panOffset.x + deltaX,
+          y: panOffset.y + deltaY,
+        });
+
+        lastTwoFingerCenterRef.current = { x: newCenterX, y: newCenterY };
+      }
+    }
+  }, [pinchDistance, pinchCenter, zoom, panOffset]);
+
+  const handleTouchEnd = useCallback((e: TouchEvent) => {
+    if (e.touches.length < 2) {
+      // No longer pinching or two-finger panning
+      setIsPinching(false);
+      setIsTwoFingerPanning(false);
+      setPinchDistance(null);
+      setPinchCenter(null);
+      lastTwoFingerCenterRef.current = null;
+    }
+  }, []);
+
+  // Handle orientation change
+  useEffect(() => {
+    const handleOrientationChange = () => {
+      // Reset view to fit new orientation
+      setTimeout(() => {
+        resetViewTransform();
+      }, 100); // Small delay to ensure layout has updated
+    };
+
+    window.addEventListener('orientationchange', handleOrientationChange);
+    window.addEventListener('resize', handleOrientationChange);
+
+    return () => {
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      window.removeEventListener('resize', handleOrientationChange);
+    };
+  }, []);
+
   useEffect(() => {
     const container = containerRef.current;
+    const canvas = compositeCanvasRef.current;
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     if (container) {
       container.addEventListener("wheel", handleWheel, { passive: false });
+    }
+    // Add touch event listeners to canvas instead of container for accurate coordinates
+    if (canvas) {
+      canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+      canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+      canvas.addEventListener("touchend", handleTouchEnd);
     }
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
@@ -1489,14 +1647,41 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       if (container) {
         container.removeEventListener("wheel", handleWheel);
       }
+      if (canvas) {
+        canvas.removeEventListener("touchstart", handleTouchStart);
+        canvas.removeEventListener("touchmove", handleTouchMove);
+        canvas.removeEventListener("touchend", handleTouchEnd);
+      }
     };
-  }, [handleKeyDown, handleKeyUp, handleWheel]);
+  }, [handleKeyDown, handleKeyUp, handleWheel, handleTouchStart, handleTouchMove, handleTouchEnd]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex">
+      {/* Mobile toolbar toggle button */}
+      <button
+        onClick={() => setIsMobileToolbarOpen(!isMobileToolbarOpen)}
+        className="fixed top-2 left-2 z-50 p-2 rounded-lg bg-gray-800 bg-opacity-90 text-white lg:hidden shadow-lg"
+        aria-label="Toggle toolbar"
+      >
+        {isMobileToolbarOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+      </button>
+
+      {/* Mobile overlay */}
+      {isMobileToolbarOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-30 lg:hidden"
+          onClick={() => setIsMobileToolbarOpen(false)}
+        />
+      )}
+
       {/* Left Toolbox */}
       <div
-        className="bg-gray-900 w-80 h-screen overflow-y-auto p-4 space-y-4"
+        className={`
+          fixed lg:static inset-y-0 left-0 z-40
+          bg-gray-900 w-80 lg:w-80 h-screen overflow-y-auto p-4 space-y-4
+          transform transition-transform duration-200 ease-in-out
+          ${isMobileToolbarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        `}
         onWheel={(e) => {
           const element = e.currentTarget;
           const atTop = element.scrollTop === 0;
@@ -2043,8 +2228,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           );
         })()}
 
-        {/* Layer Panel - Bottom Right */}
-        <div className="absolute bottom-4 right-4 bg-gray-900 bg-opacity-95 rounded-lg p-3 min-w-[200px] max-w-[300px]">
+        {/* Layer Panel - Bottom Right (hidden on mobile when toolbar is closed for fullscreen) */}
+        <div className={`absolute bottom-4 right-4 bg-gray-900 bg-opacity-95 rounded-lg p-3 min-w-[200px] max-w-[300px] transition-opacity ${!isMobileToolbarOpen ? 'lg:opacity-100 opacity-0 pointer-events-none lg:pointer-events-auto' : 'opacity-100'}`}>
           <div className="flex justify-between items-center mb-2">
             <div className="text-xs font-semibold text-gray-300">Layers</div>
             <button

@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X, Info, Maximize2 } from "lucide-react";
+import { SlidersHorizontal, X, Info, ArrowLeft } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
@@ -56,12 +56,6 @@ export default function ImageGrid() {
   const [gridColumns, setGridColumns] = useState(6);
   const [showFullSizeImage, setShowFullSizeImage] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-
-  // Image zoom states for detail view
-  const [imageZoom, setImageZoom] = useState(1);
-  const [imagePan, setImagePan] = useState({ x: 0, y: 0 });
-  const [isPinching, setIsPinching] = useState(false);
-  const [pinchDistance, setPinchDistance] = useState<number | null>(null);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -423,47 +417,22 @@ export default function ImageGrid() {
     }
   };
 
-  // Image detail view handlers
+  // Image detail view swipe handlers
   const handleDetailImageTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      // Pinch gesture
-      setIsPinching(true);
-      const distance = Math.hypot(
-        e.touches[1].clientX - e.touches[0].clientX,
-        e.touches[1].clientY - e.touches[0].clientY
-      );
-      setPinchDistance(distance);
-    } else if (e.touches.length === 1) {
-      // Swipe gesture
+    if (e.touches.length === 1) {
       setTouchStart(e.touches[0].clientX);
       setTouchEnd(null);
     }
   };
 
   const handleDetailImageTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 2 && pinchDistance && isPinching) {
-      // Pinch zoom
-      e.preventDefault();
-      const distance = Math.hypot(
-        e.touches[1].clientX - e.touches[0].clientX,
-        e.touches[1].clientY - e.touches[0].clientY
-      );
-      const scale = distance / pinchDistance;
-      const newZoom = Math.max(0.5, Math.min(5, imageZoom * scale));
-      setImageZoom(newZoom);
-      setPinchDistance(distance);
-    } else if (e.touches.length === 1 && !isPinching) {
-      // Track swipe
+    if (e.touches.length === 1) {
       setTouchEnd(e.touches[0].clientX);
     }
   };
 
   const handleDetailImageTouchEnd = () => {
-    if (isPinching) {
-      setIsPinching(false);
-      setPinchDistance(null);
-    } else if (touchStart !== null && touchEnd !== null) {
-      // Handle swipe for image navigation
+    if (touchStart !== null && touchEnd !== null) {
       const distance = touchStart - touchEnd;
       const isLeftSwipe = distance > minSwipeDistance;
       const isRightSwipe = distance < -minSwipeDistance;
@@ -471,38 +440,41 @@ export default function ImageGrid() {
       const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage?.filename);
 
       if (isLeftSwipe && currentIndex < filteredImages.length - 1) {
-        // Next image
         setSelectedImage(filteredImages[currentIndex + 1]);
-        resetImageZoom();
       } else if (isRightSwipe && currentIndex > 0) {
-        // Previous image
         setSelectedImage(filteredImages[currentIndex - 1]);
-        resetImageZoom();
       }
     }
     setTouchStart(null);
     setTouchEnd(null);
   };
 
-  const resetImageZoom = () => {
-    setImageZoom(1);
-    setImagePan({ x: 0, y: 0 });
-  };
-
   return (
     <div>
       {selectedImage ? (
         <div className="h-full relative">
-          {/* Back button */}
+          {/* Back button - Desktop */}
           <button
             onClick={() => {
               setSelectedImage(null);
-              resetImageZoom();
               setIsDetailOpen(false);
             }}
-            className="text-blue-400 hover:text-blue-300 mb-2 lg:mb-4 block"
+            className="hidden lg:flex items-center gap-2 text-blue-400 hover:text-blue-300 mb-4"
           >
-            ← Back to gallery
+            <ArrowLeft className="h-5 w-5" />
+            <span>Back to gallery</span>
+          </button>
+
+          {/* Back button - Mobile */}
+          <button
+            onClick={() => {
+              setSelectedImage(null);
+              setIsDetailOpen(false);
+            }}
+            className="fixed top-20 left-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+            aria-label="Back to gallery"
+          >
+            <ArrowLeft className="h-5 w-5" />
           </button>
 
           {/* Mobile: Detail info toggle button */}
@@ -512,16 +484,6 @@ export default function ImageGrid() {
             aria-label="Toggle detail info"
           >
             {isDetailOpen ? <X className="h-5 w-5" /> : <Info className="h-5 w-5" />}
-          </button>
-
-          {/* Mobile: Zoom reset button */}
-          <button
-            onClick={resetImageZoom}
-            className="fixed top-20 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
-            aria-label="Reset zoom"
-            title="Fit to window"
-          >
-            <Maximize2 className="h-5 w-5" />
           </button>
 
           {/* Mobile detail overlay */}
@@ -803,10 +765,7 @@ export default function ImageGrid() {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex > 0 && (
                   <button
-                    onClick={() => {
-                      setSelectedImage(filteredImages[currentIndex - 1]);
-                      resetImageZoom();
-                    }}
+                    onClick={() => setSelectedImage(filteredImages[currentIndex - 1])}
                     className="hidden lg:flex absolute left-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Previous image (← key)"
                   >
@@ -825,12 +784,8 @@ export default function ImageGrid() {
                   src={`/outputs/${selectedImage.filename}`}
                   alt="Generated"
                   className="max-w-full max-h-full object-contain cursor-pointer"
-                  style={{
-                    transform: `scale(${imageZoom}) translate(${imagePan.x}px, ${imagePan.y}px)`,
-                    transition: isPinching ? 'none' : 'transform 0.2s',
-                  }}
                   onDoubleClick={() => setShowFullSizeImage(true)}
-                  title="Double-click to view full size (Desktop) / Pinch to zoom (Mobile)"
+                  title="Double-click to view full size"
                 />
               </div>
 
@@ -839,10 +794,7 @@ export default function ImageGrid() {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex < filteredImages.length - 1 && (
                   <button
-                    onClick={() => {
-                      setSelectedImage(filteredImages[currentIndex + 1]);
-                      resetImageZoom();
-                    }}
+                    onClick={() => setSelectedImage(filteredImages[currentIndex + 1])}
                     className="hidden lg:flex absolute right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Next image (→ key)"
                   >

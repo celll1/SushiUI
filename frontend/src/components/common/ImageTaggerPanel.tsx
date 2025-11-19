@@ -352,16 +352,16 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     if (tags.length === 0) return null;
 
     return (
-      <div key={categoryName} className="mb-3">
-        <h5 className="text-xs font-semibold text-gray-400 mb-1.5 capitalize">
+      <div key={categoryName} className="mb-2">
+        <h5 className="text-[10px] font-semibold text-gray-400 mb-1 capitalize">
           {categoryName} ({tags.length})
         </h5>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1">
           {tags.map(([tag, confidence]) => (
             <button
               key={tag}
               onClick={() => handleTagClick(tag)}
-              className={`px-2 py-0.5 rounded text-xs transition-colors ${
+              className={`px-1.5 py-0.5 rounded text-[10px] transition-colors ${
                 selectedTags.has(tag)
                   ? "bg-blue-600 text-white"
                   : "bg-gray-700 text-gray-300 hover:bg-gray-600"
@@ -369,7 +369,7 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
               title={`Confidence: ${(confidence * 100).toFixed(1)}%`}
             >
               {tag}
-              <span className="ml-1 text-gray-400 text-[10px]">
+              <span className="ml-0.5 text-gray-400 text-[9px]">
                 {(confidence * 100).toFixed(0)}%
               </span>
             </button>
@@ -380,211 +380,216 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
   };
 
   return (
-    <div ref={taggerContainerRef} className="grid grid-cols-3 gap-4 h-full" tabIndex={-1}>
-      {/* Left Column: Image Upload */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-gray-200">Image</h3>
+    <div ref={taggerContainerRef} className="flex flex-col gap-3 h-full" tabIndex={-1}>
+      {/* Top Row: Image Upload and Thresholds */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* Left: Image Upload */}
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold text-gray-200">Image</h3>
 
-        {/* Model Version Selector */}
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">Model Version</label>
-          <select
-            value={selectedModelVersion}
-            onChange={(e) => setSelectedModelVersion(e.target.value)}
-            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
+          {/* Model Version Selector */}
+          <div>
+            <label className="block text-[10px] text-gray-400 mb-0.5">Model Version</label>
+            <select
+              value={selectedModelVersion}
+              onChange={(e) => setSelectedModelVersion(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
+            >
+              {MODEL_VERSIONS.map(v => (
+                <option key={v.value} value={v.value}>{v.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Drag & Drop Area */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+              isDragging
+                ? 'border-blue-500 bg-gray-700'
+                : 'border-gray-600 bg-gray-800'
+            } ${imagePreview ? 'p-1' : 'p-6'}`}
           >
-            {MODEL_VERSIONS.map(v => (
-              <option key={v.value} value={v.value}>{v.label}</option>
-            ))}
-          </select>
-        </div>
+            {imagePreview ? (
+              <img
+                src={imagePreview}
+                alt="Preview"
+                className="w-full h-auto object-contain rounded"
+              />
+            ) : (
+              <div className="text-center text-gray-400 text-xs">
+                <p className="mb-0.5">Drop image here</p>
+                <p className="text-[10px]">or click to browse</p>
+              </div>
+            )}
+          </div>
 
-        {/* Drag & Drop Area */}
-        <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
-            isDragging
-              ? 'border-blue-500 bg-gray-700'
-              : 'border-gray-600 bg-gray-800'
-          } ${imagePreview ? 'p-2' : 'p-8'}`}
-        >
-          {imagePreview ? (
-            <img
-              src={imagePreview}
-              alt="Preview"
-              className="w-full h-auto object-contain rounded"
-            />
-          ) : (
-            <div className="text-center text-gray-400 text-sm">
-              <p className="mb-1">Drop image here</p>
-              <p className="text-xs">or click to browse</p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleImageUpload}
+            className="hidden"
+          />
+
+          <Button
+            onClick={handlePredictTags}
+            variant="primary"
+            disabled={!imageBase64 || isTagging}
+            className="w-full text-xs py-1.5"
+          >
+            {isTagging ? "Tagging..." : "Predict Tags"}
+          </Button>
+
+          {error && (
+            <div className="bg-red-900 border border-red-700 rounded p-1.5 text-[10px] text-red-200">
+              {error}
             </div>
           )}
         </div>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleImageUpload}
-          className="hidden"
-        />
-
-        <Button
-          onClick={handlePredictTags}
-          variant="primary"
-          disabled={!imageBase64 || isTagging}
-          className="w-full"
-        >
-          {isTagging ? "Tagging..." : "Predict Tags"}
-        </Button>
-
-        {error && (
-          <div className="bg-red-900 border border-red-700 rounded p-2 text-xs text-red-200">
-            {error}
-          </div>
-        )}
-      </div>
-
-      {/* Middle Column: Category Thresholds & Order */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-200">Thresholds</h3>
-          <div className="flex gap-1">
-            <Button
-              onClick={() => setGlobalThresholdMode(!globalThresholdMode)}
-              variant={globalThresholdMode ? "primary" : "secondary"}
-              className="text-xs px-2 py-1"
-            >
-              {globalThresholdMode ? "Global" : "Individual"}
-            </Button>
-            <Button onClick={resetThresholds} variant="secondary" className="text-xs px-2 py-1">
-              Reset
-            </Button>
-          </div>
-        </div>
-
-        {/* Global Threshold Mode */}
-        {globalThresholdMode && (
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-300 whitespace-nowrap">All:</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={globalThreshold}
-                onChange={(e) => updateGlobalThreshold(parseFloat(e.target.value))}
-                className="flex-1 h-1"
-              />
-              <span className="text-xs text-gray-400 w-10 text-right">{globalThreshold.toFixed(2)}</span>
+        {/* Right: Category Thresholds & Order */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-gray-200">Thresholds</h3>
+            <div className="flex gap-1">
+              <Button
+                onClick={() => setGlobalThresholdMode(!globalThresholdMode)}
+                variant={globalThresholdMode ? "primary" : "secondary"}
+                className="text-[10px] px-1.5 py-0.5"
+              >
+                {globalThresholdMode ? "Global" : "Individual"}
+              </Button>
+              <Button onClick={resetThresholds} variant="secondary" className="text-[10px] px-1.5 py-0.5">
+                Reset
+              </Button>
             </div>
           </div>
-        )}
 
-        {/* Individual Thresholds */}
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-2 space-y-1 max-h-[calc(100vh-350px)] overflow-y-auto">
-          {categoryThresholds.map((cat, index) => (
-            <div
-              key={cat.id}
-              draggable
-              onDragStart={() => handleCategoryDragStart(index)}
-              onDragOver={(e) => handleCategoryDragOver(e, index)}
-              onDragLeave={handleCategoryDragLeave}
-              onDrop={(e) => handleCategoryDrop(e, index)}
-              onDragEnd={handleCategoryDragEnd}
-              className={`flex items-center gap-2 px-2 py-1 rounded cursor-move transition-all ${
-                draggedIndex === index ? 'opacity-50' : ''
-              } ${
-                dragOverIndex === index ? 'bg-blue-700' : 'hover:bg-gray-700'
-              }`}
-            >
-              <span className="text-gray-500 text-xs">⋮⋮</span>
-              <input
-                type="checkbox"
-                checked={cat.enabled}
-                onChange={() => toggleCategory(index)}
-                className="cursor-pointer"
-              />
-              <span className={`text-xs font-medium w-16 ${cat.enabled ? 'text-gray-200' : 'text-gray-500'}`}>
-                {cat.label}
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={cat.threshold}
-                onChange={(e) => updateThreshold(index, parseFloat(e.target.value))}
-                disabled={!cat.enabled || globalThresholdMode}
-                className="flex-1 h-1"
-              />
-              <span className="text-xs text-gray-400 w-10 text-right">{cat.threshold.toFixed(2)}</span>
+          {/* Global Threshold Mode */}
+          {globalThresholdMode && (
+            <div className="bg-gray-800 border border-gray-700 rounded-lg p-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-gray-300 whitespace-nowrap">All:</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={globalThreshold}
+                  onChange={(e) => updateGlobalThreshold(parseFloat(e.target.value))}
+                  className="flex-1 h-1"
+                />
+                <span className="text-[10px] text-gray-400 w-8 text-right">{globalThreshold.toFixed(2)}</span>
+              </div>
             </div>
-          ))}
+          )}
+
+          {/* Individual Thresholds */}
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-1.5 space-y-0.5 max-h-48 overflow-y-auto">
+            {categoryThresholds.map((cat, index) => (
+              <div
+                key={cat.id}
+                draggable
+                onDragStart={() => handleCategoryDragStart(index)}
+                onDragOver={(e) => handleCategoryDragOver(e, index)}
+                onDragLeave={handleCategoryDragLeave}
+                onDrop={(e) => handleCategoryDrop(e, index)}
+                onDragEnd={handleCategoryDragEnd}
+                className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded cursor-move transition-all ${
+                  draggedIndex === index ? 'opacity-50' : ''
+                } ${
+                  dragOverIndex === index ? 'bg-blue-700' : 'hover:bg-gray-700'
+                }`}
+              >
+                <span className="text-gray-500 text-[10px]">⋮⋮</span>
+                <input
+                  type="checkbox"
+                  checked={cat.enabled}
+                  onChange={() => toggleCategory(index)}
+                  className="cursor-pointer w-3 h-3"
+                />
+                <span className={`text-[10px] font-medium w-14 ${cat.enabled ? 'text-gray-200' : 'text-gray-500'}`}>
+                  {cat.label}
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={cat.threshold}
+                  onChange={(e) => updateThreshold(index, parseFloat(e.target.value))}
+                  disabled={!cat.enabled || globalThresholdMode}
+                  className="flex-1 h-1"
+                />
+                <span className="text-[10px] text-gray-400 w-8 text-right">{cat.threshold.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Right Column: Results & Actions */}
-      <div className="space-y-3">
+      {/* Bottom Row: Results & Actions */}
+      <div className="flex-1 flex flex-col space-y-2 min-h-0">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-200">
+          <h3 className="text-xs font-semibold text-gray-200">
             Results {predictions ? `(${selectedTags.size} selected)` : ""}
           </h3>
-          {predictions && (
-            <div className="flex gap-1">
-              <Button onClick={handleSelectAll} variant="secondary" className="text-xs px-2 py-1">
-                All
-              </Button>
-              <Button onClick={handleDeselectAll} variant="secondary" className="text-xs px-2 py-1">
-                None
-              </Button>
-            </div>
-          )}
+          <div className="flex gap-1">
+            {predictions && (
+              <>
+                <Button onClick={handleSelectAll} variant="secondary" className="text-[10px] px-1.5 py-0.5">
+                  All
+                </Button>
+                <Button onClick={handleDeselectAll} variant="secondary" className="text-[10px] px-1.5 py-0.5">
+                  None
+                </Button>
+              </>
+            )}
+            {predictions && (
+              <>
+                <Button
+                  onClick={handleInsertTags}
+                  variant="primary"
+                  disabled={selectedTags.size === 0}
+                  className="text-[10px] px-2 py-0.5"
+                >
+                  Insert ({selectedTags.size})
+                </Button>
+                <Button
+                  onClick={handleOverwriteTags}
+                  variant="secondary"
+                  disabled={selectedTags.size === 0}
+                  className="text-[10px] px-2 py-0.5"
+                >
+                  Overwrite ({selectedTags.size})
+                </Button>
+              </>
+            )}
+          </div>
         </div>
 
         {predictions ? (
-          <>
-            {/* Sorted Results Display */}
-            <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 max-h-[calc(100vh-400px)] overflow-y-auto">
-              {categoryThresholds.map(catThreshold => {
-                if (!catThreshold.enabled) return null;
-                const tags = predictions[catThreshold.id as keyof typeof predictions];
-                if (!tags || tags.length === 0) return null;
-                return renderTagCategory(catThreshold.id, tags);
-              })}
-            </div>
-
-            {/* Action Buttons */}
-            <div className="space-y-2">
-              <Button
-                onClick={handleInsertTags}
-                variant="primary"
-                disabled={selectedTags.size === 0}
-                className="w-full"
-              >
-                Insert ({selectedTags.size})
-              </Button>
-              <Button
-                onClick={handleOverwriteTags}
-                variant="secondary"
-                disabled={selectedTags.size === 0}
-                className="w-full"
-              >
-                Overwrite ({selectedTags.size})
-              </Button>
-              <div className="text-xs text-gray-500 text-center">
-                Ctrl+Enter: Insert | Ctrl+Shift+Enter: Overwrite
-              </div>
-            </div>
-          </>
+          <div className="flex-1 bg-gray-800 border border-gray-700 rounded-lg p-2 overflow-y-auto min-h-0">
+            {categoryThresholds.map(catThreshold => {
+              if (!catThreshold.enabled) return null;
+              const tags = predictions[catThreshold.id as keyof typeof predictions];
+              if (!tags || tags.length === 0) return null;
+              return renderTagCategory(catThreshold.id, tags);
+            })}
+          </div>
         ) : (
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-8 text-center text-gray-500 text-sm">
+          <div className="flex-1 bg-gray-800 border border-gray-700 rounded-lg p-6 flex items-center justify-center text-gray-500 text-xs">
             Upload and predict an image to see tags
+          </div>
+        )}
+
+        {predictions && (
+          <div className="text-[10px] text-gray-500 text-center">
+            Ctrl+Enter: Insert | Ctrl+Shift+Enter: Overwrite
           </div>
         )}
       </div>

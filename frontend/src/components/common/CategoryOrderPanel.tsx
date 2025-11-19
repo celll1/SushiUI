@@ -177,8 +177,8 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
         </div>
       </div>
 
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex flex-wrap gap-2">
+      <div className="bg-gray-800 rounded-lg p-2 sm:p-4">
+        <div className="space-y-0.5 sm:space-y-1">
           {categories.map((category, index) => (
             <div
               key={category.id}
@@ -188,67 +188,50 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
-              className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg transition-all cursor-move min-w-[100px] ${
+              className={`flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition-all cursor-move ${
                 draggedIndex === index
                   ? "opacity-50 bg-gray-600"
                   : dragOverIndex === index
-                  ? "bg-blue-700 border-2 border-blue-500"
+                  ? "bg-blue-700"
                   : "bg-gray-700 hover:bg-gray-650"
               }`}
             >
-              {/* Drag Handle Icon */}
-              <div className="text-gray-400">
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M4 8h16M4 16h16"
-                  />
-                </svg>
-              </div>
+              {/* Drag Handle */}
+              <span className="text-gray-400 text-xs sm:text-sm">⋮⋮</span>
 
               {/* Category Label */}
-              <div className="text-center">
-                <span
-                  className={`text-sm font-medium ${
-                    category.enabled ? "text-gray-200" : "text-gray-500"
-                  }`}
-                >
-                  {category.label}
+              <span
+                className={`text-xs sm:text-sm font-medium flex-1 ${
+                  category.enabled ? "text-gray-200" : "text-gray-500"
+                }`}
+              >
+                {category.label}
+              </span>
+
+              {/* Enable Checkbox */}
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={category.enabled}
+                  onChange={() => toggleCategory(index)}
+                  className="w-3 h-3 sm:w-4 sm:h-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                />
+                <span className="text-[10px] sm:text-xs text-gray-400">Enable</span>
+              </label>
+
+              {/* Randomize Checkbox */}
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={category.randomize || false}
+                  onChange={() => toggleRandomize(index)}
+                  disabled={!category.enabled}
+                  className="w-3 h-3 sm:w-4 sm:h-4 rounded border-gray-500 text-green-600 focus:ring-green-500 focus:ring-offset-gray-800 disabled:opacity-30"
+                />
+                <span className={`text-[10px] sm:text-xs text-gray-400 ${!category.enabled ? "opacity-30" : ""}`}>
+                  Random
                 </span>
-              </div>
-
-              {/* Control Buttons */}
-              <div className="flex flex-col gap-1">
-                {/* Enable/Disable Checkbox */}
-                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={category.enabled}
-                    onChange={() => toggleCategory(index)}
-                    className="w-3 h-3 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
-                  />
-                  <span>Enable</span>
-                </label>
-
-                {/* Randomize Checkbox */}
-                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={category.randomize || false}
-                    onChange={() => toggleRandomize(index)}
-                    disabled={!category.enabled}
-                    className="w-3 h-3 rounded border-gray-500 text-green-600 focus:ring-green-500 focus:ring-offset-gray-800 disabled:opacity-30"
-                  />
-                  <span className={!category.enabled ? "opacity-30" : ""}>Random</span>
-                </label>
-              </div>
+              </label>
             </div>
           ))}
         </div>
@@ -258,7 +241,7 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
             <strong>Usage:</strong>
           </p>
           <ul className="list-disc list-inside space-y-1">
-            <li>Drag and drop cards to reorder categories</li>
+            <li>Drag and drop rows to reorder categories</li>
             <li>Enable: Include category in reordering</li>
             <li>Random: Randomize tag order within category</li>
             <li>Click "Apply to Current Prompt" to reorder tags in the prompt above</li>

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Button from "./Button";
-import { Menu, X } from "lucide-react";
+import { Menu, X, Undo2, Redo2, Maximize2, Layers } from "lucide-react";
 
 interface ImageEditorProps {
   imageUrl: string;
@@ -87,6 +87,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
   // Mobile UI state
   const [isMobileToolbarOpen, setIsMobileToolbarOpen] = useState(false);
+  const [isMobileLayerPanelOpen, setIsMobileLayerPanelOpen] = useState(false);
   const [pinchDistance, setPinchDistance] = useState<number | null>(null);
   const [pinchCenter, setPinchCenter] = useState<{ x: number; y: number } | null>(null);
   const [isPinching, setIsPinching] = useState(false); // Flag to prevent drawing during pinch
@@ -2228,9 +2229,59 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           );
         })()}
 
-        {/* Layer Panel - Bottom Right (hidden on mobile when toolbar is closed for fullscreen) */}
-        <div className={`absolute bottom-4 right-4 bg-gray-900 bg-opacity-95 rounded-lg p-3 min-w-[200px] max-w-[300px] transition-opacity ${!isMobileToolbarOpen ? 'lg:opacity-100 opacity-0 pointer-events-none lg:pointer-events-auto' : 'opacity-100'}`}>
-          <div className="flex justify-between items-center mb-2">
+        {/* Mobile floating controls - Undo/Redo/Fullscreen */}
+        <div className="fixed bottom-4 left-4 z-40 flex gap-2 lg:hidden">
+          <button
+            onClick={undo}
+            disabled={historyIndex <= 0}
+            className="p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Undo"
+          >
+            <Undo2 className="h-5 w-5" />
+          </button>
+          <button
+            onClick={redo}
+            disabled={historyIndex >= history.length - 1}
+            className="p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Redo"
+          >
+            <Redo2 className="h-5 w-5" />
+          </button>
+          <button
+            onClick={resetViewTransform}
+            className="p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
+            aria-label="Reset view"
+          >
+            <Maximize2 className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Mobile layer panel toggle button */}
+        <button
+          onClick={() => setIsMobileLayerPanelOpen(!isMobileLayerPanelOpen)}
+          className="fixed bottom-4 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white lg:hidden shadow-lg"
+          aria-label="Toggle layers"
+        >
+          <Layers className="h-5 w-5" />
+        </button>
+
+        {/* Mobile layer panel overlay */}
+        {isMobileLayerPanelOpen && (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 z-30 lg:hidden"
+            onClick={() => setIsMobileLayerPanelOpen(false)}
+          />
+        )}
+
+        {/* Layer Panel */}
+        <div className={`
+          fixed lg:absolute bottom-20 lg:bottom-4 right-4 z-40 lg:z-auto
+          bg-gray-900 bg-opacity-95 rounded-lg p-2 lg:p-3
+          min-w-[280px] lg:min-w-[200px] max-w-[320px] lg:max-w-[300px]
+          transform transition-transform duration-200 ease-in-out
+          ${isMobileLayerPanelOpen ? 'translate-y-0' : 'translate-y-[calc(100%+6rem)] lg:translate-y-0'}
+        `}>
+          <div className="flex justify-between items-center mb-1.5 lg:mb-2">
             <div className="text-xs font-semibold text-gray-300">Layers</div>
             <button
               onClick={addLayer}
@@ -2240,11 +2291,11 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
               + Add
             </button>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 max-h-48 lg:max-h-60 overflow-y-auto">
             {[...layers].reverse().map((layer) => (
               <div
                 key={layer.id}
-                className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                className={`flex items-center gap-1.5 lg:gap-2 p-1.5 lg:p-2 rounded cursor-pointer transition-colors ${
                   activeLayerId === layer.id
                     ? 'bg-blue-600 bg-opacity-50'
                     : 'bg-gray-800 hover:bg-gray-700'
@@ -2253,7 +2304,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
               >
                 {/* Visibility Toggle */}
                 <button
-                  className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-white"
+                  className="w-4 h-4 lg:w-4 lg:h-4 flex items-center justify-center text-gray-400 hover:text-white text-xs lg:text-sm"
                   onClick={(e) => {
                     e.stopPropagation();
                     setLayers(prev => prev.map(l =>
@@ -2265,7 +2316,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                 </button>
 
                 {/* Layer Thumbnail */}
-                <div className="w-8 h-8 bg-gray-700 rounded flex items-center justify-center text-xs">
+                <div className="w-6 h-6 lg:w-8 lg:h-8 bg-gray-700 rounded flex items-center justify-center text-xs">
                   {layer.id === 'base' ? '🖼️' : '📝'}
                 </div>
 
@@ -2284,10 +2335,10 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
                 {/* Layer Action Buttons */}
                 {layer.editable && (
-                  <div className="flex gap-1">
+                  <div className="flex gap-0.5 lg:gap-1">
                     {/* Clear Layer Button */}
                     <button
-                      className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-yellow-400 transition-colors"
+                      className="w-5 h-5 lg:w-6 lg:h-6 flex items-center justify-center text-gray-400 hover:text-yellow-400 transition-colors text-xs lg:text-sm"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (confirm(`Clear all content on ${layer.name}?`)) {
@@ -2309,7 +2360,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
                     {/* Delete Layer Button (only for deletable layers) */}
                     {layer.deletable && (
                       <button
-                        className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors"
+                        className="w-5 h-5 lg:w-6 lg:h-6 flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors text-xs lg:text-sm"
                         onClick={(e) => {
                           e.stopPropagation();
                           deleteLayer(layer.id);

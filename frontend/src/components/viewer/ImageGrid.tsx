@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X } from "lucide-react";
+import { SlidersHorizontal, X, Info, Maximize2 } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
@@ -55,6 +55,13 @@ export default function ImageGrid() {
   // UI states
   const [gridColumns, setGridColumns] = useState(6);
   const [showFullSizeImage, setShowFullSizeImage] = useState(false);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // Image zoom states for detail view
+  const [imageZoom, setImageZoom] = useState(1);
+  const [imagePan, setImagePan] = useState({ x: 0, y: 0 });
+  const [isPinching, setIsPinching] = useState(false);
+  const [pinchDistance, setPinchDistance] = useState<number | null>(null);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -385,7 +392,7 @@ export default function ImageGrid() {
     router.push("/generate?tab=inpaint");
   };
 
-  // Swipe gesture handlers
+  // Swipe gesture handlers for gallery pagination
   const minSwipeDistance = 50; // Minimum distance for a swipe
 
   const onTouchStart = (e: React.TouchEvent) => {
@@ -416,19 +423,126 @@ export default function ImageGrid() {
     }
   };
 
+  // Image detail view handlers
+  const handleDetailImageTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      // Pinch gesture
+      setIsPinching(true);
+      const distance = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      );
+      setPinchDistance(distance);
+    } else if (e.touches.length === 1) {
+      // Swipe gesture
+      setTouchStart(e.touches[0].clientX);
+      setTouchEnd(null);
+    }
+  };
+
+  const handleDetailImageTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchDistance && isPinching) {
+      // Pinch zoom
+      e.preventDefault();
+      const distance = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      );
+      const scale = distance / pinchDistance;
+      const newZoom = Math.max(0.5, Math.min(5, imageZoom * scale));
+      setImageZoom(newZoom);
+      setPinchDistance(distance);
+    } else if (e.touches.length === 1 && !isPinching) {
+      // Track swipe
+      setTouchEnd(e.touches[0].clientX);
+    }
+  };
+
+  const handleDetailImageTouchEnd = () => {
+    if (isPinching) {
+      setIsPinching(false);
+      setPinchDistance(null);
+    } else if (touchStart !== null && touchEnd !== null) {
+      // Handle swipe for image navigation
+      const distance = touchStart - touchEnd;
+      const isLeftSwipe = distance > minSwipeDistance;
+      const isRightSwipe = distance < -minSwipeDistance;
+
+      const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage?.filename);
+
+      if (isLeftSwipe && currentIndex < filteredImages.length - 1) {
+        // Next image
+        setSelectedImage(filteredImages[currentIndex + 1]);
+        resetImageZoom();
+      } else if (isRightSwipe && currentIndex > 0) {
+        // Previous image
+        setSelectedImage(filteredImages[currentIndex - 1]);
+        resetImageZoom();
+      }
+    }
+    setTouchStart(null);
+    setTouchEnd(null);
+  };
+
+  const resetImageZoom = () => {
+    setImageZoom(1);
+    setImagePan({ x: 0, y: 0 });
+  };
+
   return (
     <div>
       {selectedImage ? (
-        <div className="h-full">
+        <div className="h-full relative">
+          {/* Back button */}
           <button
-            onClick={() => setSelectedImage(null)}
-            className="text-blue-400 hover:text-blue-300 mb-4 block"
+            onClick={() => {
+              setSelectedImage(null);
+              resetImageZoom();
+              setIsDetailOpen(false);
+            }}
+            className="text-blue-400 hover:text-blue-300 mb-2 lg:mb-4 block"
           >
             ← Back to gallery
           </button>
-          <div className="flex gap-4 h-[calc(100vh-12rem)]">
-            {/* Left Sidebar - Details */}
-            <div className="w-80 flex-shrink-0 flex flex-col">
+
+          {/* Mobile: Detail info toggle button */}
+          <button
+            onClick={() => setIsDetailOpen(!isDetailOpen)}
+            className="fixed top-4 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+            aria-label="Toggle detail info"
+          >
+            {isDetailOpen ? <X className="h-5 w-5" /> : <Info className="h-5 w-5" />}
+          </button>
+
+          {/* Mobile: Zoom reset button */}
+          <button
+            onClick={resetImageZoom}
+            className="fixed top-20 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+            aria-label="Reset zoom"
+            title="Fit to window"
+          >
+            <Maximize2 className="h-5 w-5" />
+          </button>
+
+          {/* Mobile detail overlay */}
+          {isDetailOpen && (
+            <div
+              className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
+              onClick={() => setIsDetailOpen(false)}
+            />
+          )}
+
+          <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-8rem)] lg:h-[calc(100vh-12rem)]">
+            {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
+            <div className={`
+              fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
+              transform transition-transform duration-200 ease-in-out
+              ${isDetailOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+              bg-gray-900 lg:bg-transparent
+              overflow-y-auto lg:overflow-visible
+              p-4 lg:p-0 pt-20 lg:pt-0
+              flex-shrink-0 flex flex-col
+            `}>
               {/* Scrollable content area */}
               <div className="flex-1 overflow-y-auto">
               <Card title="Image Details">
@@ -621,8 +735,8 @@ export default function ImageGrid() {
               </Card>
               </div>
 
-              {/* Fixed bottom panel - Send controls */}
-              <div className="border-t border-gray-700 bg-gray-900 p-4 space-y-3">
+              {/* Fixed bottom panel - Send controls (Desktop only) */}
+              <div className="hidden lg:block border-t border-gray-700 bg-gray-900 p-4 space-y-3">
                 <div className="space-y-2 text-sm">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -683,14 +797,17 @@ export default function ImageGrid() {
             </div>
 
             {/* Right Area - Image Display with Navigation */}
-            <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden relative">
-              {/* Previous Image Button */}
+            <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden relative touch-none">
+              {/* Previous Image Button - Desktop only */}
               {(() => {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex > 0 && (
                   <button
-                    onClick={() => setSelectedImage(filteredImages[currentIndex - 1])}
-                    className="absolute left-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full flex items-center justify-center transition-all"
+                    onClick={() => {
+                      setSelectedImage(filteredImages[currentIndex - 1]);
+                      resetImageZoom();
+                    }}
+                    className="hidden lg:flex absolute left-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Previous image (← key)"
                   >
                     ‹
@@ -698,21 +815,35 @@ export default function ImageGrid() {
                 );
               })()}
 
-              <img
-                src={`/outputs/${selectedImage.filename}`}
-                alt="Generated"
-                className="max-w-full max-h-full object-contain cursor-pointer"
-                onDoubleClick={() => setShowFullSizeImage(true)}
-                title="Double-click to view full size"
-              />
+              <div
+                className="w-full h-full flex items-center justify-center overflow-hidden"
+                onTouchStart={handleDetailImageTouchStart}
+                onTouchMove={handleDetailImageTouchMove}
+                onTouchEnd={handleDetailImageTouchEnd}
+              >
+                <img
+                  src={`/outputs/${selectedImage.filename}`}
+                  alt="Generated"
+                  className="max-w-full max-h-full object-contain cursor-pointer"
+                  style={{
+                    transform: `scale(${imageZoom}) translate(${imagePan.x}px, ${imagePan.y}px)`,
+                    transition: isPinching ? 'none' : 'transform 0.2s',
+                  }}
+                  onDoubleClick={() => setShowFullSizeImage(true)}
+                  title="Double-click to view full size (Desktop) / Pinch to zoom (Mobile)"
+                />
+              </div>
 
-              {/* Next Image Button */}
+              {/* Next Image Button - Desktop only */}
               {(() => {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex < filteredImages.length - 1 && (
                   <button
-                    onClick={() => setSelectedImage(filteredImages[currentIndex + 1])}
-                    className="absolute right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full flex items-center justify-center transition-all"
+                    onClick={() => {
+                      setSelectedImage(filteredImages[currentIndex + 1]);
+                      resetImageZoom();
+                    }}
+                    className="hidden lg:flex absolute right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Next image (→ key)"
                   >
                     ›
@@ -744,6 +875,66 @@ export default function ImageGrid() {
               </div>
             </div>
           )}
+
+          {/* Mobile: Fixed bottom Send controls */}
+          <div className="fixed bottom-0 left-0 right-0 z-30 bg-gray-900 border-t border-gray-700 p-4 space-y-3 lg:hidden">
+            <div className="flex gap-4 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendImage}
+                  onChange={(e) => setSendImage(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-gray-300 text-xs">Image</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendPrompt}
+                  onChange={(e) => setSendPrompt(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-gray-300 text-xs">Prompt</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendParameters}
+                  onChange={(e) => setSendParameters(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-gray-300 text-xs">Params</span>
+              </label>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <Button
+                onClick={() => sendToTxt2Img(selectedImage)}
+                variant="secondary"
+                size="sm"
+                disabled={!sendPrompt && !sendParameters}
+                title="Send image not applicable for txt2img"
+              >
+                txt2img
+              </Button>
+              <Button
+                onClick={() => sendToImg2Img(selectedImage)}
+                variant="secondary"
+                size="sm"
+                disabled={!sendImage && !sendPrompt && !sendParameters}
+              >
+                img2img
+              </Button>
+              <Button
+                onClick={() => sendToInpaint(selectedImage)}
+                variant="secondary"
+                size="sm"
+                disabled={!sendImage && !sendPrompt && !sendParameters}
+              >
+                inpaint
+              </Button>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="relative">

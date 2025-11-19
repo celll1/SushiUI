@@ -452,14 +452,14 @@ export default function ImageGrid() {
   return (
     <div>
       {selectedImage ? (
-        <div className="h-full relative">
+        <div className="fixed inset-0 bg-gray-950 z-50">
           {/* Back button - Desktop */}
           <button
             onClick={() => {
               setSelectedImage(null);
               setIsDetailOpen(false);
             }}
-            className="hidden lg:flex items-center gap-2 text-blue-400 hover:text-blue-300 mb-4"
+            className="hidden lg:flex items-center gap-2 text-blue-400 hover:text-blue-300 absolute top-4 left-4 z-50"
           >
             <ArrowLeft className="h-5 w-5" />
             <span>Back to gallery</span>
@@ -494,7 +494,7 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-8rem)] lg:h-[calc(100vh-12rem)]">
+          <div className="flex flex-col lg:flex-row gap-4 h-screen pt-16 lg:pt-0">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
               fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto

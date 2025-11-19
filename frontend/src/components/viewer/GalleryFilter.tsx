@@ -107,9 +107,9 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   loading,
 }) => {
   return (
-    <div className="w-full lg:w-80 flex-shrink-0">
+    <div className="w-full lg:w-80 flex-shrink-0 max-w-full">
       <Card title="Filters" defaultCollapsed={false} storageKey="gallery_filters_collapsed">
-        <div className="space-y-3">
+        <div className="space-y-3 overflow-hidden">
           {/* Generation Type Filter */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Generation Type</label>
@@ -170,7 +170,7 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
               </div>
             </div>
             <div className="relative">
-              <div className="flex gap-2">
+              <div className="flex gap-2 min-w-0">
                 <input
                   type="text"
                   value={tagSearchInput}
@@ -186,12 +186,13 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
                     setSelectedSuggestionIndex(-1);
                   }, 200)}
                   placeholder="Enter tag (press Enter to search)"
-                  className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="flex-1 min-w-0 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
                 <Button
                   onClick={handleTagSearchSubmit}
                   variant="primary"
                   size="sm"
+                  className="flex-shrink-0"
                 >
                   Search
                 </Button>
@@ -249,30 +250,30 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
           {/* Date Range Filter */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Date Range</label>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
+            <div className="grid grid-cols-2 gap-2 min-w-0">
+              <div className="min-w-0">
                 <label className="block text-xs text-gray-400 mb-1">From</label>
                 <input
                   type="date"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
-                  className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                  className="w-full min-w-0 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs text-gray-400 mb-1">To</label>
                 <input
                   type="date"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
-                  className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                  className="w-full min-w-0 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-xs cursor-pointer hover:border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                 />
               </div>
             </div>
           </div>
 
           {/* Size Range Filters */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 min-w-0">
             <div>
               <RangeSlider
                 label="Width Range"

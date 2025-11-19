@@ -693,68 +693,42 @@ export default function ImageGrid() {
                     </button>
                   </div>
                 )}
+
+                {/* Send options */}
+                <div className="border-t border-gray-700 pt-3">
+                  <span className="text-gray-400 font-medium">Send Options:</span>
+                  <div className="mt-2 space-y-2 text-sm">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sendImage}
+                        onChange={(e) => setSendImage(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-300">Send image</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sendPrompt}
+                        onChange={(e) => setSendPrompt(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-300">Send prompt</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sendParameters}
+                        onChange={(e) => setSendParameters(e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-300">Send parameters</span>
+                    </label>
+                  </div>
+                </div>
               </div>
               </Card>
-              </div>
-
-              {/* Fixed bottom panel - Send controls (Desktop only) */}
-              <div className="hidden lg:block border-t border-gray-700 bg-gray-900 p-4 space-y-3">
-                <div className="space-y-2 text-sm">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sendImage}
-                      onChange={(e) => setSendImage(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-gray-300">Send image</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sendPrompt}
-                      onChange={(e) => setSendPrompt(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-gray-300">Send prompt</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sendParameters}
-                      onChange={(e) => setSendParameters(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span className="text-gray-300">Send parameters</span>
-                  </label>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <Button
-                    onClick={() => sendToTxt2Img(selectedImage)}
-                    variant="secondary"
-                    size="sm"
-                    disabled={!sendPrompt && !sendParameters}
-                    title="Send image not applicable for txt2img"
-                  >
-                    Send to txt2img
-                  </Button>
-                  <Button
-                    onClick={() => sendToImg2Img(selectedImage)}
-                    variant="secondary"
-                    size="sm"
-                    disabled={!sendImage && !sendPrompt && !sendParameters}
-                  >
-                    Send to img2img
-                  </Button>
-                  <Button
-                    onClick={() => sendToInpaint(selectedImage)}
-                    variant="secondary"
-                    size="sm"
-                    disabled={!sendImage && !sendPrompt && !sendParameters}
-                  >
-                    Send to inpaint
-                  </Button>
-                </div>
               </div>
             </div>
 
@@ -828,64 +802,60 @@ export default function ImageGrid() {
             </div>
           )}
 
-          {/* Mobile: Fixed bottom Send controls */}
-          <div className="fixed bottom-0 left-0 right-0 z-30 bg-gray-900 border-t border-gray-700 p-4 space-y-3 lg:hidden">
-            <div className="flex gap-4 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sendImage}
-                  onChange={(e) => setSendImage(e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-gray-300 text-xs">Image</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sendPrompt}
-                  onChange={(e) => setSendPrompt(e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-gray-300 text-xs">Prompt</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sendParameters}
-                  onChange={(e) => setSendParameters(e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-gray-300 text-xs">Params</span>
-              </label>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <Button
-                onClick={() => sendToTxt2Img(selectedImage)}
-                variant="secondary"
-                size="sm"
-                disabled={!sendPrompt && !sendParameters}
-                title="Send image not applicable for txt2img"
-              >
-                txt2img
-              </Button>
-              <Button
-                onClick={() => sendToImg2Img(selectedImage)}
-                variant="secondary"
-                size="sm"
-                disabled={!sendImage && !sendPrompt && !sendParameters}
-              >
-                img2img
-              </Button>
-              <Button
-                onClick={() => sendToInpaint(selectedImage)}
-                variant="secondary"
-                size="sm"
-                disabled={!sendImage && !sendPrompt && !sendParameters}
-              >
-                inpaint
-              </Button>
-            </div>
+          {/* Desktop: Fixed bottom Send buttons */}
+          <div className="hidden lg:flex fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 gap-2">
+            <button
+              onClick={() => sendToTxt2Img(selectedImage)}
+              disabled={!sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to txt2img"
+            >
+              txt2img
+            </button>
+            <button
+              onClick={() => sendToImg2Img(selectedImage)}
+              disabled={!sendImage && !sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to img2img"
+            >
+              img2img
+            </button>
+            <button
+              onClick={() => sendToInpaint(selectedImage)}
+              disabled={!sendImage && !sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to inpaint"
+            >
+              inpaint
+            </button>
+          </div>
+
+          {/* Mobile: Fixed bottom Send buttons */}
+          <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 flex gap-2 lg:hidden">
+            <button
+              onClick={() => sendToTxt2Img(selectedImage)}
+              disabled={!sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to txt2img"
+            >
+              txt2img
+            </button>
+            <button
+              onClick={() => sendToImg2Img(selectedImage)}
+              disabled={!sendImage && !sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to img2img"
+            >
+              img2img
+            </button>
+            <button
+              onClick={() => sendToInpaint(selectedImage)}
+              disabled={!sendImage && !sendPrompt && !sendParameters}
+              className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Send to inpaint"
+            >
+              inpaint
+            </button>
           </div>
         </div>
       ) : (

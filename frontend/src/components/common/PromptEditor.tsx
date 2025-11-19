@@ -389,7 +389,7 @@ export default function PromptEditor({
           {/* Prompt Editor Area */}
           <div className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0">
             {/* Prompt Type Selector */}
-            <div className="flex gap-2 mb-2 sm:mb-4">
+            <div className="flex gap-2 mb-2 sm:mb-4 ml-14 lg:ml-0">
               <button
                 onClick={() => setActivePromptType("positive")}
                 className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded text-sm sm:text-base ${

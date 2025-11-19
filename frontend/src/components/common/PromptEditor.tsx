@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, ChangeEvent, useEffect } from "react";
+import { Menu, X } from "lucide-react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
@@ -30,6 +31,7 @@ export default function PromptEditor({
   const [activePanel, setActivePanel] = useState<PanelType>("main");
   const [activePromptType, setActivePromptType] = useState<"positive" | "negative">("positive");
   const [cursorPosition, setCursorPosition] = useState<number>(0);
+  const [isPanelSidebarOpen, setIsPanelSidebarOpen] = useState(false);
 
   // TIPO settings - load from localStorage or use defaults
   const [tipoSettings] = useState<TIPOSettings>(() => {
@@ -260,12 +262,37 @@ export default function PromptEditor({
         </div>
       </div>
 
+      {/* Mobile: Panel Toggle Button */}
+      <button
+        onClick={() => setIsPanelSidebarOpen(!isPanelSidebarOpen)}
+        className="fixed top-20 left-4 z-50 p-3 rounded-lg bg-gray-800 text-white shadow-lg lg:hidden"
+        aria-label="Toggle panel menu"
+      >
+        {isPanelSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+      </button>
+
+      {/* Mobile: Panel Sidebar Overlay */}
+      {isPanelSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
+          onClick={() => setIsPanelSidebarOpen(false)}
+        />
+      )}
+
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar - Panel Selection */}
-        <div className="w-48 bg-gray-800 border-r border-gray-700 p-4 space-y-2">
+        <div className={`
+          fixed lg:relative top-0 left-0 h-full w-48 z-50 lg:z-auto
+          transform transition-transform duration-200 ease-in-out
+          ${isPanelSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+          bg-gray-800 border-r border-gray-700 p-4 pt-20 lg:pt-4 space-y-2
+        `}>
           <button
-            onClick={() => setActivePanel("main")}
+            onClick={() => {
+              setActivePanel("main");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "main"
                 ? "bg-blue-600 text-white"
@@ -275,7 +302,10 @@ export default function PromptEditor({
             Main Editor
           </button>
           <button
-            onClick={() => setActivePanel("template")}
+            onClick={() => {
+              setActivePanel("template");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "template"
                 ? "bg-blue-600 text-white"
@@ -285,7 +315,10 @@ export default function PromptEditor({
             Templates
           </button>
           <button
-            onClick={() => setActivePanel("category")}
+            onClick={() => {
+              setActivePanel("category");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "category"
                 ? "bg-blue-600 text-white"
@@ -295,7 +328,10 @@ export default function PromptEditor({
             Category Order
           </button>
           <button
-            onClick={() => setActivePanel("wildcard")}
+            onClick={() => {
+              setActivePanel("wildcard");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "wildcard"
                 ? "bg-blue-600 text-white"
@@ -305,7 +341,10 @@ export default function PromptEditor({
             Wildcards
           </button>
           <button
-            onClick={() => setActivePanel("tipo")}
+            onClick={() => {
+              setActivePanel("tipo");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "tipo"
                 ? "bg-blue-600 text-white"
@@ -315,7 +354,10 @@ export default function PromptEditor({
             TIPO
           </button>
           <button
-            onClick={() => setActivePanel("tagger")}
+            onClick={() => {
+              setActivePanel("tagger");
+              setIsPanelSidebarOpen(false);
+            }}
             className={`w-full text-left px-3 py-2 rounded ${
               activePanel === "tagger"
                 ? "bg-blue-600 text-white"

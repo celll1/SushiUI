@@ -452,7 +452,7 @@ export default function ImageGrid() {
   return (
     <div>
       {selectedImage ? (
-        <div className="h-full relative fixed inset-0 lg:relative bg-gray-950 lg:bg-transparent z-30 lg:z-auto">
+        <div className="h-full relative fixed inset-0 lg:relative bg-gray-950 lg:bg-transparent z-40 lg:z-auto">
           {/* Back button - Desktop */}
           <button
             onClick={() => {
@@ -471,7 +471,7 @@ export default function ImageGrid() {
               setSelectedImage(null);
               setIsDetailOpen(false);
             }}
-            className="fixed top-20 left-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+            className="fixed top-4 left-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
             aria-label="Back to gallery"
           >
             <ArrowLeft className="h-5 w-5" />
@@ -494,7 +494,7 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:h-[calc(100vh-12rem)]">
+          <div className="flex flex-col lg:flex-row gap-4 h-full lg:h-[calc(100vh-12rem)]">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
               fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto

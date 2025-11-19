@@ -10,7 +10,7 @@ export default function GalleryPage() {
       <div className="flex h-screen">
         <Sidebar />
         <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6">
-          <h1 className="hidden lg:block text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Gallery</h1>
+          <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Gallery</h1>
           <ImageGrid />
         </main>
       </div>

@@ -732,12 +732,12 @@ export default function ImageGrid() {
           <div className="flex gap-4">
           {/* Left Sidebar - Filters */}
           <div className={`
-            fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 z-40 lg:z-auto
+            fixed lg:relative top-0 left-0 h-full lg:h-auto w-full lg:w-80 max-w-sm lg:max-w-none z-40 lg:z-auto
             transform transition-transform duration-200 ease-in-out
             ${isFilterOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
             bg-gray-900 lg:bg-transparent
             overflow-y-auto lg:overflow-visible
-            p-3 lg:p-0 pt-16 lg:pt-0
+            p-4 lg:p-0 pt-20 lg:pt-0
           `}>
           <GalleryFilter
             filterTxt2Img={filterTxt2Img}

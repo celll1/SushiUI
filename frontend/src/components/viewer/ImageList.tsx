@@ -48,7 +48,7 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform"
               />
             </div>
-            <p className="mt-2 text-xs text-gray-400 truncate">{image.prompt}</p>
+            <p className="mt-2 text-xs text-gray-400 truncate hidden lg:block">{image.prompt}</p>
           </div>
         ))}
       </div>

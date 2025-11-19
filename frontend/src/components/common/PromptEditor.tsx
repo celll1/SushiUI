@@ -412,7 +412,7 @@ export default function PromptEditor({
         <div className="flex-1 flex flex-col overflow-hidden portrait:flex-col landscape:flex-row lg:flex-col">
           {/* Prompt Editor Area */}
           <div
-            className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 flex-shrink-0 relative"
+            className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0 relative"
             style={{ height: window.innerWidth >= 1024 ? `${promptAreaHeight}px` : undefined }}
           >
             {/* Prompt Type Selector */}

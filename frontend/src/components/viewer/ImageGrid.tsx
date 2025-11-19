@@ -452,7 +452,7 @@ export default function ImageGrid() {
   return (
     <div>
       {selectedImage ? (
-        <div className="fixed inset-0 bg-gray-950 z-50">
+        <div className="fixed inset-0 bg-gray-950 z-30">
           {/* Back button - Desktop */}
           <button
             onClick={() => {
@@ -494,7 +494,7 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-screen pt-16 lg:pt-0">
+          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:p-4">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
               fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto

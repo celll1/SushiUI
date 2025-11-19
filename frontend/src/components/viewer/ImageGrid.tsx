@@ -494,7 +494,7 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:h-auto">
+          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:h-[calc(100vh-12rem)]">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
               fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto

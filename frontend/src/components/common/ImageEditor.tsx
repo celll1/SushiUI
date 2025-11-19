@@ -88,12 +88,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   // Mobile UI state
   const [isMobileToolbarOpen, setIsMobileToolbarOpen] = useState(false);
   const [isMobileLayerPanelOpen, setIsMobileLayerPanelOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [pinchDistance, setPinchDistance] = useState<number | null>(null);
   const [pinchCenter, setPinchCenter] = useState<{ x: number; y: number } | null>(null);
   const [isPinching, setIsPinching] = useState(false); // Flag to prevent drawing during pinch
   const [isTwoFingerPanning, setIsTwoFingerPanning] = useState(false); // Flag for two-finger panning
   const activePointersRef = useRef<Set<number>>(new Set()); // Track active pointer IDs
   const lastTwoFingerCenterRef = useRef<{ x: number; y: number } | null>(null); // Track two-finger center for panning
+  const containerDivRef = useRef<HTMLDivElement>(null); // Reference to main container for fullscreen
 
   // Brush stroke tracking
   const strokeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -989,10 +991,40 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     if (!container) return;
 
     if (isPanning) {
-      setPanOffset({
-        x: e.clientX - panStart.x,
-        y: e.clientY - panStart.y,
-      });
+      const newPanX = e.clientX - panStart.x;
+      const newPanY = e.clientY - panStart.y;
+
+      // Apply panning bounds - keep at least part of canvas visible
+      const composite = compositeCanvasRef.current;
+      if (composite) {
+        const canvasWidth = composite.width * zoom;
+        const canvasHeight = composite.height * zoom;
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+
+        // Allow panning but keep at least 20% of canvas visible
+        const minVisibleWidth = canvasWidth * 0.2;
+        const minVisibleHeight = canvasHeight * 0.2;
+
+        const boundedPanX = Math.max(
+          -canvasWidth + minVisibleWidth,
+          Math.min(containerWidth - minVisibleWidth, newPanX)
+        );
+        const boundedPanY = Math.max(
+          -canvasHeight + minVisibleHeight,
+          Math.min(containerHeight - minVisibleHeight, newPanY)
+        );
+
+        setPanOffset({
+          x: boundedPanX,
+          y: boundedPanY,
+        });
+      } else {
+        setPanOffset({
+          x: newPanX,
+          y: newPanY,
+        });
+      }
       return;
     }
 
@@ -1589,10 +1621,41 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         const deltaX = newCenterX - lastTwoFingerCenterRef.current.x;
         const deltaY = newCenterY - lastTwoFingerCenterRef.current.y;
 
-        setPanOffset({
-          x: panOffset.x + deltaX,
-          y: panOffset.y + deltaY,
-        });
+        const newPanX = panOffset.x + deltaX;
+        const newPanY = panOffset.y + deltaY;
+
+        // Apply panning bounds - keep at least part of canvas visible
+        const composite = compositeCanvasRef.current;
+        const container = containerRef.current;
+        if (composite && container) {
+          const canvasWidth = composite.width * zoom;
+          const canvasHeight = composite.height * zoom;
+          const containerWidth = container.clientWidth;
+          const containerHeight = container.clientHeight;
+
+          // Allow panning but keep at least 20% of canvas visible
+          const minVisibleWidth = canvasWidth * 0.2;
+          const minVisibleHeight = canvasHeight * 0.2;
+
+          const boundedPanX = Math.max(
+            -canvasWidth + minVisibleWidth,
+            Math.min(containerWidth - minVisibleWidth, newPanX)
+          );
+          const boundedPanY = Math.max(
+            -canvasHeight + minVisibleHeight,
+            Math.min(containerHeight - minVisibleHeight, newPanY)
+          );
+
+          setPanOffset({
+            x: boundedPanX,
+            y: boundedPanY,
+          });
+        } else {
+          setPanOffset({
+            x: newPanX,
+            y: newPanY,
+          });
+        }
 
         lastTwoFingerCenterRef.current = { x: newCenterX, y: newCenterY };
       }
@@ -1608,6 +1671,38 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       setPinchCenter(null);
       lastTwoFingerCenterRef.current = null;
     }
+  }, []);
+
+  // Fullscreen mode toggle
+  const toggleFullscreen = useCallback(async () => {
+    const container = containerDivRef.current;
+    if (!container) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        // Enter fullscreen
+        await container.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        // Exit fullscreen
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.error('Error toggling fullscreen:', error);
+    }
+  }, []);
+
+  // Handle fullscreen change events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
   }, []);
 
   // Handle orientation change
@@ -1630,34 +1725,29 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
   useEffect(() => {
     const container = containerRef.current;
-    const canvas = compositeCanvasRef.current;
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     if (container) {
       container.addEventListener("wheel", handleWheel, { passive: false });
-    }
-    // Add touch event listeners to canvas instead of container for accurate coordinates
-    if (canvas) {
-      canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
-      canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
-      canvas.addEventListener("touchend", handleTouchEnd);
+      // Add touch event listeners to container to catch touches outside canvas
+      container.addEventListener("touchstart", handleTouchStart, { passive: false });
+      container.addEventListener("touchmove", handleTouchMove, { passive: false });
+      container.addEventListener("touchend", handleTouchEnd);
     }
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       if (container) {
         container.removeEventListener("wheel", handleWheel);
-      }
-      if (canvas) {
-        canvas.removeEventListener("touchstart", handleTouchStart);
-        canvas.removeEventListener("touchmove", handleTouchMove);
-        canvas.removeEventListener("touchend", handleTouchEnd);
+        container.removeEventListener("touchstart", handleTouchStart);
+        container.removeEventListener("touchmove", handleTouchMove);
+        container.removeEventListener("touchend", handleTouchEnd);
       }
     };
   }, [handleKeyDown, handleKeyUp, handleWheel, handleTouchStart, handleTouchMove, handleTouchEnd]);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex">
+    <div ref={containerDivRef} className="fixed inset-0 bg-black bg-opacity-75 z-50 flex">
       {/* Mobile toolbar toggle button */}
       <button
         onClick={() => setIsMobileToolbarOpen(!isMobileToolbarOpen)}
@@ -1665,6 +1755,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         aria-label="Toggle toolbar"
       >
         {isMobileToolbarOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+      </button>
+
+      {/* Fullscreen toggle button (top-right) */}
+      <button
+        onClick={toggleFullscreen}
+        className="fixed top-2 right-2 z-50 p-2 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
+        aria-label="Toggle fullscreen"
+        title={isFullscreen ? "Exit fullscreen (F11)" : "Enter fullscreen (F11)"}
+      >
+        {isFullscreen ? <X className="h-6 w-6" /> : <Maximize2 className="h-6 w-6" />}
       </button>
 
       {/* Mobile overlay */}

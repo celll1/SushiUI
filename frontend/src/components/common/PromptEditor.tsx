@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, ChangeEvent, useEffect } from "react";
-import { Menu, X } from "lucide-react";
+import { Menu, X, Check } from "lucide-react";
 import Button from "./Button";
 import TextareaWithTagSuggestions from "./TextareaWithTagSuggestions";
 import TemplatePanel from "./TemplatePanel";
@@ -249,8 +249,8 @@ export default function PromptEditor({
         className="fixed inset-0 z-50 bg-gray-900 flex flex-col"
         tabIndex={-1}
       >
-        {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700 bg-gray-800">
+        {/* Header (Desktop only) */}
+      <div className="hidden lg:flex items-center justify-between px-6 py-4 border-b border-gray-700 bg-gray-800">
         <h2 className="text-xl font-semibold text-gray-100">Prompt Editor</h2>
         <div className="flex gap-2">
           <Button onClick={handleSave} variant="primary">
@@ -262,10 +262,26 @@ export default function PromptEditor({
         </div>
       </div>
 
+      {/* Mobile: Overlay Buttons */}
+      <button
+        onClick={handleSave}
+        className="fixed top-4 right-4 z-[60] p-3 rounded-lg bg-green-600 hover:bg-green-700 text-white shadow-lg lg:hidden"
+        aria-label="Save"
+      >
+        <Check className="h-5 w-5" />
+      </button>
+      <button
+        onClick={onClose}
+        className="fixed top-4 right-16 z-[60] p-3 rounded-lg bg-gray-700 hover:bg-gray-600 text-white shadow-lg lg:hidden"
+        aria-label="Cancel"
+      >
+        <X className="h-5 w-5" />
+      </button>
+
       {/* Mobile: Panel Toggle Button */}
       <button
         onClick={() => setIsPanelSidebarOpen(!isPanelSidebarOpen)}
-        className="fixed top-20 left-4 z-50 p-3 rounded-lg bg-gray-800 text-white shadow-lg lg:hidden"
+        className="fixed top-4 left-4 z-[60] p-3 rounded-lg bg-gray-800 text-white shadow-lg lg:hidden"
         aria-label="Toggle panel menu"
       >
         {isPanelSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
@@ -369,30 +385,30 @@ export default function PromptEditor({
         </div>
 
         {/* Center - Main Editor */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Top: Prompt Editor (Always visible) */}
-          <div className="border-b border-gray-700 p-6 bg-gray-850">
+        <div className="flex-1 flex flex-col overflow-hidden portrait:flex-col landscape:flex-row lg:flex-col">
+          {/* Prompt Editor Area */}
+          <div className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0">
             {/* Prompt Type Selector */}
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-2 sm:mb-4">
               <button
                 onClick={() => setActivePromptType("positive")}
-                className={`px-4 py-2 rounded ${
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded text-sm sm:text-base ${
                   activePromptType === "positive"
                     ? "bg-green-600 text-white"
                     : "bg-gray-700 text-gray-300"
                 }`}
               >
-                Positive Prompt
+                Positive
               </button>
               <button
                 onClick={() => setActivePromptType("negative")}
-                className={`px-4 py-2 rounded ${
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded text-sm sm:text-base ${
                   activePromptType === "negative"
                     ? "bg-red-600 text-white"
                     : "bg-gray-700 text-gray-300"
                 }`}
               >
-                Negative Prompt
+                Negative
               </button>
             </div>
 
@@ -407,7 +423,7 @@ export default function PromptEditor({
                 onClick={updateCursorPosition}
                 onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
-                rows={8}
+                rows={4}
                 className="font-mono prompt-editor-textarea"
               />
             ) : (
@@ -420,14 +436,14 @@ export default function PromptEditor({
                 onClick={updateCursorPosition}
                 onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
-                rows={8}
+                rows={4}
                 className="font-mono prompt-editor-textarea"
               />
             )}
           </div>
 
-          {/* Bottom: Panel Content (Scrollable) */}
-          <div className="flex-1 overflow-auto p-6">
+          {/* Panel Content Area */}
+          <div className="flex-1 overflow-auto p-3 sm:p-6 portrait:h-2/3 landscape:w-1/2 landscape:border-l lg:border-l-0 landscape:border-gray-700">
             {activePanel === "main" && (
               <div className="text-gray-300">
                 <h3 className="text-lg font-semibold mb-4">Main Editor</h3>

@@ -389,10 +389,10 @@ export default function PromptEditor({
           {/* Prompt Editor Area */}
           <div className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0">
             {/* Prompt Type Selector */}
-            <div className="flex gap-2 mb-2 sm:mb-4 ml-14 lg:ml-0">
+            <div className="flex gap-1.5 lg:gap-2 mb-2 sm:mb-4 ml-14 lg:ml-0">
               <button
                 onClick={() => setActivePromptType("positive")}
-                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded text-sm sm:text-base ${
+                className={`px-2 lg:px-4 py-1 lg:py-2 rounded text-xs lg:text-base ${
                   activePromptType === "positive"
                     ? "bg-green-600 text-white"
                     : "bg-gray-700 text-gray-300"
@@ -402,7 +402,7 @@ export default function PromptEditor({
               </button>
               <button
                 onClick={() => setActivePromptType("negative")}
-                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded text-sm sm:text-base ${
+                className={`px-2 lg:px-4 py-1 lg:py-2 rounded text-xs lg:text-base ${
                   activePromptType === "negative"
                     ? "bg-red-600 text-white"
                     : "bg-gray-700 text-gray-300"

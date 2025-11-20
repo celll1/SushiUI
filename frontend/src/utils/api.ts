@@ -66,6 +66,12 @@ const loadControlNetImages = async (
         return cn;
       }
 
+      // If image_base64 is already set (e.g., from loop generation), use it directly
+      if (cn.image_base64) {
+        console.log(`[API] ControlNet ${index}: image_base64 already set (length: ${cn.image_base64.length}), skipping localStorage load`);
+        return cn;
+      }
+
       const imageRef = imageRefs[index];
       console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
       if (imageRef) {

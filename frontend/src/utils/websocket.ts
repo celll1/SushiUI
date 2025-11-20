@@ -1,71 +1,67 @@
 type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string) => void;
 
-class WebSocketClient {
-  private ws: WebSocket | null = null;
+class ProgressClient {
+  private eventSource: EventSource | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
-  private backendPort: number = 8000; // Default port
 
-  async fetchBackendPort(): Promise<number> {
-    try {
-      // Try to get port info from backend's port-info endpoint
-      const response = await fetch('/api/port-info');
-      if (response.ok) {
-        const data = await response.json();
-        return data.port;
-      }
-    } catch (error) {
-      console.log('[WebSocket] Could not fetch backend port, using default:', error);
-    }
-    return 8000; // Default fallback
-  }
-
-  async connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+  connect() {
+    if (this.eventSource && this.eventSource.readyState === EventSource.OPEN) {
       return;
     }
 
-    // Fetch backend port if not already fetched
-    this.backendPort = await this.fetchBackendPort();
+    // Connect to Next.js API route which will proxy to backend WebSocket
+    // This works for both localhost and external network access
+    const sseUrl = '/api/progress';
+    console.log(`[SSE] Connecting to ${sseUrl}`);
 
-    // Use current hostname instead of hardcoded localhost for mobile compatibility
-    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${hostname}:${this.backendPort}/ws/progress`;
-    console.log(`[WebSocket] Connecting to ${wsUrl}`);
-    this.ws = new WebSocket(wsUrl);
+    this.eventSource = new EventSource(sseUrl);
 
-    this.ws.onopen = () => {
-      console.log("[WebSocket] Connected successfully");
+    this.eventSource.onopen = () => {
+      console.log("[SSE] Connected successfully");
     };
 
-    this.ws.onmessage = (event) => {
+    this.eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log("[WebSocket] Received message:", data);
+        console.log("[SSE] Received message:", data);
+
         if (data.type === "progress") {
-          console.log(`[WebSocket] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}`);
+          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}`);
           this.callbacks.forEach((callback) => {
             callback(data.step, data.total_steps, data.message, data.preview_image);
           });
+        } else if (data.type === "error") {
+          console.error("[SSE] Error from server:", data.message);
+        } else if (data.type === "closed") {
+          console.log("[SSE] Backend WebSocket closed:", data.reason);
+          this.handleDisconnect();
         }
       } catch (error) {
-        console.error("[WebSocket] Failed to parse message:", error, event.data);
+        console.error("[SSE] Failed to parse message:", error, event.data);
       }
     };
 
-    this.ws.onerror = (error) => {
-      console.error("[WebSocket] Error:", error);
+    this.eventSource.onerror = (error) => {
+      console.error("[SSE] Error:", error);
+      this.handleDisconnect();
     };
+  }
 
-    this.ws.onclose = (event) => {
-      console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason})`);
-      // Auto-reconnect after 3 seconds
+  private handleDisconnect() {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+
+    // Auto-reconnect after 3 seconds
+    if (!this.reconnectTimer) {
       this.reconnectTimer = setTimeout(() => {
-        console.log("[WebSocket] Attempting to reconnect...");
+        console.log("[SSE] Attempting to reconnect...");
+        this.reconnectTimer = null;
         this.connect();
       }, 3000);
-    };
+    }
   }
 
   disconnect() {
@@ -73,8 +69,10 @@ class WebSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.ws?.close();
-    this.ws = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
   }
 
   subscribe(callback: ProgressCallback) {
@@ -86,4 +84,5 @@ class WebSocketClient {
   }
 }
 
-export const wsClient = new WebSocketClient();
+// Export with same name for backwards compatibility
+export const wsClient = new ProgressClient();

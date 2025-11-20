@@ -809,7 +809,7 @@ export default function ImageGrid() {
               {/* Fullscreen Button - Mobile only */}
               <button
                 onClick={() => setShowFullSizeImage(true)}
-                className="lg:hidden absolute top-4 right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white w-10 h-10 rounded-full flex items-center justify-center transition-all"
+                className="lg:hidden fixed top-20 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
                 title="View fullscreen"
               >
                 <Maximize className="h-5 w-5" />

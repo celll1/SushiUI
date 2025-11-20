@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -1478,10 +1478,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                         className="flex-1"
                         size="lg"
                       >
-                        {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
+                        {isGenerating ? "Add Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
                       </Button>
                       {isGenerating && (
-                        <Button
+                        <button
                           onClick={async () => {
                             try {
                               await cancelGeneration();
@@ -1494,21 +1494,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                               console.error("Failed to cancel generation:", error);
                             }
                           }}
-                          variant="secondary"
-                          size="lg"
-                          title="Cancel generation and move to next"
+                          className="p-3 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors"
+                          title="Cancel generation"
                         >
-                          Cancel
-                        </Button>
+                          <X className="h-6 w-6" />
+                        </button>
                       )}
-                      <Button
+                      <button
                         onClick={resetToDefault}
                         disabled={isGenerating}
-                        variant="secondary"
-                        size="lg"
+                        className="p-3 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Reset to default"
                       >
-                        Reset
-                      </Button>
+                        <RotateCcw className="h-6 w-6" />
+                      </button>
                     </>
                   )}
 

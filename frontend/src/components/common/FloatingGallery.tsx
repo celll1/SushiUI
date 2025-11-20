@@ -7,10 +7,9 @@ import ImageViewer from "./ImageViewer";
 interface FloatingGalleryProps {
   images: Array<{ url: string; timestamp: number }>;
   maxImages: number;
-  hideToggle?: boolean;
 }
 
-export default function FloatingGallery({ images, maxImages, hideToggle = false }: FloatingGalleryProps) {
+export default function FloatingGallery({ images, maxImages }: FloatingGalleryProps) {
   const [viewerImageIndex, setViewerImageIndex] = useState<number | null>(null);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
 
@@ -31,10 +30,16 @@ export default function FloatingGallery({ images, maxImages, hideToggle = false 
     }
   };
 
+  // Check if any editor is open
+  const isEditorOpen = typeof document !== 'undefined' && (
+    document.body.dataset.promptEditorOpen === 'true' ||
+    document.body.dataset.imageEditorOpen === 'true'
+  );
+
   return (
     <>
       {/* Mobile gallery toggle button */}
-      {!hideToggle && (
+      {!isEditorOpen && (
         <button
           onClick={() => setIsGalleryOpen(!isGalleryOpen)}
           className="fixed top-4 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"

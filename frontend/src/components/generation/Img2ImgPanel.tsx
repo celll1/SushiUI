@@ -16,6 +16,7 @@ import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
+import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";

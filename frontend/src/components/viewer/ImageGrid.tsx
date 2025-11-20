@@ -887,7 +887,7 @@ export default function ImageGrid() {
           )}
 
           {/* Mobile: Fixed bottom Send Options and Buttons */}
-          <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 lg:hidden flex flex-col gap-2 bg-gray-900 bg-opacity-95 p-3 rounded-lg shadow-lg">
+          <div className="fixed bottom-4 portrait:left-1/2 portrait:-translate-x-1/2 landscape:right-4 landscape:translate-x-0 z-30 lg:hidden flex flex-col gap-2 bg-gray-900 bg-opacity-95 p-3 rounded-lg shadow-lg">
             {/* Send options checkboxes */}
             <div className="flex items-center gap-3 text-xs text-white">
               <label className="flex items-center gap-1 cursor-pointer">

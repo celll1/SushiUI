@@ -60,6 +60,14 @@ export default function PromptEditor({
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const tipoPanelRef = useRef<TIPOPanelRef>(null);
 
+  // Set global flag when Prompt Editor is mounted
+  useEffect(() => {
+    document.body.dataset.promptEditorOpen = "true";
+    return () => {
+      delete document.body.dataset.promptEditorOpen;
+    };
+  }, []);
+
   const handleSave = () => {
     onSave(prompt, negativePrompt);
     onClose();

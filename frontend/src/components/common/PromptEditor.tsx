@@ -32,8 +32,6 @@ export default function PromptEditor({
   const [activePromptType, setActivePromptType] = useState<"positive" | "negative">("positive");
   const [cursorPosition, setCursorPosition] = useState<number>(0);
   const [isPanelSidebarOpen, setIsPanelSidebarOpen] = useState(false);
-  const [promptAreaHeight, setPromptAreaHeight] = useState(300); // Desktop prompt area height
-  const [isResizing, setIsResizing] = useState(false);
 
   // TIPO settings - load from localStorage or use defaults
   const [tipoSettings] = useState<TIPOSettings>(() => {
@@ -85,28 +83,6 @@ export default function PromptEditor({
       setCursorPosition(textarea.selectionStart);
     }
   };
-
-  // Handle prompt area resize
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const newHeight = Math.max(200, Math.min(600, e.clientY - 64)); // Min 200px, max 600px, subtract header height
-      setPromptAreaHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isResizing]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -411,10 +387,7 @@ export default function PromptEditor({
         {/* Center - Main Editor */}
         <div className="flex-1 flex flex-col overflow-hidden portrait:flex-col landscape:flex-row lg:flex-col">
           {/* Prompt Editor Area */}
-          <div
-            className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0 relative"
-            style={{ height: window.innerWidth >= 1024 ? `${promptAreaHeight}px` : undefined }}
-          >
+          <div className="border-b border-gray-700 p-3 sm:p-6 bg-gray-850 portrait:h-1/3 landscape:w-1/2 lg:h-auto flex-shrink-0">
             {/* Prompt Type Selector */}
             <div className="flex gap-1.5 lg:gap-2 mb-2 sm:mb-4 ml-14 lg:ml-0">
               <button
@@ -450,7 +423,7 @@ export default function PromptEditor({
                 onClick={updateCursorPosition}
                 onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
-                rows={4}
+                rows={8}
                 className="font-mono prompt-editor-textarea text-xs lg:text-sm"
               />
             ) : (
@@ -463,19 +436,10 @@ export default function PromptEditor({
                 onClick={updateCursorPosition}
                 onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
-                rows={4}
+                rows={8}
                 className="font-mono prompt-editor-textarea text-xs lg:text-sm"
               />
             )}
-
-            {/* Resize Handle (Desktop only) */}
-            <div
-              className="hidden lg:block absolute bottom-0 left-0 right-0 h-1 bg-gray-700 hover:bg-blue-500 cursor-ns-resize z-10"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setIsResizing(true);
-              }}
-            />
           </div>
 
           {/* Panel Content Area */}

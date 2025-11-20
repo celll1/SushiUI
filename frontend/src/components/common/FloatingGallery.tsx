@@ -35,7 +35,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
       {/* Mobile gallery toggle button */}
       <button
         onClick={() => setIsGalleryOpen(!isGalleryOpen)}
-        className="fixed top-4 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+        className="fixed top-4 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
         aria-label="Toggle gallery"
       >
         <ImageIcon className="h-5 w-5" />

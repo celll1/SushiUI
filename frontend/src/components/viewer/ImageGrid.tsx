@@ -529,12 +529,11 @@ export default function ImageGrid() {
               transform transition-transform duration-200 ease-in-out
               ${isDetailOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
               bg-gray-900 lg:bg-transparent
-              overflow-y-auto
               p-4 lg:p-0 pt-20 lg:pt-0
-              flex-shrink-0 flex flex-col
+              flex-shrink-0 lg:flex lg:flex-col
             `}>
               {/* Scrollable content area */}
-              <div className="flex-1 overflow-y-auto">
+              <div className="lg:flex-1 lg:overflow-y-auto lg:mb-4">
               <Card title="Image Details">
                 <div className="space-y-3 text-sm">
                   <div>
@@ -722,81 +721,86 @@ export default function ImageGrid() {
                   </div>
                 )}
 
-                {/* Send options */}
-                <div className="border-t border-gray-700 pt-3">
-                  <span className="text-gray-400 font-medium">Send Options:</span>
-                  <div className="mt-2 space-y-2 text-sm">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={sendImage}
-                        onChange={(e) => setSendImage(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span className="text-gray-300">Send image</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={sendPrompt}
-                        onChange={(e) => setSendPrompt(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span className="text-gray-300">Send prompt</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={sendParameters}
-                        onChange={(e) => setSendParameters(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span className="text-gray-300">Send parameters</span>
-                    </label>
-                  </div>
-
-                  {/* Desktop Download and Send buttons */}
-                  <div className="hidden lg:flex flex-col gap-2 mt-3">
-                    <Button
-                      onClick={() => handleDownload(selectedImage)}
-                      variant="primary"
-                      size="sm"
-                      className="flex items-center justify-center"
-                    >
-                      <Download className="h-4 w-4 mr-2" />
-                      Download
-                    </Button>
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        onClick={() => sendToTxt2Img(selectedImage)}
-                        variant="secondary"
-                        size="sm"
-                        disabled={!sendPrompt && !sendParameters}
-                        title="Send image not applicable for txt2img"
-                      >
-                        txt2img
-                      </Button>
-                      <Button
-                        onClick={() => sendToImg2Img(selectedImage)}
-                        variant="secondary"
-                        size="sm"
-                        disabled={!sendImage && !sendPrompt && !sendParameters}
-                      >
-                        img2img
-                      </Button>
-                      <Button
-                        onClick={() => sendToInpaint(selectedImage)}
-                        variant="secondary"
-                        size="sm"
-                        disabled={!sendImage && !sendPrompt && !sendParameters}
-                      >
-                        inpaint
-                      </Button>
-                    </div>
-                  </div>
-                </div>
               </div>
               </Card>
+              </div>
+
+              {/* Fixed Send Options and Buttons - Desktop only */}
+              <div className="hidden lg:block lg:flex-shrink-0">
+                <Card>
+                  <div className="space-y-3">
+                    {/* Send options in one line */}
+                    <div className="flex items-center gap-3 text-sm">
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sendImage}
+                          onChange={(e) => setSendImage(e.target.checked)}
+                          className="rounded"
+                        />
+                        <span className="text-gray-300">Image</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sendPrompt}
+                          onChange={(e) => setSendPrompt(e.target.checked)}
+                          className="rounded"
+                        />
+                        <span className="text-gray-300">Prompt</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sendParameters}
+                          onChange={(e) => setSendParameters(e.target.checked)}
+                          className="rounded"
+                        />
+                        <span className="text-gray-300">Params</span>
+                      </label>
+                    </div>
+
+                    {/* Download and Send buttons */}
+                    <div className="flex flex-col gap-2">
+                      <Button
+                        onClick={() => handleDownload(selectedImage)}
+                        variant="primary"
+                        size="sm"
+                        className="flex items-center justify-center"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Download
+                      </Button>
+                      <div className="grid grid-cols-3 gap-2">
+                        <Button
+                          onClick={() => sendToTxt2Img(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                          disabled={!sendPrompt && !sendParameters}
+                          title="Send image not applicable for txt2img"
+                        >
+                          txt2img
+                        </Button>
+                        <Button
+                          onClick={() => sendToImg2Img(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                        >
+                          img2img
+                        </Button>
+                        <Button
+                          onClick={() => sendToInpaint(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                        >
+                          inpaint
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
               </div>
             </div>
 

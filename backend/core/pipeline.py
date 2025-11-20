@@ -1257,6 +1257,14 @@ class DiffusionPipelineManager:
         resize_mode = params.get("resize_mode", "image")
         resampling_method = params.get("resampling_method", "lanczos")
 
+        # Ensure dimensions are multiples of 8 (required for VAE)
+        if target_width:
+            target_width = round(target_width / 8) * 8
+            params["width"] = target_width
+        if target_height:
+            target_height = round(target_height / 8) * 8
+            params["height"] = target_height
+
         # Resize input image if width/height are specified and mode is "image"
         if target_width and target_height and resize_mode == "image":
             if init_image.size != (target_width, target_height):

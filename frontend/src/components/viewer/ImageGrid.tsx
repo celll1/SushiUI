@@ -761,6 +761,7 @@ export default function ImageGrid() {
                       onClick={() => handleDownload(selectedImage)}
                       variant="primary"
                       size="sm"
+                      className="flex items-center justify-center"
                     >
                       <Download className="h-4 w-4 mr-2" />
                       Download
@@ -853,6 +854,18 @@ export default function ImageGrid() {
               onClick={() => setShowFullSizeImage(false)}
             >
               <div className="relative max-w-full max-h-full">
+                {/* Download button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDownload(selectedImage);
+                  }}
+                  className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
+                  title="Download"
+                >
+                  <Download className="h-6 w-6" />
+                </button>
+                {/* Close button */}
                 <button
                   onClick={() => setShowFullSizeImage(false)}
                   className="absolute top-4 right-4 text-white text-2xl bg-black bg-opacity-50 rounded-full w-10 h-10 flex items-center justify-center hover:bg-opacity-75"

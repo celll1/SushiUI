@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronUp, ChevronDown } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -1728,7 +1728,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
 
               {/* Action Buttons - Mobile only (fixed bar at bottom with inline toggle) */}
-              <div className={`lg:hidden fixed bottom-0 z-30 bg-gray-900 border-t border-gray-700 transition-all ${isMobileControlsOpen ? 'left-0 right-0' : 'left-auto right-0'}`}>
+              <div className={`lg:hidden fixed bottom-0 z-40 bg-gray-900 border-t transition-all ${isMobileControlsOpen ? 'left-0 right-0 border-gray-700' : 'left-auto right-0 border-l border-gray-700'}`}>
                 <div className="flex gap-2 p-3 items-center">
                   {/* Buttons (conditionally visible) */}
                   {isMobileControlsOpen && (
@@ -1782,7 +1782,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     onClick={() => setIsMobileControlsOpen(!isMobileControlsOpen)}
                     className="p-2 text-gray-400 hover:text-white transition-colors flex-shrink-0"
                   >
-                    {isMobileControlsOpen ? <ChevronDown className="h-6 w-6" /> : <ChevronUp className="h-6 w-6" />}
+                    {isMobileControlsOpen ? <ChevronRight className="h-6 w-6" /> : <ChevronLeft className="h-6 w-6" />}
                   </button>
                 </div>
               </div>

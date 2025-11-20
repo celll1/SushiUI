@@ -44,7 +44,7 @@ export default function GPUMonitor() {
     const gpu = gpuStats[0];
     return (
       <div
-        className="fixed bottom-4 right-4 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs cursor-pointer hover:bg-gray-750 transition-colors"
+        className="fixed bottom-4 left-4 lg:right-4 lg:left-auto bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs cursor-pointer hover:bg-gray-750 transition-colors z-30"
         onClick={() => setIsExpanded(true)}
         title="Click to expand"
       >
@@ -106,7 +106,7 @@ export default function GPUMonitor() {
 
   // Expanded view or multiple GPUs
   return (
-    <div className="fixed bottom-4 right-4 bg-gray-800 border border-gray-700 rounded p-3 text-xs min-w-[300px]">
+    <div className="fixed bottom-4 left-4 lg:right-4 lg:left-auto bg-gray-800 border border-gray-700 rounded p-3 text-xs min-w-[300px] z-30">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-gray-300 font-semibold">GPU Monitor</h3>
         {gpuStats.length === 1 && (

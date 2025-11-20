@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import ImageViewer from "./ImageViewer";
 
@@ -12,9 +12,32 @@ interface FloatingGalleryProps {
 export default function FloatingGallery({ images, maxImages }: FloatingGalleryProps) {
   const [viewerImageIndex, setViewerImageIndex] = useState<number | null>(null);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
 
   // Limit to most recent images
   const displayImages = images.slice(-maxImages);
+
+  // Monitor editor state changes
+  useEffect(() => {
+    const checkEditorState = () => {
+      const editorOpen =
+        document.body.dataset.promptEditorOpen === 'true' ||
+        document.body.dataset.imageEditorOpen === 'true';
+      setIsEditorOpen(editorOpen);
+    };
+
+    // Check immediately
+    checkEditorState();
+
+    // Set up a MutationObserver to watch for dataset changes
+    const observer = new MutationObserver(checkEditorState);
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-prompt-editor-open', 'data-image-editor-open']
+    });
+
+    return () => observer.disconnect();
+  }, []);
 
   if (displayImages.length === 0) {
     return null;
@@ -29,12 +52,6 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
       setViewerImageIndex(viewerImageIndex + 1);
     }
   };
-
-  // Check if any editor is open
-  const isEditorOpen = typeof document !== 'undefined' && (
-    document.body.dataset.promptEditorOpen === 'true' ||
-    document.body.dataset.imageEditorOpen === 'true'
-  );
 
   return (
     <>
@@ -61,6 +78,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
         ${isGalleryOpen ? 'translate-x-0' : 'translate-x-[calc(100%+1rem)]'}
         lg:translate-x-0
         max-w-[80vw] lg:max-w-[60vw]
+        ${isEditorOpen ? 'lg:hidden' : ''}
       `}>
         <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
           {displayImages.map((image, index) => (

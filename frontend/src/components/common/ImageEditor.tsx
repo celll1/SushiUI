@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Button from "./Button";
-import { Menu, X, Undo2, Redo2, Maximize2, Layers } from "lucide-react";
+import { Menu, X, Undo2, Redo2, Maximize2, Maximize, Layers, Check } from "lucide-react";
 
 interface ImageEditorProps {
   imageUrl: string;
@@ -1790,14 +1790,30 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         {isMobileToolbarOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
       </button>
 
-      {/* Fullscreen toggle button (top-right) */}
+      {/* Fullscreen toggle button (mobile only) */}
       <button
         onClick={toggleFullscreen}
-        className="fixed top-2 right-2 z-50 p-2 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
+        className="lg:hidden fixed portrait:top-4 portrait:right-4 landscape:top-4 landscape:right-4 z-50 p-2.5 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
         aria-label="Toggle fullscreen"
         title={isFullscreen ? "Exit fullscreen (F11)" : "Enter fullscreen (F11)"}
       >
-        {isFullscreen ? <X className="h-6 w-6" /> : <Maximize2 className="h-6 w-6" />}
+        <Maximize className="h-4 w-4" />
+      </button>
+
+      {/* Mobile: Save & Cancel overlay buttons */}
+      <button
+        onClick={handleSave}
+        className="lg:hidden fixed portrait:top-4 portrait:right-16 landscape:top-4 landscape:right-16 z-50 p-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white shadow-lg"
+        aria-label="Save & Use"
+      >
+        <Check className="h-4 w-4" />
+      </button>
+      <button
+        onClick={onClose}
+        className="lg:hidden fixed portrait:top-4 portrait:right-28 landscape:top-4 landscape:right-28 z-50 p-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white shadow-lg"
+        aria-label="Cancel"
+      >
+        <X className="h-4 w-4" />
       </button>
 
       {/* Mobile overlay */}
@@ -2288,8 +2304,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex gap-2 pt-4 border-t border-gray-700">
+        {/* Actions (Desktop only) */}
+        <div className="hidden lg:flex gap-2 pt-4 border-t border-gray-700">
           <Button onClick={onClose} variant="secondary" className="flex-1">
             Cancel
           </Button>

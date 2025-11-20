@@ -1930,8 +1930,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           <div className="flex flex-col lg:flex-row gap-2 lg:h-[800px]">
             {/* Left: Preview and Controls */}
             <div className="flex-1 flex flex-col space-y-2 min-w-0">
-              {/* Action Buttons */}
-              <div className="flex gap-2 relative">
+              {/* Action Buttons - Desktop only (hidden on mobile) */}
+              <div className="hidden lg:flex gap-2 relative">
                 <Button
                   onClick={handleAddToQueue}
                   onContextMenu={(e) => {
@@ -1979,6 +1979,51 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         // Stop generate forever when cancelling
                         setGenerateForever(false);
                         // Move to next in queue after cancelling
+                        failCurrentItem();
+                        setTimeout(() => processQueue(), 600);
+                      } catch (error) {
+                        console.error("Failed to cancel generation:", error);
+                      }
+                    }}
+                    variant="secondary"
+                    size="lg"
+                    title="Cancel generation and move to next"
+                  >
+                    Cancel
+                  </Button>
+                )}
+                <Button
+                  onClick={resetToDefault}
+                  disabled={isGenerating}
+                  variant="secondary"
+                  size="lg"
+                >
+                  Reset
+                </Button>
+              </div>
+
+              {/* Action Buttons - Mobile only (fixed at bottom) */}
+              <div className="lg:hidden fixed bottom-4 left-4 right-4 z-30 flex gap-2 bg-gray-900 bg-opacity-95 p-3 rounded-lg shadow-lg">
+                <Button
+                  onClick={handleAddToQueue}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setMenuPosition({ x: e.clientX, y: e.clientY });
+                    setShowForeverMenu(true);
+                  }}
+                  className="flex-1"
+                  size="lg"
+                >
+                  {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
+                </Button>
+                {isGenerating && (
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await cancelGeneration();
+                        setIsGenerating(false);
+                        setProgress(0);
+                        setGenerateForever(false);
                         failCurrentItem();
                         setTimeout(() => processQueue(), 600);
                       } catch (error) {

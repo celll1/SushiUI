@@ -1728,7 +1728,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
 
               {/* Action Buttons - Mobile only (fixed bar at bottom with inline toggle) */}
-              <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-gray-900 border-t border-gray-700">
+              <div className={`lg:hidden fixed bottom-0 z-30 bg-gray-900 border-t border-gray-700 transition-all ${isMobileControlsOpen ? 'left-0 right-0' : 'left-auto right-0'}`}>
                 <div className="flex gap-2 p-3 items-center">
                   {/* Buttons (conditionally visible) */}
                   {isMobileControlsOpen && (

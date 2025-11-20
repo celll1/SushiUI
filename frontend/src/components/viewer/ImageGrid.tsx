@@ -276,6 +276,17 @@ export default function ImageGrid() {
     }
   };
 
+  const handleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error('Failed to enter fullscreen:', err);
+        alert('Fullscreen mode is not supported on this device.');
+      });
+    }
+  };
+
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)
 
@@ -808,9 +819,9 @@ export default function ImageGrid() {
             <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden relative touch-none">
               {/* Fullscreen Button - Mobile only */}
               <button
-                onClick={() => setShowFullSizeImage(true)}
+                onClick={handleFullscreen}
                 className="lg:hidden fixed top-20 right-4 z-40 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg"
-                title="View fullscreen"
+                title="Toggle fullscreen mode"
               >
                 <Maximize className="h-5 w-5" />
               </button>

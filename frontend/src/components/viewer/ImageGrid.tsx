@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X, Info, ArrowLeft } from "lucide-react";
+import { SlidersHorizontal, X, Info, ArrowLeft, Download } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
@@ -247,6 +247,34 @@ export default function ImageGrid() {
       setSelectedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
     }
   }, [selectedSuggestionIndex, tagSuggestions, handleSuggestionClick, handleTagSearchSubmit]);
+
+  const handleDownload = async (image: GeneratedImage) => {
+    try {
+      // Get metadata setting from localStorage
+      const includeMetadata = localStorage.getItem('include_metadata_in_downloads') === 'true';
+
+      // Use API endpoint for metadata-aware download
+      const downloadUrl = `/api/download/${image.filename}?include_metadata=${includeMetadata}`;
+
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = image.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert('Download failed. Please try again.');
+    }
+  };
 
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)
@@ -727,33 +755,43 @@ export default function ImageGrid() {
                     </label>
                   </div>
 
-                  {/* Desktop Send buttons */}
-                  <div className="hidden lg:grid grid-cols-3 gap-2 mt-3">
+                  {/* Desktop Download and Send buttons */}
+                  <div className="hidden lg:flex flex-col gap-2 mt-3">
                     <Button
-                      onClick={() => sendToTxt2Img(selectedImage)}
-                      variant="secondary"
+                      onClick={() => handleDownload(selectedImage)}
+                      variant="primary"
                       size="sm"
-                      disabled={!sendPrompt && !sendParameters}
-                      title="Send image not applicable for txt2img"
                     >
-                      txt2img
+                      <Download className="h-4 w-4 mr-2" />
+                      Download
                     </Button>
-                    <Button
-                      onClick={() => sendToImg2Img(selectedImage)}
-                      variant="secondary"
-                      size="sm"
-                      disabled={!sendImage && !sendPrompt && !sendParameters}
-                    >
-                      img2img
-                    </Button>
-                    <Button
-                      onClick={() => sendToInpaint(selectedImage)}
-                      variant="secondary"
-                      size="sm"
-                      disabled={!sendImage && !sendPrompt && !sendParameters}
-                    >
-                      inpaint
-                    </Button>
+                    <div className="grid grid-cols-3 gap-2">
+                      <Button
+                        onClick={() => sendToTxt2Img(selectedImage)}
+                        variant="secondary"
+                        size="sm"
+                        disabled={!sendPrompt && !sendParameters}
+                        title="Send image not applicable for txt2img"
+                      >
+                        txt2img
+                      </Button>
+                      <Button
+                        onClick={() => sendToImg2Img(selectedImage)}
+                        variant="secondary"
+                        size="sm"
+                        disabled={!sendImage && !sendPrompt && !sendParameters}
+                      >
+                        img2img
+                      </Button>
+                      <Button
+                        onClick={() => sendToInpaint(selectedImage)}
+                        variant="secondary"
+                        size="sm"
+                        disabled={!sendImage && !sendPrompt && !sendParameters}
+                      >
+                        inpaint
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -831,8 +869,15 @@ export default function ImageGrid() {
             </div>
           )}
 
-          {/* Mobile: Fixed bottom Send buttons */}
+          {/* Mobile: Fixed bottom Send and Download buttons */}
           <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 flex gap-2 lg:hidden">
+            <button
+              onClick={() => handleDownload(selectedImage)}
+              className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded"
+              title="Download"
+            >
+              <Download className="h-4 w-4" />
+            </button>
             <button
               onClick={() => sendToTxt2Img(selectedImage)}
               disabled={!sendPrompt && !sendParameters}

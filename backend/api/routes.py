@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -1886,3 +1887,66 @@ async def login(request: LoginRequest):
 async def verify_auth(username: str = Depends(require_auth)):
     """Verify authentication token"""
     return {"authenticated": True, "username": username}
+
+@router.get("/download/{filename}")
+async def download_image(filename: str, include_metadata: bool = False):
+    """Download image with optional metadata removal
+
+    Args:
+        filename: The filename of the image in the outputs directory
+        include_metadata: If True, keep metadata; if False, strip metadata (default: False)
+
+    Returns:
+        Image file with or without metadata
+    """
+    try:
+        # Validate filename (prevent directory traversal)
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        # Construct full path
+        filepath = os.path.join(settings.outputs_dir, filename)
+
+        # Check if file exists
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        # Read the image
+        image = Image.open(filepath)
+
+        # Create BytesIO buffer
+        buffer = io.BytesIO()
+
+        if include_metadata:
+            # Save with metadata (if it exists)
+            if hasattr(image, 'info') and 'pnginfo' in image.info:
+                # Preserve existing metadata
+                from PIL import PngImagePlugin
+                metadata = PngImagePlugin.PngInfo()
+                for key, value in image.text.items():
+                    metadata.add_text(key, value)
+                image.save(buffer, format="PNG", pnginfo=metadata)
+            else:
+                # No metadata to preserve, just save normally
+                image.save(buffer, format="PNG")
+        else:
+            # Strip metadata by saving without pnginfo
+            image.save(buffer, format="PNG")
+
+        # Get bytes and return as response
+        buffer.seek(0)
+        image_bytes = buffer.getvalue()
+
+        return Response(
+            content=image_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error downloading image: {e}")
+        raise HTTPException(status_code=500, detail=f"Error downloading image: {str(e)}")

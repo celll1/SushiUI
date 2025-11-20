@@ -48,6 +48,7 @@ export default function SettingsPage() {
   const [resolutionStep, setResolutionStep] = useState(64);
   const [aspectRatioPresets, setAspectRatioPresets] = useState(DEFAULT_ASPECT_RATIO_PRESETS);
   const [fixedResolutionPresets, setFixedResolutionPresets] = useState(DEFAULT_FIXED_RESOLUTION_PRESETS);
+  const [includeMetadataInDownloads, setIncludeMetadataInDownloads] = useState(false);
 
   // Panel visibility settings
   const [txt2imgVisibility, setTxt2imgVisibility] = useState({
@@ -162,6 +163,7 @@ export default function SettingsPage() {
     // Load settings from localStorage
     if (typeof window !== 'undefined') {
       setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
+      setIncludeMetadataInDownloads(localStorage.getItem('include_metadata_in_downloads') === 'true');
 
       const savedResolutionStep = localStorage.getItem('resolution_step');
       if (savedResolutionStep) {
@@ -538,6 +540,28 @@ export default function SettingsPage() {
                   <p className="text-xs text-gray-500 mt-1">
                     Controls the step size for width and height sliders in generation panels. Default is 64.
                   </p>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="include_metadata_in_downloads"
+                    checked={includeMetadataInDownloads}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setIncludeMetadataInDownloads(newValue);
+                      localStorage.setItem('include_metadata_in_downloads', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="include_metadata_in_downloads" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Include metadata in manual downloads
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      When enabled, images downloaded using the download button will include generation metadata (prompt, parameters, etc.). Note: Images automatically saved to the output folder always include metadata regardless of this setting.
+                    </p>
+                  </div>
                 </div>
 
               </div>

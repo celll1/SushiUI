@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X, Info, ArrowLeft, Download } from "lucide-react";
+import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
@@ -806,6 +806,15 @@ export default function ImageGrid() {
 
             {/* Right Area - Image Display with Navigation */}
             <div className="flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden relative touch-none">
+              {/* Fullscreen Button - Mobile only */}
+              <button
+                onClick={() => setShowFullSizeImage(true)}
+                className="lg:hidden absolute top-4 right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white w-10 h-10 rounded-full flex items-center justify-center transition-all"
+                title="View fullscreen"
+              >
+                <Maximize className="h-5 w-5" />
+              </button>
+
               {/* Previous Image Button - Desktop only */}
               {(() => {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);

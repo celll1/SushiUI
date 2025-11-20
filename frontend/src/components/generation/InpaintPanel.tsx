@@ -2184,7 +2184,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       )}
 
       {/* Floating Gallery */}
-      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
+      <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} hideToggle={showImageEditor} />
 
       {/* Preview Image Viewer */}
       {previewViewerOpen && generatedImage && (

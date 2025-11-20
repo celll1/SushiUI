@@ -7,9 +7,10 @@ import ImageViewer from "./ImageViewer";
 interface FloatingGalleryProps {
   images: Array<{ url: string; timestamp: number }>;
   maxImages: number;
+  hideToggle?: boolean;
 }
 
-export default function FloatingGallery({ images, maxImages }: FloatingGalleryProps) {
+export default function FloatingGallery({ images, maxImages, hideToggle = false }: FloatingGalleryProps) {
   const [viewerImageIndex, setViewerImageIndex] = useState<number | null>(null);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
 
@@ -33,18 +34,20 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
   return (
     <>
       {/* Mobile gallery toggle button */}
-      <button
-        onClick={() => setIsGalleryOpen(!isGalleryOpen)}
-        className="fixed top-4 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
-        aria-label="Toggle gallery"
-      >
-        <ImageIcon className="h-5 w-5" />
-        {displayImages.length > 0 && (
-          <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-            {displayImages.length}
-          </span>
-        )}
-      </button>
+      {!hideToggle && (
+        <button
+          onClick={() => setIsGalleryOpen(!isGalleryOpen)}
+          className="fixed top-4 right-4 z-50 p-3 rounded-lg bg-gray-800 bg-opacity-90 text-white shadow-lg lg:hidden"
+          aria-label="Toggle gallery"
+        >
+          <ImageIcon className="h-5 w-5" />
+          {displayImages.length > 0 && (
+            <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+              {displayImages.length}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* Gallery panel - collapsible on mobile, always visible on desktop */}
       <div className={`

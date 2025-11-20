@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { ChevronUp, ChevronDown } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import Textarea from "../common/Textarea";
@@ -140,6 +141,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     enabled: false,
     steps: []
   });
+  const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -2002,49 +2004,62 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </Button>
               </div>
 
-              {/* Action Buttons - Mobile only (fixed at bottom) */}
-              <div className="lg:hidden fixed bottom-4 left-4 right-4 z-30 flex gap-2 bg-gray-900 bg-opacity-95 p-3 rounded-lg shadow-lg">
-                <Button
-                  onClick={handleAddToQueue}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setMenuPosition({ x: e.clientX, y: e.clientY });
-                    setShowForeverMenu(true);
-                  }}
-                  className="flex-1"
-                  size="lg"
+              {/* Action Buttons - Mobile only (toggleable fixed bar at bottom) */}
+              <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-gray-900 border-t border-gray-700">
+                {/* Toggle button */}
+                <button
+                  onClick={() => setIsMobileControlsOpen(!isMobileControlsOpen)}
+                  className="w-full py-2 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
                 >
-                  {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
-                </Button>
-                {isGenerating && (
-                  <Button
-                    onClick={async () => {
-                      try {
-                        await cancelGeneration();
-                        setIsGenerating(false);
-                        setProgress(0);
-                        setGenerateForever(false);
-                        failCurrentItem();
-                        setTimeout(() => processQueue(), 600);
-                      } catch (error) {
-                        console.error("Failed to cancel generation:", error);
-                      }
-                    }}
-                    variant="secondary"
-                    size="lg"
-                    title="Cancel generation and move to next"
-                  >
-                    Cancel
-                  </Button>
+                  {isMobileControlsOpen ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
+                </button>
+
+                {/* Buttons (collapsible) */}
+                {isMobileControlsOpen && (
+                  <div className="flex gap-2 p-3 border-t border-gray-700">
+                    <Button
+                      onClick={handleAddToQueue}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setMenuPosition({ x: e.clientX, y: e.clientY });
+                        setShowForeverMenu(true);
+                      }}
+                      className="flex-1"
+                      size="lg"
+                    >
+                      {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
+                    </Button>
+                    {isGenerating && (
+                      <Button
+                        onClick={async () => {
+                          try {
+                            await cancelGeneration();
+                            setIsGenerating(false);
+                            setProgress(0);
+                            setGenerateForever(false);
+                            failCurrentItem();
+                            setTimeout(() => processQueue(), 600);
+                          } catch (error) {
+                            console.error("Failed to cancel generation:", error);
+                          }
+                        }}
+                        variant="secondary"
+                        size="lg"
+                        title="Cancel generation and move to next"
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                    <Button
+                      onClick={resetToDefault}
+                      disabled={isGenerating}
+                      variant="secondary"
+                      size="lg"
+                    >
+                      Reset
+                    </Button>
+                  </div>
                 )}
-                <Button
-                  onClick={resetToDefault}
-                  disabled={isGenerating}
-                  variant="secondary"
-                  size="lg"
-                >
-                  Reset
-                </Button>
               </div>
 
               {isGenerating && (

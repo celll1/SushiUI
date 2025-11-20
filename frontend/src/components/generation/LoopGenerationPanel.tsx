@@ -84,10 +84,23 @@ export default function LoopGenerationPanel({
   };
 
   const addStep = () => {
+    // Calculate initial size based on previous step's output
+    let initialWidth = mainWidth;
+    let initialHeight = mainHeight;
+
+    if (config.steps.length > 0) {
+      // Use last step's output size as initial size
+      const lastStep = config.steps[config.steps.length - 1];
+      initialWidth = lastStep.width || mainWidth;
+      initialHeight = lastStep.height || mainHeight;
+    }
+
     const newStep: LoopGenerationStep = {
       id: `step_${Date.now()}`,
       enabled: true,
       sizeMode: "absolute",
+      width: initialWidth,
+      height: initialHeight,
       scale: 1.0,
       linkAspectRatio: true,
       resizeMode: "latent",
@@ -154,8 +167,21 @@ export default function LoopGenerationPanel({
 
   const updateStepScale = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const newScale = parseFloat(e.target.value);
-    const scaledWidth = roundToMultipleOf8(mainWidth * newScale);
-    const scaledHeight = roundToMultipleOf8(mainHeight * newScale);
+
+    // Calculate base size for this step (output of previous step)
+    const currentIndex = config.steps.findIndex(s => s.id === id);
+    let baseWidth = mainWidth;
+    let baseHeight = mainHeight;
+
+    if (currentIndex > 0) {
+      // Use previous step's output size as base
+      const prevStep = config.steps[currentIndex - 1];
+      baseWidth = prevStep.width || mainWidth;
+      baseHeight = prevStep.height || mainHeight;
+    }
+
+    const scaledWidth = roundToMultipleOf8(baseWidth * newScale);
+    const scaledHeight = roundToMultipleOf8(baseHeight * newScale);
     updateStep(id, { scale: newScale, width: scaledWidth, height: scaledHeight });
   };
 
@@ -164,10 +190,22 @@ export default function LoopGenerationPanel({
     if (!step) return;
 
     if (newMode === "scale") {
+      // Calculate base size for this step (output of previous step)
+      const currentIndex = config.steps.findIndex(s => s.id === id);
+      let baseWidth = mainWidth;
+      let baseHeight = mainHeight;
+
+      if (currentIndex > 0) {
+        // Use previous step's output size as base
+        const prevStep = config.steps[currentIndex - 1];
+        baseWidth = prevStep.width || mainWidth;
+        baseHeight = prevStep.height || mainHeight;
+      }
+
       // Switch to scale mode - calculate scale based on current dimensions or use default
       const currentScale = step.scale || 1.0;
-      const scaledWidth = roundToMultipleOf8(mainWidth * currentScale);
-      const scaledHeight = roundToMultipleOf8(mainHeight * currentScale);
+      const scaledWidth = roundToMultipleOf8(baseWidth * currentScale);
+      const scaledHeight = roundToMultipleOf8(baseHeight * currentScale);
       updateStep(id, { sizeMode: newMode, width: scaledWidth, height: scaledHeight });
     } else {
       updateStep(id, { sizeMode: newMode });
@@ -335,7 +373,24 @@ export default function LoopGenerationPanel({
                 ) : (
                   <div>
                     <Slider
-                      label={`Scale (${step.width || mainWidth}x${step.height || mainHeight})`}
+                      label={`Scale (${(() => {
+                        // Calculate output size based on base size and scale
+                        const currentIndex = config.steps.findIndex(s => s.id === step.id);
+                        let baseWidth = mainWidth;
+                        let baseHeight = mainHeight;
+
+                        if (currentIndex > 0) {
+                          // Use previous step's output size as base
+                          const prevStep = config.steps[currentIndex - 1];
+                          baseWidth = prevStep.width || mainWidth;
+                          baseHeight = prevStep.height || mainHeight;
+                        }
+
+                        const scale = step.scale || 1.0;
+                        const outputWidth = roundToMultipleOf8(baseWidth * scale);
+                        const outputHeight = roundToMultipleOf8(baseHeight * scale);
+                        return `${outputWidth}x${outputHeight}`;
+                      })()})`}
                       value={step.scale || 1.0}
                       onChange={(e) => updateStepScale(step.id, e)}
                       min={0.25}
@@ -343,7 +398,19 @@ export default function LoopGenerationPanel({
                       step={0.25}
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Base: {mainWidth}x{mainHeight}
+                      Base: {(() => {
+                        // Calculate input size for this step (output of previous step)
+                        const currentIndex = config.steps.findIndex(s => s.id === step.id);
+                        if (currentIndex === 0) {
+                          // First step uses main generation output
+                          return `${mainWidth}x${mainHeight}`;
+                        }
+                        // Previous step's output size
+                        const prevStep = config.steps[currentIndex - 1];
+                        const prevWidth = prevStep.width || mainWidth;
+                        const prevHeight = prevStep.height || mainHeight;
+                        return `${prevWidth}x${prevHeight}`;
+                      })()}
                     </p>
                   </div>
                 )}

@@ -78,10 +78,9 @@ export default function LoopGenerationPanel({
 }: LoopGenerationPanelProps) {
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
 
-  // Ensure dimension is multiple of 64 (required for SDXL VAE latent space)
-  // SDXL VAE uses 8x downsampling, and some operations require 64-byte alignment
-  const roundToMultipleOf64 = (value: number): number => {
-    return Math.round(value / 64) * 64;
+  // Ensure dimension is multiple of 8 (required for VAE)
+  const roundToMultipleOf8 = (value: number): number => {
+    return Math.round(value / 8) * 8;
   };
 
   const addStep = () => {
@@ -142,10 +141,10 @@ export default function LoopGenerationPanel({
     if (step.linkAspectRatio) {
       const aspectRatio = mainWidth / mainHeight;
       if (field === "width") {
-        const newHeight = roundToMultipleOf64(value / aspectRatio);
+        const newHeight = roundToMultipleOf8(value / aspectRatio);
         updateStep(id, { width: value, height: newHeight });
       } else {
-        const newWidth = roundToMultipleOf64(value * aspectRatio);
+        const newWidth = roundToMultipleOf8(value * aspectRatio);
         updateStep(id, { width: newWidth, height: value });
       }
     } else {
@@ -155,8 +154,8 @@ export default function LoopGenerationPanel({
 
   const updateStepScale = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const newScale = parseFloat(e.target.value);
-    const scaledWidth = roundToMultipleOf64(mainWidth * newScale);
-    const scaledHeight = roundToMultipleOf64(mainHeight * newScale);
+    const scaledWidth = roundToMultipleOf8(mainWidth * newScale);
+    const scaledHeight = roundToMultipleOf8(mainHeight * newScale);
     updateStep(id, { scale: newScale, width: scaledWidth, height: scaledHeight });
   };
 
@@ -167,8 +166,8 @@ export default function LoopGenerationPanel({
     if (newMode === "scale") {
       // Switch to scale mode - calculate scale based on current dimensions or use default
       const currentScale = step.scale || 1.0;
-      const scaledWidth = roundToMultipleOf64(mainWidth * currentScale);
-      const scaledHeight = roundToMultipleOf64(mainHeight * currentScale);
+      const scaledWidth = roundToMultipleOf8(mainWidth * currentScale);
+      const scaledHeight = roundToMultipleOf8(mainHeight * currentScale);
       updateStep(id, { sizeMode: newMode, width: scaledWidth, height: scaledHeight });
     } else {
       updateStep(id, { sizeMode: newMode });

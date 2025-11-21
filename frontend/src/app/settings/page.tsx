@@ -50,6 +50,10 @@ export default function SettingsPage() {
   const [fixedResolutionPresets, setFixedResolutionPresets] = useState(DEFAULT_FIXED_RESOLUTION_PRESETS);
   const [includeMetadataInDownloads, setIncludeMetadataInDownloads] = useState(false);
 
+  // Send size mode settings
+  const [sendSizeMode, setSendSizeMode] = useState<"absolute" | "scale">("absolute");
+  const [sendDefaultScale, setSendDefaultScale] = useState(1.0);
+
   // Panel visibility settings
   const [txt2imgVisibility, setTxt2imgVisibility] = useState({
     lora: true,
@@ -214,6 +218,20 @@ export default function SettingsPage() {
           setInpaintVisibility(JSON.parse(savedInpaintVisibility));
         } catch (e) {
           console.error('Failed to parse inpaint visibility:', e);
+        }
+      }
+
+      // Load send size mode settings
+      const savedSendSizeMode = localStorage.getItem('send_size_mode');
+      if (savedSendSizeMode && (savedSendSizeMode === 'absolute' || savedSendSizeMode === 'scale')) {
+        setSendSizeMode(savedSendSizeMode);
+      }
+
+      const savedSendDefaultScale = localStorage.getItem('send_default_scale');
+      if (savedSendDefaultScale) {
+        const scale = parseFloat(savedSendDefaultScale);
+        if (!isNaN(scale) && scale > 0) {
+          setSendDefaultScale(scale);
         }
       }
     }
@@ -564,6 +582,83 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Send Settings">
+            <div className="space-y-4">
+              <p className="text-gray-400 text-sm mb-4">
+                Configure default size mode when sending images between panels (txt2img → img2img/inpaint, etc.)
+              </p>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-300">
+                    Default Size Mode
+                  </label>
+                  <div className="flex gap-4">
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="send_size_mode"
+                        value="absolute"
+                        checked={sendSizeMode === "absolute"}
+                        onChange={(e) => {
+                          setSendSizeMode("absolute");
+                          localStorage.setItem('send_size_mode', "absolute");
+                        }}
+                        className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-300">Absolute</span>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="send_size_mode"
+                        value="scale"
+                        checked={sendSizeMode === "scale"}
+                        onChange={(e) => {
+                          setSendSizeMode("scale");
+                          localStorage.setItem('send_size_mode', "scale");
+                        }}
+                        className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-300">Scale</span>
+                    </label>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    When set to "Scale", receiving panels will use scale mode with the default scale value below. When "Absolute", the exact pixel dimensions are used.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="send_default_scale" className="text-sm font-medium text-gray-300">
+                    Default Scale Value (for Scale mode)
+                  </label>
+                  <div className="flex items-center space-x-4">
+                    <input
+                      type="number"
+                      id="send_default_scale"
+                      value={sendDefaultScale}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value);
+                        if (!isNaN(value) && value > 0) {
+                          setSendDefaultScale(value);
+                          localStorage.setItem('send_default_scale', value.toString());
+                        }
+                      }}
+                      min="0.1"
+                      max="4.0"
+                      step="0.1"
+                      className="w-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <span className="text-sm text-gray-400">×</span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Default scale multiplier when receiving images in scale mode. Default is 1.0 (same size as source).
+                  </p>
+                </div>
               </div>
             </div>
           </Card>

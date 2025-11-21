@@ -95,13 +95,25 @@ export default function LoopGenerationPanel({
       initialHeight = lastStep.height || mainHeight;
     }
 
+    // Read global send size mode settings
+    const sendSizeMode = (typeof window !== 'undefined'
+      ? localStorage.getItem('send_size_mode')
+      : null) as "absolute" | "scale" | null;
+    const sendDefaultScale = typeof window !== 'undefined'
+      ? parseFloat(localStorage.getItem('send_default_scale') || '1.0')
+      : 1.0;
+
     const newStep: LoopGenerationStep = {
       id: `step_${Date.now()}`,
       enabled: true,
-      sizeMode: "absolute",
-      width: initialWidth,
-      height: initialHeight,
-      scale: 1.0,
+      sizeMode: sendSizeMode === 'scale' ? 'scale' : 'absolute',
+      width: sendSizeMode === 'scale'
+        ? Math.round(initialWidth * sendDefaultScale / 64) * 64
+        : initialWidth,
+      height: sendSizeMode === 'scale'
+        ? Math.round(initialHeight * sendDefaultScale / 64) * 64
+        : initialHeight,
+      scale: sendSizeMode === 'scale' ? sendDefaultScale : 1.0,
       linkAspectRatio: true,
       resizeMode: "latent",
       resamplingMethod: "lanczos",

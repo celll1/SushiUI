@@ -311,6 +311,23 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             const img = new Image();
             img.onload = () => {
               setInputImageSize({ width: img.width, height: img.height });
+
+              // Apply global send size mode settings
+              const sendSizeMode = localStorage.getItem('send_size_mode') as "absolute" | "scale" | null;
+              if (sendSizeMode === 'scale') {
+                setSizeMode('scale');
+                const sendDefaultScale = parseFloat(localStorage.getItem('send_default_scale') || '1.0');
+                setScale(sendDefaultScale);
+                // Update dimensions based on scale
+                const scaledWidth = Math.round(img.width * sendDefaultScale / 64) * 64;
+                const scaledHeight = Math.round(img.height * sendDefaultScale / 64) * 64;
+                setParams(prev => ({ ...prev, width: scaledWidth, height: scaledHeight }));
+              } else {
+                // Absolute mode - use image dimensions as-is
+                setSizeMode('absolute');
+                setScale(1.0);
+                setParams(prev => ({ ...prev, width: img.width, height: img.height }));
+              }
             };
             img.src = imageData;
           }

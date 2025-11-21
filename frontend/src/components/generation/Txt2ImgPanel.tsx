@@ -20,6 +20,7 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
+import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -56,6 +57,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
+  const [generatedImageParams, setGeneratedImageParams] = useState<GenerationParams | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
@@ -341,25 +343,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }
     }
 
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
     // Send prompt if checked
     if (sendPrompt) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
-      img2imgParams.prompt = params.prompt;
-      img2imgParams.negative_prompt = params.negative_prompt;
-      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      sendPromptToPanel(sourceParams, "img2img_params");
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
-      img2imgParams.steps = params.steps;
-      img2imgParams.cfg_scale = params.cfg_scale;
-      img2imgParams.sampler = params.sampler;
-      img2imgParams.schedule_type = params.schedule_type;
-      img2imgParams.seed = params.seed;
-      img2imgParams.width = params.width;
-      img2imgParams.height = params.height;
-      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      sendParametersToPanel(sourceParams, "img2img_params");
     }
 
     // Navigate to img2img tab
@@ -377,34 +371,23 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Send image if checked
     if (sendImage) {
       try {
-        const tempRef = await saveTempImage(generatedImage);
-        localStorage.setItem("inpaint_input_image", tempRef);
-        localStorage.removeItem("inpaint_mask_image");
-        window.dispatchEvent(new Event("inpaint_input_updated"));
+        await sendBase64ImageToInpaint(generatedImage);
       } catch (error) {
         console.error("[Txt2Img] Failed to send image to inpaint:", error);
       }
     }
 
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
     // Send prompt if checked
     if (sendPrompt) {
-      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
-      inpaintParams.prompt = params.prompt;
-      inpaintParams.negative_prompt = params.negative_prompt;
-      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+      sendPromptToPanel(sourceParams, "inpaint_params");
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
-      inpaintParams.steps = params.steps;
-      inpaintParams.cfg_scale = params.cfg_scale;
-      inpaintParams.sampler = params.sampler;
-      inpaintParams.schedule_type = params.schedule_type;
-      inpaintParams.seed = params.seed;
-      inpaintParams.width = params.width;
-      inpaintParams.height = params.height;
-      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+      sendParametersToPanel(sourceParams, "inpaint_params");
     }
 
     // Navigate to inpaint tab
@@ -827,6 +810,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+      // Save the params used for this generation (with actual result values)
+      setGeneratedImageParams({
+        ...nextItem.params,
+        seed: result.image.seed,
+        ancestral_seed: result.image.ancestral_seed || -1,
+        width: result.image.width,
+        height: result.image.height,
+      });
       setPreviewImage(null);
 
       // Notify parent component

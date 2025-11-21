@@ -21,6 +21,7 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -32,6 +33,7 @@ interface InpaintParams {
   sampler?: string;
   schedule_type?: string;
   seed?: number;
+  ancestral_seed?: number;
   width?: number;
   height?: number;
   denoising_strength?: number;
@@ -89,6 +91,7 @@ interface InpaintPanelProps {
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
   const { modelLoaded, isBackendReady } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
+  const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
@@ -681,20 +684,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return;
     }
 
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
     // Send image if checked
     if (sendImage) {
       try {
-        // Fetch the generated image and convert to base64
-        const response = await fetch(generatedImage);
-        const blob = await response.blob();
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          const ref = await saveTempImage(base64data);
-          localStorage.setItem("img2img_input_image", ref);
-          window.dispatchEvent(new Event("img2img_input_updated"));
-        };
-        reader.readAsDataURL(blob);
+        await sendImageToImg2Img(generatedImage);
       } catch (error) {
         console.error("Failed to send image to img2img:", error);
       }
@@ -702,24 +698,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     // Send prompt if checked
     if (sendPrompt) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
-      img2imgParams.prompt = params.prompt;
-      img2imgParams.negative_prompt = params.negative_prompt;
-      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      sendPromptToPanel(sourceParams, "img2img_params");
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
-      img2imgParams.steps = params.steps;
-      img2imgParams.cfg_scale = params.cfg_scale;
-      img2imgParams.sampler = params.sampler;
-      img2imgParams.schedule_type = params.schedule_type;
-      img2imgParams.seed = params.seed;
-      img2imgParams.width = params.width;
-      img2imgParams.height = params.height;
-      img2imgParams.denoising_strength = params.denoising_strength;
-      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      sendParametersToPanel(sourceParams, "img2img_params", true);
     }
 
     // Navigate to img2img tab
@@ -1114,6 +1098,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setGeneratedImageSeed(result.actual_seed);
         setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
         setPreviewImage(null);
+
+        // Save the params used for this generation (with actual result values)
+        setGeneratedImageParams({
+          ...nextItem.params,
+          seed: result.image.seed,
+          ancestral_seed: result.image.ancestral_seed || -1,
+          width: result.image.width,
+          height: result.image.height,
+        });
 
         // Add to gallery
         setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);

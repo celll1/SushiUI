@@ -1655,7 +1655,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   <>
                     <Slider
                       label="CFG Min (end of generation)"
-                      min={0}
+                      min={1}
                       max={15}
                       step={0.5}
                       value={params.cfg_schedule_min || 1.0}
@@ -1695,26 +1695,39 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
               {/* Dynamic Thresholding (Imagen) */}
               <div className="space-y-3">
-                <label className="block text-sm font-medium text-gray-300">
-                  Dynamic Thresholding (Imagen)
-                </label>
-                <Slider
-                  label="Threshold Percentile (0=off, 99.5=typical)"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={params.dynamic_threshold_percentile || 0.0}
-                  onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
-                />
-                {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (
-                  <Slider
-                    label="Mimic Scale (static clamp)"
-                    min={0.5}
-                    max={2.0}
-                    step={0.1}
-                    value={params.dynamic_threshold_mimic_scale || 1.0}
-                    onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0}
+                    onChange={(e) => setParams({
+                      ...params,
+                      dynamic_threshold_percentile: e.target.checked ? 99.5 : 0.0
+                    })}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
                   />
+                  <label className="text-sm font-medium text-gray-300">
+                    Dynamic Thresholding (Imagen)
+                  </label>
+                </div>
+                {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (
+                  <>
+                    <Slider
+                      label="Threshold Percentile"
+                      min={90}
+                      max={100}
+                      step={0.5}
+                      value={params.dynamic_threshold_percentile || 99.5}
+                      onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="Mimic Scale (static clamp)"
+                      min={0.5}
+                      max={2.0}
+                      step={0.1}
+                      value={params.dynamic_threshold_mimic_scale || 1.0}
+                      onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                    />
+                  </>
                 )}
               </div>
             </div>

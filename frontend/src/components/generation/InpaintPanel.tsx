@@ -19,7 +19,8 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
-import { wsClient } from "@/utils/websocket";
+import { wsClient, CFGMetrics } from "@/utils/websocket";
+import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
@@ -148,19 +149,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     steps: []
   });
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
+  const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
+  const [developerMode, setDeveloperMode] = useState(false);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // WebSocket progress callback
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string) => {
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
     if (isGenerating) {
       setProgress(step);
       setTotalSteps(totalSteps);
       if (preview) {
         setPreviewImage(preview);
       }
+      if (metrics && developerMode) {
+        setCfgMetrics(prev => [...prev, metrics]);
+      }
     }
-  }, [isGenerating]);
+  }, [isGenerating, developerMode]);
 
   // Setup WebSocket connection
   useEffect(() => {
@@ -274,6 +280,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const savedResolutionStep = localStorage.getItem('resolution_step');
       if (savedResolutionStep) {
         setResolutionStep(parseInt(savedResolutionStep));
+      }
+
+      // Load developer mode
+      const savedDeveloperMode = localStorage.getItem('developer_mode');
+      if (savedDeveloperMode === 'true') {
+        setDeveloperMode(true);
       }
 
       // Load custom presets
@@ -1084,6 +1096,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
+    setCfgMetrics([]); // Clear previous metrics
 
     try {
       const apiParams: ApiInpaintParams = {
@@ -1107,6 +1120,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         resampling_method: nextItem.params.resampling_method,
         loras: nextItem.params.loras,
         controlnets: nextItem.params.controlnets,
+        developer_mode: developerMode,
       };
 
       console.log('[Inpaint] Generating with params:', {
@@ -2130,6 +2144,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   <p className="text-gray-500">No image generated yet</p>
                 )}
               </div>
+
+              {/* CFG Metrics Graph (Developer Mode) */}
+              {developerMode && cfgMetrics.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-sm text-gray-400 mb-2">CFG Metrics (Developer Mode)</div>
+                  <CFGMetricsGraph metrics={cfgMetrics} />
+                </div>
+              )}
+
             {generatedImage && (
               <div className="space-y-3 mt-4">
                 <div className="flex flex-wrap gap-2 text-sm">

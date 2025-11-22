@@ -20,7 +20,8 @@ import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
-import { wsClient } from "@/utils/websocket";
+import { wsClient, CFGMetrics } from "@/utils/websocket";
+import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
@@ -131,19 +132,24 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     steps: []
   });
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
+  const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
+  const [developerMode, setDeveloperMode] = useState(false);
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // WebSocket progress callback
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string) => {
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
     if (isGenerating) {
       setProgress(step);
       setTotalSteps(totalSteps);
       if (preview) {
         setPreviewImage(preview);
       }
+      if (metrics && developerMode) {
+        setCfgMetrics(prev => [...prev, metrics]);
+      }
     }
-  }, [isGenerating]);
+  }, [isGenerating, developerMode]);
 
   // Setup WebSocket connection
   useEffect(() => {
@@ -222,6 +228,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       const savedResolutionStep = localStorage.getItem('resolution_step');
       if (savedResolutionStep) {
         setResolutionStep(parseInt(savedResolutionStep));
+      }
+
+      // Load developer mode
+      const savedDeveloperMode = localStorage.getItem('developer_mode');
+      if (savedDeveloperMode === 'true') {
+        setDeveloperMode(true);
       }
 
       // Load custom presets
@@ -917,6 +929,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
+    setCfgMetrics([]); // Clear previous metrics
 
     try {
       // For loop steps, use the input image or fall back to previous image
@@ -925,7 +938,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         throw new Error("No input image available for img2img generation");
       }
 
-      const result = await generateImg2Img(nextItem.params, inputImageToUse);
+      // Add developer_mode flag to params
+      const paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+      const result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
       const imageUrl = `/outputs/${result.image.filename}`;
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
@@ -1816,6 +1831,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   <p className="text-gray-500">No image generated yet</p>
                 )}
               </div>
+
+              {/* CFG Metrics Graph (Developer Mode) */}
+              {developerMode && cfgMetrics.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-sm text-gray-400 mb-2">CFG Metrics (Developer Mode)</div>
+                  <CFGMetricsGraph metrics={cfgMetrics} />
+                </div>
+              )}
+
               {generatedImage && (
               <div className="space-y-3 mt-4">
                 <div className="flex flex-wrap gap-2 text-sm">

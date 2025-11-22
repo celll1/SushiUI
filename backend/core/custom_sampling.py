@@ -23,6 +23,7 @@ from diffusers import (
 from PIL import Image
 import numpy as np
 import math
+from math import pi, cos
 
 
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
@@ -79,6 +80,57 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
     }
 
 
+def calculate_dynamic_cfg(
+    sigma: float,
+    sigma_max: float,
+    cfg_base: float,
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: Optional[float] = None,
+    cfg_schedule_power: float = 2.0
+) -> float:
+    """Calculate dynamic CFG scale based on sigma (noise level)
+
+    Args:
+        sigma: Current noise level
+        sigma_max: Maximum sigma value (from scheduler)
+        cfg_base: Base CFG scale (used when schedule_type is "constant")
+        cfg_schedule_type: Type of schedule ("constant", "linear", "quadratic", "cosine")
+        cfg_schedule_min: Minimum CFG scale (at sigma=0, end of generation)
+        cfg_schedule_max: Maximum CFG scale (at sigma=sigma_max, start of generation)
+                          If None, uses cfg_base
+        cfg_schedule_power: Power for quadratic schedule (default: 2.0)
+
+    Returns:
+        CFG scale for current step
+    """
+    if cfg_schedule_type == "constant":
+        return cfg_base
+
+    # Use cfg_base as max if not specified
+    if cfg_schedule_max is None:
+        cfg_schedule_max = cfg_base
+
+    # Normalize sigma to [0, 1] range
+    sigma_norm = min(sigma / sigma_max, 1.0) if sigma_max > 0 else 0.0
+
+    # Calculate CFG based on schedule type
+    if cfg_schedule_type == "linear":
+        # Linear interpolation: high CFG at start (high sigma), low at end
+        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * sigma_norm
+    elif cfg_schedule_type == "quadratic":
+        # Quadratic: more gradual at start, steeper drop at end
+        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * (sigma_norm ** cfg_schedule_power)
+    elif cfg_schedule_type == "cosine":
+        # Cosine: smooth transition
+        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * cos((1 - sigma_norm) * pi / 2)
+    else:
+        # Fallback to constant
+        cfg = cfg_base
+
+    return cfg
+
+
 def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0) -> torch.Tensor:
     """
     Rescale noise predictions to fix overexposure and improve image quality.
@@ -127,6 +179,10 @@ def custom_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: Optional[float] = None,
+    cfg_schedule_power: float = 2.0,
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -239,6 +295,12 @@ def custom_sampling_loop(
     print(f"[CustomSampling] Actual timesteps: {len(timesteps)} (some schedulers like DPM2 use 2x steps)")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
     print(f"[CustomSampling] Prompt embeds shape: {prompt_embeds.shape}")
+
+    # Get sigma_max for dynamic CFG scheduling
+    sigma_max = 0.0
+    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
+        sigma_max = float(scheduler.sigmas[0].item())
+    print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -378,9 +440,25 @@ def custom_sampling_loop(
                 **unet_kwargs
             ).sample
 
-        # Perform guidance
+        # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        # Calculate dynamic CFG scale based on current sigma
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power
+        )
+
+        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply guidance rescale if specified (important for v-prediction models)
         if guidance_rescale > 0.0:
@@ -398,7 +476,7 @@ def custom_sampling_loop(
             cfg_metrics = calculate_cfg_metrics(
                 noise_pred_uncond,
                 noise_pred_text,
-                guidance_scale,
+                current_guidance_scale,
                 developer_mode=developer_mode
             )
             # Add timestep/sigma info to metrics
@@ -455,6 +533,10 @@ def custom_img2img_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: Optional[float] = None,
+    cfg_schedule_power: float = 2.0,
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -578,6 +660,12 @@ def custom_img2img_sampling_loop(
 
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
+
+    # Get sigma_max for dynamic CFG scheduling
+    sigma_max = 0.0
+    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
+        sigma_max = float(scheduler.sigmas[0].item())
+    print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -708,9 +796,25 @@ def custom_img2img_sampling_loop(
                 **unet_kwargs
             ).sample
 
-        # Perform guidance
+        # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        # Calculate dynamic CFG scale based on current sigma
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[t_start + i].item())
+
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power
+        )
+
+        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply guidance rescale if specified (important for v-prediction models)
         if guidance_rescale > 0.0:
@@ -726,7 +830,7 @@ def custom_img2img_sampling_loop(
             cfg_metrics = calculate_cfg_metrics(
                 noise_pred_uncond,
                 noise_pred_text,
-                guidance_scale,
+                current_guidance_scale,
                 developer_mode=developer_mode
             )
             # Add timestep/sigma info to metrics
@@ -787,6 +891,10 @@ def custom_inpaint_sampling_loop(
     inpaint_fill_mode: str = "original",
     inpaint_fill_strength: float = 1.0,
     inpaint_blur_strength: float = 1.0,
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: Optional[float] = None,
+    cfg_schedule_power: float = 2.0,
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -948,6 +1056,12 @@ def custom_inpaint_sampling_loop(
 
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
+    # Get sigma_max for dynamic CFG scheduling
+    sigma_max = 0.0
+    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
+        sigma_max = float(scheduler.sigmas[0].item())
+    print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
+
     for i, t in enumerate(timesteps):
         # Check for cancellation
         from core.pipeline import pipeline_manager
@@ -1070,8 +1184,25 @@ def custom_inpaint_sampling_loop(
                 **unet_kwargs
             ).sample
 
+        # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        # Calculate dynamic CFG scale based on current sigma
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[t_start + i].item())
+
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power
+        )
+
+        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
@@ -1100,7 +1231,7 @@ def custom_inpaint_sampling_loop(
             cfg_metrics = calculate_cfg_metrics(
                 noise_pred_uncond,
                 noise_pred_text,
-                guidance_scale,
+                current_guidance_scale,
                 developer_mode=developer_mode
             )
             # Add timestep/sigma info to metrics

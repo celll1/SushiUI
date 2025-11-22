@@ -12,8 +12,17 @@ interface BaseSendParams {
   sampler?: string;
   schedule_type?: string;
   seed?: number;
+  ancestral_seed?: number;
   width?: number;
   height?: number;
+  // Advanced CFG parameters
+  cfg_schedule_type?: string;
+  cfg_schedule_min?: number;
+  cfg_schedule_max?: number;
+  cfg_schedule_power?: number;
+  cfg_rescale_snr_alpha?: number;
+  dynamic_threshold_percentile?: number;
+  dynamic_threshold_mimic_scale?: number;
 }
 
 /**
@@ -50,8 +59,32 @@ export function sendParametersToPanel(
   targetParams.sampler = sourceParams.sampler;
   targetParams.schedule_type = sourceParams.schedule_type;
   targetParams.seed = sourceParams.seed;
+  targetParams.ancestral_seed = sourceParams.ancestral_seed;
   targetParams.width = sourceParams.width;
   targetParams.height = sourceParams.height;
+
+  // Add Advanced CFG parameters
+  if (sourceParams.cfg_schedule_type !== undefined) {
+    targetParams.cfg_schedule_type = sourceParams.cfg_schedule_type;
+  }
+  if (sourceParams.cfg_schedule_min !== undefined) {
+    targetParams.cfg_schedule_min = sourceParams.cfg_schedule_min;
+  }
+  if (sourceParams.cfg_schedule_max !== undefined) {
+    targetParams.cfg_schedule_max = sourceParams.cfg_schedule_max;
+  }
+  if (sourceParams.cfg_schedule_power !== undefined) {
+    targetParams.cfg_schedule_power = sourceParams.cfg_schedule_power;
+  }
+  if (sourceParams.cfg_rescale_snr_alpha !== undefined) {
+    targetParams.cfg_rescale_snr_alpha = sourceParams.cfg_rescale_snr_alpha;
+  }
+  if (sourceParams.dynamic_threshold_percentile !== undefined) {
+    targetParams.dynamic_threshold_percentile = sourceParams.dynamic_threshold_percentile;
+  }
+  if (sourceParams.dynamic_threshold_mimic_scale !== undefined) {
+    targetParams.dynamic_threshold_mimic_scale = sourceParams.dynamic_threshold_mimic_scale;
+  }
 
   if (includeDenoising && sourceParams.denoising_strength !== undefined) {
     targetParams.denoising_strength = roundFloat(sourceParams.denoising_strength, 2);

@@ -102,6 +102,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
@@ -235,6 +236,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const savedDeveloperMode = localStorage.getItem('developer_mode');
     if (savedDeveloperMode === 'true') {
       setDeveloperMode(true);
+    }
+
+    // Load advanced CFG settings visibility
+    const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
+    if (savedShowAdvancedCFG === 'true') {
+      setShowAdvancedCFG(true);
     }
 
     // Load custom presets
@@ -815,8 +822,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Generate based on type
       if (nextItem.type === "txt2img") {
-        // Add developer_mode flag to params
-        const paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+        // Add developer_mode flag and reset advanced CFG params if disabled
+        let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+        if (!showAdvancedCFG) {
+          paramsWithDevMode = {
+            ...paramsWithDevMode,
+            cfg_schedule_type: "constant",
+            cfg_rescale_snr_alpha: 0.0,
+            dynamic_threshold_percentile: 0.0,
+          };
+        }
         result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
         imageUrl = `/outputs/${result.image.filename}`;
       } else if (nextItem.type === "img2img") {
@@ -831,8 +846,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         const blob = await response.blob();
         const file = new File([blob], "input.png", { type: "image/png" });
 
-        // Add developer_mode flag to params
-        const paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+        // Add developer_mode flag and reset advanced CFG params if disabled
+        let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+        if (!showAdvancedCFG) {
+          paramsWithDevMode = {
+            ...paramsWithDevMode,
+            cfg_schedule_type: "constant",
+            cfg_rescale_snr_alpha: 0.0,
+            dynamic_threshold_percentile: 0.0,
+          };
+        }
         result = await generateImg2Img(paramsWithDevMode, file);
         imageUrl = `/outputs/${result.image.filename}`;
       } else {
@@ -1153,6 +1176,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
 
+              {/* Advanced CFG Settings */}
+              {showAdvancedCFG && (
+                <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">
                 <label className="block text-sm font-medium text-gray-300">
@@ -1249,6 +1275,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </>
                 )}
               </div>
+              </>
+              )}
             </div>
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

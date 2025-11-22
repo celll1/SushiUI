@@ -57,6 +57,9 @@ export default function SettingsPage() {
   // Developer mode
   const [developerMode, setDeveloperMode] = useState(false);
 
+  // Advanced CFG settings visibility
+  const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
+
   // Panel visibility settings
   const [txt2imgVisibility, setTxt2imgVisibility] = useState({
     lora: true,
@@ -242,6 +245,12 @@ export default function SettingsPage() {
       const savedDeveloperMode = localStorage.getItem('developer_mode');
       if (savedDeveloperMode === 'true') {
         setDeveloperMode(true);
+      }
+
+      // Load advanced CFG settings visibility
+      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
+      if (savedShowAdvancedCFG === 'true') {
+        setShowAdvancedCFG(true);
       }
     }
   }, []);
@@ -609,6 +618,28 @@ export default function SettingsPage() {
                     </label>
                     <p className="text-xs text-gray-500 mt-1">
                       Enable developer features including CFG metrics visualization during generation. Shows noise prediction magnitudes, guidance strength, and other diagnostic information below the preview panel.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="show_advanced_cfg"
+                    checked={showAdvancedCFG}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setShowAdvancedCFG(newValue);
+                      localStorage.setItem('show_advanced_cfg', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="show_advanced_cfg" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Show Advanced CFG Settings
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Show advanced CFG (Classifier-Free Guidance) settings in generation panels. Includes Dynamic CFG Schedule (sigma-based, SNR-based), Dynamic Thresholding (Imagen), and related parameters. When disabled, all advanced CFG features are turned off.
                     </p>
                   </div>
                 </div>

@@ -45,14 +45,15 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
     # cos(θ) = (yp · yn) / (||yp|| × ||yn||)
     # 1.0 = same direction, 0.0 = orthogonal, -1.0 = opposite
     dot_product = (noise_pred_uncond * noise_pred_text).sum().item()
-    cosine_similarity = dot_product / (uncond_norm * text_norm + 1e-8)
+    denom = uncond_norm * text_norm
+    cosine_similarity = dot_product / denom if denom > 1e-8 else 0.0
 
     # Relative difference: how much CFG will change the prediction
     # This is more meaningful than absolute norms
-    relative_diff = diff_norm / (uncond_norm + 1e-8)
+    relative_diff = diff_norm / uncond_norm if uncond_norm > 1e-8 else 0.0
 
     # SNR (Signal-to-Noise Ratio): squared relative difference
-    snr = (diff_norm ** 2) / (uncond_norm ** 2 + 1e-8)
+    snr = (diff_norm ** 2) / (uncond_norm ** 2) if uncond_norm > 1e-8 else 0.0
 
     # Per-channel statistics to see variation patterns
     uncond_mean = noise_pred_uncond.mean().item()

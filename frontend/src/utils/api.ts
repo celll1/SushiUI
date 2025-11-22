@@ -159,6 +159,7 @@ export interface GenerationParams {
   cfg_schedule_min?: number;
   cfg_schedule_max?: number;
   cfg_schedule_power?: number;
+  cfg_rescale_snr_alpha?: number;
   // Dynamic thresholding (Imagen)
   dynamic_threshold_percentile?: number;
   dynamic_threshold_mimic_scale?: number;

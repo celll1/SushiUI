@@ -45,6 +45,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   cfg_schedule_min: 1.0,
   cfg_schedule_max: undefined,
   cfg_schedule_power: 2.0,
+  cfg_rescale_snr_alpha: 0.0,
   dynamic_threshold_percentile: 0.0,
   dynamic_threshold_mimic_scale: 1.0,
 };
@@ -1163,12 +1164,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="constant">Constant (no scheduling)</option>
-                  <option value="linear">Linear</option>
-                  <option value="quadratic">Quadratic</option>
-                  <option value="cosine">Cosine</option>
+                  <option value="linear">Linear (sigma-based)</option>
+                  <option value="quadratic">Quadratic (sigma-based)</option>
+                  <option value="cosine">Cosine (sigma-based)</option>
+                  <option value="snr_based">SNR-Based Adaptive</option>
                 </select>
 
-                {params.cfg_schedule_type !== "constant" && (
+                {params.cfg_schedule_type && params.cfg_schedule_type !== "constant" && params.cfg_schedule_type !== "snr_based" && (
                   <>
                     <Slider
                       label="CFG Min (end of generation)"
@@ -1197,6 +1199,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       />
                     )}
                   </>
+                )}
+                {params.cfg_schedule_type === "snr_based" && (
+                  <Slider
+                    label="SNR Alpha (0=off, 0.1-0.5 typical)"
+                    min={0}
+                    max={1.0}
+                    step={0.05}
+                    value={params.cfg_rescale_snr_alpha || 0.0}
+                    onChange={(e) => setParams({ ...params, cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
+                  />
                 )}
               </div>
 

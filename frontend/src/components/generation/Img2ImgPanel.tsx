@@ -73,7 +73,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   cfg_schedule_power: 2.0,
   cfg_rescale_snr_alpha: 0.0,
   dynamic_threshold_percentile: 0.0,
-  dynamic_threshold_mimic_scale: 1.0,
+  dynamic_threshold_mimic_scale: 7.0,
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -1454,10 +1454,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     />
                     <Slider
                       label="Mimic Scale (static clamp)"
-                      min={0.5}
-                      max={2.0}
-                      step={0.1}
-                      value={params.dynamic_threshold_mimic_scale || 1.0}
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={params.dynamic_threshold_mimic_scale || 7.0}
                       onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
                     />
                   </>

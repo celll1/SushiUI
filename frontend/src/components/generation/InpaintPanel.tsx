@@ -85,7 +85,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   cfg_schedule_power: 2.0,
   cfg_rescale_snr_alpha: 0.0,
   dynamic_threshold_percentile: 0.0,
-  dynamic_threshold_mimic_scale: 1.0,
+  dynamic_threshold_mimic_scale: 7.0,
 };
 
 const STORAGE_KEY = "inpaint_params";
@@ -1721,10 +1721,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     />
                     <Slider
                       label="Mimic Scale (static clamp)"
-                      min={0.5}
-                      max={2.0}
-                      step={0.1}
-                      value={params.dynamic_threshold_mimic_scale || 1.0}
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={params.dynamic_threshold_mimic_scale || 7.0}
                       onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
                     />
                   </>

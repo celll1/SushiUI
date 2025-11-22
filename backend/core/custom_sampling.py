@@ -178,44 +178,38 @@ def dynamic_thresholding(
     Apply dynamic thresholding to prevent CFG from causing extreme values.
 
     Based on Imagen paper: https://arxiv.org/abs/2205.11487
-
-    The method calculates a dynamic threshold based on the percentile of absolute values,
-    then clamps and rescales the predictions to prevent saturation.
+    Implementation reference: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py
 
     Args:
         noise_pred: Noise prediction tensor after CFG
         percentile: Percentile to use for dynamic threshold (default: 99.5)
-        clamp_value: Maximum absolute value for static clamping (default: 1.0)
+        clamp_value: Static threshold multiplier (default: 1.0)
 
     Returns:
         Thresholded noise prediction tensor
     """
-    # Calculate dynamic threshold as percentile of absolute values
-    # Shape: [batch, ...]
     batch_size = noise_pred.shape[0]
     original_dtype = noise_pred.dtype
 
-    # Flatten all dimensions except batch
+    # Flatten all dimensions except batch for per-sample thresholding
     noise_flat = noise_pred.reshape(batch_size, -1)
 
-    # Calculate percentile threshold for each sample in batch
-    # Convert to float32 for quantile calculation (quantile doesn't support float16)
+    # Calculate dynamic threshold as percentile of absolute values
+    # Convert to float32 for quantile (doesn't support float16)
     abs_noise = torch.abs(noise_flat).float()
-    # Use quantile instead of percentile (quantile expects 0-1 range)
     s = torch.quantile(abs_noise, percentile / 100.0, dim=1, keepdim=True)
-
-    # Convert back to original dtype
     s = s.to(original_dtype)
 
-    # Clamp s to be at least clamp_value (prevents over-clamping)
+    # Apply static threshold: s = max(s, clamp_value)
+    # This prevents over-aggressive clamping when values are already reasonable
     s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=original_dtype))
 
-    # Reshape s back to match noise_pred dimensions (with broadcasting)
+    # Reshape for broadcasting
     s = s.reshape(batch_size, *([1] * (noise_pred.ndim - 1)))
 
-    # Clamp and rescale
-    # If |x| > s, clamp to [-s, s] and then divide by s to rescale
-    noise_pred = torch.clamp(noise_pred, -s, s) / s
+    # Dynamic thresholding: clamp then rescale
+    # This keeps the relative relationships but prevents extreme outliers
+    noise_pred = torch.clamp(noise_pred, -s, s) / s * clamp_value
 
     return noise_pred
 

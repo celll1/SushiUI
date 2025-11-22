@@ -177,13 +177,15 @@ def dynamic_thresholding(
     """
     Apply dynamic thresholding to prevent CFG from causing extreme values.
 
-    Based on Imagen paper: https://arxiv.org/abs/2205.11487
-    Implementation reference: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py
+    Based on Imagen paper (https://arxiv.org/abs/2205.11487):
+    "We use a dynamic thresholding mechanism where we set s to a certain percentile
+    absolute pixel value in x_t for each sample. We then threshold x_t to the range
+    [-s, s] and then divide by s."
 
     Args:
         noise_pred: Noise prediction tensor after CFG
         percentile: Percentile to use for dynamic threshold (default: 99.5)
-        clamp_value: Static threshold multiplier (default: 1.0)
+        clamp_value: Minimum threshold value (prevents over-clamping, default: 1.0)
 
     Returns:
         Thresholded noise prediction tensor
@@ -201,15 +203,15 @@ def dynamic_thresholding(
     s = s.to(original_dtype)
 
     # Apply static threshold: s = max(s, clamp_value)
-    # This prevents over-aggressive clamping when values are already reasonable
+    # This ensures s is at least clamp_value (typically 1.0)
     s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=original_dtype))
 
     # Reshape for broadcasting
     s = s.reshape(batch_size, *([1] * (noise_pred.ndim - 1)))
 
-    # Dynamic thresholding: clamp then rescale
-    # This keeps the relative relationships but prevents extreme outliers
-    noise_pred = torch.clamp(noise_pred, -s, s) / s * clamp_value
+    # Imagen dynamic thresholding: simply clamp to [-s, s]
+    # This prevents extreme values while preserving most of the signal
+    noise_pred = torch.clamp(noise_pred, -s, s)
 
     return noise_pred
 

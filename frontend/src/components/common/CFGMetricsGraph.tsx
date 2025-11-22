@@ -8,9 +8,12 @@ interface CFGMetricsGraphProps {
   className?: string;
 }
 
+type MetricType = "relative_diff" | "cosine_similarity" | "snr" | "norms";
+
 export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsGraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoveredPoint, setHoveredPoint] = useState<CFGMetrics | null>(null);
+  const [selectedMetric, setSelectedMetric] = useState<MetricType>("relative_diff");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -28,7 +31,7 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
 
     const width = rect.width;
     const height = rect.height;
-    const padding = { top: 20, right: 20, bottom: 40, left: 60 };
+    const padding = { top: 30, right: 60, bottom: 60, left: 70 };
     const graphWidth = width - padding.left - padding.right;
     const graphHeight = height - padding.top - padding.bottom;
 
@@ -42,54 +45,70 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
     const xMin = Math.min(...xValues);
     const xMax = Math.max(...xValues);
 
-    // Determine y-axis range (use relative_diff and cosine_similarity)
-    const allRelativeDiff = metrics.map(m => m.relative_diff);
-    const allCosineSim = metrics.map(m => m.cosine_similarity);
+    // Determine y-axis range based on selected metric
+    let yMin = 0;
+    let yMax = 1;
+    let yLabel = "";
+    let lineColor = "#10b981";
+    let dataValues: number[] = [];
 
-    // For dual Y-axis: left = relative_diff (0 to max), right = cosine_similarity (-1 to 1)
-    const yMinLeft = 0;
-    const yMaxLeft = Math.max(...allRelativeDiff) * 1.1;
-    const yMinRight = -1;
-    const yMaxRight = 1;
+    switch (selectedMetric) {
+      case "relative_diff":
+        dataValues = metrics.map(m => m.relative_diff);
+        yMin = 0;
+        yMax = Math.max(...dataValues) * 1.1;
+        yLabel = "Relative Diff";
+        lineColor = "#10b981"; // green
+        break;
+      case "cosine_similarity":
+        dataValues = metrics.map(m => m.cosine_similarity);
+        yMin = -1;
+        yMax = 1;
+        yLabel = "Cosine Similarity";
+        lineColor = "#f59e0b"; // amber
+        break;
+      case "snr":
+        dataValues = metrics.map(m => m.snr);
+        yMin = 0;
+        yMax = Math.max(...dataValues) * 1.1;
+        yLabel = "SNR";
+        lineColor = "#a855f7"; // purple
+        break;
+      case "norms":
+        // For norms, we'll show diff_norm
+        dataValues = metrics.map(m => m.diff_norm);
+        yMin = 0;
+        yMax = Math.max(...dataValues) * 1.1;
+        yLabel = "Diff Norm";
+        lineColor = "#ef4444"; // red
+        break;
+    }
 
     // Helper functions
     const xScale = (val: number) => padding.left + ((val - xMin) / (xMax - xMin)) * graphWidth;
-    const yScaleLeft = (val: number) => height - padding.bottom - ((val - yMinLeft) / (yMaxLeft - yMinLeft)) * graphHeight;
-    const yScaleRight = (val: number) => height - padding.bottom - ((val - yMinRight) / (yMaxRight - yMinRight)) * graphHeight;
+    const yScale = (val: number) => height - padding.bottom - ((val - yMin) / (yMax - yMin)) * graphHeight;
 
     // Draw grid lines
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 1;
 
-    // Horizontal grid lines (left y-axis - relative_diff)
+    // Horizontal grid lines (y-axis)
     const ySteps = 5;
     for (let i = 0; i <= ySteps; i++) {
-      const y = yMinLeft + (yMaxLeft - yMinLeft) * (i / ySteps);
-      const yPos = yScaleLeft(y);
+      const y = yMin + (yMax - yMin) * (i / ySteps);
+      const yPos = yScale(y);
 
       ctx.beginPath();
       ctx.moveTo(padding.left, yPos);
       ctx.lineTo(width - padding.right, yPos);
       ctx.stroke();
 
-      // Left Y-axis labels (relative_diff)
-      ctx.fillStyle = "#10b981"; // green
+      // Y-axis labels
+      ctx.fillStyle = lineColor;
       ctx.font = "11px sans-serif";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText(y.toFixed(3), padding.left - 5, yPos);
-    }
-
-    // Right Y-axis labels (cosine_similarity)
-    for (let i = 0; i <= ySteps; i++) {
-      const y = yMinRight + (yMaxRight - yMinRight) * (i / ySteps);
-      const yPos = yScaleRight(y);
-
-      ctx.fillStyle = "#f59e0b"; // amber
-      ctx.font = "11px sans-serif";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(y.toFixed(2), width - padding.right + 5, yPos);
+      ctx.fillText(y.toFixed(4), padding.left - 5, yPos);
     }
 
     // Vertical grid lines (x-axis)
@@ -108,99 +127,46 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
       ctx.font = "11px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(x.toFixed(0), xPos, height - padding.bottom + 5);
+      // Show more decimal places for sigma
+      const xLabel = useTimestep ? x.toFixed(0) : x.toFixed(2);
+      ctx.fillText(xLabel, xPos, height - padding.bottom + 8);
     }
 
     // Draw axis labels
     ctx.fillStyle = "#aaa";
-    ctx.font = "12px sans-serif";
+    ctx.font = "13px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(useTimestep ? "Timestep" : "Sigma", width / 2, height - 5);
+    ctx.fillText(useTimestep ? "Timestep" : "Sigma", width / 2, height - 15);
 
-    // Left Y-axis label
+    // Y-axis label
     ctx.save();
-    ctx.translate(15, height / 2);
+    ctx.translate(20, height / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center";
-    ctx.fillStyle = "#10b981";
-    ctx.fillText("Relative Diff", 0, 0);
+    ctx.fillStyle = lineColor;
+    ctx.font = "13px sans-serif";
+    ctx.fillText(yLabel, 0, 0);
     ctx.restore();
 
-    // Right Y-axis label
-    ctx.save();
-    ctx.translate(width - 10, height / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#f59e0b";
-    ctx.fillText("Cosine Sim", 0, 0);
-    ctx.restore();
+    // Draw line
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
 
-    // Draw lines
-    const drawLineLeft = (data: number[], color: string, lineWidth: number = 2) => {
-      if (data.length === 0) return;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
-      ctx.beginPath();
+    dataValues.forEach((val, i) => {
+      const xVal = xValues[i];
+      const x = xScale(xVal);
+      const y = yScale(val);
 
-      data.forEach((val, i) => {
-        const xVal = xValues[i];
-        const x = xScale(xVal);
-        const y = yScaleLeft(val);
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
 
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      ctx.stroke();
-    };
-
-    const drawLineRight = (data: number[], color: string, lineWidth: number = 2) => {
-      if (data.length === 0) return;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
-      ctx.beginPath();
-
-      data.forEach((val, i) => {
-        const xVal = xValues[i];
-        const x = xScale(xVal);
-        const y = yScaleRight(val);
-
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      ctx.stroke();
-    };
-
-    // Draw relative_diff (left axis) - green
-    drawLineLeft(metrics.map(m => m.relative_diff), "#10b981", 3);
-
-    // Draw cosine_similarity (right axis) - amber
-    drawLineRight(metrics.map(m => m.cosine_similarity), "#f59e0b", 3);
-
-    // Draw legend
-    const legendX = width - padding.right - 150;
-    const legendY = padding.top + 10;
-
-    // relative_diff - green
-    ctx.fillStyle = "#10b981";
-    ctx.fillRect(legendX, legendY, 20, 3);
-    ctx.fillStyle = "#aaa";
-    ctx.font = "12px sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("Relative Diff", legendX + 25, legendY + 2);
-
-    // cosine_similarity - amber
-    ctx.fillStyle = "#f59e0b";
-    ctx.fillRect(legendX, legendY + 20, 20, 3);
-    ctx.fillStyle = "#aaa";
-    ctx.fillText("Cosine Sim", legendX + 25, legendY + 22);
-
-  }, [metrics]);
+  }, [metrics, selectedMetric]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -246,6 +212,20 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
 
   return (
     <div className={`relative ${className}`}>
+      {/* Metric selector dropdown */}
+      <div className="mb-2">
+        <select
+          value={selectedMetric}
+          onChange={(e) => setSelectedMetric(e.target.value as MetricType)}
+          className="bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+        >
+          <option value="relative_diff">Relative Diff (CFG strength)</option>
+          <option value="cosine_similarity">Cosine Similarity (direction alignment)</option>
+          <option value="snr">SNR (signal-to-noise ratio)</option>
+          <option value="norms">Diff Norm (||yp - yn||)</option>
+        </select>
+      </div>
+
       <canvas
         ref={canvasRef}
         className="w-full h-full"

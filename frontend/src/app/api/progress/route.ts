@@ -33,7 +33,18 @@ export async function GET(request: NextRequest) {
       ws.on('message', (message: Buffer) => {
         try {
           const messageStr = message.toString();
-          console.log('[SSE] Received from backend:', messageStr);
+
+          // Log message without base64 data to avoid console spam
+          try {
+            const parsed = JSON.parse(messageStr);
+            if (parsed.preview_image) {
+              console.log('[SSE] Received from backend: progress with preview_image');
+            } else {
+              console.log('[SSE] Received from backend:', messageStr.substring(0, 200));
+            }
+          } catch {
+            console.log('[SSE] Received from backend:', messageStr.substring(0, 200));
+          }
 
           // Forward WebSocket message as SSE event
           const data = `data: ${messageStr}\n\n`;

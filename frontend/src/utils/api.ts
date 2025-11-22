@@ -206,6 +206,14 @@ export interface GeneratedImage {
   mask_data?: string;
   lora_names?: string;
   model_hash?: string;
+  // Advanced CFG parameters
+  cfg_schedule_type?: string;
+  cfg_schedule_min?: string;
+  cfg_schedule_max?: string;
+  cfg_schedule_power?: string;
+  cfg_rescale_snr_alpha?: string;
+  dynamic_threshold_percentile?: string;
+  dynamic_threshold_mimic_scale?: string;
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {

@@ -95,6 +95,7 @@ def custom_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    developer_mode: bool = False,
     controlnet_images: Optional[List[Image.Image]] = None,
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
@@ -366,7 +367,22 @@ def custom_sampling_loop(
         # Note: Some schedulers (DPM2, DPM2a) create more timesteps than num_inference_steps
         # so we pass len(timesteps) as the total to avoid showing progress > 100%
         if progress_callback is not None:
-            progress_callback(i, len(timesteps), latents)
+            # Calculate CFG metrics for developer mode
+            cfg_metrics = calculate_cfg_metrics(
+                noise_pred_uncond,
+                noise_pred_text,
+                guidance_scale,
+                developer_mode=developer_mode
+            )
+            # Add timestep/sigma info to metrics
+            if cfg_metrics is not None:
+                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['step'] = i
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
         # Step callback
         if step_callback is not None:
@@ -407,6 +423,7 @@ def custom_img2img_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    developer_mode: bool = False,
     controlnet_images: Optional[List[Image.Image]] = None,
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
@@ -678,7 +695,22 @@ def custom_img2img_sampling_loop(
 
         # Progress callback
         if progress_callback is not None:
-            progress_callback(i, len(timesteps), latents)
+            # Calculate CFG metrics for developer mode
+            cfg_metrics = calculate_cfg_metrics(
+                noise_pred_uncond,
+                noise_pred_text,
+                guidance_scale,
+                developer_mode=developer_mode
+            )
+            # Add timestep/sigma info to metrics
+            if cfg_metrics is not None:
+                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['step'] = i
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
         # Step callback
         if step_callback is not None:
@@ -720,6 +752,7 @@ def custom_inpaint_sampling_loop(
     prompt_embeds_callback: Optional[Callable[[int], tuple]] = None,
     progress_callback: Optional[Callable[[int, int, torch.Tensor], None]] = None,
     step_callback: Optional[Callable[[Any, int, int, Dict], Dict]] = None,
+    developer_mode: bool = False,
     controlnet_images: Optional[List[Image.Image]] = None,
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
@@ -1036,7 +1069,22 @@ def custom_inpaint_sampling_loop(
             latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
 
         if progress_callback is not None:
-            progress_callback(i, len(timesteps), latents)
+            # Calculate CFG metrics for developer mode
+            cfg_metrics = calculate_cfg_metrics(
+                noise_pred_uncond,
+                noise_pred_text,
+                guidance_scale,
+                developer_mode=developer_mode
+            )
+            # Add timestep/sigma info to metrics
+            if cfg_metrics is not None:
+                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['step'] = i
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
         if step_callback is not None:
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})

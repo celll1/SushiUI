@@ -85,6 +85,7 @@ class GenerationParams(BaseModel):
     controlnets: Optional[List[ControlNetConfig]] = []
     prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
+    developer_mode: bool = False  # Enable CFG metrics visualization
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -173,7 +174,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents):
+        def progress_callback(step, total_steps, latents, cfg_metrics=None):
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
@@ -190,7 +191,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                     print(f"Preview generation error: {e}")
 
             # Send synchronously from callback thread
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image, cfg_metrics=cfg_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -398,7 +399,7 @@ async def generate_img2img(
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents):
+        def progress_callback(step, total_steps, latents, cfg_metrics=None):
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # For img2img with "Do full steps" enabled, display requested_steps instead
             display_total = steps if img2img_fix_steps else total_steps
@@ -417,7 +418,7 @@ async def generate_img2img(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=cfg_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -650,7 +651,7 @@ async def generate_inpaint(
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents):
+        def progress_callback(step, total_steps, latents, cfg_metrics=None):
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # For inpaint with "Do full steps" enabled, display requested_steps instead
             display_total = steps if img2img_fix_steps else total_steps
@@ -669,7 +670,7 @@ async def generate_inpaint(
                 except Exception as e:
                     print(f"Preview generation error: {e}")
 
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=cfg_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None

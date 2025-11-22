@@ -29,7 +29,7 @@ class ConnectionManager:
         }
         await self.broadcast(json.dumps(data))
 
-    def send_progress_sync(self, step: int, total_steps: int, message: str = "", preview_image: str = None):
+    def send_progress_sync(self, step: int, total_steps: int, message: str = "", preview_image: str = None, cfg_metrics: dict = None):
         """Send progress synchronously from callback thread - uses queue"""
         data = {
             "type": "progress",
@@ -40,6 +40,8 @@ class ConnectionManager:
         }
         if preview_image:
             data["preview_image"] = preview_image
+        if cfg_metrics:
+            data["cfg_metrics"] = cfg_metrics
         # Put message in queue (thread-safe)
         self.message_queue.put(data)
 

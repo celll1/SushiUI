@@ -1181,6 +1181,7 @@ class DiffusionPipelineManager:
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
                 step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
                 **controlnet_kwargs,
             )
 
@@ -1505,6 +1506,7 @@ class DiffusionPipelineManager:
                 prompt_embeds_callback=prompt_embeds_callback_fn,
                 progress_callback=progress_callback,
                 step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
                 **controlnet_kwargs,
             )
 
@@ -1696,6 +1698,7 @@ class DiffusionPipelineManager:
             inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
             inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
             inpaint_blur_strength=params.get("inpaint_blur_strength", 1.0),
+            developer_mode=params.get("developer_mode", False),
             **controlnet_kwargs,
         )
 

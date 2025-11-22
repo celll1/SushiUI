@@ -1,4 +1,18 @@
-type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string) => void;
+export interface CFGMetrics {
+  uncond_norm: number;
+  text_norm: number;
+  diff_norm: number;
+  uncond_mean: number;
+  text_mean: number;
+  uncond_std: number;
+  text_std: number;
+  guidance_scale: number;
+  timestep: number;
+  step: number;
+  sigma?: number;
+}
+
+type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string, cfgMetrics?: CFGMetrics) => void;
 
 class ProgressClient {
   private eventSource: EventSource | null = null;
@@ -27,9 +41,9 @@ class ProgressClient {
         console.log("[SSE] Received message:", data);
 
         if (data.type === "progress") {
-          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}`);
+          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}, has CFG metrics: ${!!data.cfg_metrics}`);
           this.callbacks.forEach((callback) => {
-            callback(data.step, data.total_steps, data.message, data.preview_image);
+            callback(data.step, data.total_steps, data.message, data.preview_image, data.cfg_metrics);
           });
         } else if (data.type === "error") {
           console.error("[SSE] Error from server:", data.message);

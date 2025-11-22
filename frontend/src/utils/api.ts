@@ -54,9 +54,10 @@ const loadControlNetImages = async (
 
   const IMAGE_STORAGE_KEY = `${storageKey}_images`;
   const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
-  console.log('[API] localStorage key:', IMAGE_STORAGE_KEY, 'stored:', stored);
+  const storedLength = stored ? stored.length : 0;
+  console.log(`[API] localStorage key: ${IMAGE_STORAGE_KEY} (${storedLength} chars)`);
   const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
-  console.log('[API] imageRefs:', imageRefs);
+  console.log('[API] imageRefs count:', Object.keys(imageRefs).length);
 
   const loadedControlnets = await Promise.all(
     controlnets.map(async (cn, index) => {
@@ -73,14 +74,16 @@ const loadControlNetImages = async (
       }
 
       const imageRef = imageRefs[index];
-      console.log(`[API] ControlNet ${index}: imageRef =`, imageRef);
+      console.log(`[API] ControlNet ${index}: imageRef = ${imageRef ? 'exists' : 'none'}`);
       if (imageRef) {
         const imageData = await loadTempImage(imageRef);
-        console.log(`[API] ControlNet ${index}: loaded image data length =`, imageData?.length);
+        const imageDataLength = imageData?.length || 0;
+        console.log(`[API] ControlNet ${index}: loaded image data (${imageDataLength} chars)`);
         const base64Data = imageData.startsWith('data:')
           ? imageData.split(',')[1]
           : imageData;
-        console.log(`[API] ControlNet ${index}: base64 length =`, base64Data?.length);
+        const base64Length = base64Data?.length || 0;
+        console.log(`[API] ControlNet ${index}: base64 (${base64Length} chars)`);
         return {
           ...cn,
           image_base64: base64Data,

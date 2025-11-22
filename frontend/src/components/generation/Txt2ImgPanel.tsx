@@ -193,15 +193,19 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
-    console.log("Loading params from localStorage:", saved);
+    const savedLength = saved ? saved.length : 0;
+    console.log(`[Txt2Img] Loading params from localStorage (${savedLength} chars)`);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        console.log("Parsed params:", parsed);
+        console.log("[Txt2Img] Parsed params:", {
+          loras: parsed.loras?.length || 0,
+          controlnets: parsed.controlnets?.length || 0,
+          prompt_length: parsed.prompt?.length || 0,
+        });
         const merged = { ...DEFAULT_PARAMS, ...parsed };
         // Fix floating point precision issues
         const fixed = fixFloatingPointParams(merged);
-        console.log("Merged with defaults:", fixed);
         setParams(fixed);
       } catch (error) {
         console.error("Failed to load saved params:", error);

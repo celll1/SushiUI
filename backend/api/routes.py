@@ -86,6 +86,11 @@ class GenerationParams(BaseModel):
     prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
     developer_mode: bool = False  # Enable CFG metrics visualization
+    # Dynamic CFG scheduling
+    cfg_schedule_type: str = "constant"  # constant, linear, quadratic, cosine
+    cfg_schedule_min: float = 1.0  # Minimum CFG at end of generation
+    cfg_schedule_max: Optional[float] = None  # Maximum CFG at start (None = use cfg_scale)
+    cfg_schedule_power: float = 2.0  # Power for quadratic schedule
 
 class Txt2ImgRequest(GenerationParams):
     pass

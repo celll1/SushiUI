@@ -1182,6 +1182,10 @@ class DiffusionPipelineManager:
                 progress_callback=progress_callback,
                 step_callback=step_callback,
                 developer_mode=params.get("developer_mode", False),
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
                 **controlnet_kwargs,
             )
 
@@ -1507,6 +1511,10 @@ class DiffusionPipelineManager:
                 progress_callback=progress_callback,
                 step_callback=step_callback,
                 developer_mode=params.get("developer_mode", False),
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
                 **controlnet_kwargs,
             )
 
@@ -1699,6 +1707,10 @@ class DiffusionPipelineManager:
             inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
             inpaint_blur_strength=params.get("inpaint_blur_strength", 1.0),
             developer_mode=params.get("developer_mode", False),
+            cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+            cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+            cfg_schedule_max=params.get("cfg_schedule_max", None),
+            cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
             **controlnet_kwargs,
         )
 

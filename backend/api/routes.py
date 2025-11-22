@@ -178,6 +178,7 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
+            send_metrics = None
             if step % 5 == 0 or step == total_steps - 1:
                 try:
                     preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
@@ -189,9 +190,11 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
                         preview_image = base64.b64encode(buffered.getvalue()).decode()
                 except Exception as e:
                     print(f"Preview generation error: {e}")
+                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
+                send_metrics = cfg_metrics
 
             # Send synchronously from callback thread
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image, cfg_metrics=cfg_metrics)
+            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image, cfg_metrics=send_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -406,6 +409,7 @@ async def generate_img2img(
 
             # Generate preview image from latent
             preview_image = None
+            send_metrics = None
             if step % 5 == 0 or step == total_steps - 1:
                 try:
                     preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
@@ -417,8 +421,10 @@ async def generate_img2img(
                         preview_image = base64.b64encode(buffered.getvalue()).decode()
                 except Exception as e:
                     print(f"Preview generation error: {e}")
+                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
+                send_metrics = cfg_metrics
 
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=cfg_metrics)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=send_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None
@@ -658,6 +664,7 @@ async def generate_inpaint(
 
             # Generate preview image from latent (every 5 steps to reduce overhead)
             preview_image = None
+            send_metrics = None
             if step % 5 == 0 or step == total_steps - 1:
                 try:
                     preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
@@ -669,8 +676,10 @@ async def generate_inpaint(
                         preview_image = base64.b64encode(buffered.getvalue()).decode()
                 except Exception as e:
                     print(f"Preview generation error: {e}")
+                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
+                send_metrics = cfg_metrics
 
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=cfg_metrics)
+            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=send_metrics)
 
         # Create step callback for LoRA step range if needed
         step_callback = None

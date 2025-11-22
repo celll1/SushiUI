@@ -193,17 +193,22 @@ def dynamic_thresholding(
     # Calculate dynamic threshold as percentile of absolute values
     # Shape: [batch, ...]
     batch_size = noise_pred.shape[0]
+    original_dtype = noise_pred.dtype
 
     # Flatten all dimensions except batch
     noise_flat = noise_pred.reshape(batch_size, -1)
 
     # Calculate percentile threshold for each sample in batch
-    abs_noise = torch.abs(noise_flat)
+    # Convert to float32 for quantile calculation (quantile doesn't support float16)
+    abs_noise = torch.abs(noise_flat).float()
     # Use quantile instead of percentile (quantile expects 0-1 range)
     s = torch.quantile(abs_noise, percentile / 100.0, dim=1, keepdim=True)
 
+    # Convert back to original dtype
+    s = s.to(original_dtype)
+
     # Clamp s to be at least clamp_value (prevents over-clamping)
-    s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=noise_pred.dtype))
+    s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=original_dtype))
 
     # Reshape s back to match noise_pred dimensions (with broadcasting)
     s = s.reshape(batch_size, *([1] * (noise_pred.ndim - 1)))

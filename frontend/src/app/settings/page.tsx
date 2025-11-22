@@ -54,6 +54,9 @@ export default function SettingsPage() {
   const [sendSizeMode, setSendSizeMode] = useState<"absolute" | "scale">("absolute");
   const [sendDefaultScale, setSendDefaultScale] = useState(1.0);
 
+  // Developer mode
+  const [developerMode, setDeveloperMode] = useState(false);
+
   // Panel visibility settings
   const [txt2imgVisibility, setTxt2imgVisibility] = useState({
     lora: true,
@@ -233,6 +236,12 @@ export default function SettingsPage() {
         if (!isNaN(scale) && scale > 0) {
           setSendDefaultScale(scale);
         }
+      }
+
+      // Load developer mode setting
+      const savedDeveloperMode = localStorage.getItem('developer_mode');
+      if (savedDeveloperMode === 'true') {
+        setDeveloperMode(true);
       }
     }
   }, []);
@@ -578,6 +587,28 @@ export default function SettingsPage() {
                     </label>
                     <p className="text-xs text-gray-500 mt-1">
                       When enabled, images downloaded using the download button will include generation metadata (prompt, parameters, etc.). Note: Images automatically saved to the output folder always include metadata regardless of this setting.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    id="developer_mode"
+                    checked={developerMode}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setDeveloperMode(newValue);
+                      localStorage.setItem('developer_mode', newValue.toString());
+                    }}
+                    className="mt-1 w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <div>
+                    <label htmlFor="developer_mode" className="text-sm font-medium text-gray-300 cursor-pointer">
+                      Developer Mode
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Enable developer features including CFG metrics visualization during generation. Shows noise prediction magnitudes, guidance strength, and other diagnostic information below the preview panel.
                     </p>
                   </div>
                 </div>

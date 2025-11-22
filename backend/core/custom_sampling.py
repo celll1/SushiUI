@@ -24,6 +24,34 @@ from PIL import Image
 import numpy as np
 
 
+def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
+    """Calculate CFG metrics for developer mode visualization"""
+    if not developer_mode:
+        return None
+
+    # Calculate L2 norms (magnitude of vectors)
+    uncond_norm = torch.norm(noise_pred_uncond).item()
+    text_norm = torch.norm(noise_pred_text).item()
+    diff_norm = torch.norm(noise_pred_text - noise_pred_uncond).item()
+
+    # Per-latent statistics
+    uncond_mean = noise_pred_uncond.mean().item()
+    text_mean = noise_pred_text.mean().item()
+    uncond_std = noise_pred_uncond.std().item()
+    text_std = noise_pred_text.std().item()
+
+    return {
+        'uncond_norm': round(uncond_norm, 4),
+        'text_norm': round(text_norm, 4),
+        'diff_norm': round(diff_norm, 4),
+        'uncond_mean': round(uncond_mean, 4),
+        'text_mean': round(text_mean, 4),
+        'uncond_std': round(uncond_std, 4),
+        'text_std': round(text_std, 4),
+        'guidance_scale': guidance_scale,
+    }
+
+
 def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0) -> torch.Tensor:
     """
     Rescale noise predictions to fix overexposure and improve image quality.

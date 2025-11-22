@@ -87,19 +87,23 @@ def calculate_dynamic_cfg(
     cfg_schedule_type: str = "constant",
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
-    cfg_schedule_power: float = 2.0
+    cfg_schedule_power: float = 2.0,
+    snr: Optional[float] = None,
+    cfg_rescale_snr_alpha: float = 0.0,
 ) -> float:
-    """Calculate dynamic CFG scale based on sigma (noise level)
+    """Calculate dynamic CFG scale based on sigma (noise level) and optionally SNR
 
     Args:
         sigma: Current noise level
         sigma_max: Maximum sigma value (from scheduler)
         cfg_base: Base CFG scale (used when schedule_type is "constant")
-        cfg_schedule_type: Type of schedule ("constant", "linear", "quadratic", "cosine")
+        cfg_schedule_type: Type of schedule ("constant", "linear", "quadratic", "cosine", "snr_based")
         cfg_schedule_min: Minimum CFG scale (at sigma=0, end of generation)
         cfg_schedule_max: Maximum CFG scale (at sigma=sigma_max, start of generation)
                           If None, uses cfg_base
         cfg_schedule_power: Power for quadratic schedule (default: 2.0)
+        snr: Signal-to-Noise Ratio from CFG metrics (optional, for SNR-based scheduling)
+        cfg_rescale_snr_alpha: Alpha parameter for SNR rescaling (0.0 = disabled)
 
     Returns:
         CFG scale for current step
@@ -124,6 +128,14 @@ def calculate_dynamic_cfg(
     elif cfg_schedule_type == "cosine":
         # Cosine: smooth transition
         cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * cos((1 - sigma_norm) * pi / 2)
+    elif cfg_schedule_type == "snr_based" and snr is not None:
+        # SNR-based adaptive CFG: reduce CFG when SNR is high
+        # cfg = cfg_base / (1 + alpha * sqrt(SNR))
+        import math
+        snr_sqrt = math.sqrt(max(snr, 0))
+        cfg = cfg_base / (1.0 + cfg_rescale_snr_alpha * snr_sqrt)
+        # Clamp to min/max range
+        cfg = max(cfg_schedule_min, min(cfg_schedule_max if cfg_schedule_max else cfg_base, cfg))
     else:
         # Fallback to constant
         cfg = cfg_base
@@ -157,6 +169,52 @@ def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, gu
     return noise_cfg
 
 
+def dynamic_thresholding(
+    noise_pred: torch.Tensor,
+    percentile: float = 99.5,
+    clamp_value: float = 1.0
+) -> torch.Tensor:
+    """
+    Apply dynamic thresholding to prevent CFG from causing extreme values.
+
+    Based on Imagen paper: https://arxiv.org/abs/2205.11487
+
+    The method calculates a dynamic threshold based on the percentile of absolute values,
+    then clamps and rescales the predictions to prevent saturation.
+
+    Args:
+        noise_pred: Noise prediction tensor after CFG
+        percentile: Percentile to use for dynamic threshold (default: 99.5)
+        clamp_value: Maximum absolute value for static clamping (default: 1.0)
+
+    Returns:
+        Thresholded noise prediction tensor
+    """
+    # Calculate dynamic threshold as percentile of absolute values
+    # Shape: [batch, ...]
+    batch_size = noise_pred.shape[0]
+
+    # Flatten all dimensions except batch
+    noise_flat = noise_pred.reshape(batch_size, -1)
+
+    # Calculate percentile threshold for each sample in batch
+    abs_noise = torch.abs(noise_flat)
+    # Use quantile instead of percentile (quantile expects 0-1 range)
+    s = torch.quantile(abs_noise, percentile / 100.0, dim=1, keepdim=True)
+
+    # Clamp s to be at least clamp_value (prevents over-clamping)
+    s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=noise_pred.dtype))
+
+    # Reshape s back to match noise_pred dimensions (with broadcasting)
+    s = s.reshape(batch_size, *([1] * (noise_pred.ndim - 1)))
+
+    # Clamp and rescale
+    # If |x| > s, clamp to [-s, s] and then divide by s to rescale
+    noise_pred = torch.clamp(noise_pred, -s, s) / s
+
+    return noise_pred
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -183,6 +241,8 @@ def custom_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
+    dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -460,6 +520,14 @@ def custom_sampling_loop(
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+        # Apply dynamic thresholding if enabled (prevents CFG saturation)
+        if dynamic_threshold_percentile > 0.0:
+            noise_pred = dynamic_thresholding(
+                noise_pred,
+                percentile=dynamic_threshold_percentile,
+                clamp_value=dynamic_threshold_mimic_scale
+            )
+
         # Apply guidance rescale if specified (important for v-prediction models)
         if guidance_rescale > 0.0:
             noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
@@ -537,6 +605,8 @@ def custom_img2img_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
+    dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -816,6 +886,14 @@ def custom_img2img_sampling_loop(
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+        # Apply dynamic thresholding if enabled (prevents CFG saturation)
+        if dynamic_threshold_percentile > 0.0:
+            noise_pred = dynamic_thresholding(
+                noise_pred,
+                percentile=dynamic_threshold_percentile,
+                clamp_value=dynamic_threshold_mimic_scale
+            )
+
         # Apply guidance rescale if specified (important for v-prediction models)
         if guidance_rescale > 0.0:
             noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
@@ -895,6 +973,8 @@ def custom_inpaint_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
+    dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -1203,6 +1283,14 @@ def custom_inpaint_sampling_loop(
         )
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        # Apply dynamic thresholding if enabled (prevents CFG saturation)
+        if dynamic_threshold_percentile > 0.0:
+            noise_pred = dynamic_thresholding(
+                noise_pred,
+                percentile=dynamic_threshold_percentile,
+                clamp_value=dynamic_threshold_mimic_scale
+            )
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample

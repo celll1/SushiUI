@@ -1582,7 +1582,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   <Slider
                     label="Blur Strength"
                     min={0.1}
-                    max={3.0}
+                    max={5.0}
                     step={0.1}
                     value={params.inpaint_blur_strength || 1.0}
                     onChange={(e) => setParams({ ...params, inpaint_blur_strength: parseFloat(e.target.value) })}

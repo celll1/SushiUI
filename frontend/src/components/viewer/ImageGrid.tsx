@@ -657,6 +657,11 @@ export default function ImageGrid() {
                               <span className="text-gray-500">Fill Strength:</span> {selectedImage.parameters.inpaint_fill_strength}
                             </div>
                           )}
+                          {selectedImage.parameters?.inpaint_blur_strength !== undefined && selectedImage.parameters.inpaint_fill_mode === 'blur' && (
+                            <div>
+                              <span className="text-gray-500">Blur Strength:</span> {selectedImage.parameters.inpaint_blur_strength}
+                            </div>
+                          )}
                         </>
                       )}
                     </div>

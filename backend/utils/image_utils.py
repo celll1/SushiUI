@@ -74,6 +74,8 @@ def save_image_with_metadata(
             metadata.add_text("inpaint_fill_mode", params["inpaint_fill_mode"])
         if "inpaint_fill_strength" in params:
             metadata.add_text("inpaint_fill_strength", str(params["inpaint_fill_strength"]))
+        if "inpaint_blur_strength" in params:
+            metadata.add_text("inpaint_blur_strength", str(params["inpaint_blur_strength"]))
 
     # Add model information
     if model_info:

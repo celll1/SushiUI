@@ -32,7 +32,15 @@ class ProgressClient {
 
   connect() {
     if (this.eventSource && this.eventSource.readyState === EventSource.OPEN) {
+      console.log('[SSE] Already connected, skipping');
       return;
+    }
+
+    // Close any existing connection first
+    if (this.eventSource) {
+      console.log('[SSE] Closing existing connection');
+      this.eventSource.close();
+      this.eventSource = null;
     }
 
     // Connect to Next.js API route which will proxy to backend WebSocket

@@ -43,6 +43,7 @@ interface InpaintParams {
   inpaint_full_res_padding?: number;
   inpaint_fill_mode?: string;
   inpaint_fill_strength?: number;
+  inpaint_blur_strength?: number;
   resize_mode?: string;
   resampling_method?: string;
   prompt_chunking_mode?: string;
@@ -69,6 +70,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   inpaint_full_res_padding: 32,
   inpaint_fill_mode: "original",
   inpaint_fill_strength: 1.0,
+  inpaint_blur_strength: 1.0,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -986,6 +988,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_full_res_padding: mainParams.inpaint_full_res_padding,
         inpaint_fill_mode: mainParams.inpaint_fill_mode,
         inpaint_fill_strength: mainParams.inpaint_fill_strength,
+        inpaint_blur_strength: mainParams.inpaint_blur_strength,
       };
 
       // Use custom settings or inherit from main
@@ -1095,6 +1098,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_full_res_padding: nextItem.params.inpaint_full_res_padding,
         inpaint_fill_mode: nextItem.params.inpaint_fill_mode,
         inpaint_fill_strength: nextItem.params.inpaint_fill_strength,
+        inpaint_blur_strength: nextItem.params.inpaint_blur_strength,
         resize_mode: nextItem.params.resize_mode,
         resampling_method: nextItem.params.resampling_method,
         loras: nextItem.params.loras,
@@ -1565,14 +1569,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             />
 
             {params.inpaint_fill_mode && params.inpaint_fill_mode !== "original" && (
-              <Slider
-                label="Fill Strength"
-                min={0}
-                max={1}
-                step={0.05}
-                value={params.inpaint_fill_strength || 1.0}
-                onChange={(e) => setParams({ ...params, inpaint_fill_strength: parseFloat(e.target.value) })}
-              />
+              <>
+                <Slider
+                  label="Fill Strength"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={params.inpaint_fill_strength || 1.0}
+                  onChange={(e) => setParams({ ...params, inpaint_fill_strength: parseFloat(e.target.value) })}
+                />
+                {params.inpaint_fill_mode === "blur" && (
+                  <Slider
+                    label="Blur Strength"
+                    min={0.1}
+                    max={3.0}
+                    step={0.1}
+                    value={params.inpaint_blur_strength || 1.0}
+                    onChange={(e) => setParams({ ...params, inpaint_blur_strength: parseFloat(e.target.value) })}
+                  />
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

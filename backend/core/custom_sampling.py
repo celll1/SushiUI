@@ -698,6 +698,7 @@ def custom_inpaint_sampling_loop(
     control_guidance_end: Optional[Union[float, List[float]]] = None,
     inpaint_fill_mode: str = "original",
     inpaint_fill_strength: float = 1.0,
+    inpaint_blur_strength: float = 1.0,
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -809,8 +810,10 @@ def custom_inpaint_sampling_loop(
         if inpaint_fill_mode == "blur":
             # Apply gaussian blur to the original image
             import torch.nn.functional as F
-            # Blur with kernel size proportional to image size
-            kernel_size = max(3, int(original_width / 10) | 1)  # Ensure odd number
+            # Blur with kernel size proportional to image size and blur strength
+            # inpaint_blur_strength: 0.1 = very weak blur, 1.0 = default, 2.0+ = very strong blur
+            base_kernel_size = max(3, int(original_width / 10) | 1)  # Ensure odd number
+            kernel_size = max(3, int(base_kernel_size * inpaint_blur_strength) | 1)
             sigma = kernel_size / 3.0
 
             # Create gaussian kernel
@@ -820,10 +823,14 @@ def custom_inpaint_sampling_loop(
             kernel_1d = gauss.unsqueeze(0)
 
             # Apply separable 2D gaussian blur
+            # Number of iterations based on blur strength (1-5 iterations)
+            blur_iterations = max(1, min(5, int(3 * inpaint_blur_strength)))
             blurred = init_image_tensor.to(device=device, dtype=dtype)
-            for _ in range(3):  # Apply multiple times for stronger blur
+            for _ in range(blur_iterations):
                 blurred = F.conv2d(blurred, kernel_1d.unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(0, kernel_size // 2), groups=3)
                 blurred = F.conv2d(blurred, kernel_1d.t().unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(kernel_size // 2, 0), groups=3)
+
+            print(f"[CustomSampling] Blur applied: kernel_size={kernel_size}, iterations={blur_iterations}, strength={inpaint_blur_strength}")
 
             with torch.no_grad():
                 blurred_latents = vae.encode(blurred).latent_dist.sample(generator)

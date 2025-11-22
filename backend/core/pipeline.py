@@ -1695,6 +1695,7 @@ class DiffusionPipelineManager:
             step_callback=step_callback,
             inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
             inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
+            inpaint_blur_strength=params.get("inpaint_blur_strength", 1.0),
             **controlnet_kwargs,
         )
 

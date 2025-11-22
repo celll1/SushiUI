@@ -530,6 +530,7 @@ async def generate_inpaint(
     inpaint_full_res_padding: int = Form(32),
     inpaint_fill_mode: str = Form("original"),
     inpaint_fill_strength: float = Form(1.0),
+    inpaint_blur_strength: float = Form(1.0),
     prompt_chunking_mode: str = Form("a1111"),
     max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -614,6 +615,7 @@ async def generate_inpaint(
             "inpaint_full_res_padding": inpaint_full_res_padding,
             "inpaint_fill_mode": inpaint_fill_mode,
             "inpaint_fill_strength": inpaint_fill_strength,
+            "inpaint_blur_strength": inpaint_blur_strength,
             "controlnet_images": controlnet_images,
         }
         # Log params without large image objects

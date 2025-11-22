@@ -45,6 +45,8 @@ const DEFAULT_PARAMS: GenerationParams = {
   cfg_schedule_min: 1.0,
   cfg_schedule_max: undefined,
   cfg_schedule_power: 2.0,
+  dynamic_threshold_percentile: 0.0,
+  dynamic_threshold_mimic_scale: 1.0,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -1195,6 +1197,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       />
                     )}
                   </>
+                )}
+              </div>
+
+              {/* Dynamic Thresholding (Imagen) */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-300">
+                  Dynamic Thresholding (Imagen)
+                </label>
+                <Slider
+                  label="Threshold Percentile (0=off, 99.5=typical)"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={params.dynamic_threshold_percentile || 0.0}
+                  onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
+                />
+                {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (
+                  <Slider
+                    label="Mimic Scale (static clamp)"
+                    min={0.5}
+                    max={2.0}
+                    step={0.1}
+                    value={params.dynamic_threshold_mimic_scale || 1.0}
+                    onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                  />
                 )}
               </div>
             </div>

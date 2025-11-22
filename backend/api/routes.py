@@ -91,6 +91,9 @@ class GenerationParams(BaseModel):
     cfg_schedule_min: float = 1.0  # Minimum CFG at end of generation
     cfg_schedule_max: Optional[float] = None  # Maximum CFG at start (None = use cfg_scale)
     cfg_schedule_power: float = 2.0  # Power for quadratic schedule
+    # Dynamic thresholding (Imagen)
+    dynamic_threshold_percentile: float = 0.0  # 0.0 = disabled, 99.5 = typical
+    dynamic_threshold_mimic_scale: float = 1.0  # Clamp value for static threshold
 
 class Txt2ImgRequest(GenerationParams):
     pass

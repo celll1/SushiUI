@@ -241,6 +241,7 @@ def custom_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
@@ -361,6 +362,9 @@ def custom_sampling_loop(
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
         sigma_max = float(scheduler.sigmas[0].item())
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
+
+    # Track previous SNR for SNR-based adaptive CFG
+    previous_snr = None
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -503,11 +507,22 @@ def custom_sampling_loop(
         # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate dynamic CFG scale based on current sigma
+        # Calculate current sigma for sigma-based scheduling
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[i].item())
 
+        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+        current_snr = None
+        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+            # Calculate SNR from CFG components
+            uncond_norm = torch.norm(noise_pred_uncond).item()
+            diff = noise_pred_text - noise_pred_uncond
+            diff_norm = torch.norm(diff).item()
+            if uncond_norm > 1e-8:
+                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+
+        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
             sigma_max=sigma_max,
@@ -515,8 +530,14 @@ def custom_sampling_loop(
             cfg_schedule_type=cfg_schedule_type,
             cfg_schedule_min=cfg_schedule_min,
             cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,  # Use previous step's SNR
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
+
+        # Store current SNR for next step
+        if current_snr is not None:
+            previous_snr = current_snr
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
@@ -605,6 +626,7 @@ def custom_img2img_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
@@ -736,6 +758,9 @@ def custom_img2img_sampling_loop(
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
         sigma_max = float(scheduler.sigmas[0].item())
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
+
+    # Track previous SNR for SNR-based adaptive CFG
+    previous_snr = None
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -869,11 +894,22 @@ def custom_img2img_sampling_loop(
         # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate dynamic CFG scale based on current sigma
+        # Calculate current sigma for sigma-based scheduling
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[t_start + i].item())
 
+        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+        current_snr = None
+        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+            # Calculate SNR from CFG components
+            uncond_norm = torch.norm(noise_pred_uncond).item()
+            diff = noise_pred_text - noise_pred_uncond
+            diff_norm = torch.norm(diff).item()
+            if uncond_norm > 1e-8:
+                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+
+        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
             sigma_max=sigma_max,
@@ -881,8 +917,14 @@ def custom_img2img_sampling_loop(
             cfg_schedule_type=cfg_schedule_type,
             cfg_schedule_min=cfg_schedule_min,
             cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,  # Use previous step's SNR
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
+
+        # Store current SNR for next step
+        if current_snr is not None:
+            previous_snr = current_snr
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
@@ -973,6 +1015,7 @@ def custom_inpaint_sampling_loop(
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
     cfg_schedule_power: float = 2.0,
+    cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
 ) -> Image.Image:
@@ -1142,6 +1185,9 @@ def custom_inpaint_sampling_loop(
         sigma_max = float(scheduler.sigmas[0].item())
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
+    # Track previous SNR for SNR-based adaptive CFG
+    previous_snr = None
+
     for i, t in enumerate(timesteps):
         # Check for cancellation
         from core.pipeline import pipeline_manager
@@ -1267,11 +1313,22 @@ def custom_inpaint_sampling_loop(
         # Perform guidance with dynamic CFG
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate dynamic CFG scale based on current sigma
+        # Calculate current sigma for sigma-based scheduling
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[t_start + i].item())
 
+        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+        current_snr = None
+        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+            # Calculate SNR from CFG components
+            uncond_norm = torch.norm(noise_pred_uncond).item()
+            diff = noise_pred_text - noise_pred_uncond
+            diff_norm = torch.norm(diff).item()
+            if uncond_norm > 1e-8:
+                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+
+        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
             sigma_max=sigma_max,
@@ -1279,8 +1336,14 @@ def custom_inpaint_sampling_loop(
             cfg_schedule_type=cfg_schedule_type,
             cfg_schedule_min=cfg_schedule_min,
             cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,  # Use previous step's SNR
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
+
+        # Store current SNR for next step
+        if current_snr is not None:
+            previous_snr = current_snr
 
         noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 

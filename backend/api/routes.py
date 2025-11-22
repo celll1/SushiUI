@@ -87,10 +87,11 @@ class GenerationParams(BaseModel):
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
     developer_mode: bool = False  # Enable CFG metrics visualization
     # Dynamic CFG scheduling
-    cfg_schedule_type: str = "constant"  # constant, linear, quadratic, cosine
+    cfg_schedule_type: str = "constant"  # constant, linear, quadratic, cosine, snr_based
     cfg_schedule_min: float = 1.0  # Minimum CFG at end of generation
     cfg_schedule_max: Optional[float] = None  # Maximum CFG at start (None = use cfg_scale)
     cfg_schedule_power: float = 2.0  # Power for quadratic schedule
+    cfg_rescale_snr_alpha: float = 0.0  # SNR-based adaptive CFG (0.0 = disabled, 0.1-0.5 typical)
     # Dynamic thresholding (Imagen)
     dynamic_threshold_percentile: float = 0.0  # 0.0 = disabled, 99.5 = typical
     dynamic_threshold_mimic_scale: float = 1.0  # Clamp value for static threshold

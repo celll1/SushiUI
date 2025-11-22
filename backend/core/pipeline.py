@@ -1186,6 +1186,9 @@ class DiffusionPipelineManager:
                 cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
                 cfg_schedule_max=params.get("cfg_schedule_max", None),
                 cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
                 **controlnet_kwargs,
             )
 
@@ -1515,6 +1518,9 @@ class DiffusionPipelineManager:
                 cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
                 cfg_schedule_max=params.get("cfg_schedule_max", None),
                 cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
                 **controlnet_kwargs,
             )
 
@@ -1711,6 +1717,9 @@ class DiffusionPipelineManager:
             cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
             cfg_schedule_max=params.get("cfg_schedule_max", None),
             cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+            cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+            dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+            dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
             **controlnet_kwargs,
         )
 

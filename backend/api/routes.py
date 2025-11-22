@@ -307,6 +307,7 @@ async def generate_img2img(
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
+    ancestral_seed: int = Form(-1),
     width: int = Form(1024),
     height: int = Form(1024),
     resize_mode: str = Form("image"),
@@ -315,6 +316,14 @@ async def generate_img2img(
     max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     controlnets: str = Form("[]"),  # JSON string of ControlNet configs
+    developer_mode: bool = Form(False),
+    cfg_schedule_type: str = Form("constant"),
+    cfg_schedule_min: float = Form(1.0),
+    cfg_schedule_max: Optional[float] = Form(None),
+    cfg_schedule_power: float = Form(2.0),
+    cfg_rescale_snr_alpha: float = Form(0.0),
+    dynamic_threshold_percentile: float = Form(0.0),
+    dynamic_threshold_mimic_scale: float = Form(7.0),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -373,11 +382,20 @@ async def generate_img2img(
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
+            "ancestral_seed": ancestral_seed,
             "width": width,
             "height": height,
             "resize_mode": resize_mode,
             "resampling_method": resampling_method,
             "controlnet_images": controlnet_images,
+            "developer_mode": developer_mode,
+            "cfg_schedule_type": cfg_schedule_type,
+            "cfg_schedule_min": cfg_schedule_min,
+            "cfg_schedule_max": cfg_schedule_max,
+            "cfg_schedule_power": cfg_schedule_power,
+            "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
+            "dynamic_threshold_percentile": dynamic_threshold_percentile,
+            "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
         }
         # Log params without large image objects
         params_for_log = params.copy()
@@ -539,6 +557,7 @@ async def generate_inpaint(
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
+    ancestral_seed: int = Form(-1),
     width: int = Form(1024),
     height: int = Form(1024),
     mask_blur: int = Form(4),
@@ -551,6 +570,14 @@ async def generate_inpaint(
     max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     controlnets: str = Form("[]"),  # JSON string of ControlNet configs
+    developer_mode: bool = Form(False),
+    cfg_schedule_type: str = Form("constant"),
+    cfg_schedule_min: float = Form(1.0),
+    cfg_schedule_max: Optional[float] = Form(None),
+    cfg_schedule_power: float = Form(2.0),
+    cfg_rescale_snr_alpha: float = Form(0.0),
+    dynamic_threshold_percentile: float = Form(0.0),
+    dynamic_threshold_mimic_scale: float = Form(7.0),
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -624,6 +651,7 @@ async def generate_inpaint(
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
+            "ancestral_seed": ancestral_seed,
             "width": width,
             "height": height,
             "mask_blur": mask_blur,
@@ -633,6 +661,14 @@ async def generate_inpaint(
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
             "controlnet_images": controlnet_images,
+            "developer_mode": developer_mode,
+            "cfg_schedule_type": cfg_schedule_type,
+            "cfg_schedule_min": cfg_schedule_min,
+            "cfg_schedule_max": cfg_schedule_max,
+            "cfg_schedule_power": cfg_schedule_power,
+            "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
+            "dynamic_threshold_percentile": dynamic_threshold_percentile,
+            "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
         }
         # Log params without large image objects
         params_for_log = params.copy()

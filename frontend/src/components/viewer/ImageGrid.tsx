@@ -308,6 +308,22 @@ export default function ImageGrid() {
       txt2imgParams.seed = image.seed;
       txt2imgParams.width = image.width;
       txt2imgParams.height = image.height;
+
+      // Add Advanced CFG parameters
+      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+        txt2imgParams.cfg_schedule_type = image.cfg_schedule_type;
+        txt2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
+        txt2imgParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
+        if (image.cfg_schedule_power) txt2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_rescale_snr_alpha) {
+        txt2imgParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
+      }
+      if (image.dynamic_threshold_percentile) {
+        txt2imgParams.dynamic_threshold_percentile = parseFloat(image.dynamic_threshold_percentile);
+        txt2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
+      }
+
       localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
     }
 
@@ -363,6 +379,22 @@ export default function ImageGrid() {
       img2imgParams.width = image.width;
       img2imgParams.height = image.height;
       img2imgParams.denoising_strength = 0.75;
+
+      // Add Advanced CFG parameters
+      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+        img2imgParams.cfg_schedule_type = image.cfg_schedule_type;
+        img2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
+        img2imgParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
+        if (image.cfg_schedule_power) img2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_rescale_snr_alpha) {
+        img2imgParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
+      }
+      if (image.dynamic_threshold_percentile) {
+        img2imgParams.dynamic_threshold_percentile = parseFloat(image.dynamic_threshold_percentile);
+        img2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
+      }
+
       localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
     }
 
@@ -419,6 +451,22 @@ export default function ImageGrid() {
       inpaintParams.width = image.width;
       inpaintParams.height = image.height;
       inpaintParams.denoising_strength = 0.75;
+
+      // Add Advanced CFG parameters
+      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+        inpaintParams.cfg_schedule_type = image.cfg_schedule_type;
+        inpaintParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
+        inpaintParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
+        if (image.cfg_schedule_power) inpaintParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_rescale_snr_alpha) {
+        inpaintParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
+      }
+      if (image.dynamic_threshold_percentile) {
+        inpaintParams.dynamic_threshold_percentile = parseFloat(image.dynamic_threshold_percentile);
+        inpaintParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
+      }
+
       localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
     }
 
@@ -591,6 +639,23 @@ export default function ImageGrid() {
                   {selectedImage.ancestral_seed && selectedImage.ancestral_seed !== -1 && (
                     <div>
                       <span className="text-gray-400">Ancestral Seed:</span> {selectedImage.ancestral_seed}
+                    </div>
+                  )}
+                  {/* Advanced CFG parameters */}
+                  {selectedImage.cfg_schedule_type && selectedImage.cfg_schedule_type !== 'constant' && (
+                    <div>
+                      <span className="text-gray-400">CFG Schedule:</span> {selectedImage.cfg_schedule_type} (min: {selectedImage.cfg_schedule_min}, max: {selectedImage.cfg_schedule_max || selectedImage.cfg_scale})
+                      {selectedImage.cfg_schedule_type === 'quadratic' && ` power: ${selectedImage.cfg_schedule_power}`}
+                    </div>
+                  )}
+                  {selectedImage.cfg_rescale_snr_alpha && parseFloat(selectedImage.cfg_rescale_snr_alpha) > 0 && (
+                    <div>
+                      <span className="text-gray-400">SNR Alpha:</span> {selectedImage.cfg_rescale_snr_alpha}
+                    </div>
+                  )}
+                  {selectedImage.dynamic_threshold_percentile && parseFloat(selectedImage.dynamic_threshold_percentile) > 0 && (
+                    <div>
+                      <span className="text-gray-400">Dynamic Threshold:</span> {selectedImage.dynamic_threshold_percentile}% (mimic: {selectedImage.dynamic_threshold_mimic_scale || 7.0})
                     </div>
                   )}
                   {selectedImage.lora_names && (

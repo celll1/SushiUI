@@ -245,12 +245,23 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("ancestral_seed", String(paramsWithImages.ancestral_seed ?? -1));
   formData.append("width", String(paramsWithImages.width || 1024));
   formData.append("height", String(paramsWithImages.height || 1024));
   formData.append("resize_mode", paramsWithImages.resize_mode || "image");
   formData.append("resampling_method", paramsWithImages.resampling_method || "lanczos");
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
   formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
+  formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
+  formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
+  formData.append("developer_mode", String(paramsWithImages.developer_mode ?? false));
+  formData.append("cfg_schedule_type", paramsWithImages.cfg_schedule_type || "constant");
+  formData.append("cfg_schedule_min", String(paramsWithImages.cfg_schedule_min ?? 1.0));
+  formData.append("cfg_schedule_max", String(paramsWithImages.cfg_schedule_max ?? ""));
+  formData.append("cfg_schedule_power", String(paramsWithImages.cfg_schedule_power ?? 2.0));
+  formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
+  formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
+  formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -294,6 +305,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("ancestral_seed", String(paramsWithImages.ancestral_seed ?? -1));
   formData.append("width", String(paramsWithImages.width || 1024));
   formData.append("height", String(paramsWithImages.height || 1024));
   formData.append("inpaint_full_res", String(paramsWithImages.inpaint_full_res || false));
@@ -305,6 +317,16 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("resampling_method", paramsWithImages.resampling_method || "lanczos");
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
   formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
+  formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
+  formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
+  formData.append("developer_mode", String(paramsWithImages.developer_mode ?? false));
+  formData.append("cfg_schedule_type", paramsWithImages.cfg_schedule_type || "constant");
+  formData.append("cfg_schedule_min", String(paramsWithImages.cfg_schedule_min ?? 1.0));
+  formData.append("cfg_schedule_max", String(paramsWithImages.cfg_schedule_max ?? ""));
+  formData.append("cfg_schedule_power", String(paramsWithImages.cfg_schedule_power ?? 2.0));
+  formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
+  formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
+  formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

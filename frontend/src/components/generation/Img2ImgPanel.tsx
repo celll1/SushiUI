@@ -863,6 +863,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         stepParams.schedule_type = mainParams.schedule_type;
         stepParams.seed = mainParams.seed;
         stepParams.ancestral_seed = mainParams.ancestral_seed;
+        // Inherit Advanced CFG from main
+        stepParams.cfg_schedule_type = mainParams.cfg_schedule_type;
+        stepParams.cfg_schedule_min = mainParams.cfg_schedule_min;
+        stepParams.cfg_schedule_max = mainParams.cfg_schedule_max;
+        stepParams.cfg_schedule_power = mainParams.cfg_schedule_power;
+        stepParams.cfg_rescale_snr_alpha = mainParams.cfg_rescale_snr_alpha;
+        stepParams.dynamic_threshold_percentile = mainParams.dynamic_threshold_percentile;
+        stepParams.dynamic_threshold_mimic_scale = mainParams.dynamic_threshold_mimic_scale;
       } else {
         stepParams.steps = step.steps || 20;
         stepParams.cfg_scale = step.cfgScale || 7;
@@ -870,6 +878,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
         stepParams.seed = step.seed ?? -1;
         stepParams.ancestral_seed = step.ancestralSeed ?? -1;
+        // Use step's Advanced CFG or defaults
+        stepParams.cfg_schedule_type = step.cfg_schedule_type || "constant";
+        stepParams.cfg_schedule_min = step.cfg_schedule_min ?? 1.0;
+        stepParams.cfg_schedule_max = step.cfg_schedule_max;
+        stepParams.cfg_schedule_power = step.cfg_schedule_power ?? 2.0;
+        stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
+        stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
+        stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
       }
 
       // Apply LoRA inheritance

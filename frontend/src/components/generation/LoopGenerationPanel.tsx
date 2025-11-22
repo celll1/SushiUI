@@ -33,6 +33,15 @@ export interface LoopGenerationStep {
   seed?: number;
   ancestralSeed?: number;
 
+  // Advanced CFG parameters (only used when useMainSettings is false)
+  cfg_schedule_type?: string;
+  cfg_schedule_min?: number;
+  cfg_schedule_max?: number;
+  cfg_schedule_power?: number;
+  cfg_rescale_snr_alpha?: number;
+  dynamic_threshold_percentile?: number;
+  dynamic_threshold_mimic_scale?: number;
+
   // ControlNet
   controlnets: Array<{
     model_path: string;
@@ -595,6 +604,110 @@ export default function LoopGenerationPanel({
                               -1
                             </Button>
                           </div>
+                        </div>
+                      </div>
+
+                      {/* Advanced CFG Settings for Loop Step */}
+                      <div className="space-y-3 mt-3 pt-3 border-t border-gray-700">
+                        <h5 className="text-xs font-semibold text-gray-300">Advanced CFG (optional)</h5>
+
+                        {/* Dynamic CFG Scheduling */}
+                        <div className="space-y-2">
+                          <Select
+                            label="CFG Schedule"
+                            options={[
+                              { value: "constant", label: "Constant (use main CFG)" },
+                              { value: "linear", label: "Linear (sigma-based)" },
+                              { value: "quadratic", label: "Quadratic (sigma-based)" },
+                              { value: "cosine", label: "Cosine (sigma-based)" },
+                              { value: "snr_based", label: "SNR-Based Adaptive" },
+                            ]}
+                            value={step.cfg_schedule_type || "constant"}
+                            onChange={(e) => updateStep(step.id, { cfg_schedule_type: e.target.value })}
+                          />
+
+                          {step.cfg_schedule_type && step.cfg_schedule_type !== "constant" && (
+                            <div className="space-y-2">
+                              {step.cfg_schedule_type !== "snr_based" && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                  <Slider
+                                    label="CFG Min"
+                                    value={step.cfg_schedule_min ?? 1.0}
+                                    onChange={(e) => updateStep(step.id, { cfg_schedule_min: parseFloat(e.target.value) })}
+                                    min={1}
+                                    max={30}
+                                    step={0.5}
+                                  />
+                                  <Slider
+                                    label="CFG Max"
+                                    value={step.cfg_schedule_max ?? step.cfgScale ?? 7.0}
+                                    onChange={(e) => updateStep(step.id, { cfg_schedule_max: parseFloat(e.target.value) })}
+                                    min={1}
+                                    max={30}
+                                    step={0.5}
+                                  />
+                                </div>
+                              )}
+
+                              {step.cfg_schedule_type === "quadratic" && (
+                                <Slider
+                                  label="Power"
+                                  value={step.cfg_schedule_power ?? 2.0}
+                                  onChange={(e) => updateStep(step.id, { cfg_schedule_power: parseFloat(e.target.value) })}
+                                  min={0.5}
+                                  max={5.0}
+                                  step={0.1}
+                                />
+                              )}
+
+                              {step.cfg_schedule_type === "snr_based" && (
+                                <Slider
+                                  label="SNR Alpha (adaptive strength)"
+                                  value={step.cfg_rescale_snr_alpha ?? 0.0}
+                                  onChange={(e) => updateStep(step.id, { cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
+                                  min={0}
+                                  max={1}
+                                  step={0.05}
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Dynamic Thresholding */}
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={(step.dynamic_threshold_percentile ?? 0) > 0}
+                              onChange={(e) => updateStep(step.id, {
+                                dynamic_threshold_percentile: e.target.checked ? 99.5 : 0
+                              })}
+                              className="cursor-pointer"
+                            />
+                            <label className="text-xs text-gray-400">Dynamic Thresholding (Imagen)</label>
+                          </div>
+
+                          {(step.dynamic_threshold_percentile ?? 0) > 0 && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <Slider
+                                label="Percentile"
+                                value={step.dynamic_threshold_percentile ?? 99.5}
+                                onChange={(e) => updateStep(step.id, { dynamic_threshold_percentile: parseFloat(e.target.value) })}
+                                min={90}
+                                max={100}
+                                step={0.1}
+                              />
+                              <Slider
+                                label="Mimic Scale (static clamp)"
+                                value={step.dynamic_threshold_mimic_scale ?? 7.0}
+                                onChange={(e) => updateStep(step.id, { dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                                min={1}
+                                max={30}
+                                step={0.5}
+                              />
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

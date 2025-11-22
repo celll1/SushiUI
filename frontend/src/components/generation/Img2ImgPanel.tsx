@@ -354,7 +354,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       console.log("[Img2Img] Saving params to localStorage:", {
         loras: params.loras?.length || 0,
         controlnets: params.controlnets?.length || 0,
-        fullParams: params
+        prompt_length: params.prompt?.length || 0,
+        // Don't log full params to avoid base64 spam
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }

@@ -434,7 +434,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       console.log('[Inpaint] Saving params to localStorage:', {
         loras: params.loras?.length || 0,
         controlnets: params.controlnets?.length || 0,
-        fullParams: params
+        prompt_length: params.prompt?.length || 0,
+        // Don't log full params to avoid base64 spam
       });
     }
   }, [params, isMounted]);

@@ -25,29 +25,62 @@ import numpy as np
 
 
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
-    """Calculate CFG metrics for developer mode visualization"""
+    """Calculate CFG metrics for developer mode visualization
+
+    Key metrics:
+    - cosine_similarity: Direction similarity between yp and yn (-1 to 1, closer to 1 = more similar)
+    - relative_diff: ||yp - yn|| / ||yn|| (relative strength of CFG direction)
+    - snr: Signal-to-noise ratio = ||yp - yn||² / ||yn||² (squared relative strength)
+    """
     if not developer_mode:
         return None
 
     # Calculate L2 norms (magnitude of vectors)
     uncond_norm = torch.norm(noise_pred_uncond).item()
     text_norm = torch.norm(noise_pred_text).item()
-    diff_norm = torch.norm(noise_pred_text - noise_pred_uncond).item()
+    diff = noise_pred_text - noise_pred_uncond
+    diff_norm = torch.norm(diff).item()
 
-    # Per-latent statistics
+    # Cosine similarity: measures direction similarity
+    # cos(θ) = (yp · yn) / (||yp|| × ||yn||)
+    # 1.0 = same direction, 0.0 = orthogonal, -1.0 = opposite
+    dot_product = (noise_pred_uncond * noise_pred_text).sum().item()
+    cosine_similarity = dot_product / (uncond_norm * text_norm + 1e-8)
+
+    # Relative difference: how much CFG will change the prediction
+    # This is more meaningful than absolute norms
+    relative_diff = diff_norm / (uncond_norm + 1e-8)
+
+    # SNR (Signal-to-Noise Ratio): squared relative difference
+    snr = (diff_norm ** 2) / (uncond_norm ** 2 + 1e-8)
+
+    # Per-channel statistics to see variation patterns
     uncond_mean = noise_pred_uncond.mean().item()
     text_mean = noise_pred_text.mean().item()
+    diff_mean = diff.mean().item()
     uncond_std = noise_pred_uncond.std().item()
     text_std = noise_pred_text.std().item()
+    diff_std = diff.std().item()
 
     return {
+        # Primary metrics (most important for understanding CFG)
+        'cosine_similarity': round(cosine_similarity, 6),
+        'relative_diff': round(relative_diff, 6),
+        'snr': round(snr, 6),
+
+        # L2 norms (for reference)
         'uncond_norm': round(uncond_norm, 4),
         'text_norm': round(text_norm, 4),
         'diff_norm': round(diff_norm, 4),
-        'uncond_mean': round(uncond_mean, 4),
-        'text_mean': round(text_mean, 4),
-        'uncond_std': round(uncond_std, 4),
-        'text_std': round(text_std, 4),
+
+        # Statistics
+        'uncond_mean': round(uncond_mean, 6),
+        'text_mean': round(text_mean, 6),
+        'diff_mean': round(diff_mean, 6),
+        'uncond_std': round(uncond_std, 6),
+        'text_std': round(text_std, 6),
+        'diff_std': round(diff_std, 6),
+
         'guidance_scale': guidance_scale,
     }
 

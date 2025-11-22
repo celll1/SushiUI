@@ -1,11 +1,22 @@
 export interface CFGMetrics {
+  // Primary metrics
+  cosine_similarity: number;
+  relative_diff: number;
+  snr: number;
+
+  // L2 norms (for reference)
   uncond_norm: number;
   text_norm: number;
   diff_norm: number;
+
+  // Statistics
   uncond_mean: number;
   text_mean: number;
+  diff_mean: number;
   uncond_std: number;
   text_std: number;
+  diff_std: number;
+
   guidance_scale: number;
   timestep: number;
   step: number;
@@ -38,10 +49,12 @@ class ProgressClient {
     this.eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log("[SSE] Received message:", data);
 
         if (data.type === "progress") {
-          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, has preview: ${!!data.preview_image}, has CFG metrics: ${!!data.cfg_metrics}`);
+          // Log without base64 data to avoid console spam
+          const preview_length = data.preview_image ? data.preview_image.length : 0;
+          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, preview: ${preview_length > 0 ? `${preview_length} chars` : 'none'}, CFG metrics: ${!!data.cfg_metrics}`);
+
           this.callbacks.forEach((callback) => {
             callback(data.step, data.total_steps, data.message, data.preview_image, data.cfg_metrics);
           });
@@ -52,7 +65,7 @@ class ProgressClient {
           this.handleDisconnect();
         }
       } catch (error) {
-        console.error("[SSE] Failed to parse message:", error, event.data);
+        console.error("[SSE] Failed to parse message:", error);
       }
     };
 

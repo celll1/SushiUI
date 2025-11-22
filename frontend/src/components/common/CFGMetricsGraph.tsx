@@ -42,36 +42,54 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
     const xMin = Math.min(...xValues);
     const xMax = Math.max(...xValues);
 
-    // Determine y-axis range (norms)
-    const allNorms = metrics.flatMap(m => [m.uncond_norm, m.text_norm]);
-    const yMin = 0;
-    const yMax = Math.max(...allNorms) * 1.1; // 10% padding
+    // Determine y-axis range (use relative_diff and cosine_similarity)
+    const allRelativeDiff = metrics.map(m => m.relative_diff);
+    const allCosineSim = metrics.map(m => m.cosine_similarity);
+
+    // For dual Y-axis: left = relative_diff (0 to max), right = cosine_similarity (-1 to 1)
+    const yMinLeft = 0;
+    const yMaxLeft = Math.max(...allRelativeDiff) * 1.1;
+    const yMinRight = -1;
+    const yMaxRight = 1;
 
     // Helper functions
     const xScale = (val: number) => padding.left + ((val - xMin) / (xMax - xMin)) * graphWidth;
-    const yScale = (val: number) => height - padding.bottom - ((val - yMin) / (yMax - yMin)) * graphHeight;
+    const yScaleLeft = (val: number) => height - padding.bottom - ((val - yMinLeft) / (yMaxLeft - yMinLeft)) * graphHeight;
+    const yScaleRight = (val: number) => height - padding.bottom - ((val - yMinRight) / (yMaxRight - yMinRight)) * graphHeight;
 
     // Draw grid lines
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 1;
 
-    // Horizontal grid lines (y-axis)
+    // Horizontal grid lines (left y-axis - relative_diff)
     const ySteps = 5;
     for (let i = 0; i <= ySteps; i++) {
-      const y = yMin + (yMax - yMin) * (i / ySteps);
-      const yPos = yScale(y);
+      const y = yMinLeft + (yMaxLeft - yMinLeft) * (i / ySteps);
+      const yPos = yScaleLeft(y);
 
       ctx.beginPath();
       ctx.moveTo(padding.left, yPos);
       ctx.lineTo(width - padding.right, yPos);
       ctx.stroke();
 
-      // Y-axis labels
-      ctx.fillStyle = "#888";
+      // Left Y-axis labels (relative_diff)
+      ctx.fillStyle = "#10b981"; // green
       ctx.font = "11px sans-serif";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText(y.toFixed(2), padding.left - 5, yPos);
+      ctx.fillText(y.toFixed(3), padding.left - 5, yPos);
+    }
+
+    // Right Y-axis labels (cosine_similarity)
+    for (let i = 0; i <= ySteps; i++) {
+      const y = yMinRight + (yMaxRight - yMinRight) * (i / ySteps);
+      const yPos = yScaleRight(y);
+
+      ctx.fillStyle = "#f59e0b"; // amber
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(y.toFixed(2), width - padding.right + 5, yPos);
     }
 
     // Vertical grid lines (x-axis)
@@ -99,25 +117,35 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
     ctx.textAlign = "center";
     ctx.fillText(useTimestep ? "Timestep" : "Sigma", width / 2, height - 5);
 
+    // Left Y-axis label
     ctx.save();
     ctx.translate(15, height / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center";
-    ctx.fillText("L2 Norm", 0, 0);
+    ctx.fillStyle = "#10b981";
+    ctx.fillText("Relative Diff", 0, 0);
+    ctx.restore();
+
+    // Right Y-axis label
+    ctx.save();
+    ctx.translate(width - 10, height / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#f59e0b";
+    ctx.fillText("Cosine Sim", 0, 0);
     ctx.restore();
 
     // Draw lines
-    const drawLine = (data: number[], color: string, lineWidth: number = 2) => {
+    const drawLineLeft = (data: number[], color: string, lineWidth: number = 2) => {
       if (data.length === 0) return;
-
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
       ctx.beginPath();
 
-      data.forEach((norm, i) => {
+      data.forEach((val, i) => {
         const xVal = xValues[i];
         const x = xScale(xVal);
-        const y = yScale(norm);
+        const y = yScaleLeft(val);
 
         if (i === 0) {
           ctx.moveTo(x, y);
@@ -125,33 +153,52 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
           ctx.lineTo(x, y);
         }
       });
-
       ctx.stroke();
     };
 
-    // Draw uncond_norm (yn) - blue
-    drawLine(metrics.map(m => m.uncond_norm), "#3b82f6", 2);
+    const drawLineRight = (data: number[], color: string, lineWidth: number = 2) => {
+      if (data.length === 0) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
 
-    // Draw text_norm (yp) - red
-    drawLine(metrics.map(m => m.text_norm), "#ef4444", 2);
+      data.forEach((val, i) => {
+        const xVal = xValues[i];
+        const x = xScale(xVal);
+        const y = yScaleRight(val);
+
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+    };
+
+    // Draw relative_diff (left axis) - green
+    drawLineLeft(metrics.map(m => m.relative_diff), "#10b981", 3);
+
+    // Draw cosine_similarity (right axis) - amber
+    drawLineRight(metrics.map(m => m.cosine_similarity), "#f59e0b", 3);
 
     // Draw legend
-    const legendX = width - padding.right - 100;
+    const legendX = width - padding.right - 150;
     const legendY = padding.top + 10;
 
-    // yn (uncond) - blue
-    ctx.fillStyle = "#3b82f6";
-    ctx.fillRect(legendX, legendY, 15, 3);
+    // relative_diff - green
+    ctx.fillStyle = "#10b981";
+    ctx.fillRect(legendX, legendY, 20, 3);
     ctx.fillStyle = "#aaa";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText("yn (uncond)", legendX + 20, legendY + 2);
+    ctx.fillText("Relative Diff", legendX + 25, legendY + 2);
 
-    // yp (text) - red
-    ctx.fillStyle = "#ef4444";
-    ctx.fillRect(legendX, legendY + 20, 15, 3);
+    // cosine_similarity - amber
+    ctx.fillStyle = "#f59e0b";
+    ctx.fillRect(legendX, legendY + 20, 20, 3);
     ctx.fillStyle = "#aaa";
-    ctx.fillText("yp (text)", legendX + 20, legendY + 22);
+    ctx.fillText("Cosine Sim", legendX + 25, legendY + 22);
 
   }, [metrics]);
 
@@ -228,11 +275,14 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
             <span className="text-gray-400">Timestep:</span>
             <span className="text-white">{hoveredPoint.timestep}</span>
 
-            <span className="text-blue-400">yn:</span>
-            <span className="text-white">{hoveredPoint.uncond_norm.toFixed(4)}</span>
+            <span className="text-green-400">Rel. Diff:</span>
+            <span className="text-white">{hoveredPoint.relative_diff.toFixed(4)}</span>
 
-            <span className="text-red-400">yp:</span>
-            <span className="text-white">{hoveredPoint.text_norm.toFixed(4)}</span>
+            <span className="text-amber-400">Cos Sim:</span>
+            <span className="text-white">{hoveredPoint.cosine_similarity.toFixed(4)}</span>
+
+            <span className="text-purple-400">SNR:</span>
+            <span className="text-white">{hoveredPoint.snr.toFixed(4)}</span>
 
             <span className="text-gray-400">CFG:</span>
             <span className="text-white">{hoveredPoint.guidance_scale}</span>

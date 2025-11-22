@@ -24,41 +24,6 @@ from PIL import Image
 import numpy as np
 
 
-def get_sigma_from_scheduler(scheduler, timestep: torch.Tensor, step_index: int) -> Optional[float]:
-    """Extract sigma value from scheduler, trying multiple methods"""
-    sigma_value = None
-    method_used = None
-
-    # Method 1: sigmas array (Karras, Euler, DPM++, etc.)
-    if hasattr(scheduler, 'sigmas'):
-        if step_index < len(scheduler.sigmas):
-            sigma_value = float(scheduler.sigmas[step_index].item())
-            method_used = "sigmas_array"
-
-    # Method 2: sigma_t method
-    if sigma_value is None and hasattr(scheduler, 'sigma_t'):
-        try:
-            sigma_value = float(scheduler.sigma_t(timestep).item())
-            method_used = "sigma_t_method"
-        except:
-            pass
-
-    # Method 3: Fallback - estimate from timestep
-    # This is rough but better than nothing
-    if sigma_value is None:
-        timestep_val = float(timestep.item())
-        if timestep_val > 0:
-            # Linear approximation: timestep ∈ [0, 1000], sigma ∈ [0.03, 14.6] for SDXL
-            sigma_value = timestep_val / 1000.0 * 15.0
-            method_used = "timestep_fallback"
-
-    # Debug log on first call
-    if step_index == 0 and sigma_value is not None:
-        print(f"[Sigma] Using method: {method_used}, first sigma: {sigma_value:.4f}, timestep: {timestep.item():.1f}")
-
-    return sigma_value
-
-
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
     """Calculate CFG metrics for developer mode visualization
 
@@ -446,9 +411,9 @@ def custom_sampling_loop(
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                sigma = get_sigma_from_scheduler(scheduler, t, i)
-                if sigma is not None:
-                    cfg_metrics['sigma'] = sigma
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
@@ -774,9 +739,9 @@ def custom_img2img_sampling_loop(
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                sigma = get_sigma_from_scheduler(scheduler, t, i)
-                if sigma is not None:
-                    cfg_metrics['sigma'] = sigma
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
@@ -1148,9 +1113,9 @@ def custom_inpaint_sampling_loop(
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                sigma = get_sigma_from_scheduler(scheduler, t, i)
-                if sigma is not None:
-                    cfg_metrics['sigma'] = sigma
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 

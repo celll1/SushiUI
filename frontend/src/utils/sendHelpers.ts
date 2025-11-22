@@ -1,4 +1,5 @@
 import { saveTempImage, deleteTempImageRef } from "./tempImageStorage";
+import { roundFloat } from "./numberUtils";
 
 /**
  * Common parameters that can be sent between panels
@@ -45,7 +46,7 @@ export function sendParametersToPanel(
 ): void {
   const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
   targetParams.steps = sourceParams.steps;
-  targetParams.cfg_scale = sourceParams.cfg_scale;
+  targetParams.cfg_scale = sourceParams.cfg_scale !== undefined ? roundFloat(sourceParams.cfg_scale, 2) : sourceParams.cfg_scale;
   targetParams.sampler = sourceParams.sampler;
   targetParams.schedule_type = sourceParams.schedule_type;
   targetParams.seed = sourceParams.seed;
@@ -53,7 +54,7 @@ export function sendParametersToPanel(
   targetParams.height = sourceParams.height;
 
   if (includeDenoising && sourceParams.denoising_strength !== undefined) {
-    targetParams.denoising_strength = sourceParams.denoising_strength;
+    targetParams.denoising_strength = roundFloat(sourceParams.denoising_strength, 2);
   }
 
   localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));

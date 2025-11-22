@@ -13,6 +13,7 @@ import ModelSelector from "../common/ModelSelector";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
+import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
@@ -192,8 +193,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         const parsed = JSON.parse(saved);
         console.log("Parsed params:", parsed);
         const merged = { ...DEFAULT_PARAMS, ...parsed };
-        console.log("Merged with defaults:", merged);
-        setParams(merged);
+        // Fix floating point precision issues
+        const fixed = fixFloatingPointParams(merged);
+        console.log("Merged with defaults:", fixed);
+        setParams(fixed);
       } catch (error) {
         console.error("Failed to load saved params:", error);
       }

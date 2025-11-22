@@ -14,6 +14,7 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
+import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
@@ -167,7 +168,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         try {
           const parsed = JSON.parse(saved);
           const merged = { ...DEFAULT_PARAMS, ...parsed };
-          setParams(merged);
+          // Fix floating point precision issues
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
         } catch (error) {
           console.error("Failed to load saved params:", error);
         }

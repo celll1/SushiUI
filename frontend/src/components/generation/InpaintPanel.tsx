@@ -22,6 +22,7 @@ import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInp
 import { wsClient } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img } from "@/utils/sendHelpers";
+import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -184,7 +185,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         try {
           const parsed = JSON.parse(saved);
           const merged = { ...DEFAULT_PARAMS, ...parsed };
-          setParams(merged);
+          // Fix floating point precision issues
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
         } catch (error) {
           console.error("Failed to load saved params:", error);
         }

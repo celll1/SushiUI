@@ -629,44 +629,43 @@ export default function LoopGenerationPanel({
                           {step.cfg_schedule_type && step.cfg_schedule_type !== "constant" && (
                             <div className="space-y-2">
                               {step.cfg_schedule_type !== "snr_based" && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <>
                                   <Slider
-                                    label="CFG Min"
+                                    label="CFG Min (end of generation)"
                                     value={step.cfg_schedule_min ?? 1.0}
                                     onChange={(e) => updateStep(step.id, { cfg_schedule_min: parseFloat(e.target.value) })}
                                     min={1}
-                                    max={30}
+                                    max={15}
                                     step={0.5}
                                   />
                                   <Slider
-                                    label="CFG Max"
+                                    label="CFG Max (start of generation)"
                                     value={step.cfg_schedule_max ?? step.cfgScale ?? 7.0}
                                     onChange={(e) => updateStep(step.id, { cfg_schedule_max: parseFloat(e.target.value) })}
                                     min={1}
                                     max={30}
                                     step={0.5}
                                   />
-                                </div>
-                              )}
-
-                              {step.cfg_schedule_type === "quadratic" && (
-                                <Slider
-                                  label="Power"
-                                  value={step.cfg_schedule_power ?? 2.0}
-                                  onChange={(e) => updateStep(step.id, { cfg_schedule_power: parseFloat(e.target.value) })}
-                                  min={0.5}
-                                  max={5.0}
-                                  step={0.1}
-                                />
+                                  {step.cfg_schedule_type === "quadratic" && (
+                                    <Slider
+                                      label="Power (curve steepness)"
+                                      value={step.cfg_schedule_power ?? 2.0}
+                                      onChange={(e) => updateStep(step.id, { cfg_schedule_power: parseFloat(e.target.value) })}
+                                      min={0.5}
+                                      max={4.0}
+                                      step={0.1}
+                                    />
+                                  )}
+                                </>
                               )}
 
                               {step.cfg_schedule_type === "snr_based" && (
                                 <Slider
-                                  label="SNR Alpha (adaptive strength)"
+                                  label="SNR Alpha (0=off, 0.1-0.5 typical)"
                                   value={step.cfg_rescale_snr_alpha ?? 0.0}
                                   onChange={(e) => updateStep(step.id, { cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
                                   min={0}
-                                  max={1}
+                                  max={1.0}
                                   step={0.05}
                                 />
                               )}
@@ -689,14 +688,14 @@ export default function LoopGenerationPanel({
                           </div>
 
                           {(step.dynamic_threshold_percentile ?? 0) > 0 && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <>
                               <Slider
-                                label="Percentile"
+                                label="Threshold Percentile"
                                 value={step.dynamic_threshold_percentile ?? 99.5}
                                 onChange={(e) => updateStep(step.id, { dynamic_threshold_percentile: parseFloat(e.target.value) })}
                                 min={90}
                                 max={100}
-                                step={0.1}
+                                step={0.5}
                               />
                               <Slider
                                 label="Mimic Scale (static clamp)"
@@ -706,7 +705,7 @@ export default function LoopGenerationPanel({
                                 max={30}
                                 step={0.5}
                               />
-                            </div>
+                            </>
                           )}
                         </div>
                       </div>

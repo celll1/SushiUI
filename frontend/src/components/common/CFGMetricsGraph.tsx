@@ -8,7 +8,7 @@ interface CFGMetricsGraphProps {
   className?: string;
 }
 
-type MetricType = "relative_diff" | "cosine_similarity" | "snr" | "norms";
+type MetricType = "relative_diff" | "snr" | "norms";
 
 export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsGraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -59,13 +59,6 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
         yMax = Math.max(...dataValues) * 1.1;
         yLabel = "Relative Diff";
         lineColor = "#10b981"; // green
-        break;
-      case "cosine_similarity":
-        dataValues = metrics.map(m => m.cosine_similarity);
-        yMin = -1;
-        yMax = 1;
-        yLabel = "Cosine Similarity";
-        lineColor = "#f59e0b"; // amber
         break;
       case "snr":
         dataValues = metrics.map(m => m.snr);
@@ -220,7 +213,6 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
           className="bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
         >
           <option value="relative_diff">Relative Diff (CFG strength)</option>
-          <option value="cosine_similarity">Cosine Similarity (direction alignment)</option>
           <option value="snr">SNR (signal-to-noise ratio)</option>
           <option value="norms">Diff Norm (||yp - yn||)</option>
         </select>
@@ -257,9 +249,6 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
 
             <span className="text-green-400">Rel. Diff:</span>
             <span className="text-white">{hoveredPoint.relative_diff.toFixed(4)}</span>
-
-            <span className="text-amber-400">Cos Sim:</span>
-            <span className="text-white">{hoveredPoint.cosine_similarity.toFixed(4)}</span>
 
             <span className="text-purple-400">SNR:</span>
             <span className="text-white">{hoveredPoint.snr.toFixed(4)}</span>

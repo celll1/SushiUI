@@ -1,6 +1,5 @@
 export interface CFGMetrics {
   // Primary metrics
-  cosine_similarity: number;
   relative_diff: number;
   snr: number;
 

@@ -134,6 +134,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
     steps: []
@@ -241,6 +242,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       const savedDeveloperMode = localStorage.getItem('developer_mode');
       if (savedDeveloperMode === 'true') {
         setDeveloperMode(true);
+      }
+
+      // Load advanced CFG settings visibility
+      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
+      if (savedShowAdvancedCFG === 'true') {
+        setShowAdvancedCFG(true);
       }
 
       // Load custom presets
@@ -945,8 +952,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         throw new Error("No input image available for img2img generation");
       }
 
-      // Add developer_mode flag to params
-      const paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+      // Add developer_mode flag and reset advanced CFG params if disabled
+      let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
+      if (!showAdvancedCFG) {
+        paramsWithDevMode = {
+          ...paramsWithDevMode,
+          cfg_schedule_type: "constant",
+          cfg_rescale_snr_alpha: 0.0,
+          dynamic_threshold_percentile: 0.0,
+        };
+      }
       const result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
       const imageUrl = `/outputs/${result.image.filename}`;
       setGeneratedImage(imageUrl);
@@ -1367,6 +1382,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
 
+              {/* Advanced CFG Settings */}
+              {showAdvancedCFG && (
+                <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">
                 <label className="block text-sm font-medium text-gray-300">
@@ -1463,6 +1481,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   </>
                 )}
               </div>
+              </>
+              )}
             </div>
             <div>
               <div className="flex items-center justify-between mb-2">

@@ -151,6 +151,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
     steps: []
@@ -293,6 +294,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const savedDeveloperMode = localStorage.getItem('developer_mode');
       if (savedDeveloperMode === 'true') {
         setDeveloperMode(true);
+      }
+
+      // Load advanced CFG settings visibility
+      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
+      if (savedShowAdvancedCFG === 'true') {
+        setShowAdvancedCFG(true);
       }
 
       // Load custom presets
@@ -1128,6 +1135,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         loras: nextItem.params.loras,
         controlnets: nextItem.params.controlnets,
         developer_mode: developerMode,
+        // Reset advanced CFG params if disabled
+        cfg_schedule_type: showAdvancedCFG ? nextItem.params.cfg_schedule_type : "constant",
+        cfg_rescale_snr_alpha: showAdvancedCFG ? nextItem.params.cfg_rescale_snr_alpha : 0.0,
+        dynamic_threshold_percentile: showAdvancedCFG ? nextItem.params.dynamic_threshold_percentile : 0.0,
       };
 
       console.log('[Inpaint] Generating with params:', {
@@ -1634,6 +1645,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
 
+              {/* Advanced CFG Settings */}
+              {showAdvancedCFG && (
+                <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">
                 <label className="block text-sm font-medium text-gray-300">
@@ -1730,6 +1744,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   </>
                 )}
               </div>
+              </>
+              )}
             </div>
 
             <div>

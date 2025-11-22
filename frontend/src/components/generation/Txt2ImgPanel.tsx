@@ -41,6 +41,10 @@ const DEFAULT_PARAMS: GenerationParams = {
   prompt_chunking_mode: "a1111",
   max_prompt_chunks: 0,
   controlnets: [],
+  cfg_schedule_type: "constant",
+  cfg_schedule_min: 1.0,
+  cfg_schedule_max: undefined,
+  cfg_schedule_power: 2.0,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -1145,6 +1149,54 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
+
+              {/* Dynamic CFG Scheduling */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-300">
+                  Dynamic CFG Schedule
+                </label>
+                <select
+                  value={params.cfg_schedule_type || "constant"}
+                  onChange={(e) => setParams({ ...params, cfg_schedule_type: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="constant">Constant (no scheduling)</option>
+                  <option value="linear">Linear</option>
+                  <option value="quadratic">Quadratic</option>
+                  <option value="cosine">Cosine</option>
+                </select>
+
+                {params.cfg_schedule_type !== "constant" && (
+                  <>
+                    <Slider
+                      label="CFG Min (end of generation)"
+                      min={0}
+                      max={15}
+                      step={0.5}
+                      value={params.cfg_schedule_min || 1.0}
+                      onChange={(e) => setParams({ ...params, cfg_schedule_min: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="CFG Max (start of generation)"
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={params.cfg_schedule_max || params.cfg_scale}
+                      onChange={(e) => setParams({ ...params, cfg_schedule_max: parseFloat(e.target.value) })}
+                    />
+                    {params.cfg_schedule_type === "quadratic" && (
+                      <Slider
+                        label="Power (curve steepness)"
+                        min={0.5}
+                        max={4.0}
+                        step={0.1}
+                        value={params.cfg_schedule_power || 2.0}
+                        onChange={(e) => setParams({ ...params, cfg_schedule_power: parseFloat(e.target.value) })}
+                      />
+                    )}
+                  </>
+                )}
+              </div>
             </div>
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

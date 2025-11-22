@@ -154,6 +154,11 @@ export interface GenerationParams {
   prompt_chunking_mode?: string;
   max_prompt_chunks?: number;
   controlnets?: ControlNetConfig[];
+  // Dynamic CFG scheduling
+  cfg_schedule_type?: string;
+  cfg_schedule_min?: number;
+  cfg_schedule_max?: number;
+  cfg_schedule_power?: number;
 }
 
 export interface Img2ImgParams extends GenerationParams {

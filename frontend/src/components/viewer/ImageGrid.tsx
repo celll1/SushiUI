@@ -324,6 +324,17 @@ export default function ImageGrid() {
         txt2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
+      // Add NAG parameters
+      if (image.nag_enable === 'True') {
+        txt2imgParams.nag_enable = true;
+        txt2imgParams.nag_scale = parseFloat(image.nag_scale || "5.0");
+        txt2imgParams.nag_tau = parseFloat(image.nag_tau || "3.5");
+        txt2imgParams.nag_alpha = parseFloat(image.nag_alpha || "0.25");
+        txt2imgParams.nag_sigma_end = parseFloat(image.nag_sigma_end || "3.0");
+      } else {
+        txt2imgParams.nag_enable = false;
+      }
+
       localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
     }
 
@@ -656,6 +667,12 @@ export default function ImageGrid() {
                   {selectedImage.dynamic_threshold_percentile && parseFloat(selectedImage.dynamic_threshold_percentile) > 0 && (
                     <div>
                       <span className="text-gray-400">Dynamic Threshold:</span> {selectedImage.dynamic_threshold_percentile}% (mimic: {selectedImage.dynamic_threshold_mimic_scale || 7.0})
+                    </div>
+                  )}
+                  {/* NAG parameters */}
+                  {selectedImage.nag_enable === 'True' && (
+                    <div>
+                      <span className="text-gray-400">NAG:</span> scale: {selectedImage.nag_scale || 5.0}, tau: {selectedImage.nag_tau || 3.5}, alpha: {selectedImage.nag_alpha || 0.25}, sigma_end: {selectedImage.nag_sigma_end || 3.0}
                     </div>
                   )}
                   {selectedImage.lora_names && (

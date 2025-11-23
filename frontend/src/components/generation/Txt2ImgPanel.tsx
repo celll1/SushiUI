@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
-import Textarea from "../common/Textarea";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
@@ -1196,10 +1195,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 step={0.5}
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
+                disabled={params.nag_enable}
               />
 
               {/* Advanced CFG Settings */}
-              {showAdvancedCFG && (
+              {showAdvancedCFG && !params.nag_enable && (
                 <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">
@@ -1297,74 +1297,65 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </>
                 )}
               </div>
-
-              {/* NAG (Normalized Attention Guidance) */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={params.nag_enable || false}
-                    onChange={(e) => setParams({
-                      ...params,
-                      nag_enable: e.target.checked
-                    })}
-                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                  />
-                  <label className="text-sm font-medium text-gray-300">
-                    NAG (Normalized Attention Guidance)
-                  </label>
-                </div>
-                {params.nag_enable && (
-                  <>
-                    <Slider
-                      label="NAG Scale"
-                      min={1}
-                      max={10}
-                      step={0.5}
-                      value={params.nag_scale || 5.0}
-                      onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
-                    />
-                    <Slider
-                      label="NAG Tau (normalization threshold)"
-                      min={1.0}
-                      max={5.0}
-                      step={0.1}
-                      value={params.nag_tau || 3.5}
-                      onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
-                    />
-                    <Slider
-                      label="NAG Alpha (blending factor)"
-                      min={0.05}
-                      max={1.0}
-                      step={0.05}
-                      value={params.nag_alpha || 0.25}
-                      onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
-                    />
-                    <Slider
-                      label="NAG Sigma End"
-                      min={0.0}
-                      max={5.0}
-                      step={0.1}
-                      value={params.nag_sigma_end || 3.0}
-                      onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
-                    />
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-300">
-                        NAG Negative Prompt (optional, leave empty to use main negative)
-                      </label>
-                      <Textarea
-                        value={params.nag_negative_prompt || ""}
-                        onChange={(e) => setParams({ ...params, nag_negative_prompt: e.target.value })}
-                        rows={2}
-                        placeholder="Separate negative prompt for NAG..."
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
               </>
               )}
             </div>
+
+            {/* NAG (Normalized Attention Guidance) */}
+            {showAdvancedCFG && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={params.nag_enable || false}
+                  onChange={(e) => setParams({
+                    ...params,
+                    nag_enable: e.target.checked
+                  })}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                />
+                <label className="text-sm font-medium text-gray-300">
+                  NAG (Normalized Attention Guidance)
+                </label>
+              </div>
+              {params.nag_enable && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Slider
+                    label="NAG Scale"
+                    min={1}
+                    max={10}
+                    step={0.5}
+                    value={params.nag_scale || 5.0}
+                    onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Tau (normalization threshold)"
+                    min={1.0}
+                    max={5.0}
+                    step={0.1}
+                    value={params.nag_tau || 3.5}
+                    onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Alpha (blending factor)"
+                    min={0.05}
+                    max={1.0}
+                    step={0.05}
+                    value={params.nag_alpha || 0.25}
+                    onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Sigma End"
+                    min={0.0}
+                    max={5.0}
+                    step={0.1}
+                    value={params.nag_sigma_end || 3.0}
+                    onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
+                  />
+                </div>
+              )}
+            </div>
+            )}
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider

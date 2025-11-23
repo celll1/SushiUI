@@ -73,6 +73,15 @@ def save_image_with_metadata(
         metadata.add_text("dynamic_threshold_percentile", str(dynamic_threshold_percentile))
         metadata.add_text("dynamic_threshold_mimic_scale", str(params.get("dynamic_threshold_mimic_scale", 7.0)))
 
+    # Add NAG (Normalized Attention Guidance) parameters
+    nag_enable = params.get("nag_enable", False)
+    if nag_enable:
+        metadata.add_text("nag_enable", str(nag_enable))
+        metadata.add_text("nag_scale", str(params.get("nag_scale", 5.0)))
+        metadata.add_text("nag_tau", str(params.get("nag_tau", 3.5)))
+        metadata.add_text("nag_alpha", str(params.get("nag_alpha", 0.25)))
+        metadata.add_text("nag_sigma_end", str(params.get("nag_sigma_end", 3.0)))
+
     # Add generation-type specific parameters
     if generation_type in ("img2img", "inpaint"):
         if "denoising_strength" in params:

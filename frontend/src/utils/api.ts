@@ -221,6 +221,12 @@ export interface GeneratedImage {
   cfg_rescale_snr_alpha?: string;
   dynamic_threshold_percentile?: string;
   dynamic_threshold_mimic_scale?: string;
+  // NAG parameters
+  nag_enable?: string;
+  nag_scale?: string;
+  nag_tau?: string;
+  nag_alpha?: string;
+  nag_sigma_end?: string;
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {

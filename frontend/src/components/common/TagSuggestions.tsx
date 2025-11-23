@@ -115,7 +115,7 @@ export default function TagSuggestions({
 
         return (
           <div
-            key={`${suggestion.category}-${suggestion.tag}`}
+            key={`${suggestion.category}-${suggestion.tag}-${suggestion.alias || 'main'}-${index}`}
             className={`cursor-pointer transition-colors ${
               isMobile ? 'px-2 py-1.5' : 'px-3 py-2'
             } ${

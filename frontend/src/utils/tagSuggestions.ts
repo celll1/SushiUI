@@ -301,8 +301,11 @@ export async function searchTags(
           }
         }
 
-        // Only add if not already in results (to avoid duplicates)
-        if (!results.find(r => r.tag === data.originalTag && r.alias === data.displayName)) {
+        // Only add if not already in results from category search (category results take priority)
+        // Check if this tag already exists without an alias (i.e., from category search)
+        const alreadyInCategoryResults = results.find(r => r.tag === data.originalTag && !r.alias);
+
+        if (!alreadyInCategoryResults) {
           results.push({
             tag: data.originalTag,
             count: count,
@@ -494,12 +497,12 @@ export function replaceCurrentTag(
   const needsSpaceBefore = trimmedBefore.length > 0 && !trimmedBefore.endsWith(",") && !trimmedBefore.endsWith("\n");
   const prefix = needsSpaceBefore ? trimmedBefore + ", " : trimmedBefore + (trimmedBefore.length > 0 && trimmedBefore.endsWith(",") ? " " : "");
 
-  // Add comma after tag if there's content after (not at end of string)
+  // Always add comma after tag for consistency (even at end of string)
   const needsCommaAfter = trimmedAfter.length > 0 && !trimmedAfter.startsWith(",") && !trimmedAfter.startsWith("\n");
-  const suffix = needsCommaAfter ? ", " + trimmedAfter : trimmedAfter;
+  const suffix = needsCommaAfter ? ", " + trimmedAfter : (trimmedAfter.length === 0 ? ", " : trimmedAfter);
 
   const newText = prefix + formattedTag + suffix;
-  const newCursorPos = prefix.length + formattedTag.length + (needsCommaAfter ? 2 : 0);
+  const newCursorPos = prefix.length + formattedTag.length + 2; // Always position after ", "
 
   return {
     text: newText,

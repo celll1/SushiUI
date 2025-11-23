@@ -115,6 +115,10 @@ class NAGAttnProcessor:
             hidden_states_negative = attn.batch_to_head_dim(hidden_states_negative)
 
             # Apply NAG
+            # Debug: Log NAG parameters being used
+            if not hasattr(self, '_nag_logged'):
+                print(f"[NAG Processor] Applying NAG with scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}")
+                self._nag_logged = True
             hidden_states = nag(
                 hidden_states_positive,
                 hidden_states_negative,
@@ -240,6 +244,10 @@ class NAGAttnProcessor2_0:
             hidden_states_negative = hidden_states_negative.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
 
             # Apply NAG
+            # Debug: Log NAG parameters being used
+            if not hasattr(self, '_nag_logged'):
+                print(f"[NAG Processor] Applying NAG with scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}")
+                self._nag_logged = True
             hidden_states = nag(
                 hidden_states_positive,
                 hidden_states_negative,
@@ -299,6 +307,7 @@ def set_nag_processors(
     processor_cls = NAGAttnProcessor2_0 if use_torch2 and hasattr(F, "scaled_dot_product_attention") else NAGAttnProcessor
 
     # Iterate through all attention layers
+    nag_processor_count = 0
     for name, module in unet.named_modules():
         if isinstance(module, Attention):
             # Only set NAG processor for cross-attention layers
@@ -316,6 +325,8 @@ def set_nag_processors(
                             nag_alpha=nag_alpha,
                         )
                     )
+                    nag_processor_count += 1
+    print(f"[NAG] Set {nag_processor_count} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
 
 
 def restore_original_processors(unet):

@@ -38,6 +38,42 @@ export default function TagSuggestions({
   position,
 }: TagSuggestionsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [adjustedPosition, setAdjustedPosition] = useState(position);
+
+  // Detect mobile
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Adjust position to prevent overflow
+  useEffect(() => {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const suggestionsWidth = isMobile ? Math.min(viewportWidth - 32, 300) : 500;
+    const suggestionsHeight = 256; // max-h-64 = 16rem = 256px
+
+    let newLeft = position.left;
+    let newTop = position.top;
+
+    // Prevent horizontal overflow
+    if (newLeft + suggestionsWidth > viewportWidth - 16) {
+      newLeft = Math.max(16, viewportWidth - suggestionsWidth - 16);
+    }
+
+    // Prevent vertical overflow
+    if (newTop + suggestionsHeight > viewportHeight - 16) {
+      // Show above cursor instead
+      newTop = Math.max(16, position.top - suggestionsHeight - 10);
+    }
+
+    setAdjustedPosition({ top: newTop, left: newLeft });
+  }, [position, isMobile]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -56,12 +92,15 @@ export default function TagSuggestions({
   return (
     <div
       ref={containerRef}
-      className="fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto"
+      className={`fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto ${
+        isMobile ? 'text-sm' : ''
+      }`}
       style={{
-        top: position.top + 'px',
-        left: position.left + 'px',
-        minWidth: "300px",
-        maxWidth: "500px",
+        top: adjustedPosition.top + 'px',
+        left: adjustedPosition.left + 'px',
+        minWidth: isMobile ? "auto" : "300px",
+        maxWidth: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "500px",
+        width: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "auto",
       }}
     >
       {suggestions.map((suggestion, index) => {
@@ -76,7 +115,9 @@ export default function TagSuggestions({
         return (
           <div
             key={`${suggestion.category}-${suggestion.tag}`}
-            className={`px-3 py-2 cursor-pointer transition-colors ${
+            className={`cursor-pointer transition-colors ${
+              isMobile ? 'px-2 py-1.5' : 'px-3 py-2'
+            } ${
               index === selectedIndex
                 ? "bg-blue-600 text-white"
                 : "hover:bg-gray-700 text-gray-100"
@@ -90,14 +131,22 @@ export default function TagSuggestions({
             }}
           >
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-medium truncate">{suggestion.tag.replace(/_/g, " ")}</span>
+              <span
+                className={`font-medium truncate ${
+                  index === selectedIndex ? '' : categoryColor
+                }`}
+              >
+                {suggestion.tag.replace(/_/g, " ")}
+              </span>
               <span className={`text-xs flex-shrink-0 ${index === selectedIndex ? 'text-blue-200' : 'text-gray-400'}`}>
                 {isSpecialTag ? suggestion.category : suggestion.count.toLocaleString()}
               </span>
             </div>
-            <div className={`text-xs mt-0.5 font-semibold ${index === selectedIndex ? 'text-blue-200' : categoryColor}`}>
-              {displayCategory}
-            </div>
+            {!isMobile && (
+              <div className={`text-xs mt-0.5 font-semibold ${index === selectedIndex ? 'text-blue-200' : categoryColor}`}>
+                {displayCategory}
+              </div>
+            )}
           </div>
         );
       })}

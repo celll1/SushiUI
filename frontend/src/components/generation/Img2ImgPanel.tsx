@@ -996,9 +996,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         throw new Error("No input image available for img2img generation");
       }
 
-      // Add developer_mode flag and reset advanced CFG params if disabled or NAG enabled
+      // Add developer_mode flag and reset advanced CFG params if disabled
       let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-      if (!showAdvancedCFG || paramsWithDevMode.nag_enable) {
+      if (!showAdvancedCFG) {
         paramsWithDevMode = {
           ...paramsWithDevMode,
           cfg_schedule_type: "constant",

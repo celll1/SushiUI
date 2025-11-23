@@ -1179,10 +1179,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         loras: nextItem.params.loras,
         controlnets: nextItem.params.controlnets,
         developer_mode: developerMode,
-        // Reset advanced CFG params if disabled or NAG enabled
-        cfg_schedule_type: (!showAdvancedCFG || nextItem.params.nag_enable) ? "constant" : nextItem.params.cfg_schedule_type,
-        cfg_rescale_snr_alpha: (!showAdvancedCFG || nextItem.params.nag_enable) ? 0.0 : nextItem.params.cfg_rescale_snr_alpha,
-        dynamic_threshold_percentile: (!showAdvancedCFG || nextItem.params.nag_enable) ? 0.0 : nextItem.params.dynamic_threshold_percentile,
+        // Reset advanced CFG params if disabled
+        cfg_schedule_type: !showAdvancedCFG ? "constant" : nextItem.params.cfg_schedule_type,
+        cfg_rescale_snr_alpha: !showAdvancedCFG ? 0.0 : nextItem.params.cfg_rescale_snr_alpha,
+        dynamic_threshold_percentile: !showAdvancedCFG ? 0.0 : nextItem.params.dynamic_threshold_percentile,
         // NAG params
         nag_enable: nextItem.params.nag_enable,
         nag_scale: nextItem.params.nag_scale,

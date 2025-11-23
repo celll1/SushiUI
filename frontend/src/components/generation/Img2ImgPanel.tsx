@@ -46,6 +46,21 @@ interface Img2ImgParams {
   max_prompt_chunks?: number;
   loras?: LoRAConfig[];
   controlnets?: ControlNetConfig[];
+  // Advanced CFG parameters
+  cfg_schedule_type?: string;
+  cfg_schedule_min?: number;
+  cfg_schedule_max?: number;
+  cfg_schedule_power?: number;
+  cfg_rescale_snr_alpha?: number;
+  dynamic_threshold_percentile?: number;
+  dynamic_threshold_mimic_scale?: number;
+  // NAG parameters
+  nag_enable?: boolean;
+  nag_scale?: number;
+  nag_tau?: number;
+  nag_alpha?: number;
+  nag_sigma_end?: number;
+  nag_negative_prompt?: string;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -74,6 +89,12 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   cfg_rescale_snr_alpha: 0.0,
   dynamic_threshold_percentile: 0.0,
   dynamic_threshold_mimic_scale: 7.0,
+  nag_enable: false,
+  nag_scale: 5.0,
+  nag_tau: 3.5,
+  nag_alpha: 0.25,
+  nag_sigma_end: 3.0,
+  nag_negative_prompt: "",
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -968,9 +989,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         throw new Error("No input image available for img2img generation");
       }
 
-      // Add developer_mode flag and reset advanced CFG params if disabled
+      // Add developer_mode flag and reset advanced CFG params if disabled or NAG enabled
       let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-      if (!showAdvancedCFG) {
+      if (!showAdvancedCFG || paramsWithDevMode.nag_enable) {
         paramsWithDevMode = {
           ...paramsWithDevMode,
           cfg_schedule_type: "constant",
@@ -1396,10 +1417,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 step={0.5}
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
+                disabled={params.nag_enable}
               />
 
               {/* Advanced CFG Settings */}
-              {showAdvancedCFG && (
+              {showAdvancedCFG && !params.nag_enable && (
                 <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">
@@ -1500,6 +1522,62 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </>
               )}
             </div>
+
+            {/* NAG (Normalized Attention Guidance) */}
+            {showAdvancedCFG && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={params.nag_enable || false}
+                  onChange={(e) => setParams({
+                    ...params,
+                    nag_enable: e.target.checked
+                  })}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                />
+                <label className="text-sm font-medium text-gray-300">
+                  NAG (Normalized Attention Guidance)
+                </label>
+              </div>
+              {params.nag_enable && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Slider
+                    label="NAG Scale"
+                    min={1}
+                    max={10}
+                    step={0.5}
+                    value={params.nag_scale || 5.0}
+                    onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Tau (normalization threshold)"
+                    min={1.0}
+                    max={5.0}
+                    step={0.1}
+                    value={params.nag_tau || 3.5}
+                    onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Alpha (blending factor)"
+                    min={0.05}
+                    max={1.0}
+                    step={0.05}
+                    value={params.nag_alpha || 0.25}
+                    onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="NAG Sigma End"
+                    min={0.0}
+                    max={5.0}
+                    step={0.1}
+                    value={params.nag_sigma_end || 3.0}
+                    onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
+                  />
+                </div>
+              )}
+            </div>
+            )}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-sm font-medium text-gray-300">

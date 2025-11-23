@@ -283,6 +283,12 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
   formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
   formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
+  formData.append("nag_enable", String(paramsWithImages.nag_enable ?? false));
+  formData.append("nag_scale", String(paramsWithImages.nag_scale ?? 5.0));
+  formData.append("nag_tau", String(paramsWithImages.nag_tau ?? 3.5));
+  formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
+  formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
+  formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -348,6 +354,12 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
   formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
   formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
+  formData.append("nag_enable", String(paramsWithImages.nag_enable ?? false));
+  formData.append("nag_scale", String(paramsWithImages.nag_scale ?? 5.0));
+  formData.append("nag_tau", String(paramsWithImages.nag_tau ?? 3.5));
+  formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
+  formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
+  formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

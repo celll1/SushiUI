@@ -150,7 +150,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       return;
     }
 
-    // Debounce search with 300ms delay
+    // Debounce search with 150ms delay (optimized with indexed search)
     searchTimeoutRef.current = setTimeout(async () => {
       console.log('[TagSuggestions] Searching for:', currentTag);
       const results = await searchTags(currentTag, 20);
@@ -187,7 +187,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
           }
         }
       }
-    }, 300); // Increased delay to 300ms
+    }, 150); // Optimized delay with indexed search
   };
 
   // Track external changes to value (e.g., from "send to", initial load, etc.)

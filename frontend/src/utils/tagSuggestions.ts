@@ -11,6 +11,7 @@ interface TagCategory {
   name: string;
   tags: TagData;
   loaded: boolean;
+  index?: Map<string, Array<{ tag: string; count: number }>>;
 }
 
 const categories: Record<string, TagCategory> = {
@@ -43,6 +44,29 @@ export function formatTagForDisplay(tag: string): string {
 }
 
 /**
+ * Build index for fast prefix lookup
+ * Groups tags by their first 2 normalized characters
+ */
+function buildIndex(tags: TagData, categoryName: string): Map<string, Array<{ tag: string; count: number }>> {
+  const index = new Map<string, Array<{ tag: string; count: number }>>();
+
+  for (const [tag, count] of Object.entries(tags)) {
+    const normalized = normalizeTag(tag);
+    // Use first 2 characters as index key (or 1 if tag is very short)
+    const prefix = normalized.substring(0, Math.min(2, normalized.length));
+
+    if (!index.has(prefix)) {
+      index.set(prefix, []);
+    }
+
+    index.get(prefix)!.push({ tag, count });
+  }
+
+  console.log(`[TagSuggestions] Built index for ${categoryName}: ${index.size} prefix groups`);
+  return index;
+}
+
+/**
  * Load tags from a specific category
  */
 async function loadCategory(category: keyof typeof categories): Promise<void> {
@@ -56,6 +80,7 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
     if (response.ok) {
       const data: TagData = await response.json();
       categories[category].tags = data;
+      categories[category].index = buildIndex(data, category);
       categories[category].loaded = true;
       console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags for ${category}`);
     } else {
@@ -93,7 +118,7 @@ const SPECIAL_TAGS = {
 };
 
 /**
- * Search for tags matching the input
+ * Search for tags matching the input (optimized with indexing)
  * @param input - User input (can be in any format: aaaa_bbbb_(c, aaaa bbbb \(c, etc.)
  * @param limit - Maximum number of results
  * @returns Array of matching tags with their counts, sorted by count (descending)
@@ -115,7 +140,7 @@ export async function searchTags(
   await loadAllTags();
 
   const normalizedInput = normalizeTag(input);
-  console.log(`[TagSuggestions] Searching with normalized input: "${normalizedInput}", min count: ${minCount}`);
+  const searchStartTime = performance.now();
   const results: Array<{ tag: string; count: number; category: string }> = [];
 
   // Search special tags first
@@ -131,14 +156,21 @@ export async function searchTags(
     }
   }
 
-  // Search in all categories
+  // Use index for fast lookup (first 2 characters)
+  const searchPrefix = normalizedInput.substring(0, Math.min(2, normalizedInput.length));
+  let totalScanned = 0;
+
+  // Search in all categories using index
   for (const [categoryKey, category] of Object.entries(categories)) {
-    if (!category.loaded) {
-      console.log(`[TagSuggestions] Category ${categoryKey} not loaded, skipping`);
+    if (!category.loaded || !category.index) {
       continue;
     }
 
-    for (const [tag, count] of Object.entries(category.tags)) {
+    // Get all tags that start with the same 2-character prefix
+    const candidates = category.index.get(searchPrefix) || [];
+    totalScanned += candidates.length;
+
+    for (const { tag, count } of candidates) {
       // Skip tags below minimum count (except count 0 which are deprecated)
       if (count < minCount && count !== 0) {
         continue;
@@ -162,7 +194,8 @@ export async function searchTags(
     }
   }
 
-  console.log(`[TagSuggestions] Found ${results.length} matches (min count: ${minCount})`);
+  const searchTime = (performance.now() - searchStartTime).toFixed(2);
+  console.log(`[TagSuggestions] Found ${results.length} matches in ${searchTime}ms (scanned ${totalScanned} tags, min count: ${minCount})`);
 
   // Sort: special tags first, then by count (descending)
   const sorted = results.sort((a, b) => {

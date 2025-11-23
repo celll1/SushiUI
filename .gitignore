@@ -34,6 +34,7 @@ tagother/
 *.swp
 *.swo
 *~
+SageAttention/
 
 # フロントエンド
 node_modules/

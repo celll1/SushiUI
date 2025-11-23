@@ -312,6 +312,17 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     onChange(e);
     const cursorPos = e.target.selectionStart;
+
+    // Get current tag to check if it changed
+    const currentTag = getCurrentTag(e.target.value, cursorPos);
+    const previousTag = suggestions.length > 0 ? getCurrentTag(value, cursorPos) : '';
+
+    // If tag changed, clear suggestions immediately to prevent showing stale results
+    if (currentTag !== previousTag) {
+      setSuggestions([]);
+      setSelectedIndex(-1);
+    }
+
     updateSuggestions(e.target.value, cursorPos);
   };
 

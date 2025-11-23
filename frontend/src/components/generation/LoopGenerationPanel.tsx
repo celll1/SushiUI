@@ -551,9 +551,9 @@ export default function LoopGenerationPanel({
 
                       {/* Advanced CFG Settings for Loop Step */}
                       {showAdvancedCFG && !step.nag_enable && (
-                          <>
-                            {/* Dynamic CFG Scheduling */}
-                            <div className="space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Dynamic CFG Scheduling */}
+                          <div className="space-y-3">
                               <label className="block text-sm font-medium text-gray-300">
                                 Dynamic CFG Schedule
                               </label>
@@ -647,8 +647,8 @@ export default function LoopGenerationPanel({
                                 </>
                               )}
                             </div>
-                          </>
-                        )}
+                        </div>
+                      )}
 
                       {/* NAG (Normalized Attention Guidance) */}
                       {showAdvancedCFG && (

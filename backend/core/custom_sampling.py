@@ -419,8 +419,9 @@ def custom_sampling_loop(
 
         # Expand latents based on whether NAG is active or using normal CFG
         if apply_nag_this_step:
-            # NAG mode: duplicate latents for [positive, nag_negative]
-            latent_model_input = torch.cat([latents] * 2)
+            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
+            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
+            latent_model_input = latents
         else:
             # Normal CFG mode: duplicate for [negative, positive]
             latent_model_input = torch.cat([latents] * 2)
@@ -612,10 +613,8 @@ def custom_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred_text has shape [2, ...] where first half is the guided output
-            # We only need the first batch for scheduler.step()
-            batch_size = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size]
+            # noise_pred is already the guided output with correct shape [1, ...]
+            noise_pred = noise_pred_text
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -887,8 +886,9 @@ def custom_img2img_sampling_loop(
 
         # Expand latents based on whether NAG is active or using normal CFG
         if apply_nag_this_step:
-            # NAG mode: duplicate latents for [positive, nag_negative]
-            latent_model_input = torch.cat([latents] * 2)
+            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
+            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
+            latent_model_input = latents
         else:
             # Normal CFG mode: duplicate for [negative, positive]
             latent_model_input = torch.cat([latents] * 2)
@@ -1069,10 +1069,8 @@ def custom_img2img_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred_text has shape [2, ...] where first half is the guided output
-            # We only need the first batch for scheduler.step()
-            batch_size = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size]
+            # noise_pred is already the guided output with correct shape [1, ...]
+            noise_pred = noise_pred_text
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -1380,8 +1378,9 @@ def custom_inpaint_sampling_loop(
 
         # Expand latents based on whether NAG is active or using normal CFG
         if apply_nag_this_step:
-            # NAG mode: duplicate latents for [positive, nag_negative]
-            latent_model_input = torch.cat([latents] * 2)
+            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
+            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
+            latent_model_input = latents
         else:
             # Normal CFG mode: duplicate for [negative, positive]
             latent_model_input = torch.cat([latents] * 2)
@@ -1560,10 +1559,8 @@ def custom_inpaint_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred_text has shape [2, ...] where first half is the guided output
-            # We only need the first batch for scheduler.step()
-            batch_size = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size]
+            # noise_pred is already the guided output with correct shape [1, ...]
+            noise_pred = noise_pred_text
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)

@@ -1723,7 +1723,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 )}
               </div>
 
-              {/* Dynamic Thresholding (Imagen) */}
+              {/* Dynamic Thresholding */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <input
@@ -1736,7 +1736,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
                   />
                   <label className="text-sm font-medium text-gray-300">
-                    Dynamic Thresholding (Imagen)
+                    Dynamic Thresholding
                   </label>
                 </div>
                 {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (

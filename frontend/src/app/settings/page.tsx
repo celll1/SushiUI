@@ -639,7 +639,7 @@ export default function SettingsPage() {
                       Show Advanced CFG Settings
                     </label>
                     <p className="text-xs text-gray-500 mt-1">
-                      Show advanced CFG (Classifier-Free Guidance) settings in generation panels. Includes Dynamic CFG Schedule (sigma-based, SNR-based), Dynamic Thresholding (Imagen), and related parameters. When disabled, all advanced CFG features are turned off.
+                      Show advanced CFG (Classifier-Free Guidance) settings in generation panels. Includes Dynamic CFG Schedule (sigma-based, SNR-based), Dynamic Thresholding, and related parameters. When disabled, all advanced CFG features are turned off.
                     </p>
                   </div>
                 </div>

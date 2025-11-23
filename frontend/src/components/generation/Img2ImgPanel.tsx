@@ -907,6 +907,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
         stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
         stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
+        // Use step's NAG or defaults
+        stepParams.nag_enable = step.nag_enable ?? false;
+        stepParams.nag_scale = step.nag_scale ?? 5.0;
+        stepParams.nag_tau = step.nag_tau ?? 3.5;
+        stepParams.nag_alpha = step.nag_alpha ?? 0.25;
+        stepParams.nag_sigma_end = step.nag_sigma_end ?? 3.0;
+        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? "";
       }
 
       // Apply LoRA inheritance

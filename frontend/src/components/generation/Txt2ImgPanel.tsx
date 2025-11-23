@@ -692,6 +692,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
         stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
         stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
+        // Use step's NAG or defaults
+        stepParams.nag_enable = step.nag_enable ?? false;
+        stepParams.nag_scale = step.nag_scale ?? 5.0;
+        stepParams.nag_tau = step.nag_tau ?? 3.5;
+        stepParams.nag_alpha = step.nag_alpha ?? 0.25;
+        stepParams.nag_sigma_end = step.nag_sigma_end ?? 3.0;
+        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? "";
       }
 
       // Apply LoRA inheritance
@@ -782,6 +789,21 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
         stepParams.seed = step.seed ?? -1;
         stepParams.ancestral_seed = step.ancestralSeed ?? -1;
+        // Use step's Advanced CFG or defaults
+        stepParams.cfg_schedule_type = step.cfg_schedule_type || "constant";
+        stepParams.cfg_schedule_min = step.cfg_schedule_min ?? 1.0;
+        stepParams.cfg_schedule_max = step.cfg_schedule_max;
+        stepParams.cfg_schedule_power = step.cfg_schedule_power ?? 2.0;
+        stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
+        stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
+        stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
+        // Use step's NAG or defaults
+        stepParams.nag_enable = step.nag_enable ?? false;
+        stepParams.nag_scale = step.nag_scale ?? 5.0;
+        stepParams.nag_tau = step.nag_tau ?? 3.5;
+        stepParams.nag_alpha = step.nag_alpha ?? 0.25;
+        stepParams.nag_sigma_end = step.nag_sigma_end ?? 3.0;
+        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? "";
       }
 
       stepParams.loras = mainParams.loras || [];

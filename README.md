@@ -9,7 +9,7 @@ Stable Diffusion 1.5/XL対応の画像生成Webアプリケーション
 - **Inpainting**: マスク領域の再生成
 - **Loop Generation**: 同一パラメータで連続生成、ステップ範囲指定可能
 - **画像ビューワー**: 生成画像の閲覧とメタデータ検索
-- **Advanced CFG**: CFG Scheduling、SNR-Based Adaptive CFG、Dynamic Thresholding、Rescaled CFG
+- **Advanced CFG**: CFG Scheduling、SNR-Based Adaptive CFG、Dynamic Thresholding
 - **高度な機能**: プロンプト編集、マルチLoRA（ステップ範囲指定）、マルチControlNet
 
 ## 技術スタック
@@ -233,11 +233,6 @@ Signal-to-Noise Ratio に基づいてCFGを自動調整:
 - `dynamic_threshold_mimic_scale`: クランプ値（1～30、推奨 5～7）
 - 高CFG使用時のアーティファクト、色飽和を軽減
 
-##### 4. Rescaled CFG
-CFG適用後の潜在変数を元のスケールに再調整:
-- 高CFG使用時の明度・コントラストの過剰変化を抑制
-- Dynamic Thresholding と併用可能
-
 #### プロンプト編集
 プロンプトに `[prompt1:prompt2:0.5]` 形式で記述することで、生成途中でプロンプトを切り替えられます。
 
@@ -323,7 +318,6 @@ CFG適用後の潜在変数を元のスケールに再調整:
   - [x] Cosine
 - [x] SNR-Based Adaptive CFG
 - [x] Dynamic Thresholding (percentile + mimic scale)
-- [x] Rescaled CFG
 - [x] Developer Mode（CFGメトリクス可視化）
 
 ### モデル・拡張機能
@@ -368,7 +362,7 @@ Diffusersパイプラインをベースにしたカスタム実装により、�
 - プロンプト編集（ステップベース切り替え）
 - LoRAステップ範囲指定（動的ロード/アンロード）
 - ControlNetステップ範囲指定
-- Advanced CFG Features（Scheduling, SNR-based, Dynamic Thresholding, Rescaled CFG）
+- Advanced CFG Features（Scheduling, SNR-based, Dynamic Thresholding）
 - Ancestral Seed（確率的サンプラーの再現性）
 
 実装ファイル: [backend/core/custom_sampling.py](backend/core/custom_sampling.py)
@@ -399,9 +393,6 @@ percentile_value = torch.quantile(abs_values, dynamic_threshold_percentile / 100
 clamp_value = max(percentile_value, dynamic_threshold_mimic_scale)
 noise_pred = noise_pred.clamp(-clamp_value, clamp_value)
 ```
-
-#### Rescaled CFG
-CFG適用後の潜在変数を元のスケールに再調整し、明度・コントラストの過剰変化を抑制。
 
 実装ファイル: [backend/core/cfg_utils.py](backend/core/cfg_utils.py)
 

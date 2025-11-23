@@ -217,20 +217,28 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float)
     Returns:
         dict: Original processors for restoration
     """
-    original_processors = {}
+    # Get current processors
+    original_processors = unet.attn_processors.copy()
 
-    for name in unet.attn_processors.keys():
+    # Create new processor dict with NAG processors for attn2
+    new_processors = {}
+    for name, processor in unet.attn_processors.items():
         if "attn2" in name:  # Cross-attention only
-            original_processors[name] = unet.attn_processors[name]
-            unet.attn_processors[name] = NAGAttnProcessor2_0(
+            new_processors[name] = NAGAttnProcessor2_0(
                 nag_scale=nag_scale,
                 nag_tau=nag_tau,
                 nag_alpha=nag_alpha,
             )
+        else:
+            new_processors[name] = processor
+
+    # Set processors using diffusers' method
+    unet.set_attn_processor(new_processors)
 
     # Verify processors were set
     nag_count = sum(1 for proc in unet.attn_processors.values() if isinstance(proc, NAGAttnProcessor2_0))
-    print(f"[NAG] Set {len([n for n in unet.attn_processors.keys() if 'attn2' in n])} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
+    attn2_count = len([n for n in unet.attn_processors.keys() if 'attn2' in n])
+    print(f"[NAG] Set {attn2_count} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
     print(f"[NAG] Verification: {nag_count} NAGAttnProcessor2_0 instances found in unet.attn_processors")
 
     return original_processors
@@ -241,7 +249,7 @@ def restore_original_processors(unet, original_processors: dict):
     if not original_processors:
         return
 
-    for name, processor in original_processors.items():
-        unet.attn_processors[name] = processor
+    # Use diffusers' method to restore
+    unet.set_attn_processor(original_processors)
 
     print("[NAG] Restored original attention processors")

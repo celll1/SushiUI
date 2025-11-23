@@ -7,8 +7,10 @@ Stable Diffusion 1.5/XL対応の画像生成Webアプリケーション
 - **txt2img**: テキストから画像を生成
 - **img2img**: 画像から画像を生成（デノイジング強度調整可能）
 - **Inpainting**: マスク領域の再生成
+- **Loop Generation**: 同一パラメータで連続生成、ステップ範囲指定可能
 - **画像ビューワー**: 生成画像の閲覧とメタデータ検索
-- **高度な機能**: プロンプト編集、LoRA、複数サンプラー対応
+- **Advanced CFG**: CFG Scheduling、SNR-Based Adaptive CFG、Dynamic Thresholding、Rescaled CFG
+- **高度な機能**: プロンプト編集、マルチLoRA（ステップ範囲指定）、マルチControlNet
 
 ## 技術スタック
 
@@ -147,20 +149,39 @@ npm run dev
 ```
 webui_cl/
 ├── backend/
-│   ├── api/              # APIエンドポイント
-│   ├── core/             # コア機能（パイプライン、サンプリングループ）
-│   ├── extensions/       # 拡張機能システム（将来実装予定）
-│   ├── utils/            # ユーティリティ
-│   ├── database/         # データベースモデル、自動マイグレーション
-│   ├── config/           # 設定
-│   ├── main.py           # エントリーポイント
+│   ├── api/
+│   │   └── routes.py            # APIエンドポイント（txt2img, img2img, inpaint）
+│   ├── core/
+│   │   ├── pipeline.py          # Diffusersパイプライン管理
+│   │   ├── custom_sampling.py   # カスタムサンプリングループ
+│   │   ├── lora_manager.py      # LoRA管理（動的ロード）
+│   │   ├── controlnet_manager.py      # ControlNet管理
+│   │   ├── controlnet_preprocessor.py # ControlNetプリプロセッサー
+│   │   └── cfg_utils.py         # Advanced CFG ユーティリティ
+│   ├── database/
+│   │   ├── models.py            # SQLAlchemyモデル（GeneratedImage, UserSettings）
+│   │   └── db.py                # データベース接続・マイグレーション
+│   ├── utils/                   # ユーティリティ
+│   ├── config/                  # 設定
+│   ├── main.py                  # エントリーポイント
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── app/          # Next.js App Router
-│   │   ├── components/   # Reactコンポーネント
-│   │   ├── utils/        # API クライアント
-│   │   └── lib/          # ユーティリティ
+│   │   ├── app/
+│   │   │   ├── page.tsx                # Txt2Img
+│   │   │   ├── img2img/page.tsx        # Img2Img
+│   │   │   ├── inpaint/page.tsx        # Inpaint
+│   │   │   ├── loop-generation/page.tsx # Loop Generation
+│   │   │   ├── gallery/page.tsx        # Gallery
+│   │   │   └── settings/page.tsx       # Settings
+│   │   ├── components/
+│   │   │   ├── generation/             # 生成パネルコンポーネント
+│   │   │   ├── common/                 # 共通コンポーネント
+│   │   │   └── settings/               # 設定コンポーネント
+│   │   ├── utils/
+│   │   │   ├── api.ts                  # API クライアント
+│   │   │   └── sendHelpers.ts          # Send機能ヘルパー
+│   │   └── lib/                        # ユーティリティ
 │   └── package.json
 ├── models/               # Stable Diffusionモデル
 ├── lora/                 # LoRAモデル
@@ -185,6 +206,38 @@ webui_cl/
 
 ### 高度な機能
 
+#### Advanced CFG Features
+
+##### 1. CFG Scheduling (Sigma-based)
+CFGスケールを生成プロセス全体で動的に変化させる機能:
+- **Constant**: 固定CFG（デフォルト）
+- **Linear**: 線形補間（min → max）
+- **Quadratic**: 2次補間（より滑らかな変化、power パラメータで調整）
+- **Cosine**: コサイン補間（序盤と終盤で緩やかに変化）
+
+パラメータ:
+- `cfg_schedule_type`: スケジュールタイプ
+- `cfg_schedule_min`: 最小CFG値（デフォルト: 1.0）
+- `cfg_schedule_max`: 最大CFG値（デフォルト: main CFG scale）
+- `cfg_schedule_power`: Quadraticモード時の累乗値（デフォルト: 2.0）
+
+##### 2. SNR-Based Adaptive CFG
+Signal-to-Noise Ratio に基づいてCFGを自動調整:
+- `cfg_rescale_snr_alpha`: 0.0 = 無効、0.1-0.5 が一般的
+- SNRが高い（クリアな画像）ほどCFGを下げてアーティファクトを抑制
+- SNRが低い（ノイズが多い）ほどCFGを上げてプロンプト従属性を強化
+
+##### 3. Dynamic Thresholding
+生成された潜在変数の値を動的にクランプしてアーティファクトを抑制:
+- `dynamic_threshold_percentile`: 0.0 = 無効、99.5 が一般的
+- `dynamic_threshold_mimic_scale`: クランプ値（1～30、推奨 5～7）
+- 高CFG使用時のアーティファクト、色飽和を軽減
+
+##### 4. Rescaled CFG
+CFG適用後の潜在変数を元のスケールに再調整:
+- 高CFG使用時の明度・コントラストの過剰変化を抑制
+- Dynamic Thresholding と併用可能
+
 #### プロンプト編集
 プロンプトに `[prompt1:prompt2:0.5]` 形式で記述することで、生成途中でプロンプトを切り替えられます。
 
@@ -197,14 +250,24 @@ webui_cl/
 - `[word]` - 0.9倍弱体化
 
 #### LoRA
-- LoRAタブで複数のLoRAを追加可能
+- LoRAタブで最大5つまで同時に追加可能
 - 重み調整（-2.0 〜 2.0）
-- ステップ範囲指定で特定のステップ範囲でのみLoRAを適用
+- ステップ範囲指定（0-1000）で特定のステップ範囲でのみLoRAを適用
+- 動的読み込み: 生成時に必要なLoRAのみロード
 
 #### ControlNet
+- マルチControlNet対応（複数同時適用可能）
 - ControlNetタブで画像をアップロード
-- Conditioning Scale調整
-- ガイダンス範囲指定（開始・終了ステップ）
+- Conditioning Scale調整（0.0 〜 2.0）
+- ガイダンス範囲指定（開始・終了ステップ: 0-1000）
+- プリプロセッサー自動検出（モデル名から推定）
+- LLLiteサポート
+
+#### Loop Generation
+- 同一パラメータで連続生成
+- ステップ範囲指定（Start Step / End Step）
+- Advanced CFG、LoRA、ControlNet をすべてサポート
+- 各画像の生成時間を表示
 
 ## サポート機能
 
@@ -245,23 +308,47 @@ webui_cl/
 - [x] txt2img基本機能
 - [x] img2img機能
 - [x] Inpainting機能
+- [x] Loop Generation（連続生成、ステップ範囲指定）
 - [x] カスタムサンプリングループ
 - [x] プロンプト編集（ステップベース切り替え）
 - [x] プロンプト強調構文
-- [x] WebSocketリアルタイム進捗表示
+- [x] WebSocketリアルタイム進捗表示（Server-Sent Events）
 - [x] TAESDプレビュー
 - [x] 自動データベースマイグレーション
+
+### Advanced CFG Features
+- [x] CFG Scheduling (Sigma-based)
+  - [x] Linear
+  - [x] Quadratic (power パラメータ対応)
+  - [x] Cosine
+- [x] SNR-Based Adaptive CFG
+- [x] Dynamic Thresholding (percentile + mimic scale)
+- [x] Rescaled CFG
+- [x] Developer Mode（CFGメトリクス可視化）
 
 ### モデル・拡張機能
 - [x] LoRA（マルチLoRA、ステップ範囲指定）
 - [x] ControlNet（マルチControlNet対応）
+  - [x] ステップ範囲指定（start_step, end_step）
+  - [x] プリプロセッサー自動検出
+  - [x] LLLiteサポート
+  - [x] Canny, Depth, OpenPose, LineArt 等のプリプロセッサー
 
 ### UI機能
 - [x] 画像ビューワー・ギャラリー
 - [x] メタデータ検索・フィルタリング
-- [x] 生成パラメータ表示
+- [x] 生成パラメータ表示（Advanced CFG含む）
 - [x] プレビュー画像からパラメータ再利用
-- [x] Settings画面（モデルディレクトリ登録）
+- [x] Send機能（ギャラリー → 各パネル）
+- [x] Settings画面
+  - [x] モデルディレクトリ登録
+  - [x] Advanced CFG表示切替
+  - [x] パネル表示切替（LoRA, ControlNet, プリセット）
+  - [x] 送信サイズモード設定（absolute/scale）
+  - [x] Developer Mode切替
+  - [x] localStorage管理
+  - [x] 一時画像クリーンアップ
+  - [x] サーバー再起動機能
 
 ### 高度な機能
 - [x] v-prediction モデル対応（guidance rescale自動適用）
@@ -270,11 +357,53 @@ webui_cl/
 - [x] タグサジェスト機能
 - [x] 複数スケジュールタイプ（Karras, Exponential）
 - [x] 確率的サンプラー向けAncestral Seed
+- [x] 画像ハッシュ（SHA256）
+- [x] 生成画像メタデータ埋め込み（parameters JSON）
+- [x] アスペクト比・固定解像度プリセット
 
 ## 技術的な詳細
 
 ### カスタムサンプリングループ
-Diffusersパイプラインをベースにしたカスタム実装により、プロンプト編集、ControlNet、LoRAステップ範囲などの高度な機能をサポートしています。
+Diffusersパイプラインをベースにしたカスタム実装により、以下の高度な機能をサポート:
+- プロンプト編集（ステップベース切り替え）
+- LoRAステップ範囲指定（動的ロード/アンロード）
+- ControlNetステップ範囲指定
+- Advanced CFG Features（Scheduling, SNR-based, Dynamic Thresholding, Rescaled CFG）
+- Ancestral Seed（確率的サンプラーの再現性）
+
+実装ファイル: [backend/core/custom_sampling.py](backend/core/custom_sampling.py)
+
+### Advanced CFG実装
+
+#### CFG Scheduling
+シグマベースのスケジューリングにより、ノイズレベルに応じてCFGを動的調整:
+- `t = sigma / sigma_max` でタイムステップを正規化（0.0～1.0）
+- Linear: `cfg = min + (max - min) * t`
+- Quadratic: `cfg = min + (max - min) * (t ** power)`
+- Cosine: `cfg = min + (max - min) * ((1 - cos(t * π)) / 2)`
+
+#### SNR-Based Adaptive CFG
+各ステップのSNRを計算し、CFGを自動調整:
+```python
+snr = (sigma_max ** 2) / (sigma ** 2 + 1e-8)
+snr_normalized = snr / (snr + 1.0)  # 0.0～1.0に正規化
+cfg_adjusted = cfg_base * (1.0 - alpha * snr_normalized)
+```
+- SNRが高い（終盤）→ CFGを下げてアーティファクト抑制
+- SNRが低い（序盤）→ CFGを上げてプロンプト従属性強化
+
+#### Dynamic Thresholding
+生成された潜在変数の値をパーセンタイルベースでクランプ:
+```python
+percentile_value = torch.quantile(abs_values, dynamic_threshold_percentile / 100.0)
+clamp_value = max(percentile_value, dynamic_threshold_mimic_scale)
+noise_pred = noise_pred.clamp(-clamp_value, clamp_value)
+```
+
+#### Rescaled CFG
+CFG適用後の潜在変数を元のスケールに再調整し、明度・コントラストの過剰変化を抑制。
+
+実装ファイル: [backend/core/cfg_utils.py](backend/core/cfg_utils.py)
 
 ### v-prediction対応
 - `prediction_type="v_prediction"` の自動検出
@@ -285,13 +414,25 @@ Diffusersパイプラインをベースにしたカスタム実装により、�
 - SQLite + SQLAlchemy
 - 自動マイグレーション（起動時にスキーマ差分を検出・適用）
 - 生成画像メタデータ、パラメータ、モデル情報を保存
+- Advanced CFGパラメータの保存・表示対応
+
+実装ファイル: [backend/database/models.py](backend/database/models.py)
+
+### リアルタイムプレビュー
+- WebSocket（Server-Sent Events）によるストリーミング配信
+- TAESD（Tiny AutoEncoder for Stable Diffusion）による高速デコード
+- 5ステップごとに更新（設定可能）
+- Developer Mode時はCFGメトリクス（SNR, CFG scale）も配信
 
 ## 今後の実装予定
 
-- [ ] バッチ生成
+- [ ] バッチ生成（現状はLoop Generationで代替可能）
 - [ ] 画像編集機能の強化
-- [ ] より高度な検索・フィルタリング
-- [ ] APIドキュメント整備
+- [ ] より高度な検索・フィルタリング（タグベース、日付範囲）
+- [ ] APIドキュメント整備（OpenAPI/Swagger）
+- [ ] Upscaler統合（RealESRGAN, SwinIR等）
+- [ ] その他のプリプロセッサー対応
+- [ ] カスタムスケジューラーの追加
 
 ## 未実装機能
 

@@ -92,9 +92,16 @@ class GenerationParams(BaseModel):
     cfg_schedule_max: Optional[float] = None  # Maximum CFG at start (None = use cfg_scale)
     cfg_schedule_power: float = 2.0  # Power for quadratic schedule
     cfg_rescale_snr_alpha: float = 0.0  # SNR-based adaptive CFG (0.0 = disabled, 0.1-0.5 typical)
-    # Dynamic thresholding (Imagen)
+    # Dynamic thresholding
     dynamic_threshold_percentile: float = 0.0  # 0.0 = disabled, 99.5 = typical
     dynamic_threshold_mimic_scale: float = 1.0  # Clamp value for static threshold
+    # NAG (Normalized Attention Guidance)
+    nag_enable: bool = False  # Enable NAG
+    nag_scale: float = 5.0  # NAG extrapolation scale (3-7 typical)
+    nag_tau: float = 3.5  # NAG normalization threshold (2.5-3.5 typical)
+    nag_alpha: float = 0.25  # NAG blending factor (0.25-0.5 typical)
+    nag_sigma_end: float = 0.0  # Sigma threshold to disable NAG (0.0 = always enabled)
+    nag_negative_prompt: Optional[str] = ""  # Separate negative prompt for NAG (empty = use main negative prompt)
 
 class Txt2ImgRequest(GenerationParams):
     pass

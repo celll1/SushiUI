@@ -245,6 +245,13 @@ def custom_sampling_loop(
     cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
+    nag_enable: bool = False,  # Enable NAG (Normalized Attention Guidance)
+    nag_scale: float = 5.0,  # NAG extrapolation scale (similar to CFG scale, typical: 3-7)
+    nag_tau: float = 3.5,  # NAG normalization threshold (typical: 2.5-3.5)
+    nag_alpha: float = 0.25,  # NAG blending factor (typical: 0.25-0.5)
+    nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG (0.0 = always enabled)
+    nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
+    nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -329,6 +336,26 @@ def custom_sampling_loop(
         if not isinstance(control_guidance_end, list):
             control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
+    # Setup NAG (Normalized Attention Guidance) if enabled
+    nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    if nag_active:
+        from core.nag_processor import set_nag_processors, restore_original_processors
+        print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
+
+        # Set NAG attention processors on all cross-attention layers
+        set_nag_processors(
+            unet,
+            nag_scale=nag_scale,
+            nag_tau=nag_tau,
+            nag_alpha=nag_alpha,
+            use_torch2=True,
+        )
+
+        # Ensure NAG negative embeds are on correct device and dtype
+        nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
+        if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
+
     # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
@@ -382,15 +409,39 @@ def custom_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {i}: Updated prompt embeddings")
 
-        # Expand latents for classifier-free guidance
-        latent_model_input = torch.cat([latents] * 2)
+        # Check if NAG is active for this step (needed to determine batch size)
+        from core.nag import check_nag_activation, prepare_nag_context
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > i:
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
+
+        # Expand latents based on whether NAG is active or using normal CFG
+        if apply_nag_this_step:
+            # NAG mode: duplicate latents for [positive, nag_negative]
+            latent_model_input = torch.cat([latents] * 2)
+        else:
+            # Normal CFG mode: duplicate for [negative, positive]
+            latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+        # Prepare prompt embeddings
+        if apply_nag_this_step:
+            # NAG mode: [positive, nag_negative]
+            prompt_embeds_input = prepare_nag_context(
+                current_prompt_embeds,  # positive only
+                nag_negative_prompt_embeds,
+                apply_nag=True
+            )
+        else:
+            # Normal CFG mode: [negative, positive]
+            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
-            # Create add_time_ids: [original_height, original_width, crop_top, crop_left, target_height, target_width]
             original_size = (height, width)
             crops_coords_top_left = (0, 0)
             target_size = (height, width)
@@ -398,22 +449,31 @@ def custom_sampling_loop(
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
-            # Duplicate for CFG (negative + positive)
+            # Duplicate for batch size (2 for both CFG and NAG modes)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            # Concatenate pooled embeddings for CFG (negative first, then positive)
-            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            # Prepare pooled embeddings
+            if apply_nag_this_step:
+                # NAG mode: [positive, nag_negative]
+                if nag_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = prepare_nag_context(
+                        current_pooled_prompt_embeds,
+                        nag_negative_pooled_prompt_embeds,
+                        apply_nag=True
+                    )
+                else:
+                    add_text_embeds = None
             else:
-                add_text_embeds = None
+                # Normal CFG mode: [negative, positive]
+                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                else:
+                    add_text_embeds = None
 
             added_cond_kwargs = {
                 "text_embeds": add_text_embeds,
                 "time_ids": add_time_ids
             }
-
-        # Concatenate prompt embeddings for CFG (negative first, then positive)
-        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -506,7 +566,16 @@ def custom_sampling_loop(
             ).sample
 
         # Perform guidance with dynamic CFG
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # Note: When NAG is active, the noise prediction is already guided in attention space
+        # We only have one prediction (guided), not uncond/cond split
+        if apply_nag_this_step:
+            # NAG is active: noise_pred is already guided, no CFG split needed
+            # NAG handles the guidance in attention space
+            noise_pred_text = noise_pred
+            noise_pred_uncond = noise_pred  # Dummy, won't be used for CFG calculation
+        else:
+            # Normal CFG: split into uncond and cond
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
         # Calculate current sigma for sigma-based scheduling
         current_sigma = 0.0
@@ -540,7 +609,13 @@ def custom_sampling_loop(
         if current_snr is not None:
             previous_snr = current_snr
 
-        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
+        if apply_nag_this_step:
+            # NAG already applied guidance, use the predicted noise directly
+            noise_pred = noise_pred_text
+        else:
+            # Normal CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply dynamic thresholding if enabled (prevents CFG saturation)
         if dynamic_threshold_percentile > 0.0:
@@ -630,6 +705,13 @@ def custom_img2img_sampling_loop(
     cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
+    nag_enable: bool = False,  # Enable NAG (Normalized Attention Guidance)
+    nag_scale: float = 5.0,  # NAG extrapolation scale
+    nag_tau: float = 3.5,  # NAG normalization threshold
+    nag_alpha: float = 0.25,  # NAG blending factor
+    nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG
+    nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
+    nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -927,7 +1009,13 @@ def custom_img2img_sampling_loop(
         if current_snr is not None:
             previous_snr = current_snr
 
-        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
+        if apply_nag_this_step:
+            # NAG already applied guidance, use the predicted noise directly
+            noise_pred = noise_pred_text
+        else:
+            # Normal CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply dynamic thresholding if enabled (prevents CFG saturation)
         if dynamic_threshold_percentile > 0.0:
@@ -1019,6 +1107,13 @@ def custom_inpaint_sampling_loop(
     cfg_rescale_snr_alpha: float = 0.0,  # SNR-based adaptive CFG (0.0 = disabled)
     dynamic_threshold_percentile: float = 0.0,  # 0.0 = disabled, 99.5 = typical value
     dynamic_threshold_mimic_scale: float = 1.0,  # Clamp value for static threshold
+    nag_enable: bool = False,  # Enable NAG (Normalized Attention Guidance)
+    nag_scale: float = 5.0,  # NAG extrapolation scale
+    nag_tau: float = 3.5,  # NAG normalization threshold
+    nag_alpha: float = 0.25,  # NAG blending factor
+    nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG
+    nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
+    nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -1346,7 +1441,13 @@ def custom_inpaint_sampling_loop(
         if current_snr is not None:
             previous_snr = current_snr
 
-        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
+        if apply_nag_this_step:
+            # NAG already applied guidance, use the predicted noise directly
+            noise_pred = noise_pred_text
+        else:
+            # Normal CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply dynamic thresholding if enabled (prevents CFG saturation)
         if dynamic_threshold_percentile > 0.0:

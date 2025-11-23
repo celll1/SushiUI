@@ -976,6 +976,24 @@ class DiffusionPipelineManager:
         if negative_pooled_prompt_embeds is not None:
             print(f"Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
 
+        # Encode NAG negative prompt if NAG is enabled
+        nag_negative_prompt_embeds = None
+        nag_negative_pooled_prompt_embeds = None
+        if params.get("nag_enable", False):
+            nag_negative_prompt = params.get("nag_negative_prompt", "")
+            # If NAG negative prompt is empty, use the main negative prompt
+            if not nag_negative_prompt:
+                nag_negative_prompt = params.get("negative_prompt", "")
+
+            print(f"[NAG] Encoding NAG negative prompt: '{nag_negative_prompt[:100]}...'")
+            # Encode NAG negative prompt (positive part is ignored, only need negative)
+            _, nag_negative_prompt_embeds, _, nag_negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
+                "",  # Empty positive prompt
+                nag_negative_prompt,
+                pipeline=self.txt2img_pipeline
+            )
+            print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
+
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
         pipeline_to_use = self.txt2img_pipeline
@@ -1189,6 +1207,13 @@ class DiffusionPipelineManager:
                 cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
                 dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
                 dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=params.get("nag_enable", False),
+                nag_scale=params.get("nag_scale", 5.0),
+                nag_tau=params.get("nag_tau", 3.5),
+                nag_alpha=params.get("nag_alpha", 0.25),
+                nag_sigma_end=params.get("nag_sigma_end", 0.0),
+                nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                 **controlnet_kwargs,
             )
 

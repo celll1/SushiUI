@@ -160,9 +160,16 @@ export interface GenerationParams {
   cfg_schedule_max?: number;
   cfg_schedule_power?: number;
   cfg_rescale_snr_alpha?: number;
-  // Dynamic thresholding (Imagen)
+  // Dynamic thresholding
   dynamic_threshold_percentile?: number;
   dynamic_threshold_mimic_scale?: number;
+  // NAG (Normalized Attention Guidance)
+  nag_enable?: boolean;
+  nag_scale?: number;
+  nag_tau?: number;
+  nag_alpha?: number;
+  nag_sigma_end?: number;
+  nag_negative_prompt?: string;
 }
 
 export interface Img2ImgParams extends GenerationParams {

@@ -1370,7 +1370,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     min={0.0}
                     max={5.0}
                     step={0.1}
-                    value={params.nag_sigma_end || 3.0}
+                    value={params.nag_sigma_end ?? 3.0}
                     onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
                   />
                 </div>

@@ -836,6 +836,21 @@ def custom_img2img_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
+    # Setup NAG (Normalized Attention Guidance) if enabled
+    nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    if nag_active:
+        from core.nag_processor import set_nag_processors
+        print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
+        # Determine if using torch 2.0 attention based on UNet config
+        use_torch2 = hasattr(unet.config, '_use_default_values') or not hasattr(unet, 'set_attn_processor')
+        set_nag_processors(
+            unet,
+            nag_scale=nag_scale,
+            nag_tau=nag_tau,
+            nag_alpha=nag_alpha,
+            use_torch2=use_torch2
+        )
+
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
@@ -863,9 +878,33 @@ def custom_img2img_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {t_start + i}: Updated prompt embeddings")
 
-        # Expand latents for CFG
-        latent_model_input = torch.cat([latents] * 2)
+        # Check current sigma for NAG activation
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
+
+        # Expand latents based on whether NAG is active or using normal CFG
+        if apply_nag_this_step:
+            # NAG mode: duplicate latents for [positive, nag_negative]
+            latent_model_input = torch.cat([latents] * 2)
+        else:
+            # Normal CFG mode: duplicate for [negative, positive]
+            latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+        # Prepare prompt embeddings
+        if apply_nag_this_step:
+            # NAG mode: [positive, nag_negative]
+            prompt_embeds_input = prepare_nag_context(
+                current_prompt_embeds,  # positive only
+                nag_negative_prompt_embeds,
+                apply_nag=True
+            )
+        else:
+            # Normal CFG mode: [negative, positive]
+            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = None
@@ -878,17 +917,31 @@ def custom_img2img_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            # Prepare pooled embeddings
+            if apply_nag_this_step:
+                # NAG mode: [positive, nag_negative]
+                if nag_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = prepare_nag_context(
+                        current_pooled_prompt_embeds,
+                        nag_negative_pooled_prompt_embeds,
+                        apply_nag=True
+                    )
+                else:
+                    add_text_embeds = None
+            else:
+                # Normal CFG mode: [negative, positive]
+                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                else:
+                    add_text_embeds = None
+
+            if add_text_embeds is not None:
                 added_cond_kwargs = {
                     "text_embeds": add_text_embeds,
                     "time_ids": add_time_ids
                 }
             else:
                 print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
-
-        # Concatenate prompt embeddings for CFG
-        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -978,16 +1031,17 @@ def custom_img2img_sampling_loop(
             ).sample
 
         # Perform guidance with dynamic CFG
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-
-        # Calculate current sigma for sigma-based scheduling
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[t_start + i].item())
+        if apply_nag_this_step:
+            # NAG mode: noise_pred contains [positive, nag_negative]
+            noise_pred_text = noise_pred  # Both predictions (will be split later)
+            noise_pred_uncond = None  # Not used in NAG mode
+        else:
+            # Normal CFG mode: split into uncond and cond
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
         # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
         current_snr = None
-        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+        if not apply_nag_this_step and (cfg_rescale_snr_alpha > 0.0 or developer_mode):
             # Calculate SNR from CFG components
             uncond_norm = torch.norm(noise_pred_uncond).item()
             diff = noise_pred_text - noise_pred_uncond
@@ -1279,6 +1333,21 @@ def custom_inpaint_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
+    # Setup NAG (Normalized Attention Guidance) if enabled
+    nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    if nag_active:
+        from core.nag_processor import set_nag_processors
+        print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
+        # Determine if using torch 2.0 attention based on UNet config
+        use_torch2 = hasattr(unet.config, '_use_default_values') or not hasattr(unet, 'set_attn_processor')
+        set_nag_processors(
+            unet,
+            nag_scale=nag_scale,
+            nag_tau=nag_tau,
+            nag_alpha=nag_alpha,
+            use_torch2=use_torch2
+        )
+
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     # Get sigma_max for dynamic CFG scheduling
@@ -1302,7 +1371,20 @@ def custom_inpaint_sampling_loop(
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
 
-        latent_model_input = torch.cat([latents] * 2)
+        # Check current sigma for NAG activation
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
+
+        # Expand latents based on whether NAG is active or using normal CFG
+        if apply_nag_this_step:
+            # NAG mode: duplicate latents for [positive, nag_negative]
+            latent_model_input = torch.cat([latents] * 2)
+        else:
+            # Normal CFG mode: duplicate for [negative, positive]
+            latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Only concatenate mask and masked image for inpaint-specific UNets
@@ -1311,6 +1393,18 @@ def custom_inpaint_sampling_loop(
             # Use original clean image latents, masked to show only non-inpaint regions
             masked_image_latents = image_latents * (1 - mask_latent)
             latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+
+        # Prepare prompt embeddings
+        if apply_nag_this_step:
+            # NAG mode: [positive, nag_negative]
+            prompt_embeds_input = prepare_nag_context(
+                current_prompt_embeds,  # positive only
+                nag_negative_prompt_embeds,
+                apply_nag=True
+            )
+        else:
+            # Normal CFG mode: [negative, positive]
+            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         added_cond_kwargs = None
         if is_sdxl:
@@ -1322,16 +1416,31 @@ def custom_inpaint_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            # Prepare pooled embeddings
+            if apply_nag_this_step:
+                # NAG mode: [positive, nag_negative]
+                if nag_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = prepare_nag_context(
+                        current_pooled_prompt_embeds,
+                        nag_negative_pooled_prompt_embeds,
+                        apply_nag=True
+                    )
+                else:
+                    add_text_embeds = None
+            else:
+                # Normal CFG mode: [negative, positive]
+                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                else:
+                    add_text_embeds = None
+
+            if add_text_embeds is not None:
                 added_cond_kwargs = {
                     "text_embeds": add_text_embeds,
                     "time_ids": add_time_ids
                 }
             else:
                 print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
-
-        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -1413,16 +1522,17 @@ def custom_inpaint_sampling_loop(
             ).sample
 
         # Perform guidance with dynamic CFG
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-
-        # Calculate current sigma for sigma-based scheduling
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and (t_start + i) < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[t_start + i].item())
+        if apply_nag_this_step:
+            # NAG mode: noise_pred contains [positive, nag_negative]
+            noise_pred_text = noise_pred  # Both predictions (will be split later)
+            noise_pred_uncond = None  # Not used in NAG mode
+        else:
+            # Normal CFG mode: split into uncond and cond
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
         # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
         current_snr = None
-        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+        if not apply_nag_this_step and (cfg_rescale_snr_alpha > 0.0 or developer_mode):
             # Calculate SNR from CFG components
             uncond_norm = torch.norm(noise_pred_uncond).item()
             diff = noise_pred_text - noise_pred_uncond

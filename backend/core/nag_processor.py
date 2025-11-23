@@ -73,6 +73,10 @@ class NAGAttnProcessor:
         if encoder_hidden_states is not None:
             context_batch = encoder_hidden_states.shape[0]
             apply_nag = context_batch == 2 * batch_size
+            # Debug: Log context sizes
+            if not hasattr(self, '_context_logged'):
+                print(f"[NAG Processor] Context check: batch_size={batch_size}, context_batch={context_batch}, apply_nag={apply_nag}")
+                self._context_logged = True
         else:
             apply_nag = False
 
@@ -199,6 +203,10 @@ class NAGAttnProcessor2_0:
         if encoder_hidden_states is not None:
             context_batch = encoder_hidden_states.shape[0]
             apply_nag = context_batch == 2 * batch_size
+            # Debug: Log context sizes
+            if not hasattr(self, '_context_logged'):
+                print(f"[NAG Processor2_0] Context check: batch_size={batch_size}, context_batch={context_batch}, apply_nag={apply_nag}")
+                self._context_logged = True
         else:
             apply_nag = False
 

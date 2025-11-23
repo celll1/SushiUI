@@ -23,6 +23,13 @@ interface BaseSendParams {
   cfg_rescale_snr_alpha?: number;
   dynamic_threshold_percentile?: number;
   dynamic_threshold_mimic_scale?: number;
+  // NAG parameters
+  nag_enable?: boolean;
+  nag_scale?: number;
+  nag_tau?: number;
+  nag_alpha?: number;
+  nag_sigma_end?: number;
+  nag_negative_prompt?: string;
 }
 
 /**
@@ -84,6 +91,26 @@ export function sendParametersToPanel(
   }
   if (sourceParams.dynamic_threshold_mimic_scale !== undefined) {
     targetParams.dynamic_threshold_mimic_scale = sourceParams.dynamic_threshold_mimic_scale;
+  }
+
+  // Add NAG parameters
+  if (sourceParams.nag_enable !== undefined) {
+    targetParams.nag_enable = sourceParams.nag_enable;
+  }
+  if (sourceParams.nag_scale !== undefined) {
+    targetParams.nag_scale = sourceParams.nag_scale;
+  }
+  if (sourceParams.nag_tau !== undefined) {
+    targetParams.nag_tau = sourceParams.nag_tau;
+  }
+  if (sourceParams.nag_alpha !== undefined) {
+    targetParams.nag_alpha = sourceParams.nag_alpha;
+  }
+  if (sourceParams.nag_sigma_end !== undefined) {
+    targetParams.nag_sigma_end = sourceParams.nag_sigma_end;
+  }
+  if (sourceParams.nag_negative_prompt !== undefined) {
+    targetParams.nag_negative_prompt = sourceParams.nag_negative_prompt;
   }
 
   if (includeDenoising && sourceParams.denoising_strength !== undefined) {

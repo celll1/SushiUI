@@ -331,6 +331,12 @@ async def generate_img2img(
     cfg_rescale_snr_alpha: float = Form(0.0),
     dynamic_threshold_percentile: float = Form(0.0),
     dynamic_threshold_mimic_scale: float = Form(7.0),
+    nag_enable: bool = Form(False),
+    nag_scale: float = Form(5.0),
+    nag_tau: float = Form(3.5),
+    nag_alpha: float = Form(0.25),
+    nag_sigma_end: float = Form(3.0),
+    nag_negative_prompt: str = Form(""),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -403,6 +409,12 @@ async def generate_img2img(
             "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
             "dynamic_threshold_percentile": dynamic_threshold_percentile,
             "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
+            "nag_enable": nag_enable,
+            "nag_scale": nag_scale,
+            "nag_tau": nag_tau,
+            "nag_alpha": nag_alpha,
+            "nag_sigma_end": nag_sigma_end,
+            "nag_negative_prompt": nag_negative_prompt,
         }
         # Log params without large image objects
         params_for_log = params.copy()
@@ -585,6 +597,12 @@ async def generate_inpaint(
     cfg_rescale_snr_alpha: float = Form(0.0),
     dynamic_threshold_percentile: float = Form(0.0),
     dynamic_threshold_mimic_scale: float = Form(7.0),
+    nag_enable: bool = Form(False),
+    nag_scale: float = Form(5.0),
+    nag_tau: float = Form(3.5),
+    nag_alpha: float = Form(0.25),
+    nag_sigma_end: float = Form(3.0),
+    nag_negative_prompt: str = Form(""),
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -676,6 +694,12 @@ async def generate_inpaint(
             "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
             "dynamic_threshold_percentile": dynamic_threshold_percentile,
             "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
+            "nag_enable": nag_enable,
+            "nag_scale": nag_scale,
+            "nag_tau": nag_tau,
+            "nag_alpha": nag_alpha,
+            "nag_sigma_end": nag_sigma_end,
+            "nag_negative_prompt": nag_negative_prompt,
         }
         # Log params without large image objects
         params_for_log = params.copy()

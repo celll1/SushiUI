@@ -11,6 +11,8 @@ import {
   swapTagWithAdjacent,
   jumpToNextDelimiter,
   jumpToPreviousDelimiter,
+  addToRecentTags,
+  removeFromRecentTags,
 } from "@/utils/tagSuggestions";
 
 interface TagSuggestion {
@@ -486,6 +488,19 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
           e.preventDefault();
           acceptSuggestion(suggestions[selectedIndex].tag);
         }
+      } else if (e.key === "Delete") {
+        // Remove selected tag from recent history
+        if (selectedIndex >= 0) {
+          e.preventDefault();
+          const tagToRemove = suggestions[selectedIndex].tag;
+          removeFromRecentTags(tagToRemove);
+          console.log(`[TagSuggestions] Removed "${tagToRemove}" from recent history`);
+          // Refresh suggestions to reflect the change
+          const textarea = internalTextareaRef.current;
+          if (textarea && textarea.tagName === "TEXTAREA") {
+            updateSuggestions(value, textarea.selectionStart);
+          }
+        }
       } else if (e.key === "Escape") {
         setSuggestions([]);
         setSelectedIndex(-1);
@@ -502,6 +517,9 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     const cursorPos = textarea.selectionStart;
     const result = replaceCurrentTag(value, cursorPos, tag);
+
+    // Add tag to recent history
+    addToRecentTags(tag);
 
     // Create synthetic event for onChange
     const syntheticEvent = {

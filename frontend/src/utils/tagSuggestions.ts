@@ -23,6 +23,52 @@ const categories: Record<string, TagCategory> = {
   model: { name: "Model", tags: {}, loaded: false },
 };
 
+// Recent tag history management
+const RECENT_TAGS_KEY = 'tag_suggestion_recent_tags';
+const MAX_RECENT_TAGS = 100;
+
+/**
+ * Get recent tags from localStorage
+ */
+function getRecentTags(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const stored = localStorage.getItem(RECENT_TAGS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('[TagSuggestions] Failed to load recent tags:', error);
+    return [];
+  }
+}
+
+/**
+ * Add a tag to recent history (called when user confirms a tag)
+ */
+export function addToRecentTags(tag: string): void {
+  if (typeof window === 'undefined') return;
+
+  const recent = getRecentTags();
+  // Remove tag if it already exists
+  const filtered = recent.filter(t => t !== tag);
+  // Add to front
+  filtered.unshift(tag);
+  // Keep only MAX_RECENT_TAGS
+  const trimmed = filtered.slice(0, MAX_RECENT_TAGS);
+
+  localStorage.setItem(RECENT_TAGS_KEY, JSON.stringify(trimmed));
+}
+
+/**
+ * Remove a tag from recent history
+ */
+export function removeFromRecentTags(tag: string): void {
+  if (typeof window === 'undefined') return;
+
+  const recent = getRecentTags();
+  const filtered = recent.filter(t => t !== tag);
+  localStorage.setItem(RECENT_TAGS_KEY, JSON.stringify(filtered));
+}
+
 /**
  * Normalize tag format for comparison
  * Converts both underscore and space formats to a common format
@@ -197,12 +243,27 @@ export async function searchTags(
   const searchTime = (performance.now() - searchStartTime).toFixed(2);
   console.log(`[TagSuggestions] Found ${results.length} matches in ${searchTime}ms (scanned ${totalScanned} tags, min count: ${minCount})`);
 
-  // Sort: special tags first, then by count (descending)
+  // Get recent tags for prioritization
+  const recentTags = getRecentTags();
+  const recentTagsSet = new Set(recentTags);
+
+  // Sort: special tags first, then recent tags, then by count (descending)
   const sorted = results.sort((a, b) => {
     // Special tags (count = -1) come first
     if (a.count === -1 && b.count !== -1) return -1;
     if (a.count !== -1 && b.count === -1) return 1;
     if (a.count === -1 && b.count === -1) return 0;
+
+    // Recent tags come next (maintain their order from history)
+    const aIsRecent = recentTagsSet.has(a.tag);
+    const bIsRecent = recentTagsSet.has(b.tag);
+
+    if (aIsRecent && !bIsRecent) return -1;
+    if (!aIsRecent && bIsRecent) return 1;
+    if (aIsRecent && bIsRecent) {
+      // Both are recent, sort by recency (earlier in array = more recent)
+      return recentTags.indexOf(a.tag) - recentTags.indexOf(b.tag);
+    }
 
     // Otherwise sort by count
     return b.count - a.count;

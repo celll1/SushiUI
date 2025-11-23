@@ -547,9 +547,10 @@ export default function LoopGenerationPanel({
                           max={30}
                           step={0.5}
                         />
+                      </div>
 
-                        {/* Advanced CFG Settings for Loop Step */}
-                        {showAdvancedCFG && !step.nag_enable && (
+                      {/* Advanced CFG Settings for Loop Step */}
+                      {showAdvancedCFG && !step.nag_enable && (
                           <>
                             {/* Dynamic CFG Scheduling */}
                             <div className="space-y-3">
@@ -649,8 +650,8 @@ export default function LoopGenerationPanel({
                           </>
                         )}
 
-                        {/* NAG (Normalized Attention Guidance) */}
-                        {showAdvancedCFG && (
+                      {/* NAG (Normalized Attention Guidance) */}
+                      {showAdvancedCFG && (
                         <div className="space-y-3">
                           <div className="flex items-center gap-2">
                             <input
@@ -700,8 +701,7 @@ export default function LoopGenerationPanel({
                             </div>
                           )}
                         </div>
-                        )}
-                      </div>
+                      )}
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <Select

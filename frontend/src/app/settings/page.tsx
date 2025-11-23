@@ -60,6 +60,9 @@ export default function SettingsPage() {
   // Advanced CFG settings visibility
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
+  // Font size (mobile UI scaling)
+  const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
+
   // Panel visibility settings
   const [txt2imgVisibility, setTxt2imgVisibility] = useState({
     lora: true,
@@ -245,6 +248,16 @@ export default function SettingsPage() {
       const savedDeveloperMode = localStorage.getItem('developer_mode');
       if (savedDeveloperMode === 'true') {
         setDeveloperMode(true);
+      }
+
+      // Load font size setting
+      const savedFontSize = localStorage.getItem('ui_font_size');
+      if (savedFontSize) {
+        const size = parseInt(savedFontSize);
+        if (!isNaN(size) && size >= 50 && size <= 200) {
+          setFontSize(size);
+          document.documentElement.style.setProperty('--ui-font-size', `${size}%`);
+        }
       }
 
       // Load advanced CFG settings visibility
@@ -985,7 +998,41 @@ export default function SettingsPage() {
           </Card>
 
           <Card title="Other Settings">
-            <p className="text-gray-400">Additional settings will be implemented in future updates.</p>
+            {/* Font Size Slider (Mobile UI Scaling) */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium mb-2">
+                UI Font Size (Mobile): {fontSize}%
+              </label>
+              <div className="flex items-center gap-4">
+                <input
+                  type="range"
+                  min="50"
+                  max="200"
+                  step="5"
+                  value={fontSize}
+                  onChange={(e) => {
+                    const newSize = parseInt(e.target.value);
+                    setFontSize(newSize);
+                    localStorage.setItem('ui_font_size', newSize.toString());
+                    document.documentElement.style.setProperty('--ui-font-size', `${newSize}%`);
+                  }}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={() => {
+                    setFontSize(100);
+                    localStorage.setItem('ui_font_size', '100');
+                    document.documentElement.style.setProperty('--ui-font-size', '100%');
+                  }}
+                  variant="secondary"
+                >
+                  Reset
+                </Button>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Adjust the overall font size for mobile devices. This affects all UI elements. Default is 100%.
+              </p>
+            </div>
           </Card>
         </div>
       </main>

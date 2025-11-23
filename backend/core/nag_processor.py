@@ -69,16 +69,17 @@ class NAGAttnProcessor:
         else:
             batch_size, sequence_length, _ = hidden_states.shape
 
-        # Check if NAG is active (context is doubled)
-        if encoder_hidden_states is not None:
-            context_batch = encoder_hidden_states.shape[0]
-            apply_nag = context_batch == 2 * batch_size
-            # Debug: Log context sizes
-            if not hasattr(self, '_context_logged'):
-                print(f"[NAG Processor] Context check: batch_size={batch_size}, context_batch={context_batch}, apply_nag={apply_nag}")
-                self._context_logged = True
-        else:
-            apply_nag = False
+        # Check if NAG is active using the same logic as official implementation
+        # apply_guidance = self.nag_scale > 1 and encoder_hidden_states is not None
+        # if apply_guidance:
+        #     origin_batch_size = batch_size - len(hidden_states)
+        # In NAG mode: encoder_hidden_states has batch_size=2, hidden_states has batch_size=2
+        # origin_batch_size = 2 - 2 = 0 is wrong, we need to check differently
+        apply_nag = self.nag_scale > 1.0 and encoder_hidden_states is not None
+        # Debug: Log NAG check
+        if not hasattr(self, '_nag_check_logged') and encoder_hidden_states is not None:
+            print(f"[NAG Processor] NAG check: nag_scale={self.nag_scale}, apply_nag={apply_nag}, batch_size={batch_size}, context_batch={encoder_hidden_states.shape[0]}")
+            self._nag_check_logged = True
 
         # Prepare query
         query = attn.to_q(hidden_states)
@@ -199,16 +200,12 @@ class NAGAttnProcessor2_0:
         else:
             batch_size, sequence_length, _ = hidden_states.shape
 
-        # Check if NAG is active
-        if encoder_hidden_states is not None:
-            context_batch = encoder_hidden_states.shape[0]
-            apply_nag = context_batch == 2 * batch_size
-            # Debug: Log context sizes
-            if not hasattr(self, '_context_logged'):
-                print(f"[NAG Processor2_0] Context check: batch_size={batch_size}, context_batch={context_batch}, apply_nag={apply_nag}")
-                self._context_logged = True
-        else:
-            apply_nag = False
+        # Check if NAG is active using the same logic as official implementation
+        apply_nag = self.nag_scale > 1.0 and encoder_hidden_states is not None
+        # Debug: Log NAG check
+        if not hasattr(self, '_nag_check_logged') and encoder_hidden_states is not None:
+            print(f"[NAG Processor2_0] NAG check: nag_scale={self.nag_scale}, apply_nag={apply_nag}, batch_size={batch_size}, context_batch={encoder_hidden_states.shape[0]}")
+            self._nag_check_logged = True
 
         query = attn.to_q(hidden_states)
 

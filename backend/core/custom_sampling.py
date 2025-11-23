@@ -417,14 +417,9 @@ def custom_sampling_loop(
 
         apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
 
-        # Expand latents based on whether NAG is active or using normal CFG
-        if apply_nag_this_step:
-            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
-            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
-            latent_model_input = latents
-        else:
-            # Normal CFG mode: duplicate for [negative, positive]
-            latent_model_input = torch.cat([latents] * 2)
+        # Expand latents for both NAG and CFG modes
+        # Both modes need batch_size=2 for UNet skip connections to work
+        latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Prepare prompt embeddings
@@ -613,8 +608,10 @@ def custom_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred is already the guided output with correct shape [1, ...]
-            noise_pred = noise_pred_text
+            # noise_pred has shape [2, ...] where both are the same guided output
+            # We only need one for scheduler.step()
+            batch_size_single = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size_single]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -884,14 +881,9 @@ def custom_img2img_sampling_loop(
 
         apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
 
-        # Expand latents based on whether NAG is active or using normal CFG
-        if apply_nag_this_step:
-            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
-            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
-            latent_model_input = latents
-        else:
-            # Normal CFG mode: duplicate for [negative, positive]
-            latent_model_input = torch.cat([latents] * 2)
+        # Expand latents for both NAG and CFG modes
+        # Both modes need batch_size=2 for UNet skip connections to work
+        latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Prepare prompt embeddings
@@ -1069,8 +1061,10 @@ def custom_img2img_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred is already the guided output with correct shape [1, ...]
-            noise_pred = noise_pred_text
+            # noise_pred has shape [2, ...] where both are the same guided output
+            # We only need one for scheduler.step()
+            batch_size_single = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size_single]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -1376,14 +1370,9 @@ def custom_inpaint_sampling_loop(
 
         apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
 
-        # Expand latents based on whether NAG is active or using normal CFG
-        if apply_nag_this_step:
-            # NAG mode: DON'T duplicate latents (NAG works in attention space only)
-            # The encoder_hidden_states will be [positive, nag_negative] but latents stay single
-            latent_model_input = latents
-        else:
-            # Normal CFG mode: duplicate for [negative, positive]
-            latent_model_input = torch.cat([latents] * 2)
+        # Expand latents for both NAG and CFG modes
+        # Both modes need batch_size=2 for UNet skip connections to work
+        latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Only concatenate mask and masked image for inpaint-specific UNets
@@ -1559,8 +1548,10 @@ def custom_inpaint_sampling_loop(
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
             # NAG already applied guidance in attention space
-            # noise_pred is already the guided output with correct shape [1, ...]
-            noise_pred = noise_pred_text
+            # noise_pred has shape [2, ...] where both are the same guided output
+            # We only need one for scheduler.step()
+            batch_size_single = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size_single]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)

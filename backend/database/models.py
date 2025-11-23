@@ -76,32 +76,35 @@ class GeneratedImage(Base):
             "model_hash": self.model_hash,
         }
 
-        # Extract Advanced CFG parameters from parameters JSON if available
+        # Extract Advanced CFG and NAG parameters from parameters JSON if available
         if self.parameters:
-            if "cfg_schedule_type" in self.parameters:
-                result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]
-            if "cfg_schedule_min" in self.parameters:
-                result["cfg_schedule_min"] = str(self.parameters["cfg_schedule_min"])
-            if "cfg_schedule_max" in self.parameters:
-                result["cfg_schedule_max"] = str(self.parameters["cfg_schedule_max"])
-            if "cfg_schedule_power" in self.parameters:
-                result["cfg_schedule_power"] = str(self.parameters["cfg_schedule_power"])
-            if "cfg_rescale_snr_alpha" in self.parameters:
-                result["cfg_rescale_snr_alpha"] = str(self.parameters["cfg_rescale_snr_alpha"])
-            if "dynamic_threshold_percentile" in self.parameters:
-                result["dynamic_threshold_percentile"] = str(self.parameters["dynamic_threshold_percentile"])
-            if "dynamic_threshold_mimic_scale" in self.parameters:
-                result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
             # NAG parameters
-            if "nag_enable" in self.parameters:
-                result["nag_enable"] = str(self.parameters["nag_enable"])
-            if "nag_scale" in self.parameters:
-                result["nag_scale"] = str(self.parameters["nag_scale"])
-            if "nag_tau" in self.parameters:
-                result["nag_tau"] = str(self.parameters["nag_tau"])
-            if "nag_alpha" in self.parameters:
-                result["nag_alpha"] = str(self.parameters["nag_alpha"])
-            if "nag_sigma_end" in self.parameters:
-                result["nag_sigma_end"] = str(self.parameters["nag_sigma_end"])
+            nag_enable = self.parameters.get("nag_enable", False)
+            if nag_enable:
+                result["nag_enable"] = str(nag_enable)
+                if "nag_scale" in self.parameters:
+                    result["nag_scale"] = str(self.parameters["nag_scale"])
+                if "nag_tau" in self.parameters:
+                    result["nag_tau"] = str(self.parameters["nag_tau"])
+                if "nag_alpha" in self.parameters:
+                    result["nag_alpha"] = str(self.parameters["nag_alpha"])
+                if "nag_sigma_end" in self.parameters:
+                    result["nag_sigma_end"] = str(self.parameters["nag_sigma_end"])
+            else:
+                # Advanced CFG parameters (only when NAG is not enabled)
+                if "cfg_schedule_type" in self.parameters:
+                    result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]
+                if "cfg_schedule_min" in self.parameters:
+                    result["cfg_schedule_min"] = str(self.parameters["cfg_schedule_min"])
+                if "cfg_schedule_max" in self.parameters:
+                    result["cfg_schedule_max"] = str(self.parameters["cfg_schedule_max"])
+                if "cfg_schedule_power" in self.parameters:
+                    result["cfg_schedule_power"] = str(self.parameters["cfg_schedule_power"])
+                if "cfg_rescale_snr_alpha" in self.parameters:
+                    result["cfg_rescale_snr_alpha"] = str(self.parameters["cfg_rescale_snr_alpha"])
+                if "dynamic_threshold_percentile" in self.parameters:
+                    result["dynamic_threshold_percentile"] = str(self.parameters["dynamic_threshold_percentile"])
+                if "dynamic_threshold_mimic_scale" in self.parameters:
+                    result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
 
         return result

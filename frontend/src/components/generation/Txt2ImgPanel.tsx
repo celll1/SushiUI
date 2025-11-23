@@ -843,9 +843,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Generate based on type
       if (nextItem.type === "txt2img") {
-        // Add developer_mode flag and reset advanced CFG params if disabled
+        // Add developer_mode flag and reset advanced CFG params if disabled or NAG enabled
         let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-        if (!showAdvancedCFG) {
+        if (!showAdvancedCFG || paramsWithDevMode.nag_enable) {
           paramsWithDevMode = {
             ...paramsWithDevMode,
             cfg_schedule_type: "constant",
@@ -867,9 +867,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         const blob = await response.blob();
         const file = new File([blob], "input.png", { type: "image/png" });
 
-        // Add developer_mode flag and reset advanced CFG params if disabled
+        // Add developer_mode flag and reset advanced CFG params if disabled or NAG enabled
         let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-        if (!showAdvancedCFG) {
+        if (!showAdvancedCFG || paramsWithDevMode.nag_enable) {
           paramsWithDevMode = {
             ...paramsWithDevMode,
             cfg_schedule_type: "constant",

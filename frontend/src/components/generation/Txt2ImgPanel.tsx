@@ -52,7 +52,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_scale: 5.0,
   nag_tau: 3.5,
   nag_alpha: 0.25,
-  nag_sigma_end: 0.0,
+  nag_sigma_end: 3.0,
   nag_negative_prompt: "",
 };
 
@@ -1334,7 +1334,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     />
                     <Slider
                       label="NAG Alpha (blending factor)"
-                      min={0.0}
+                      min={0.05}
                       max={1.0}
                       step={0.05}
                       value={params.nag_alpha || 0.25}
@@ -1345,7 +1345,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       min={0.0}
                       max={5.0}
                       step={0.1}
-                      value={params.nag_sigma_end || 0.0}
+                      value={params.nag_sigma_end || 3.0}
                       onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
                     />
                     <div className="space-y-2">

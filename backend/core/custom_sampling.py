@@ -611,8 +611,11 @@ def custom_sampling_loop(
 
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
-            # NAG already applied guidance, use the predicted noise directly
-            noise_pred = noise_pred_text
+            # NAG already applied guidance in attention space
+            # noise_pred_text has shape [2, ...] where first half is the guided output
+            # We only need the first batch for scheduler.step()
+            batch_size = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -1011,8 +1014,11 @@ def custom_img2img_sampling_loop(
 
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
-            # NAG already applied guidance, use the predicted noise directly
-            noise_pred = noise_pred_text
+            # NAG already applied guidance in attention space
+            # noise_pred_text has shape [2, ...] where first half is the guided output
+            # We only need the first batch for scheduler.step()
+            batch_size = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -1443,8 +1449,11 @@ def custom_inpaint_sampling_loop(
 
         # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
         if apply_nag_this_step:
-            # NAG already applied guidance, use the predicted noise directly
-            noise_pred = noise_pred_text
+            # NAG already applied guidance in attention space
+            # noise_pred_text has shape [2, ...] where first half is the guided output
+            # We only need the first batch for scheduler.step()
+            batch_size = noise_pred_text.shape[0] // 2
+            noise_pred = noise_pred_text[:batch_size]
         else:
             # Normal CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)

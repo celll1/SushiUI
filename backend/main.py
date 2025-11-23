@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
+import logging
 
 from api import router, websocket_endpoint
 from api.logs import router as logs_router
@@ -12,6 +13,9 @@ from utils.logger import setup_logging
 
 # Setup logging capture
 setup_logging()
+
+# Disable uvicorn access logs
+logging.getLogger("uvicorn.access").disabled = True
 
 # Initialize database
 init_db()

@@ -549,7 +549,7 @@ export default function LoopGenerationPanel({
                         />
 
                         {/* Advanced CFG Settings for Loop Step */}
-                        {showAdvancedCFG && (
+                        {showAdvancedCFG && !step.nag_enable && (
                           <>
                             {/* Dynamic CFG Scheduling */}
                             <div className="space-y-3">
@@ -646,58 +646,60 @@ export default function LoopGenerationPanel({
                                 </>
                               )}
                             </div>
-
-                            {/* NAG (Normalized Attention Guidance) */}
-                            <div className="space-y-3 pt-4 border-t border-gray-700">
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={step.nag_enable ?? false}
-                                  onChange={(e) => updateStep(step.id, { nag_enable: e.target.checked })}
-                                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                                />
-                                <label className="text-sm font-medium text-gray-300">
-                                  NAG (Normalized Attention Guidance)
-                                </label>
-                              </div>
-                              {step.nag_enable && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                  <Slider
-                                    label="NAG Scale"
-                                    value={step.nag_scale ?? 5.0}
-                                    onChange={(e) => updateStep(step.id, { nag_scale: parseFloat(e.target.value) })}
-                                    min={1}
-                                    max={10}
-                                    step={0.5}
-                                  />
-                                  <Slider
-                                    label="NAG Tau (normalization threshold)"
-                                    value={step.nag_tau ?? 3.5}
-                                    onChange={(e) => updateStep(step.id, { nag_tau: parseFloat(e.target.value) })}
-                                    min={1.0}
-                                    max={5.0}
-                                    step={0.1}
-                                  />
-                                  <Slider
-                                    label="NAG Alpha (blending factor)"
-                                    value={step.nag_alpha ?? 0.25}
-                                    onChange={(e) => updateStep(step.id, { nag_alpha: parseFloat(e.target.value) })}
-                                    min={0.05}
-                                    max={1.0}
-                                    step={0.05}
-                                  />
-                                  <Slider
-                                    label="NAG Sigma End"
-                                    value={step.nag_sigma_end ?? 3.0}
-                                    onChange={(e) => updateStep(step.id, { nag_sigma_end: parseFloat(e.target.value) })}
-                                    min={0.0}
-                                    max={5.0}
-                                    step={0.1}
-                                  />
-                                </div>
-                              )}
-                            </div>
                           </>
+                        )}
+
+                        {/* NAG (Normalized Attention Guidance) */}
+                        {showAdvancedCFG && (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={step.nag_enable ?? false}
+                              onChange={(e) => updateStep(step.id, { nag_enable: e.target.checked })}
+                              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                            />
+                            <label className="text-sm font-medium text-gray-300">
+                              NAG (Normalized Attention Guidance)
+                            </label>
+                          </div>
+                          {step.nag_enable && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <Slider
+                                label="NAG Scale"
+                                value={step.nag_scale ?? 5.0}
+                                onChange={(e) => updateStep(step.id, { nag_scale: parseFloat(e.target.value) })}
+                                min={1}
+                                max={10}
+                                step={0.5}
+                              />
+                              <Slider
+                                label="NAG Tau (normalization threshold)"
+                                value={step.nag_tau ?? 3.5}
+                                onChange={(e) => updateStep(step.id, { nag_tau: parseFloat(e.target.value) })}
+                                min={1.0}
+                                max={5.0}
+                                step={0.1}
+                              />
+                              <Slider
+                                label="NAG Alpha (blending factor)"
+                                value={step.nag_alpha ?? 0.25}
+                                onChange={(e) => updateStep(step.id, { nag_alpha: parseFloat(e.target.value) })}
+                                min={0.05}
+                                max={1.0}
+                                step={0.05}
+                              />
+                              <Slider
+                                label="NAG Sigma End"
+                                value={step.nag_sigma_end ?? 3.0}
+                                onChange={(e) => updateStep(step.id, { nag_sigma_end: parseFloat(e.target.value) })}
+                                min={0.0}
+                                max={5.0}
+                                step={0.1}
+                              />
+                            </div>
+                          )}
+                        </div>
                         )}
                       </div>
 

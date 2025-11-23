@@ -92,5 +92,16 @@ class GeneratedImage(Base):
                 result["dynamic_threshold_percentile"] = str(self.parameters["dynamic_threshold_percentile"])
             if "dynamic_threshold_mimic_scale" in self.parameters:
                 result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
+            # NAG parameters
+            if "nag_enable" in self.parameters:
+                result["nag_enable"] = str(self.parameters["nag_enable"])
+            if "nag_scale" in self.parameters:
+                result["nag_scale"] = str(self.parameters["nag_scale"])
+            if "nag_tau" in self.parameters:
+                result["nag_tau"] = str(self.parameters["nag_tau"])
+            if "nag_alpha" in self.parameters:
+                result["nag_alpha"] = str(self.parameters["nag_alpha"])
+            if "nag_sigma_end" in self.parameters:
+                result["nag_sigma_end"] = str(self.parameters["nag_sigma_end"])
 
         return result

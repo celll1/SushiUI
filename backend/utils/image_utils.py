@@ -54,25 +54,6 @@ def save_image_with_metadata(
     metadata.add_text("height", str(params.get("height", settings.default_height)))
     metadata.add_text("generation_type", generation_type)
 
-    # Add Advanced CFG parameters
-    cfg_schedule_type = params.get("cfg_schedule_type", "constant")
-    if cfg_schedule_type != "constant":
-        metadata.add_text("cfg_schedule_type", cfg_schedule_type)
-        metadata.add_text("cfg_schedule_min", str(params.get("cfg_schedule_min", 1.0)))
-        if params.get("cfg_schedule_max") is not None:
-            metadata.add_text("cfg_schedule_max", str(params["cfg_schedule_max"]))
-        if cfg_schedule_type == "quadratic":
-            metadata.add_text("cfg_schedule_power", str(params.get("cfg_schedule_power", 2.0)))
-
-    cfg_rescale_snr_alpha = params.get("cfg_rescale_snr_alpha", 0.0)
-    if cfg_rescale_snr_alpha > 0:
-        metadata.add_text("cfg_rescale_snr_alpha", str(cfg_rescale_snr_alpha))
-
-    dynamic_threshold_percentile = params.get("dynamic_threshold_percentile", 0.0)
-    if dynamic_threshold_percentile > 0:
-        metadata.add_text("dynamic_threshold_percentile", str(dynamic_threshold_percentile))
-        metadata.add_text("dynamic_threshold_mimic_scale", str(params.get("dynamic_threshold_mimic_scale", 7.0)))
-
     # Add NAG (Normalized Attention Guidance) parameters
     nag_enable = params.get("nag_enable", False)
     if nag_enable:
@@ -81,6 +62,25 @@ def save_image_with_metadata(
         metadata.add_text("nag_tau", str(params.get("nag_tau", 3.5)))
         metadata.add_text("nag_alpha", str(params.get("nag_alpha", 0.25)))
         metadata.add_text("nag_sigma_end", str(params.get("nag_sigma_end", 3.0)))
+    else:
+        # Add Advanced CFG parameters only when NAG is not enabled
+        cfg_schedule_type = params.get("cfg_schedule_type", "constant")
+        if cfg_schedule_type != "constant":
+            metadata.add_text("cfg_schedule_type", cfg_schedule_type)
+            metadata.add_text("cfg_schedule_min", str(params.get("cfg_schedule_min", 1.0)))
+            if params.get("cfg_schedule_max") is not None:
+                metadata.add_text("cfg_schedule_max", str(params["cfg_schedule_max"]))
+            if cfg_schedule_type == "quadratic":
+                metadata.add_text("cfg_schedule_power", str(params.get("cfg_schedule_power", 2.0)))
+
+        cfg_rescale_snr_alpha = params.get("cfg_rescale_snr_alpha", 0.0)
+        if cfg_rescale_snr_alpha > 0:
+            metadata.add_text("cfg_rescale_snr_alpha", str(cfg_rescale_snr_alpha))
+
+        dynamic_threshold_percentile = params.get("dynamic_threshold_percentile", 0.0)
+        if dynamic_threshold_percentile > 0:
+            metadata.add_text("dynamic_threshold_percentile", str(dynamic_threshold_percentile))
+            metadata.add_text("dynamic_threshold_mimic_scale", str(params.get("dynamic_threshold_mimic_scale", 7.0)))
 
     # Add generation-type specific parameters
     if generation_type in ("img2img", "inpaint"):

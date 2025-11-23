@@ -1217,11 +1217,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 step={0.5}
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
-                disabled={params.nag_enable}
               />
 
               {/* Advanced CFG Settings */}
-              {showAdvancedCFG && !params.nag_enable && (
+              {showAdvancedCFG && (
                 <>
               {/* Dynamic CFG Scheduling */}
               <div className="space-y-3">

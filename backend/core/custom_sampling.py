@@ -336,22 +336,23 @@ def custom_sampling_loop(
         if not isinstance(control_guidance_end, list):
             control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
-    # Setup NAG (Normalized Attention Guidance) if enabled
+    # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    original_processors = None
+
     if nag_active:
-        from core.nag_processor import set_nag_processors, restore_original_processors
+        from core.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
-        # Set NAG attention processors on all cross-attention layers
-        set_nag_processors(
+        # Set NAG processors on cross-attention layers
+        original_processors = set_nag_processors(
             unet,
             nag_scale=nag_scale,
             nag_tau=nag_tau,
             nag_alpha=nag_alpha,
-            use_torch2=True,
         )
 
-        # Ensure NAG negative embeds are on correct device and dtype
+        # Ensure NAG embeddings on correct device/dtype
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
@@ -402,6 +403,16 @@ def custom_sampling_loop(
             print("[CustomSampling] Generation cancelled by user")
             raise RuntimeError("Generation cancelled by user")
 
+        # Check if NAG should be deactivated based on sigma threshold
+        if nag_active and nag_sigma_end > 0.0:
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                current_sigma = float(scheduler.sigmas[i].item())
+                if current_sigma < nag_sigma_end:
+                    print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
+                    from core.nag_processor import restore_original_processors
+                    restore_original_processors(unet, original_processors)
+                    nag_active = False
+
         # Check if prompt should be updated at this step
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(i)
@@ -409,30 +420,11 @@ def custom_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {i}: Updated prompt embeddings")
 
-        # Check if NAG is active for this step (needed to determine batch size)
-        from core.nag import check_nag_activation, prepare_nag_context
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > i:
-            current_sigma = float(scheduler.sigmas[i].item())
-
-        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
-
-        # Expand latents for both NAG and CFG modes
-        # Both modes need batch_size=2 for UNet skip connections to work
+        # Both NAG and CFG use double batch structure: [negative, positive]
+        # NAG processors will apply guidance in attention space on positive batch
         latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-
-        # Prepare prompt embeddings
-        if apply_nag_this_step:
-            # NAG mode: [positive, nag_negative]
-            prompt_embeds_input = prepare_nag_context(
-                current_prompt_embeds,  # positive only
-                nag_negative_prompt_embeds,
-                apply_nag=True
-            )
-        else:
-            # Normal CFG mode: [negative, positive]
-            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
@@ -444,27 +436,12 @@ def custom_sampling_loop(
 
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
-
-            # Duplicate for batch size (2 for both CFG and NAG modes)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            # Prepare pooled embeddings
-            if apply_nag_this_step:
-                # NAG mode: [positive, nag_negative]
-                if nag_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = prepare_nag_context(
-                        current_pooled_prompt_embeds,
-                        nag_negative_pooled_prompt_embeds,
-                        apply_nag=True
-                    )
-                else:
-                    add_text_embeds = None
+            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
             else:
-                # Normal CFG mode: [negative, positive]
-                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
-                else:
-                    add_text_embeds = None
+                add_text_embeds = None
 
             added_cond_kwargs = {
                 "text_embeds": add_text_embeds,
@@ -561,72 +538,59 @@ def custom_sampling_loop(
                 **unet_kwargs
             ).sample
 
-        # Perform guidance with dynamic CFG
-        # Note: When NAG is active, the noise prediction is already guided in attention space
-        # We only have one prediction (guided), not uncond/cond split
-        if apply_nag_this_step:
-            # NAG is active: noise_pred is already guided, no CFG split needed
-            # NAG handles the guidance in attention space
-            noise_pred_text = noise_pred
-            noise_pred_uncond = noise_pred  # Dummy, won't be used for CFG calculation
-        else:
-            # Normal CFG: split into uncond and cond
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # Perform guidance with CFG
+        # NAG mode: noise_pred still has [negative, positive] batches
+        # NAG guidance was applied in attention space, but CFG is still applied here
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate current sigma for sigma-based scheduling
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
+        # CFG calculations
+        if True:
+            # Calculate current sigma for sigma-based scheduling
+            current_sigma = 0.0
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                current_sigma = float(scheduler.sigmas[i].item())
 
-        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
-        current_snr = None
-        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
-            # Calculate SNR from CFG components
-            uncond_norm = torch.norm(noise_pred_uncond).item()
-            diff = noise_pred_text - noise_pred_uncond
-            diff_norm = torch.norm(diff).item()
-            if uncond_norm > 1e-8:
-                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+            current_snr = None
+            if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+                # Calculate SNR from CFG components
+                uncond_norm = torch.norm(noise_pred_uncond).item()
+                diff = noise_pred_text - noise_pred_uncond
+                diff_norm = torch.norm(diff).item()
+                if uncond_norm > 1e-8:
+                    current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
-        current_guidance_scale = calculate_dynamic_cfg(
-            sigma=current_sigma,
-            sigma_max=sigma_max,
-            cfg_base=guidance_scale,
-            cfg_schedule_type=cfg_schedule_type,
-            cfg_schedule_min=cfg_schedule_min,
-            cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power,
-            snr=previous_snr,  # Use previous step's SNR
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
-        )
-
-        # Store current SNR for next step
-        if current_snr is not None:
-            previous_snr = current_snr
-
-        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
-        if apply_nag_this_step:
-            # NAG already applied guidance in attention space
-            # noise_pred has shape [2, ...] where both are the same guided output
-            # We only need one for scheduler.step()
-            batch_size_single = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size_single]
-        else:
-            # Normal CFG
-            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        # Apply dynamic thresholding if enabled (prevents CFG saturation)
-        if dynamic_threshold_percentile > 0.0:
-            noise_pred = dynamic_thresholding(
-                noise_pred,
-                percentile=dynamic_threshold_percentile,
-                clamp_value=dynamic_threshold_mimic_scale
+            # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
+            current_guidance_scale = calculate_dynamic_cfg(
+                sigma=current_sigma,
+                sigma_max=sigma_max,
+                cfg_base=guidance_scale,
+                cfg_schedule_type=cfg_schedule_type,
+                cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max,
+                cfg_schedule_power=cfg_schedule_power,
+                snr=previous_snr,  # Use previous step's SNR
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
             )
 
-        # Apply guidance rescale if specified (important for v-prediction models)
-        if guidance_rescale > 0.0:
-            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+            # Store current SNR for next step
+            if current_snr is not None:
+                previous_snr = current_snr
+
+            # Apply CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # Apply dynamic thresholding if enabled (prevents CFG saturation)
+            if dynamic_threshold_percentile > 0.0:
+                noise_pred = dynamic_thresholding(
+                    noise_pred,
+                    percentile=dynamic_threshold_percentile,
+                    clamp_value=dynamic_threshold_mimic_scale
+                )
+
+            # Apply guidance rescale if specified (important for v-prediction models)
+            if guidance_rescale > 0.0:
+                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
@@ -660,6 +624,11 @@ def custom_sampling_loop(
             latents = callback_kwargs.get("latents", latents)
 
     print(f"[CustomSampling] Sampling complete, decoding latents")
+
+    # Restore original processors if NAG was active
+    if nag_active and original_processors is not None:
+        from core.nag_processor import restore_original_processors
+        restore_original_processors(unet, original_processors)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
@@ -832,20 +801,19 @@ def custom_img2img_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
-    # Setup NAG (Normalized Attention Guidance) if enabled
+    # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    original_processors = None
+
     if nag_active:
         from core.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
-        # Determine if using torch 2.0 attention based on UNet config
-        use_torch2 = hasattr(unet.config, '_use_default_values') or not hasattr(unet, 'set_attn_processor')
-        set_nag_processors(
-            unet,
-            nag_scale=nag_scale,
-            nag_tau=nag_tau,
-            nag_alpha=nag_alpha,
-            use_torch2=use_torch2
-        )
+
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha)
+
+        nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
+        if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
 
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
@@ -867,6 +835,16 @@ def custom_img2img_sampling_loop(
             print("[CustomSampling] Generation cancelled by user")
             raise RuntimeError("Generation cancelled by user")
 
+        # Check if NAG should be deactivated based on sigma threshold
+        if nag_active and nag_sigma_end > 0.0:
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                current_sigma = float(scheduler.sigmas[i].item())
+                if current_sigma < nag_sigma_end:
+                    print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
+                    from core.nag_processor import restore_original_processors
+                    restore_original_processors(unet, original_processors)
+                    nag_active = False
+
         # Check if prompt should be updated
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)
@@ -874,33 +852,16 @@ def custom_img2img_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {t_start + i}: Updated prompt embeddings")
 
-        # Check current sigma for NAG activation
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
-
-        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
-
-        # Expand latents for both NAG and CFG modes
-        # Both modes need batch_size=2 for UNet skip connections to work
+        # Both NAG and CFG use double batch structure: [negative, positive]
+        # NAG processors will apply guidance in attention space on positive batch
         latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-
-        # Prepare prompt embeddings
-        if apply_nag_this_step:
-            # NAG mode: [positive, nag_negative]
-            prompt_embeds_input = prepare_nag_context(
-                current_prompt_embeds,  # positive only
-                nag_negative_prompt_embeds,
-                apply_nag=True
-            )
-        else:
-            # Normal CFG mode: [negative, positive]
-            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
         # Prepare added conditions for SDXL
-        added_cond_kwargs = None
+        added_cond_kwargs = {}
         if is_sdxl:
+            # SDXL requires time_ids
             original_size = (original_height, original_width)
             crops_coords_top_left = (0, 0)
             target_size = (original_height, original_width)
@@ -909,31 +870,15 @@ def custom_img2img_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            # Prepare pooled embeddings
-            if apply_nag_this_step:
-                # NAG mode: [positive, nag_negative]
-                if nag_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = prepare_nag_context(
-                        current_pooled_prompt_embeds,
-                        nag_negative_pooled_prompt_embeds,
-                        apply_nag=True
-                    )
-                else:
-                    add_text_embeds = None
+            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
             else:
-                # Normal CFG mode: [negative, positive]
-                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
-                else:
-                    add_text_embeds = None
+                add_text_embeds = None
 
-            if add_text_embeds is not None:
-                added_cond_kwargs = {
-                    "text_embeds": add_text_embeds,
-                    "time_ids": add_time_ids
-                }
-            else:
-                print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
+            added_cond_kwargs = {
+                "text_embeds": add_text_embeds,
+                "time_ids": add_time_ids
+            }
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -1022,64 +967,59 @@ def custom_img2img_sampling_loop(
                 **unet_kwargs
             ).sample
 
-        # Perform guidance with dynamic CFG
-        if apply_nag_this_step:
-            # NAG mode: noise_pred contains [positive, nag_negative]
-            noise_pred_text = noise_pred  # Both predictions (will be split later)
-            noise_pred_uncond = None  # Not used in NAG mode
-        else:
-            # Normal CFG mode: split into uncond and cond
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # Perform guidance with CFG
+        # NAG mode: noise_pred still has [negative, positive] batches
+        # NAG guidance was applied in attention space, but CFG is still applied here
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
-        current_snr = None
-        if not apply_nag_this_step and (cfg_rescale_snr_alpha > 0.0 or developer_mode):
-            # Calculate SNR from CFG components
-            uncond_norm = torch.norm(noise_pred_uncond).item()
-            diff = noise_pred_text - noise_pred_uncond
-            diff_norm = torch.norm(diff).item()
-            if uncond_norm > 1e-8:
-                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+        # CFG calculations
+        if True:
+            # Calculate current sigma for sigma-based scheduling
+            current_sigma = 0.0
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                current_sigma = float(scheduler.sigmas[i].item())
 
-        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
-        current_guidance_scale = calculate_dynamic_cfg(
-            sigma=current_sigma,
-            sigma_max=sigma_max,
-            cfg_base=guidance_scale,
-            cfg_schedule_type=cfg_schedule_type,
-            cfg_schedule_min=cfg_schedule_min,
-            cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power,
-            snr=previous_snr,  # Use previous step's SNR
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
-        )
+            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+            current_snr = None
+            if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+                # Calculate SNR from CFG components
+                uncond_norm = torch.norm(noise_pred_uncond).item()
+                diff = noise_pred_text - noise_pred_uncond
+                diff_norm = torch.norm(diff).item()
+                if uncond_norm > 1e-8:
+                    current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-        # Store current SNR for next step
-        if current_snr is not None:
-            previous_snr = current_snr
-
-        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
-        if apply_nag_this_step:
-            # NAG already applied guidance in attention space
-            # noise_pred has shape [2, ...] where both are the same guided output
-            # We only need one for scheduler.step()
-            batch_size_single = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size_single]
-        else:
-            # Normal CFG
-            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        # Apply dynamic thresholding if enabled (prevents CFG saturation)
-        if dynamic_threshold_percentile > 0.0:
-            noise_pred = dynamic_thresholding(
-                noise_pred,
-                percentile=dynamic_threshold_percentile,
-                clamp_value=dynamic_threshold_mimic_scale
+            # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
+            current_guidance_scale = calculate_dynamic_cfg(
+                sigma=current_sigma,
+                sigma_max=sigma_max,
+                cfg_base=guidance_scale,
+                cfg_schedule_type=cfg_schedule_type,
+                cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max,
+                cfg_schedule_power=cfg_schedule_power,
+                snr=previous_snr,  # Use previous step's SNR
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
             )
 
-        # Apply guidance rescale if specified (important for v-prediction models)
-        if guidance_rescale > 0.0:
-            noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+            # Store current SNR for next step
+            if current_snr is not None:
+                previous_snr = current_snr
+
+            # Apply CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # Apply dynamic thresholding if enabled (prevents CFG saturation)
+            if dynamic_threshold_percentile > 0.0:
+                noise_pred = dynamic_thresholding(
+                    noise_pred,
+                    percentile=dynamic_threshold_percentile,
+                    clamp_value=dynamic_threshold_mimic_scale
+                )
+
+            # Apply guidance rescale if specified (important for v-prediction models)
+            if guidance_rescale > 0.0:
+                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
@@ -1087,20 +1027,22 @@ def custom_img2img_sampling_loop(
 
         # Progress callback
         if progress_callback is not None:
-            # Calculate CFG metrics for developer mode
-            cfg_metrics = calculate_cfg_metrics(
-                noise_pred_uncond,
-                noise_pred_text,
-                current_guidance_scale,
-                developer_mode=developer_mode
-            )
-            # Add timestep/sigma info to metrics
-            if cfg_metrics is not None:
-                cfg_metrics['timestep'] = int(t.item())
-                cfg_metrics['step'] = i
-                # Get sigma from scheduler if available
-                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+            cfg_metrics = None
+            if not nag_active:
+                # Calculate CFG metrics for developer mode
+                cfg_metrics = calculate_cfg_metrics(
+                    noise_pred_uncond,
+                    noise_pred_text,
+                    current_guidance_scale,
+                    developer_mode=developer_mode
+                )
+                # Add timestep/sigma info to metrics
+                if cfg_metrics is not None:
+                    cfg_metrics['timestep'] = int(t.item())
+                    cfg_metrics['step'] = i
+                    # Get sigma from scheduler if available
+                    if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                        cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
@@ -1111,6 +1053,11 @@ def custom_img2img_sampling_loop(
             latents = callback_kwargs.get("latents", latents)
 
     print(f"[CustomSampling] Sampling complete, decoding latents")
+
+    # Restore original processors if NAG was active
+    if nag_active and original_processors is not None:
+        from core.nag_processor import restore_original_processors
+        restore_original_processors(unet, original_processors)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
@@ -1325,20 +1272,19 @@ def custom_inpaint_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
-    # Setup NAG (Normalized Attention Guidance) if enabled
+    # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
+    original_processors = None
+
     if nag_active:
         from core.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
-        # Determine if using torch 2.0 attention based on UNet config
-        use_torch2 = hasattr(unet.config, '_use_default_values') or not hasattr(unet, 'set_attn_processor')
-        set_nag_processors(
-            unet,
-            nag_scale=nag_scale,
-            nag_tau=nag_tau,
-            nag_alpha=nag_alpha,
-            use_torch2=use_torch2
-        )
+
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha)
+
+        nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
+        if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
 
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
@@ -1358,22 +1304,31 @@ def custom_inpaint_sampling_loop(
             print("[CustomSampling] Generation cancelled by user")
             raise RuntimeError("Generation cancelled by user")
 
+        # Check if NAG should be deactivated based on sigma threshold
+        if nag_active and nag_sigma_end > 0.0:
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                current_sigma = float(scheduler.sigmas[i].item())
+                if current_sigma < nag_sigma_end:
+                    print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
+                    from core.nag_processor import restore_original_processors
+                    restore_original_processors(unet, original_processors)
+                    nag_active = False
+
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
 
-        # Check current sigma for NAG activation
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
-
-        apply_nag_this_step = nag_active and check_nag_activation(current_sigma, nag_sigma_end)
-
-        # Expand latents for both NAG and CFG modes
-        # Both modes need batch_size=2 for UNet skip connections to work
-        latent_model_input = torch.cat([latents] * 2)
-        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+        # NAG mode: single batch with [positive, negative] embeddings
+        # CFG mode: double batch with [negative, positive] embeddings
+        if nag_active:
+            # NAG: latents stay single batch, embeddings are [positive, negative]
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+        else:
+            # CFG: latents doubled, embeddings are [negative, positive]
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
         # Only concatenate mask and masked image for inpaint-specific UNets
         # Regular UNets use post-processing masking instead (see after scheduler.step)
@@ -1382,20 +1337,13 @@ def custom_inpaint_sampling_loop(
             masked_image_latents = image_latents * (1 - mask_latent)
             latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
 
-        # Prepare prompt embeddings
-        if apply_nag_this_step:
-            # NAG mode: [positive, nag_negative]
-            prompt_embeds_input = prepare_nag_context(
-                current_prompt_embeds,  # positive only
-                nag_negative_prompt_embeds,
-                apply_nag=True
-            )
-        else:
-            # Normal CFG mode: [negative, positive]
-            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        # Prepare prompt embeddings: [negative, positive]
+        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
 
-        added_cond_kwargs = None
+        # Prepare added conditions for SDXL
+        added_cond_kwargs = {}
         if is_sdxl:
+            # SDXL requires time_ids
             original_size = (original_height, original_width)
             crops_coords_top_left = (0, 0)
             target_size = (original_height, original_width)
@@ -1404,31 +1352,15 @@ def custom_inpaint_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
             add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            # Prepare pooled embeddings
-            if apply_nag_this_step:
-                # NAG mode: [positive, nag_negative]
-                if nag_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = prepare_nag_context(
-                        current_pooled_prompt_embeds,
-                        nag_negative_pooled_prompt_embeds,
-                        apply_nag=True
-                    )
-                else:
-                    add_text_embeds = None
+            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
+                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
             else:
-                # Normal CFG mode: [negative, positive]
-                if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
-                else:
-                    add_text_embeds = None
+                add_text_embeds = None
 
-            if add_text_embeds is not None:
-                added_cond_kwargs = {
-                    "text_embeds": add_text_embeds,
-                    "time_ids": add_time_ids
-                }
-            else:
-                print(f"[CustomSampling] Warning: SDXL detected but pooled embeddings are None, skipping added_cond_kwargs")
+            added_cond_kwargs = {
+                "text_embeds": add_text_embeds,
+                "time_ids": add_time_ids
+            }
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -1545,16 +1477,8 @@ def custom_inpaint_sampling_loop(
         if current_snr is not None:
             previous_snr = current_snr
 
-        # Apply CFG (skip if NAG is active, as NAG already applied guidance in attention space)
-        if apply_nag_this_step:
-            # NAG already applied guidance in attention space
-            # noise_pred has shape [2, ...] where both are the same guided output
-            # We only need one for scheduler.step()
-            batch_size_single = noise_pred_text.shape[0] // 2
-            noise_pred = noise_pred_text[:batch_size_single]
-        else:
-            # Normal CFG
-            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+        # Apply CFG
+        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         # Apply dynamic thresholding if enabled (prevents CFG saturation)
         if dynamic_threshold_percentile > 0.0:

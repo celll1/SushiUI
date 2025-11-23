@@ -19,4 +19,5 @@ if __name__ == "__main__":
         reload=settings.debug,
         timeout_keep_alive=600,  # Keep connections alive for 10 minutes
         timeout_graceful_shutdown=30,  # 30 seconds for graceful shutdown
+        log_level="warning",  # Reduce INFO logs (error, warning, info, debug, trace)
     )

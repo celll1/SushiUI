@@ -1,10 +1,17 @@
-"""Custom Attention Processors for NAG (Normalized Attention Guidance)
+"""
+NAG (Normalized Attention Guidance) Attention Processor
 
-This module provides custom attention processors that enable NAG for SD1.5 and SDXL models.
-NAG applies guidance in attention space by computing separate attention outputs for positive
-and negative prompts, then combining them with normalized extrapolation.
+Implements attention-space guidance by computing:
+1. Ap = Attn(Q, Kp, Vp) - positive attention
+2. An = Attn(Q, Kn, Vn) - negative attention
+3. A~ = Ap * (1+φ) - An * φ - extrapolation
+4. A^ = Normalize(A~) - L1 normalization with tau threshold
+5. Anag = Ap * (1-α) + A^ * α - alpha blending
 
-Based on diffusers' attention processor architecture with NAG extensions.
+Where:
+- φ (phi) = nag_scale
+- α (alpha) = nag_alpha
+- tau = nag_tau
 """
 
 import torch
@@ -12,16 +19,17 @@ import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 
-from .nag import nag, split_nag_context_output
 
+class NAGAttnProcessor2_0:
+    """
+    NAG Attention Processor for PyTorch 2.0+ (scaled_dot_product_attention)
 
-class NAGAttnProcessor:
-    """Attention processor with NAG support for SD1.5
+    Processes cross-attention with NAG guidance in attention space.
 
-    This processor computes attention twice:
-    1. For positive context (normal attention)
-    2. For NAG negative context (additional attention)
-    Then applies NAG to combine the outputs.
+    Args:
+        nag_scale: Extrapolation scale φ (default: 5.0)
+        nag_tau: L1 normalization threshold (default: 3.5)
+        nag_alpha: Blending factor α (default: 0.25)
     """
 
     def __init__(
@@ -30,6 +38,8 @@ class NAGAttnProcessor:
         nag_tau: float = 3.5,
         nag_alpha: float = 0.25,
     ):
+        if not hasattr(F, "scaled_dot_product_attention"):
+            raise ImportError("NAGAttnProcessor2_0 requires PyTorch 2.0+")
         self.nag_scale = nag_scale
         self.nag_tau = nag_tau
         self.nag_alpha = nag_alpha
@@ -41,21 +51,15 @@ class NAGAttnProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         temb: Optional[torch.Tensor] = None,
+        *args,
         **kwargs,
     ) -> torch.Tensor:
-        """Process attention with NAG
+        # Log that processor is being called
+        import sys
+        if not hasattr(self, '_called_logged'):
+            print(f"[NAG CALL] NAG processor called! encoder_hidden_states is None: {encoder_hidden_states is None}", file=sys.stderr)
+            self._called_logged = True
 
-        Args:
-            attn: Attention module
-            hidden_states: Input hidden states [B, N, C]
-            encoder_hidden_states: Context from text encoder [B or 2*B, seq_len, dim]
-                If NAG is active, this contains [positive_context, nag_negative_context] concatenated
-            attention_mask: Optional attention mask
-            temb: Optional time embeddings
-
-        Returns:
-            Processed hidden states with NAG applied
-        """
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -66,83 +70,129 @@ class NAGAttnProcessor:
         if input_ndim == 4:
             batch_size, channel, height, width = hidden_states.shape
             hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
-        else:
-            batch_size, sequence_length, _ = hidden_states.shape
 
-        # Check if NAG is active using the same logic as official implementation
-        # apply_guidance = self.nag_scale > 1 and encoder_hidden_states is not None
-        # if apply_guidance:
-        #     origin_batch_size = batch_size - len(hidden_states)
-        # In NAG mode: encoder_hidden_states has batch_size=2, hidden_states has batch_size=2
-        # origin_batch_size = 2 - 2 = 0 is wrong, we need to check differently
-        apply_nag = self.nag_scale > 1.0 and encoder_hidden_states is not None
-        # Debug: Log NAG check
-        if not hasattr(self, '_nag_check_logged') and encoder_hidden_states is not None:
-            print(f"[NAG Processor] NAG check: nag_scale={self.nag_scale}, apply_nag={apply_nag}, batch_size={batch_size}, context_batch={encoder_hidden_states.shape[0]}")
-            self._nag_check_logged = True
+        batch_size, sequence_length, _ = hidden_states.shape
 
-        # Prepare query
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        # Prepare query from hidden_states (image features)
         query = attn.to_q(hidden_states)
 
-        # Use encoder_hidden_states if provided (cross-attention), else use hidden_states (self-attention)
+        # Check if this is cross-attention with NAG-formatted embeddings
+        is_cross_attention = encoder_hidden_states is not None
         if encoder_hidden_states is None:
+            # Self-attention: use original processing
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        # For cross-attention with NAG, split context into positive and negative
-        if apply_nag and attn.to_k.in_features == encoder_hidden_states.shape[-1]:
-            # This is cross-attention and NAG is active
-            positive_context = encoder_hidden_states[:batch_size]
-            nag_negative_context = encoder_hidden_states[batch_size:]
+        # NAG mode detection: cross-attention with batch_size=2, context_batch=2
+        # This will be triggered when NAG processors are set
+        context_batch = encoder_hidden_states.shape[0]
 
-            # Compute attention for positive context
+        # NAG marker: Check if this processor was set as NAG processor
+        is_nag_mode = is_cross_attention and hasattr(self, 'nag_scale')
+
+        # Debug logging (only log first few times to avoid spam)
+        import sys
+        if is_nag_mode and not hasattr(self, '_debug_logged'):
+            print(f"[NAG DEBUG] is_cross={is_cross_attention}, batch_size={batch_size}, context_batch={context_batch}, has_nag_scale={hasattr(self, 'nag_scale')}", file=sys.stderr)
+            self._debug_logged = True
+
+        if is_nag_mode and batch_size == 2 and context_batch == 2:
+            # NAG mode: encoder_hidden_states = [negative, positive]
+            # Query = [negative_batch, positive_batch]
+            # Apply NAG only to positive batch
+
+            # Log NAG execution (only once)
+            if not hasattr(self, '_nag_executed_logged'):
+                print(f"[NAG EXEC] Applying NAG guidance: scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}", file=sys.stderr)
+                self._nag_executed_logged = True
+
+            negative_context = encoder_hidden_states[0:1]
+            positive_context = encoder_hidden_states[1:2]
+
+            # Split query
+            query_negative = query[0:1]
+            query_positive = query[1:2]
+
+            inner_dim = attn.to_k(positive_context).shape[-1]
+            head_dim = inner_dim // attn.heads
+
+            # Batch 0: Standard attention with negative context (for CFG)
+            key_neg = attn.to_k(negative_context)
+            value_neg = attn.to_v(negative_context)
+
+            query_neg_heads = query_negative.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            key_neg_heads = key_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            value_neg_heads = value_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+
+            A_negative = F.scaled_dot_product_attention(
+                query_neg_heads, key_neg_heads, value_neg_heads,
+                attn_mask=None, dropout_p=0.0, is_causal=False
+            )
+            A_negative = A_negative.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+
+            # Batch 1: NAG guidance on positive batch
+            # Ap = Attn(Q_positive, K_positive, V_positive)
             key_positive = attn.to_k(positive_context)
             value_positive = attn.to_v(positive_context)
 
-            query = attn.head_to_batch_dim(query)
-            key_positive = attn.head_to_batch_dim(key_positive)
-            value_positive = attn.head_to_batch_dim(value_positive)
+            query_pos_heads = query_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            key_pos_heads = key_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            value_pos_heads = value_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
 
-            attention_probs_positive = attn.get_attention_scores(query, key_positive, attention_mask)
-            hidden_states_positive = torch.bmm(attention_probs_positive, value_positive)
-            hidden_states_positive = attn.batch_to_head_dim(hidden_states_positive)
-
-            # Compute attention for NAG negative context
-            key_negative = attn.to_k(nag_negative_context)
-            value_negative = attn.to_v(nag_negative_context)
-
-            key_negative = attn.head_to_batch_dim(key_negative)
-            value_negative = attn.head_to_batch_dim(value_negative)
-
-            attention_probs_negative = attn.get_attention_scores(query, key_negative, attention_mask)
-            hidden_states_negative = torch.bmm(attention_probs_negative, value_negative)
-            hidden_states_negative = attn.batch_to_head_dim(hidden_states_negative)
-
-            # Apply NAG
-            # Debug: Log NAG parameters being used
-            if not hasattr(self, '_nag_logged'):
-                print(f"[NAG Processor] Applying NAG with scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}")
-                self._nag_logged = True
-            hidden_states = nag(
-                hidden_states_positive,
-                hidden_states_negative,
-                self.nag_scale,
-                self.nag_tau,
-                self.nag_alpha,
+            Ap = F.scaled_dot_product_attention(
+                query_pos_heads, key_pos_heads, value_pos_heads,
+                attn_mask=None, dropout_p=0.0, is_causal=False
             )
+            Ap = Ap.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+
+            # An = Attn(Q_positive, K_negative, V_negative) - use negative context for NAG
+            An = F.scaled_dot_product_attention(
+                query_pos_heads, key_neg_heads, value_neg_heads,
+                attn_mask=None, dropout_p=0.0, is_causal=False
+            )
+            An = An.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+
+            # NAG guidance: A~ = Ap * (1+φ) - An * φ
+            phi = self.nag_scale
+            A_tilde = Ap * (1 + phi) - An * phi
+
+            # L1 Normalization
+            eps = 1e-6
+            norm_Ap = torch.norm(Ap, p=1, dim=-1, keepdim=True).clamp_min(eps)
+            norm_A_tilde = torch.norm(A_tilde, p=1, dim=-1, keepdim=True).clamp_min(eps)
+            scale_factor = norm_A_tilde / norm_Ap
+            scale_clamped = torch.minimum(scale_factor, torch.full_like(scale_factor, self.nag_tau))
+            A_hat = A_tilde * scale_clamped / scale_factor
+
+            # Alpha blending
+            alpha = self.nag_alpha
+            A_nag = Ap * (1 - alpha) + A_hat * alpha
+
+            # Combine: [negative_batch, nag_batch]
+            hidden_states = torch.cat([A_negative, A_nag], dim=0)
+
         else:
-            # Normal attention (self-attention or NAG not active)
+            # Standard attention (not NAG mode)
             key = attn.to_k(encoder_hidden_states)
             value = attn.to_v(encoder_hidden_states)
 
-            query = attn.head_to_batch_dim(query)
-            key = attn.head_to_batch_dim(key)
-            value = attn.head_to_batch_dim(value)
+            inner_dim = key.shape[-1]
+            head_dim = inner_dim // attn.heads
 
-            attention_probs = attn.get_attention_scores(query, key, attention_mask)
-            hidden_states = torch.bmm(attention_probs, value)
-            hidden_states = attn.batch_to_head_dim(hidden_states)
+            query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+            key = key.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
+            value = value.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
+
+            hidden_states = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+
+            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+            hidden_states = hidden_states.to(query.dtype)
 
         # Linear projection
         hidden_states = attn.to_out[0](hidden_states)
@@ -160,200 +210,38 @@ class NAGAttnProcessor:
         return hidden_states
 
 
-class NAGAttnProcessor2_0:
-    """Attention processor with NAG support using torch 2.0 scaled_dot_product_attention
-
-    This is an optimized version for PyTorch 2.0+ that uses flash attention when available.
+def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float):
     """
+    Set NAG attention processors on cross-attention layers (attn2)
 
-    def __init__(
-        self,
-        nag_scale: float = 5.0,
-        nag_tau: float = 3.5,
-        nag_alpha: float = 0.25,
-    ):
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError("NAGAttnProcessor2_0 requires PyTorch 2.0+ for scaled_dot_product_attention")
-        self.nag_scale = nag_scale
-        self.nag_tau = nag_tau
-        self.nag_alpha = nag_alpha
-
-    def __call__(
-        self,
-        attn: Attention,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        temb: Optional[torch.Tensor] = None,
-        **kwargs,
-    ) -> torch.Tensor:
-        residual = hidden_states
-
-        if attn.spatial_norm is not None:
-            hidden_states = attn.spatial_norm(hidden_states, temb)
-
-        input_ndim = hidden_states.ndim
-
-        if input_ndim == 4:
-            batch_size, channel, height, width = hidden_states.shape
-            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
-        else:
-            batch_size, sequence_length, _ = hidden_states.shape
-
-        # Check if NAG is active using the same logic as official implementation
-        apply_nag = self.nag_scale > 1.0 and encoder_hidden_states is not None
-        # Debug: Log NAG check
-        if not hasattr(self, '_nag_check_logged') and encoder_hidden_states is not None:
-            print(f"[NAG Processor2_0] NAG check: nag_scale={self.nag_scale}, apply_nag={apply_nag}, batch_size={batch_size}, context_batch={encoder_hidden_states.shape[0]}")
-            self._nag_check_logged = True
-
-        query = attn.to_q(hidden_states)
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif attn.norm_cross:
-            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
-
-        # For cross-attention with NAG
-        if apply_nag and attn.to_k.in_features == encoder_hidden_states.shape[-1]:
-            positive_context = encoder_hidden_states[:batch_size]
-            nag_negative_context = encoder_hidden_states[batch_size:]
-
-            # Positive attention
-            key_positive = attn.to_k(positive_context)
-            value_positive = attn.to_v(positive_context)
-
-            inner_dim = key_positive.shape[-1]
-            head_dim = inner_dim // attn.heads
-
-            query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            key_positive = key_positive.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            value_positive = value_positive.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-
-            hidden_states_positive = F.scaled_dot_product_attention(
-                query, key_positive, value_positive, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states_positive = hidden_states_positive.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
-
-            # Negative attention
-            key_negative = attn.to_k(nag_negative_context)
-            value_negative = attn.to_v(nag_negative_context)
-
-            key_negative = key_negative.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            value_negative = value_negative.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-
-            # Reuse query (already computed)
-            hidden_states_negative = F.scaled_dot_product_attention(
-                query, key_negative, value_negative, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states_negative = hidden_states_negative.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
-
-            # Apply NAG
-            # Debug: Log NAG parameters being used
-            if not hasattr(self, '_nag_logged'):
-                print(f"[NAG Processor] Applying NAG with scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}")
-                self._nag_logged = True
-            hidden_states = nag(
-                hidden_states_positive,
-                hidden_states_negative,
-                self.nag_scale,
-                self.nag_tau,
-                self.nag_alpha,
-            )
-        else:
-            # Normal attention
-            key = attn.to_k(encoder_hidden_states)
-            value = attn.to_v(encoder_hidden_states)
-
-            inner_dim = key.shape[-1]
-            head_dim = inner_dim // attn.heads
-
-            query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
-            hidden_states = hidden_states.to(query.dtype)
-
-        # Linear projection
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
-
-        if input_ndim == 4:
-            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
-
-        if attn.residual_connection:
-            hidden_states = hidden_states + residual
-
-        hidden_states = hidden_states / attn.rescale_output_factor
-
-        return hidden_states
-
-
-def set_nag_processors(
-    unet,
-    nag_scale: float = 5.0,
-    nag_tau: float = 3.5,
-    nag_alpha: float = 0.25,
-    use_torch2: bool = True,
-):
-    """Set NAG attention processors on all cross-attention layers in UNet
-
-    Args:
-        unet: UNet2DConditionModel
-        nag_scale: NAG extrapolation scale
-        nag_tau: NAG normalization threshold
-        nag_alpha: NAG blending factor
-        use_torch2: Use optimized torch 2.0 processor if available
+    Returns:
+        dict: Original processors for restoration
     """
-    processor_cls = NAGAttnProcessor2_0 if use_torch2 and hasattr(F, "scaled_dot_product_attention") else NAGAttnProcessor
+    original_processors = {}
 
-    # Iterate through all attention layers
-    nag_processor_count = 0
-    for name, module in unet.named_modules():
-        if isinstance(module, Attention):
-            # Only set NAG processor for cross-attention layers
-            # Cross-attention has different input dimensions for query and key/value
-            if hasattr(module, 'to_k') and module.to_k is not None:
-                # Check if this is cross-attention (not self-attention)
-                # In cross-attention, encoder_hidden_states is used
-                # We can identify this by checking if the attention is typically cross-attn
-                # A simple heuristic: cross-attention layers usually have "attn2" in their name in SD
-                if "attn2" in name or "cross" in name.lower():
-                    module.set_processor(
-                        processor_cls(
-                            nag_scale=nag_scale,
-                            nag_tau=nag_tau,
-                            nag_alpha=nag_alpha,
-                        )
-                    )
-                    nag_processor_count += 1
-    print(f"[NAG] Set {nag_processor_count} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
+    for name in unet.attn_processors.keys():
+        if "attn2" in name:  # Cross-attention only
+            original_processors[name] = unet.attn_processors[name]
+            unet.attn_processors[name] = NAGAttnProcessor2_0(
+                nag_scale=nag_scale,
+                nag_tau=nag_tau,
+                nag_alpha=nag_alpha,
+            )
+
+    # Verify processors were set
+    nag_count = sum(1 for proc in unet.attn_processors.values() if isinstance(proc, NAGAttnProcessor2_0))
+    print(f"[NAG] Set {len([n for n in unet.attn_processors.keys() if 'attn2' in n])} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
+    print(f"[NAG] Verification: {nag_count} NAGAttnProcessor2_0 instances found in unet.attn_processors")
+
+    return original_processors
 
 
-def restore_original_processors(unet):
-    """Restore original attention processors (remove NAG)
+def restore_original_processors(unet, original_processors: dict):
+    """Restore original attention processors"""
+    if not original_processors:
+        return
 
-    Args:
-        unet: UNet2DConditionModel
-    """
-    # Import default processors
-    try:
-        from diffusers.models.attention_processor import AttnProcessor2_0, AttnProcessor
+    for name, processor in original_processors.items():
+        unet.attn_processors[name] = processor
 
-        # Try to use torch 2.0 processor if available
-        if hasattr(F, "scaled_dot_product_attention"):
-            default_processor = AttnProcessor2_0()
-        else:
-            default_processor = AttnProcessor()
-
-        # Restore all attention processors
-        for name, module in unet.named_modules():
-            if isinstance(module, Attention):
-                module.set_processor(default_processor)
-    except ImportError:
-        # Fallback: use UNet's built-in method
-        unet.set_default_attn_processor()
+    print("[NAG] Restored original attention processors")

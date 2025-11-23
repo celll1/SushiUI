@@ -23,6 +23,15 @@ const categories: Record<string, TagCategory> = {
   model: { name: "Model", tags: {}, loaded: false },
 };
 
+// Tag other names (aliases in different languages)
+interface TagOtherNames {
+  [tag: string]: string[]; // original tag -> other names
+}
+
+let tagOtherNames: TagOtherNames = {};
+let otherNamesIndex: Map<string, string> = new Map(); // normalized other_name -> original tag
+let otherNamesLoaded = false;
+
 // Recent tag history management
 const RECENT_TAGS_KEY = 'tag_suggestion_recent_tags';
 const MAX_RECENT_TAGS = 100;
@@ -138,12 +147,47 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
 }
 
 /**
+ * Load tag other names (aliases in different languages)
+ */
+async function loadTagOtherNames(): Promise<void> {
+  if (otherNamesLoaded) {
+    return;
+  }
+
+  try {
+    console.log('[TagSuggestions] Loading tag other names');
+    const response = await fetch('/tagother/tag_other_names.json');
+    if (response.ok) {
+      const data: TagOtherNames = await response.json();
+      tagOtherNames = data;
+
+      // Build index: normalized other_name -> original tag
+      otherNamesIndex.clear();
+      for (const [originalTag, otherNames] of Object.entries(data)) {
+        for (const otherName of otherNames) {
+          const normalized = normalizeTag(otherName);
+          otherNamesIndex.set(normalized, originalTag);
+        }
+      }
+
+      otherNamesLoaded = true;
+      console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags with other names, ${otherNamesIndex.size} total aliases`);
+    } else {
+      console.error(`[TagSuggestions] Failed to load tag other names: HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Failed to load tag other names:', error);
+  }
+}
+
+/**
  * Load all tag categories
  */
 export async function loadAllTags(): Promise<void> {
-  await Promise.all(
-    Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories))
-  );
+  await Promise.all([
+    ...Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories)),
+    loadTagOtherNames()
+  ]);
 }
 
 // Special tags that should always be available
@@ -236,6 +280,34 @@ export async function searchTags(
           count,
           category: category.name,
         });
+      }
+    }
+  }
+
+  // Search in tag other names (aliases)
+  if (otherNamesLoaded) {
+    for (const [normalizedOtherName, originalTag] of otherNamesIndex.entries()) {
+      if (normalizedOtherName.startsWith(normalizedInput)) {
+        // Find the count from the original tag in categories
+        let count = 0;
+        let categoryName = "Other Names";
+
+        for (const [categoryKey, category] of Object.entries(categories)) {
+          if (category.tags[originalTag] !== undefined) {
+            count = category.tags[originalTag];
+            categoryName = category.name;
+            break;
+          }
+        }
+
+        // Only add if not already in results (to avoid duplicates)
+        if (!results.find(r => r.tag === originalTag)) {
+          results.push({
+            tag: originalTag,
+            count: count,
+            category: categoryName,
+          });
+        }
       }
     }
   }

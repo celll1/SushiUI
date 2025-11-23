@@ -19,6 +19,7 @@ models/
 lora/
 controlnet/
 taglist/
+tagother/
 *.safetensors
 *.ckpt
 *.pt

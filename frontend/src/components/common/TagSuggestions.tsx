@@ -6,6 +6,7 @@ interface TagSuggestion {
   tag: string;
   count: number;
   category: string;
+  alias?: string;
 }
 
 interface TagSuggestionsProps {
@@ -136,7 +137,7 @@ export default function TagSuggestions({
                   index === selectedIndex ? '' : categoryColor
                 }`}
               >
-                {suggestion.tag.replace(/_/g, " ")}
+                {suggestion.alias ? `${suggestion.tag.replace(/_/g, " ")} < ${suggestion.alias}` : suggestion.tag.replace(/_/g, " ")}
               </span>
               <span className={`text-xs flex-shrink-0 ${index === selectedIndex ? 'text-blue-200' : 'text-gray-400'}`}>
                 {isSpecialTag ? suggestion.category : suggestion.count.toLocaleString()}

@@ -127,9 +127,10 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     // Calculate absolute position (account for scroll and padding)
     const paddingTop = parseFloat(style.paddingTop) || 0;
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5;
 
     return {
-      top: rect.top + paddingTop + relativeTop - textarea.scrollTop,
+      top: rect.top + paddingTop + relativeTop - textarea.scrollTop + lineHeight,
       left: rect.left + paddingLeft + relativeLeft,
     };
   };

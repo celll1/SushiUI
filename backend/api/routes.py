@@ -1414,6 +1414,28 @@ async def get_taglist(category: str):
         print(f"Error loading taglist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/tagother/tag_other_names")
+async def get_tag_other_names():
+    """
+    Get tag other names (multilingual aliases) from tagother directory
+    """
+    try:
+        tagother_path = os.path.join(settings.root_dir, "tagother", "tag_other_names.json")
+
+        if not os.path.exists(tagother_path):
+            raise HTTPException(status_code=404, detail=f"Tag other names file not found: {tagother_path}")
+
+        import json
+        with open(tagother_path, "r", encoding="utf-8") as f:
+            tag_other_names = json.load(f)
+
+        return tag_other_names
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error loading tag other names: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ==================== ControlNet Preprocessor Endpoints ====================
 

@@ -29,7 +29,7 @@ interface TagOtherNames {
 }
 
 let tagOtherNames: TagOtherNames = {};
-let otherNamesIndex: Map<string, string> = new Map(); // normalized other_name -> original tag
+let otherNamesIndex: Map<string, { originalTag: string; displayName: string }> = new Map(); // normalized other_name -> {original tag, display name}
 let otherNamesLoaded = false;
 
 // Recent tag history management
@@ -156,17 +156,17 @@ async function loadTagOtherNames(): Promise<void> {
 
   try {
     console.log('[TagSuggestions] Loading tag other names');
-    const response = await fetch('/tagother/tag_other_names.json');
+    const response = await fetch('/api/tagother/tag_other_names');
     if (response.ok) {
       const data: TagOtherNames = await response.json();
       tagOtherNames = data;
 
-      // Build index: normalized other_name -> original tag
+      // Build index: normalized other_name -> {original tag, display name}
       otherNamesIndex.clear();
       for (const [originalTag, otherNames] of Object.entries(data)) {
         for (const otherName of otherNames) {
           const normalized = normalizeTag(otherName);
-          otherNamesIndex.set(normalized, originalTag);
+          otherNamesIndex.set(normalized, { originalTag, displayName: otherName });
         }
       }
 
@@ -216,7 +216,7 @@ const SPECIAL_TAGS = {
 export async function searchTags(
   input: string,
   limit: number = 20
-): Promise<Array<{ tag: string; count: number; category: string }>> {
+): Promise<Array<{ tag: string; count: number; category: string; alias?: string }>> {
   if (!input.trim()) {
     return [];
   }
@@ -231,7 +231,7 @@ export async function searchTags(
 
   const normalizedInput = normalizeTag(input);
   const searchStartTime = performance.now();
-  const results: Array<{ tag: string; count: number; category: string }> = [];
+  const results: Array<{ tag: string; count: number; category: string; alias?: string }> = [];
 
   // Search special tags first
   const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
@@ -284,28 +284,30 @@ export async function searchTags(
     }
   }
 
-  // Search in tag other names (aliases)
+  // Search in tag other names (aliases) - partial match
   if (otherNamesLoaded) {
-    for (const [normalizedOtherName, originalTag] of otherNamesIndex.entries()) {
-      if (normalizedOtherName.startsWith(normalizedInput)) {
+    for (const [normalizedOtherName, data] of otherNamesIndex.entries()) {
+      // Check for partial match (contains)
+      if (normalizedOtherName.includes(normalizedInput)) {
         // Find the count from the original tag in categories
         let count = 0;
         let categoryName = "Other Names";
 
         for (const [categoryKey, category] of Object.entries(categories)) {
-          if (category.tags[originalTag] !== undefined) {
-            count = category.tags[originalTag];
+          if (category.tags[data.originalTag] !== undefined) {
+            count = category.tags[data.originalTag];
             categoryName = category.name;
             break;
           }
         }
 
         // Only add if not already in results (to avoid duplicates)
-        if (!results.find(r => r.tag === originalTag)) {
+        if (!results.find(r => r.tag === data.originalTag && r.alias === data.displayName)) {
           results.push({
-            tag: originalTag,
+            tag: data.originalTag,
             count: count,
             category: categoryName,
+            alias: data.displayName, // Add alias for display
           });
         }
       }

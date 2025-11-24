@@ -28,9 +28,13 @@ class SageAttnProcessor:
             from sageattention import sageattn
             self.sageattn = sageattn
             self._available = True
+            print("[SageAttention] ✓ Successfully loaded SageAttention module")
         except ImportError:
-            print("[SageAttention] Warning: sageattention not installed. Falling back to normal attention.")
+            print("[SageAttention] ✗ Warning: sageattention not installed. Falling back to normal attention.")
             print("[SageAttention] Install with: pip install sageattention")
+            self._available = False
+        except Exception as e:
+            print(f"[SageAttention] ✗ Error loading sageattention: {e}")
             self._available = False
 
     def __call__(
@@ -79,8 +83,16 @@ class SageAttnProcessor:
 
         # Apply SageAttention or fallback to normal
         if self._available:
-            # SageAttention expects (batch, heads, seq_len, head_dim) - "HND" layout
-            hidden_states = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
+            try:
+                # SageAttention expects (batch, heads, seq_len, head_dim) - "HND" layout
+                hidden_states = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
+            except Exception as e:
+                print(f"[SageAttention] ✗ Error during attention computation: {e}")
+                print(f"[SageAttention] Falling back to standard SDPA")
+                # Fallback to standard attention
+                hidden_states = F.scaled_dot_product_attention(
+                    query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+                )
         else:
             # Fallback to standard attention
             hidden_states = F.scaled_dot_product_attention(
@@ -221,25 +233,30 @@ def set_attention_processor(unet, attention_type: str = "normal"):
     # Store original processors
     original_processors = unet.attn_processors.copy()
 
+    num_processors = len(unet.attn_processors)
+
     if attention_type == "sage":
-        print("[AttentionProcessor] Setting SageAttention processors")
+        print(f"[AttentionProcessor] Setting SageAttention processors for {num_processors} attention layers")
         processor = SageAttnProcessor()
         new_processors = {name: processor for name in unet.attn_processors.keys()}
         unet.set_attn_processor(new_processors)
+        print(f"[AttentionProcessor] ✓ SageAttention ACTIVE for all {num_processors} layers")
 
     elif attention_type == "flash":
-        print("[AttentionProcessor] Setting FlashAttention processors")
+        print(f"[AttentionProcessor] Setting FlashAttention processors for {num_processors} attention layers")
         processor = FlashAttnProcessor()
         new_processors = {name: processor for name in unet.attn_processors.keys()}
         unet.set_attn_processor(new_processors)
+        print(f"[AttentionProcessor] ✓ FlashAttention ACTIVE for all {num_processors} layers")
 
     else:  # "normal"
-        print("[AttentionProcessor] Using default PyTorch 2.0 SDPA (auto Flash Attention)")
+        print(f"[AttentionProcessor] Using default PyTorch 2.0 SDPA (auto Flash Attention) for {num_processors} attention layers")
         # Reset to default processors - PyTorch 2.0+ automatically uses Flash Attention
         from diffusers.models.attention_processor import AttnProcessor2_0
         processor = AttnProcessor2_0()
         new_processors = {name: processor for name in unet.attn_processors.keys()}
         unet.set_attn_processor(new_processors)
+        print(f"[AttentionProcessor] ✓ Normal SDPA ACTIVE for all {num_processors} layers")
 
     return original_processors
 

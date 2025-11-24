@@ -171,7 +171,9 @@ class NAGAttnProcessor2_0:
                 print(f"[NAG EXEC] Applying NAG guidance: scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}", file=sys.stderr)
                 self._nag_executed_logged = True
 
-            negative_context = encoder_hidden_states[0:1]
+            # In NAG mode, encoder_hidden_states contains [nag_negative, positive]
+            # But for CFG batch 0, we should use regular processing (not NAG negative)
+            nag_negative_context = encoder_hidden_states[0:1]
             positive_context = encoder_hidden_states[1:2]
 
             # Split query
@@ -181,16 +183,17 @@ class NAGAttnProcessor2_0:
             inner_dim = attn.to_k(positive_context).shape[-1]
             head_dim = inner_dim // attn.heads
 
-            # Batch 0: Standard attention with negative context (for CFG)
-            key_neg = attn.to_k(negative_context)
-            value_neg = attn.to_v(negative_context)
+            # Batch 0: Standard attention for CFG unconditioned batch
+            # Use nag_negative_context (which is typically empty or negative prompt)
+            key_cfg_uncond = attn.to_k(nag_negative_context)
+            value_cfg_uncond = attn.to_v(nag_negative_context)
 
             query_neg_heads = query_negative.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            key_neg_heads = key_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            value_neg_heads = value_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            key_cfg_uncond_heads = key_cfg_uncond.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            value_cfg_uncond_heads = value_cfg_uncond.view(1, -1, attn.heads, head_dim).transpose(1, 2)
 
-            A_negative = self._compute_attention(query_neg_heads, key_neg_heads, value_neg_heads)
-            A_negative = A_negative.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+            A_uncond = self._compute_attention(query_neg_heads, key_cfg_uncond_heads, value_cfg_uncond_heads)
+            A_uncond = A_uncond.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # Batch 1: NAG guidance on positive batch
             # Step 1: Compute positive attention - Ap = Attn(Q_positive, K_positive, V_positive)
@@ -204,8 +207,14 @@ class NAGAttnProcessor2_0:
             hidden_states_positive = self._compute_attention(query_pos_heads, key_pos_heads, value_pos_heads)
             hidden_states_positive = hidden_states_positive.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
-            # Step 2: Compute negative attention - An = Attn(Q_positive, K_negative, V_negative)
-            hidden_states_negative_attn = self._compute_attention(query_pos_heads, key_neg_heads, value_neg_heads)
+            # Step 2: Compute negative attention - An = Attn(Q_positive, K_nag_negative, V_nag_negative)
+            # Use NAG negative context (not CFG negative)
+            key_nag_neg = attn.to_k(nag_negative_context)
+            value_nag_neg = attn.to_v(nag_negative_context)
+            key_nag_neg_heads = key_nag_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            value_nag_neg_heads = value_nag_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+
+            hidden_states_negative_attn = self._compute_attention(query_pos_heads, key_nag_neg_heads, value_nag_neg_heads)
             hidden_states_negative_attn = hidden_states_negative_attn.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # Step 3: NAG guidance formula (official implementation)
@@ -225,10 +234,10 @@ class NAGAttnProcessor2_0:
 
             # Step 5: Alpha blending (interpolation between guidance and positive)
             alpha = self.nag_alpha
-            A_nag = hidden_states_guidance * alpha + hidden_states_positive * (1 - alpha)
+            A_cond = hidden_states_guidance * alpha + hidden_states_positive * (1 - alpha)
 
-            # Combine: [negative_batch, nag_batch]
-            hidden_states = torch.cat([A_negative, A_nag], dim=0)
+            # Combine: [uncond_batch, cond_batch_with_nag]
+            hidden_states = torch.cat([A_uncond, A_cond], dim=0)
 
         else:
             # Standard attention (not NAG mode)

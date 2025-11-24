@@ -420,11 +420,44 @@ def custom_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {i}: Updated prompt embeddings")
 
-        # Both NAG and CFG use double batch structure: [negative, positive]
-        # NAG processors will apply guidance in attention space on positive batch
-        latent_model_input = torch.cat([latents] * 2)
-        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        # Calculate current sigma and guidance scale first to determine if we need CFG
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+        )
+
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+
+        # Prepare latent input: single batch if no CFG needed, double batch otherwise
+        if do_classifier_free_guidance:
+            # Both NAG and CFG use double batch structure: [negative, positive]
+            # NAG processors will apply guidance in attention space on positive batch
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Prepare prompt embeddings: [negative, positive]
+            # NAG mode: use NAG negative embeddings for cross-attention guidance
+            if nag_active:
+                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+            else:
+                prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        else:
+            # CFG = 1.0: only use conditional (positive) pass
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+            prompt_embeds_input = current_prompt_embeds
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
@@ -436,12 +469,23 @@ def custom_sampling_loop(
 
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
-            add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            if do_classifier_free_guidance:
+                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+
+                if current_pooled_prompt_embeds is not None:
+                    # NAG mode: use NAG negative pooled embeddings
+                    if nag_active and nag_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    elif current_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    else:
+                        add_text_embeds = None
+                else:
+                    add_text_embeds = None
             else:
-                add_text_embeds = None
+                # CFG = 1.0: only use positive embeddings
+                add_text_embeds = current_pooled_prompt_embeds
 
             added_cond_kwargs = {
                 "text_embeds": add_text_embeds,
@@ -467,6 +511,9 @@ def custom_sampling_loop(
             # Only run ControlNet if at least one is active
             if any(s > 0 for s in active_scales):
                 with torch.no_grad():
+                    # Determine batch size for ControlNet conditioning
+                    batch_multiplier = 2 if do_classifier_free_guidance else 1
+
                     # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         # Multiple ControlNets
@@ -476,7 +523,7 @@ def custom_sampling_loop(
                             if scale > 0:
                                 controlnet_kwargs = {
                                     "encoder_hidden_states": prompt_embeds_input,
-                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "controlnet_cond": ctrl_img.repeat(batch_multiplier, 1, 1, 1),
                                     "conditioning_scale": scale,
                                     "return_dict": False,
                                 }
@@ -504,7 +551,7 @@ def custom_sampling_loop(
                         if active_scales[0] > 0:
                             controlnet_kwargs = {
                                 "encoder_hidden_states": prompt_embeds_input,
-                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "controlnet_cond": control_image_tensors[0].repeat(batch_multiplier, 1, 1, 1),
                                 "conditioning_scale": active_scales[0],
                                 "return_dict": False,
                             }
@@ -539,16 +586,10 @@ def custom_sampling_loop(
             ).sample
 
         # Perform guidance with CFG
-        # NAG mode: noise_pred still has [negative, positive] batches
-        # NAG guidance was applied in attention space, but CFG is still applied here
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-
-        # CFG calculations
-        if True:
-            # Calculate current sigma for sigma-based scheduling
-            current_sigma = 0.0
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                current_sigma = float(scheduler.sigmas[i].item())
+        if do_classifier_free_guidance:
+            # NAG mode: noise_pred still has [negative, positive] batches
+            # NAG guidance was applied in attention space, but CFG is still applied here
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
             # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
@@ -559,19 +600,6 @@ def custom_sampling_loop(
                 diff_norm = torch.norm(diff).item()
                 if uncond_norm > 1e-8:
                     current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
-
-            # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
-            current_guidance_scale = calculate_dynamic_cfg(
-                sigma=current_sigma,
-                sigma_max=sigma_max,
-                cfg_base=guidance_scale,
-                cfg_schedule_type=cfg_schedule_type,
-                cfg_schedule_min=cfg_schedule_min,
-                cfg_schedule_max=cfg_schedule_max,
-                cfg_schedule_power=cfg_schedule_power,
-                snr=previous_snr,  # Use previous step's SNR
-                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
-            )
 
             # Store current SNR for next step
             if current_snr is not None:
@@ -591,6 +619,10 @@ def custom_sampling_loop(
             # Apply guidance rescale if specified (important for v-prediction models)
             if guidance_rescale > 0.0:
                 noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+        else:
+            # CFG = 1.0: use the prediction directly (no guidance needed)
+            noise_pred_text = noise_pred
+            noise_pred_uncond = None
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
@@ -601,12 +633,14 @@ def custom_sampling_loop(
         # so we pass len(timesteps) as the total to avoid showing progress > 100%
         if progress_callback is not None:
             # Calculate CFG metrics for developer mode
-            cfg_metrics = calculate_cfg_metrics(
-                noise_pred_uncond,
-                noise_pred_text,
-                current_guidance_scale,
-                developer_mode=developer_mode
-            )
+            cfg_metrics = None
+            if do_classifier_free_guidance:
+                cfg_metrics = calculate_cfg_metrics(
+                    noise_pred_uncond,
+                    noise_pred_text,
+                    current_guidance_scale,
+                    developer_mode=developer_mode
+                )
             # Add timestep/sigma info to metrics
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
@@ -852,11 +886,44 @@ def custom_img2img_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {t_start + i}: Updated prompt embeddings")
 
-        # Both NAG and CFG use double batch structure: [negative, positive]
-        # NAG processors will apply guidance in attention space on positive batch
-        latent_model_input = torch.cat([latents] * 2)
-        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-        prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        # Calculate current sigma and guidance scale first to determine if we need CFG
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
+
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+        )
+
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+
+        # Prepare latent input: single batch if no CFG needed, double batch otherwise
+        if do_classifier_free_guidance:
+            # Both NAG and CFG use double batch structure: [negative, positive]
+            # NAG processors will apply guidance in attention space on positive batch
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Prepare prompt embeddings: [negative, positive]
+            # NAG mode: use NAG negative embeddings for cross-attention guidance
+            if nag_active:
+                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+            else:
+                prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+        else:
+            # CFG = 1.0: only use conditional (positive) pass
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+            prompt_embeds_input = current_prompt_embeds
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
@@ -868,12 +935,23 @@ def custom_img2img_sampling_loop(
 
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
-            add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None and current_negative_pooled_prompt_embeds is not None:
-                add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            if do_classifier_free_guidance:
+                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+
+                if current_pooled_prompt_embeds is not None:
+                    # NAG mode: use NAG negative pooled embeddings
+                    if nag_active and nag_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    elif current_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    else:
+                        add_text_embeds = None
+                else:
+                    add_text_embeds = None
             else:
-                add_text_embeds = None
+                # CFG = 1.0: only use positive embeddings
+                add_text_embeds = current_pooled_prompt_embeds
 
             added_cond_kwargs = {
                 "text_embeds": add_text_embeds,
@@ -899,6 +977,10 @@ def custom_img2img_sampling_loop(
             # Only run ControlNet if at least one is active
             if any(s > 0 for s in active_scales):
                 with torch.no_grad():
+                    # Determine batch size for ControlNet conditioning
+                    batch_multiplier = 2 if do_classifier_free_guidance else 1
+
+                    # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         # Multiple ControlNets
                         down_block_res_samples_list = []
@@ -907,7 +989,7 @@ def custom_img2img_sampling_loop(
                             if scale > 0:
                                 controlnet_kwargs = {
                                     "encoder_hidden_states": prompt_embeds_input,
-                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "controlnet_cond": ctrl_img.repeat(batch_multiplier, 1, 1, 1),
                                     "conditioning_scale": scale,
                                     "return_dict": False,
                                 }
@@ -934,7 +1016,7 @@ def custom_img2img_sampling_loop(
                         if active_scales[0] > 0:
                             controlnet_kwargs = {
                                 "encoder_hidden_states": prompt_embeds_input,
-                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "controlnet_cond": control_image_tensors[0].repeat(batch_multiplier, 1, 1, 1),
                                 "conditioning_scale": active_scales[0],
                                 "return_dict": False,
                             }
@@ -968,16 +1050,10 @@ def custom_img2img_sampling_loop(
             ).sample
 
         # Perform guidance with CFG
-        # NAG mode: noise_pred still has [negative, positive] batches
-        # NAG guidance was applied in attention space, but CFG is still applied here
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-
-        # CFG calculations
-        if True:
-            # Calculate current sigma for sigma-based scheduling
-            current_sigma = 0.0
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                current_sigma = float(scheduler.sigmas[i].item())
+        if do_classifier_free_guidance:
+            # NAG mode: noise_pred still has [negative, positive] batches
+            # NAG guidance was applied in attention space, but CFG is still applied here
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
             # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
@@ -988,19 +1064,6 @@ def custom_img2img_sampling_loop(
                 diff_norm = torch.norm(diff).item()
                 if uncond_norm > 1e-8:
                     current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
-
-            # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
-            current_guidance_scale = calculate_dynamic_cfg(
-                sigma=current_sigma,
-                sigma_max=sigma_max,
-                cfg_base=guidance_scale,
-                cfg_schedule_type=cfg_schedule_type,
-                cfg_schedule_min=cfg_schedule_min,
-                cfg_schedule_max=cfg_schedule_max,
-                cfg_schedule_power=cfg_schedule_power,
-                snr=previous_snr,  # Use previous step's SNR
-                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
-            )
 
             # Store current SNR for next step
             if current_snr is not None:
@@ -1020,6 +1083,10 @@ def custom_img2img_sampling_loop(
             # Apply guidance rescale if specified (important for v-prediction models)
             if guidance_rescale > 0.0:
                 noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+        else:
+            # CFG = 1.0: use the prediction directly (no guidance needed)
+            noise_pred_text = noise_pred
+            noise_pred_uncond = None
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
@@ -1027,22 +1094,22 @@ def custom_img2img_sampling_loop(
 
         # Progress callback
         if progress_callback is not None:
+            # Calculate CFG metrics for developer mode
             cfg_metrics = None
-            if not nag_active:
-                # Calculate CFG metrics for developer mode
+            if do_classifier_free_guidance:
                 cfg_metrics = calculate_cfg_metrics(
                     noise_pred_uncond,
                     noise_pred_text,
                     current_guidance_scale,
                     developer_mode=developer_mode
                 )
-                # Add timestep/sigma info to metrics
-                if cfg_metrics is not None:
-                    cfg_metrics['timestep'] = int(t.item())
-                    cfg_metrics['step'] = i
-                    # Get sigma from scheduler if available
-                    if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                        cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+            # Add timestep/sigma info to metrics
+            if cfg_metrics is not None:
+                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['step'] = i
+                # Get sigma from scheduler if available
+                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
 
@@ -1319,24 +1386,58 @@ def custom_inpaint_sampling_loop(
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
 
-        # Both NAG and CFG use double batch structure: [negative, positive]
-        # NAG processors will apply guidance in attention space on positive batch
-        latent_model_input = torch.cat([latents] * 2)
-        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+        # Calculate current sigma and guidance scale first to determine if we need CFG
+        current_sigma = 0.0
+        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+            current_sigma = float(scheduler.sigmas[i].item())
 
-        # Only concatenate mask and masked image for inpaint-specific UNets
-        # Regular UNets use post-processing masking instead (see after scheduler.step)
-        if is_inpaint_unet:
-            # Use original clean image latents, masked to show only non-inpaint regions
-            masked_image_latents = image_latents * (1 - mask_latent)
-            latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+        current_guidance_scale = calculate_dynamic_cfg(
+            sigma=current_sigma,
+            sigma_max=sigma_max,
+            cfg_base=guidance_scale,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power,
+            snr=previous_snr,
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+        )
 
-        # Prepare prompt embeddings: [negative, positive]
-        # NAG mode: use NAG negative embeddings for cross-attention guidance
-        if nag_active:
-            prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+
+        # Prepare latent input: single batch if no CFG needed, double batch otherwise
+        if do_classifier_free_guidance:
+            # Both NAG and CFG use double batch structure: [negative, positive]
+            # NAG processors will apply guidance in attention space on positive batch
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Only concatenate mask and masked image for inpaint-specific UNets
+            # Regular UNets use post-processing masking instead (see after scheduler.step)
+            if is_inpaint_unet:
+                # Use original clean image latents, masked to show only non-inpaint regions
+                masked_image_latents = image_latents * (1 - mask_latent)
+                latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+
+            # Prepare prompt embeddings: [negative, positive]
+            # NAG mode: use NAG negative embeddings for cross-attention guidance
+            if nag_active:
+                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+            else:
+                prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
         else:
-            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+            # CFG = 1.0: only use conditional (positive) pass
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Only concatenate mask and masked image for inpaint-specific UNets
+            if is_inpaint_unet:
+                # Use original clean image latents, masked to show only non-inpaint regions
+                masked_image_latents = image_latents * (1 - mask_latent)
+                latent_model_input = torch.cat([latent_model_input, mask_latent, masked_image_latents], dim=1)
+
+            prompt_embeds_input = current_prompt_embeds
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
@@ -1348,18 +1449,23 @@ def custom_inpaint_sampling_loop(
 
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
-            add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
-            if current_pooled_prompt_embeds is not None:
-                # NAG mode: use NAG negative pooled embeddings
-                if nag_active and nag_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
-                elif current_negative_pooled_prompt_embeds is not None:
-                    add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+            if do_classifier_free_guidance:
+                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+
+                if current_pooled_prompt_embeds is not None:
+                    # NAG mode: use NAG negative pooled embeddings
+                    if nag_active and nag_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    elif current_negative_pooled_prompt_embeds is not None:
+                        add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                    else:
+                        add_text_embeds = None
                 else:
                     add_text_embeds = None
             else:
-                add_text_embeds = None
+                # CFG = 1.0: only use positive embeddings
+                add_text_embeds = current_pooled_prompt_embeds
 
             added_cond_kwargs = {
                 "text_embeds": add_text_embeds,
@@ -1381,6 +1487,10 @@ def custom_inpaint_sampling_loop(
 
             if any(s > 0 for s in active_scales):
                 with torch.no_grad():
+                    # Determine batch size for ControlNet conditioning
+                    batch_multiplier = 2 if do_classifier_free_guidance else 1
+
+                    # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         down_block_res_samples_list = []
                         mid_block_res_sample_list = []
@@ -1388,7 +1498,7 @@ def custom_inpaint_sampling_loop(
                             if scale > 0:
                                 controlnet_kwargs = {
                                     "encoder_hidden_states": prompt_embeds_input,
-                                    "controlnet_cond": ctrl_img.repeat(2, 1, 1, 1),
+                                    "controlnet_cond": ctrl_img.repeat(batch_multiplier, 1, 1, 1),
                                     "conditioning_scale": scale,
                                     "return_dict": False,
                                 }
@@ -1413,7 +1523,7 @@ def custom_inpaint_sampling_loop(
                         if active_scales[0] > 0:
                             controlnet_kwargs = {
                                 "encoder_hidden_states": prompt_embeds_input,
-                                "controlnet_cond": control_image_tensors[0].repeat(2, 1, 1, 1),
+                                "controlnet_cond": control_image_tensors[0].repeat(batch_multiplier, 1, 1, 1),
                                 "conditioning_scale": active_scales[0],
                                 "return_dict": False,
                             }
@@ -1445,53 +1555,44 @@ def custom_inpaint_sampling_loop(
                 **unet_kwargs
             ).sample
 
-        # Perform guidance with dynamic CFG
-        # NAG mode: noise_pred still has [negative, positive] batches
-        # NAG guidance was applied in attention space, but CFG is still applied here
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # Perform guidance with CFG
+        if do_classifier_free_guidance:
+            # NAG mode: noise_pred still has [negative, positive] batches
+            # NAG guidance was applied in attention space, but CFG is still applied here
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-        # Calculate current sigma for sigma-based scheduling
-        current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
+            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
+            current_snr = None
+            if cfg_rescale_snr_alpha > 0.0 or developer_mode:
+                # Calculate SNR from CFG components
+                uncond_norm = torch.norm(noise_pred_uncond).item()
+                diff = noise_pred_text - noise_pred_uncond
+                diff_norm = torch.norm(diff).item()
+                if uncond_norm > 1e-8:
+                    current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-        # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
-        current_snr = None
-        if cfg_rescale_snr_alpha > 0.0 or developer_mode:
-            # Calculate SNR from CFG components
-            uncond_norm = torch.norm(noise_pred_uncond).item()
-            diff = noise_pred_text - noise_pred_uncond
-            diff_norm = torch.norm(diff).item()
-            if uncond_norm > 1e-8:
-                current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
+            # Store current SNR for next step
+            if current_snr is not None:
+                previous_snr = current_snr
 
-        # Calculate dynamic CFG scale (using previous step's SNR for SNR-based scheduling)
-        current_guidance_scale = calculate_dynamic_cfg(
-            sigma=current_sigma,
-            sigma_max=sigma_max,
-            cfg_base=guidance_scale,
-            cfg_schedule_type=cfg_schedule_type,
-            cfg_schedule_min=cfg_schedule_min,
-            cfg_schedule_max=cfg_schedule_max,
-            cfg_schedule_power=cfg_schedule_power,
-            snr=previous_snr,  # Use previous step's SNR
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
-        )
+            # Apply CFG
+            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        # Store current SNR for next step
-        if current_snr is not None:
-            previous_snr = current_snr
+            # Apply dynamic thresholding if enabled (prevents CFG saturation)
+            if dynamic_threshold_percentile > 0.0:
+                noise_pred = dynamic_thresholding(
+                    noise_pred,
+                    percentile=dynamic_threshold_percentile,
+                    clamp_value=dynamic_threshold_mimic_scale
+                )
 
-        # Apply CFG
-        noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        # Apply dynamic thresholding if enabled (prevents CFG saturation)
-        if dynamic_threshold_percentile > 0.0:
-            noise_pred = dynamic_thresholding(
-                noise_pred,
-                percentile=dynamic_threshold_percentile,
-                clamp_value=dynamic_threshold_mimic_scale
-            )
+            # Apply guidance rescale if specified (important for v-prediction models)
+            if guidance_rescale > 0.0:
+                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+        else:
+            # CFG = 1.0: use the prediction directly (no guidance needed)
+            noise_pred_text = noise_pred
+            noise_pred_uncond = None
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
@@ -1517,12 +1618,14 @@ def custom_inpaint_sampling_loop(
 
         if progress_callback is not None:
             # Calculate CFG metrics for developer mode
-            cfg_metrics = calculate_cfg_metrics(
-                noise_pred_uncond,
-                noise_pred_text,
-                current_guidance_scale,
-                developer_mode=developer_mode
-            )
+            cfg_metrics = None
+            if do_classifier_free_guidance:
+                cfg_metrics = calculate_cfg_metrics(
+                    noise_pred_uncond,
+                    noise_pred_text,
+                    current_guidance_scale,
+                    developer_mode=developer_mode
+                )
             # Add timestep/sigma info to metrics
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())

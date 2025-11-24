@@ -190,27 +190,35 @@ class NAGAttnProcessor2_0:
             inner_dim = key.shape[-1]
             head_dim = inner_dim // attn.heads
 
-            # Official implementation: tile query to match batch expansion
-            # For batch_size=2*origin_batch_size (CFG), tile each query:
-            # [uncond, cond] → [uncond, uncond, cond, cond]
-            query_tiled = query.tile(2, 1, 1)  # [4, seq, dim]
+            # Official implementation query expansion logic:
+            # if batch_size == 2 * origin_batch_size: query = query.tile(2, 1, 1)
+            # else: query = torch.cat((query, query[origin_batch_size:2 * origin_batch_size]), dim=0)
+            #
+            # In our case: context_batch (official's batch_size) = 3, origin_batch_size = 1
+            # So context_batch == 3 * origin_batch_size, use the else branch:
+            # query: [uncond, cond] → [uncond, cond] + [cond] = [uncond, cond, cond] (batch=3)
+            if context_batch == 2 * origin_batch_size:
+                query_expanded = query.tile(2, 1, 1)
+            else:
+                # For context_batch == 3 * origin_batch_size (CFG + NAG)
+                query_expanded = torch.cat((query, query[origin_batch_size:2 * origin_batch_size]), dim=0)
 
-            # Reshape for multi-head attention
-            query_tiled = query_tiled.view(batch_size * 2, -1, attn.heads, head_dim).transpose(1, 2)
+            # Reshape ALL tensors with context_batch (3) to match official implementation
+            query_expanded = query_expanded.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
             key = key.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
             value = value.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
 
-            # Compute attention: [4 queries] × [3 contexts] via broadcasting
-            # Result indices (batch=4):
-            # 0: uncond→cfg_negative, 1: uncond→cfg_positive
-            # 2: cond→cfg_positive, 3: cond→nag_negative
-            hidden_states_all = self._compute_attention(query_tiled, key, value, attention_mask)
-            hidden_states_all = hidden_states_all.transpose(1, 2).reshape(batch_size * 2, -1, attn.heads * head_dim).to(query.dtype)
+            # Compute attention with matching batch sizes (3)
+            # Result indices for context_batch=3 (CFG + NAG):
+            # 0: uncond→cfg_negative, 1: cond→cfg_positive, 2: cond→nag_negative
+            hidden_states_all = self._compute_attention(query_expanded, key, value, attention_mask)
+            hidden_states_all = hidden_states_all.transpose(1, 2).reshape(context_batch, -1, attn.heads * head_dim).to(query.dtype)
 
             # Extract results following official implementation:
-            # For NAG: use results from cond queries (indices 2 and 3)
-            hidden_states_negative = hidden_states_all[-origin_batch_size:]  # cond→nag_negative (index 3)
-            hidden_states_positive = hidden_states_all[batch_size:batch_size + origin_batch_size]  # cond→cfg_positive (index 2)
+            # hidden_states_negative = last origin_batch_size items (index 2)
+            # hidden_states_positive = middle origin_batch_size items (index 1)
+            hidden_states_negative = hidden_states_all[-origin_batch_size:]  # index 2: cond→nag_negative
+            hidden_states_positive = hidden_states_all[origin_batch_size:2 * origin_batch_size]  # index 1: uncond→cfg_positive
 
             # Debug logging - tensor statistics (first cross-attention call only)
             if not hasattr(self, '_tensor_stats_logged'):

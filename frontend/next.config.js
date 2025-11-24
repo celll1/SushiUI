@@ -24,6 +24,18 @@ function getBackendPort() {
 const backendPort = getBackendPort();
 const backendUrl = `http://localhost:${backendPort}`;
 
+// Suppress proxy error logs during development
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  // Suppress ECONNREFUSED errors from proxy attempts
+  if (args[0]?.includes?.('Failed to proxy') ||
+      args[0]?.code === 'ECONNREFUSED' ||
+      args[0]?.toString?.()?.includes?.('ECONNREFUSED')) {
+    return;
+  }
+  originalConsoleError.apply(console, args);
+};
+
 const nextConfig = {
   async rewrites() {
     return [

@@ -1442,7 +1442,7 @@ def custom_inpaint_sampling_loop(
             ).sample
 
         # Perform guidance with dynamic CFG
-        if apply_nag_this_step:
+        if nag_active:
             # NAG mode: noise_pred contains [positive, nag_negative]
             noise_pred_text = noise_pred  # Both predictions (will be split later)
             noise_pred_uncond = None  # Not used in NAG mode
@@ -1452,7 +1452,7 @@ def custom_inpaint_sampling_loop(
 
         # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
         current_snr = None
-        if not apply_nag_this_step and (cfg_rescale_snr_alpha > 0.0 or developer_mode):
+        if not nag_active and (cfg_rescale_snr_alpha > 0.0 or developer_mode):
             # Calculate SNR from CFG components
             uncond_norm = torch.norm(noise_pred_uncond).item()
             diff = noise_pred_text - noise_pred_uncond

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # System
     max_batch_size: int = 4
     device: str = "cuda"
+    attention_type: str = "normal"  # "normal", "sage", "flash"
 
     # Authentication (optional)
     auth_enabled: bool = False

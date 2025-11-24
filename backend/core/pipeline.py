@@ -42,6 +42,10 @@ class DiffusionPipelineManager:
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
+        # Attention processor settings
+        self.attention_type: str = settings.attention_type  # "normal", "sage", "flash"
+        self.original_processors: Optional[dict] = None  # Store original processors
+
         # Cancellation flag
         self.cancel_requested = False
 
@@ -1181,6 +1185,12 @@ class DiffusionPipelineManager:
             if is_v_prediction:
                 print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
+            # Set attention processor based on attention_type (unless NAG is enabled)
+            # NAG has its own processors that will be set in custom_sampling_loop
+            if not params.get("nag_enable", False) and self.attention_type != "normal":
+                from core.attention_processors import set_attention_processor
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+
             # Call custom sampling loop
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
@@ -1223,6 +1233,12 @@ class DiffusionPipelineManager:
             traceback.print_exc()
             raise
         finally:
+            # Restore original attention processors if they were changed
+            if self.original_processors is not None:
+                from core.attention_processors import restore_processors
+                restore_processors(pipeline_to_use.unet, self.original_processors)
+                self.original_processors = None
+
             # Clear intermediate tensors
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()
@@ -1533,6 +1549,12 @@ class DiffusionPipelineManager:
             if is_v_prediction:
                 print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
+            # Set attention processor based on attention_type (unless NAG is enabled)
+            # NAG has its own processors that will be set in custom_sampling_loop
+            if not params.get("nag_enable", False) and self.attention_type != "normal":
+                from core.attention_processors import set_attention_processor
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+
             # Use t_start directly for custom sampling loop
             t_start_override = t_start if fix_steps else None
             if fix_steps:
@@ -1579,6 +1601,12 @@ class DiffusionPipelineManager:
             import traceback
             traceback.print_exc()
             raise
+        finally:
+            # Restore original attention processors if they were changed
+            if self.original_processors is not None:
+                from core.attention_processors import restore_processors
+                restore_processors(pipeline_to_use.unet, self.original_processors)
+                self.original_processors = None
 
         # Apply extensions after generation
         for ext in self.extensions:
@@ -1751,6 +1779,12 @@ class DiffusionPipelineManager:
         if is_v_prediction:
             print(f"[Pipeline] V-prediction model detected, applying guidance_rescale={guidance_rescale}")
 
+        # Set attention processor based on attention_type (unless NAG is enabled)
+        # NAG has its own processors that will be set in custom_sampling_loop
+        if not params.get("nag_enable", False) and self.attention_type != "normal":
+            from core.attention_processors import set_attention_processor
+            self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+
         # Use t_start directly for custom sampling loop
         t_start_override = t_start if fix_steps else None
         if fix_steps:
@@ -1795,6 +1829,12 @@ class DiffusionPipelineManager:
             nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
             **controlnet_kwargs,
         )
+
+        # Restore original attention processors if they were changed
+        if self.original_processors is not None:
+            from core.attention_processors import restore_processors
+            restore_processors(pipeline_to_use.unet, self.original_processors)
+            self.original_processors = None
 
         # Apply extensions after generation
         for ext in self.extensions:

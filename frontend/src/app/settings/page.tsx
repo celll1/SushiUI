@@ -60,6 +60,9 @@ export default function SettingsPage() {
   // Advanced CFG settings visibility
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
+  // Attention type
+  const [attentionType, setAttentionType] = useState<"normal" | "sage" | "flash">("normal");
+
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
 
@@ -177,6 +180,11 @@ export default function SettingsPage() {
     if (typeof window !== 'undefined') {
       setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
       setIncludeMetadataInDownloads(localStorage.getItem('include_metadata_in_downloads') === 'true');
+
+      const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | null;
+      if (savedAttentionType) {
+        setAttentionType(savedAttentionType);
+      }
 
       const savedResolutionStep = localStorage.getItem('resolution_step');
       if (savedResolutionStep) {
@@ -655,6 +663,31 @@ export default function SettingsPage() {
                       Show advanced CFG (Classifier-Free Guidance) settings in generation panels. Includes Dynamic CFG Schedule (sigma-based, SNR-based), Dynamic Thresholding, and related parameters. When disabled, all advanced CFG features are turned off.
                     </p>
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="attention_type" className="block text-sm font-medium text-gray-300">
+                    Attention Type
+                  </label>
+                  <select
+                    id="attention_type"
+                    value={attentionType}
+                    onChange={(e) => {
+                      const newValue = e.target.value as "normal" | "sage" | "flash";
+                      setAttentionType(newValue);
+                      localStorage.setItem('attention_type', newValue);
+                      // Show alert that restart is required
+                      alert('Backend restart required for attention type change to take effect.');
+                    }}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="normal">Normal (PyTorch SDPA + Auto Flash Attention)</option>
+                    <option value="sage">SageAttention (2-5x faster, quantized)</option>
+                    <option value="flash">FlashAttention (explicit FA2)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). Backend restart required after changing.
+                  </p>
                 </div>
 
               </div>

@@ -2,16 +2,18 @@
 NAG (Normalized Attention Guidance) Attention Processor
 
 Implements attention-space guidance by computing:
-1. Ap = Attn(Q, Kp, Vp) - positive attention
-2. An = Attn(Q, Kn, Vn) - negative attention
-3. A~ = Ap * (1+φ) - An * φ - extrapolation
-4. A^ = Normalize(A~) - L1 normalization with tau threshold
-5. Anag = Ap * (1-α) + A^ * α - alpha blending
+1. hidden_states_positive = Attn(Q, K_pos, V_pos) - positive attention output
+2. hidden_states_negative = Attn(Q, K_neg, V_neg) - negative attention output
+3. guidance = positive * φ - negative * (φ - 1) - NAG guidance formula
+4. guidance_normalized = guidance * min(||guidance||/||positive||, tau) - L1 normalization with tau threshold
+5. result = guidance_normalized * α + positive * (1 - α) - alpha blending
 
 Where:
-- φ (phi) = nag_scale
-- α (alpha) = nag_alpha
-- tau = nag_tau
+- φ (phi) = nag_scale (guidance strength, typical: 3-7)
+- τ (tau) = nag_tau (normalization threshold, typical: 2.5-3.5)
+- α (alpha) = nag_alpha (blending factor, typical: 0.25-0.5)
+
+Reference: Official implementation from ChenDarYen/Normalized-Attention-Guidance
 """
 
 import torch
@@ -191,7 +193,7 @@ class NAGAttnProcessor2_0:
             A_negative = A_negative.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # Batch 1: NAG guidance on positive batch
-            # Ap = Attn(Q_positive, K_positive, V_positive)
+            # Step 1: Compute positive attention - Ap = Attn(Q_positive, K_positive, V_positive)
             key_positive = attn.to_k(positive_context)
             value_positive = attn.to_v(positive_context)
 
@@ -199,28 +201,31 @@ class NAGAttnProcessor2_0:
             key_pos_heads = key_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
             value_pos_heads = value_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
 
-            Ap = self._compute_attention(query_pos_heads, key_pos_heads, value_pos_heads)
-            Ap = Ap.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+            hidden_states_positive = self._compute_attention(query_pos_heads, key_pos_heads, value_pos_heads)
+            hidden_states_positive = hidden_states_positive.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
-            # An = Attn(Q_positive, K_negative, V_negative) - use negative context for NAG
-            An = self._compute_attention(query_pos_heads, key_neg_heads, value_neg_heads)
-            An = An.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+            # Step 2: Compute negative attention - An = Attn(Q_positive, K_negative, V_negative)
+            hidden_states_negative_attn = self._compute_attention(query_pos_heads, key_neg_heads, value_neg_heads)
+            hidden_states_negative_attn = hidden_states_negative_attn.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
-            # NAG guidance: A~ = Ap * (1+φ) - An * φ
+            # Step 3: NAG guidance formula (official implementation)
+            # guidance = positive * φ - negative * (φ - 1)
             phi = self.nag_scale
-            A_tilde = Ap * (1 + phi) - An * phi
+            hidden_states_guidance = hidden_states_positive * phi - hidden_states_negative_attn * (phi - 1)
 
-            # L1 Normalization
+            # Step 4: L1 Normalization with tau threshold
             eps = 1e-6
-            norm_Ap = torch.norm(Ap, p=1, dim=-1, keepdim=True).clamp_min(eps)
-            norm_A_tilde = torch.norm(A_tilde, p=1, dim=-1, keepdim=True).clamp_min(eps)
-            scale_factor = norm_A_tilde / norm_Ap
-            scale_clamped = torch.minimum(scale_factor, torch.full_like(scale_factor, self.nag_tau))
-            A_hat = A_tilde * scale_clamped / scale_factor
+            norm_positive = torch.norm(hidden_states_positive, p=1, dim=-1, keepdim=True).clamp_min(eps)
+            norm_guidance = torch.norm(hidden_states_guidance, p=1, dim=-1, keepdim=True).clamp_min(eps)
+            scale = norm_guidance / norm_positive
 
-            # Alpha blending
+            # Clamp scale to tau threshold
+            scale_clamped = torch.minimum(scale, torch.full_like(scale, self.nag_tau))
+            hidden_states_guidance = hidden_states_guidance * scale_clamped / scale
+
+            # Step 5: Alpha blending (interpolation between guidance and positive)
             alpha = self.nag_alpha
-            A_nag = Ap * (1 - alpha) + A_hat * alpha
+            A_nag = hidden_states_guidance * alpha + hidden_states_positive * (1 - alpha)
 
             # Combine: [negative_batch, nag_batch]
             hidden_states = torch.cat([A_negative, A_nag], dim=0)

@@ -159,7 +159,7 @@ class NAGAttnProcessor2_0:
         # Debug logging (only log first few times to avoid spam)
         import sys
         if is_nag_mode and not hasattr(self, '_debug_logged'):
-            print(f"[NAG DEBUG] is_cross={is_cross_attention}, batch_size={batch_size}, context_batch={context_batch}, has_nag_scale={hasattr(self, 'nag_scale')}", file=sys.stderr)
+            print(f"[NAG DEBUG] is_cross={is_cross_attention_original}, batch_size={batch_size}, context_batch={context_batch}, has_nag_scale={hasattr(self, 'nag_scale')}", file=sys.stderr)
             self._debug_logged = True
 
         if is_nag_mode and batch_size == 2 and context_batch == 2:

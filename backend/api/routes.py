@@ -102,6 +102,8 @@ class GenerationParams(BaseModel):
     nag_alpha: float = 0.25  # NAG blending factor (0.25-0.5 typical)
     nag_sigma_end: float = 0.0  # Sigma threshold to disable NAG (0.0 = always enabled)
     nag_negative_prompt: Optional[str] = ""  # Separate negative prompt for NAG (empty = use main negative prompt)
+    # Attention processor type
+    attention_type: str = "normal"  # "normal", "sage", "flash"
 
 class Txt2ImgRequest(GenerationParams):
     pass

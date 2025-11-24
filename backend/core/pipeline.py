@@ -42,8 +42,7 @@ class DiffusionPipelineManager:
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
-        # Attention processor settings
-        self.attention_type: str = settings.attention_type  # "normal", "sage", "flash"
+        # Attention processor settings (dynamically loaded from localStorage via API)
         self.original_processors: Optional[dict] = None  # Store original processors
 
         # Cancellation flag
@@ -1187,9 +1186,10 @@ class DiffusionPipelineManager:
 
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
-            if not params.get("nag_enable", False) and self.attention_type != "normal":
+            attention_type = params.get("attention_type", "normal")
+            if not params.get("nag_enable", False) and attention_type != "normal":
                 from core.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
             # Call custom sampling loop
             image = custom_sampling_loop(
@@ -1551,9 +1551,10 @@ class DiffusionPipelineManager:
 
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
-            if not params.get("nag_enable", False) and self.attention_type != "normal":
+            attention_type = params.get("attention_type", "normal")
+            if not params.get("nag_enable", False) and attention_type != "normal":
                 from core.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
             # Use t_start directly for custom sampling loop
             t_start_override = t_start if fix_steps else None

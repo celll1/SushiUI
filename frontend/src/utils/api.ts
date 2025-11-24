@@ -230,8 +230,12 @@ export interface GeneratedImage {
 }
 
 export const generateTxt2Img = async (params: GenerationParams) => {
+  // Get attention_type from localStorage
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+
   const paramsWithImages = {
     ...params,
+    attention_type: attentionType || 'normal',
     controlnets: await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed"),
   };
 
@@ -240,8 +244,12 @@ export const generateTxt2Img = async (params: GenerationParams) => {
 };
 
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
+  // Get attention_type from localStorage
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+
   const paramsWithImages = {
     ...params,
+    attention_type: attentionType || 'normal',
     controlnets: await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed"),
   };
 
@@ -289,6 +297,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
+  formData.append("attention_type", paramsWithImages.attention_type || "normal");
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -297,8 +306,12 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 };
 
 export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
+  // Get attention_type from localStorage
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+
   const paramsWithImages = {
     ...params,
+    attention_type: attentionType || 'normal',
     controlnets: await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed"),
   };
 
@@ -360,6 +373,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
+  formData.append("attention_type", paramsWithImages.attention_type || "normal");
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

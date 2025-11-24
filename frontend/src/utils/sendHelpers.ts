@@ -30,6 +30,8 @@ interface BaseSendParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  // Attention processor type
+  attention_type?: string;
 }
 
 /**
@@ -111,6 +113,11 @@ export function sendParametersToPanel(
   }
   if (sourceParams.nag_negative_prompt !== undefined) {
     targetParams.nag_negative_prompt = sourceParams.nag_negative_prompt;
+  }
+
+  // Add attention processor type
+  if (sourceParams.attention_type !== undefined) {
+    targetParams.attention_type = sourceParams.attention_type;
   }
 
   if (includeDenoising && sourceParams.denoising_strength !== undefined) {

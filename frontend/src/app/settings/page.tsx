@@ -676,8 +676,6 @@ export default function SettingsPage() {
                       const newValue = e.target.value as "normal" | "sage" | "flash";
                       setAttentionType(newValue);
                       localStorage.setItem('attention_type', newValue);
-                      // Show alert that restart is required
-                      alert('Backend restart required for attention type change to take effect.');
                     }}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
@@ -686,7 +684,7 @@ export default function SettingsPage() {
                     <option value="flash">FlashAttention (explicit FA2)</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). Backend restart required after changing.
+                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). Changes take effect immediately on next generation.
                   </p>
                 </div>
 

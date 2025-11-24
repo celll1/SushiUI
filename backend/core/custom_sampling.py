@@ -454,10 +454,32 @@ def custom_sampling_loop(
             if nag_active:
                 # NAG mode (following official implementation):
                 # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+                # Pad NAG negative embeddings to match the longest sequence length
+                max_seq_len = max(
+                    current_negative_prompt_embeds.shape[1],
+                    current_prompt_embeds.shape[1],
+                    nag_negative_prompt_embeds.shape[1]
+                )
+
+                # Pad each embedding to max_seq_len with zeros
+                def pad_embeds(embeds, target_len):
+                    if embeds.shape[1] < target_len:
+                        pad_len = target_len - embeds.shape[1]
+                        padding = torch.zeros(
+                            embeds.shape[0], pad_len, embeds.shape[2],
+                            dtype=embeds.dtype, device=embeds.device
+                        )
+                        return torch.cat([embeds, padding], dim=1)
+                    return embeds
+
+                current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
+                current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
+                nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
+
                 prompt_embeds_input = torch.cat([
-                    current_negative_prompt_embeds,
-                    current_prompt_embeds,
-                    nag_negative_prompt_embeds
+                    current_negative_prompt_embeds_padded,
+                    current_prompt_embeds_padded,
+                    nag_negative_prompt_embeds_padded
                 ], dim=0)
             else:
                 # Standard CFG: [negative, positive] (batch=2)
@@ -929,10 +951,32 @@ def custom_img2img_sampling_loop(
             if nag_active:
                 # NAG mode (following official implementation):
                 # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+                # Pad NAG negative embeddings to match the longest sequence length
+                max_seq_len = max(
+                    current_negative_prompt_embeds.shape[1],
+                    current_prompt_embeds.shape[1],
+                    nag_negative_prompt_embeds.shape[1]
+                )
+
+                # Pad each embedding to max_seq_len with zeros
+                def pad_embeds(embeds, target_len):
+                    if embeds.shape[1] < target_len:
+                        pad_len = target_len - embeds.shape[1]
+                        padding = torch.zeros(
+                            embeds.shape[0], pad_len, embeds.shape[2],
+                            dtype=embeds.dtype, device=embeds.device
+                        )
+                        return torch.cat([embeds, padding], dim=1)
+                    return embeds
+
+                current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
+                current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
+                nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
+
                 prompt_embeds_input = torch.cat([
-                    current_negative_prompt_embeds,
-                    current_prompt_embeds,
-                    nag_negative_prompt_embeds
+                    current_negative_prompt_embeds_padded,
+                    current_prompt_embeds_padded,
+                    nag_negative_prompt_embeds_padded
                 ], dim=0)
             else:
                 # Standard CFG: [negative, positive] (batch=2)

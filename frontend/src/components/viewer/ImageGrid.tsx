@@ -674,7 +674,7 @@ export default function ImageGrid() {
                   {selectedImage.cfg_schedule_type && selectedImage.cfg_schedule_type !== 'constant' && (
                     <div>
                       <span className="text-gray-400">CFG Schedule:</span> {selectedImage.cfg_schedule_type} (min: {selectedImage.cfg_schedule_min}, max: {selectedImage.cfg_schedule_max || selectedImage.cfg_scale})
-                      {selectedImage.cfg_schedule_type === 'quadratic' && ` power: ${selectedImage.cfg_schedule_power}`}
+                      {selectedImage.cfg_schedule_type === 'quadratic' && selectedImage.cfg_schedule_power && ` power: ${selectedImage.cfg_schedule_power}`}
                     </div>
                   )}
                   {selectedImage.cfg_rescale_snr_alpha && parseFloat(selectedImage.cfg_rescale_snr_alpha) > 0 && (

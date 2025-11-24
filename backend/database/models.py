@@ -90,21 +90,21 @@ class GeneratedImage(Base):
                     result["nag_alpha"] = str(self.parameters["nag_alpha"])
                 if "nag_sigma_end" in self.parameters:
                     result["nag_sigma_end"] = str(self.parameters["nag_sigma_end"])
-            else:
-                # Advanced CFG parameters (only when NAG is not enabled)
-                if "cfg_schedule_type" in self.parameters:
-                    result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]
-                if "cfg_schedule_min" in self.parameters:
-                    result["cfg_schedule_min"] = str(self.parameters["cfg_schedule_min"])
-                if "cfg_schedule_max" in self.parameters:
-                    result["cfg_schedule_max"] = str(self.parameters["cfg_schedule_max"])
-                if "cfg_schedule_power" in self.parameters:
-                    result["cfg_schedule_power"] = str(self.parameters["cfg_schedule_power"])
-                if "cfg_rescale_snr_alpha" in self.parameters:
-                    result["cfg_rescale_snr_alpha"] = str(self.parameters["cfg_rescale_snr_alpha"])
-                if "dynamic_threshold_percentile" in self.parameters:
-                    result["dynamic_threshold_percentile"] = str(self.parameters["dynamic_threshold_percentile"])
-                if "dynamic_threshold_mimic_scale" in self.parameters:
-                    result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
+
+            # Advanced CFG parameters (can coexist with NAG)
+            if "cfg_schedule_type" in self.parameters:
+                result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]
+            if "cfg_schedule_min" in self.parameters:
+                result["cfg_schedule_min"] = str(self.parameters["cfg_schedule_min"])
+            if "cfg_schedule_max" in self.parameters:
+                result["cfg_schedule_max"] = str(self.parameters["cfg_schedule_max"])
+            if "cfg_schedule_power" in self.parameters:
+                result["cfg_schedule_power"] = str(self.parameters["cfg_schedule_power"])
+            if "cfg_rescale_snr_alpha" in self.parameters:
+                result["cfg_rescale_snr_alpha"] = str(self.parameters["cfg_rescale_snr_alpha"])
+            if "dynamic_threshold_percentile" in self.parameters:
+                result["dynamic_threshold_percentile"] = str(self.parameters["dynamic_threshold_percentile"])
+            if "dynamic_threshold_mimic_scale" in self.parameters:
+                result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
 
         return result

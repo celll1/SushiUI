@@ -2,9 +2,49 @@
 
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import Button from "./Button";
+import { useEffect, useState } from "react";
+
+interface LastGenerationInfo {
+  width: number;
+  height: number;
+  steps: number;
+  sampler: string;
+  elapsedTime: number;
+}
 
 export default function GenerationQueue() {
   const { queue, currentItem, removeFromQueue } = useGenerationQueue();
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [lastGenInfo, setLastGenInfo] = useState<LastGenerationInfo | null>(null);
+
+  // Update elapsed time every 100ms when generating
+  useEffect(() => {
+    if (!currentItem || currentItem.status !== "generating" || !currentItem.startTime) {
+      setElapsedTime(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      const elapsed = (Date.now() - currentItem.startTime!) / 1000;
+      setElapsedTime(elapsed);
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [currentItem]);
+
+  // Save last generation info when generation completes
+  useEffect(() => {
+    if (currentItem && currentItem.status === "generating") {
+      // Store current generation info while it's running
+      setLastGenInfo({
+        width: currentItem.params.width || 0,
+        height: currentItem.params.height || 0,
+        steps: currentItem.params.steps || 0,
+        sampler: currentItem.params.sampler || "",
+        elapsedTime: elapsedTime,
+      });
+    }
+  }, [currentItem, elapsedTime]);
 
   const pendingItems = queue.filter((item) => item.status === "pending");
   const completedItems = queue.filter((item) => item.status === "completed");
@@ -32,6 +72,46 @@ export default function GenerationQueue() {
           </Button>
         )}
       </div>
+
+      {/* Generation Info */}
+      {lastGenInfo && (
+        <div className="p-2 border-b border-gray-700 bg-gray-800/80 flex-shrink-0">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Size:</span>
+              <span className="text-gray-200 font-mono">
+                {lastGenInfo.width}×{lastGenInfo.height}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Steps:</span>
+              <span className="text-gray-200 font-mono">
+                {lastGenInfo.steps}
+              </span>
+            </div>
+            <div className="flex items-center justify-between col-span-2">
+              <span className="text-gray-400">Sampler:</span>
+              <span className="text-gray-200 font-mono">
+                {lastGenInfo.sampler}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Time:</span>
+              <span className="text-blue-400 font-mono">
+                {lastGenInfo.elapsedTime.toFixed(2)}s
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Speed:</span>
+              <span className="text-blue-400 font-mono">
+                {lastGenInfo.steps > 0 && lastGenInfo.elapsedTime > 0
+                  ? `${(lastGenInfo.elapsedTime / lastGenInfo.steps).toFixed(3)}s/it`
+                  : "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Queue Items */}
       <div className="overflow-y-auto flex-1 p-2 space-y-2">

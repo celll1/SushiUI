@@ -15,6 +15,8 @@ export interface QueueItem {
   loopGroupId?: string; // ID to group loop steps together
   loopStepIndex?: number; // Index of this step in the loop sequence
   isLoopStep?: boolean; // Whether this is a loop step (vs main generation)
+  startTime?: number; // When generation started (for timing)
+  endTime?: number; // When generation completed (for timing)
 }
 
 interface GenerationQueueContextType {
@@ -110,7 +112,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     }
 
     if (nextItem) {
-      const updatedItem = { ...nextItem, status: "generating" as const };
+      const updatedItem = { ...nextItem, status: "generating" as const, startTime: Date.now() };
       setCurrentItem(updatedItem);
 
       // Update the item in queue to generating status
@@ -133,6 +135,11 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     if (!currentItem) return;
 
     console.log("[QueueContext] Completing item:", currentItem.id);
+    // Mark completion time before removing
+    const endTime = Date.now();
+    const elapsedMs = currentItem.startTime ? endTime - currentItem.startTime : 0;
+    console.log(`[QueueContext] Generation took ${(elapsedMs / 1000).toFixed(2)}s`);
+
     // Remove completed item from queue
     setQueue((prev) => prev.filter((item) => item.id !== currentItem.id));
     setCurrentItem(null);

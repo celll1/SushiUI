@@ -28,14 +28,17 @@ class SageAttnProcessor:
             from sageattention import sageattn
             self.sageattn = sageattn
             self._available = True
+            self._call_count = 0  # Track number of calls
             print("[SageAttention] ✓ Successfully loaded SageAttention module")
         except ImportError:
             print("[SageAttention] ✗ Warning: sageattention not installed. Falling back to normal attention.")
             print("[SageAttention] Install with: pip install sageattention")
             self._available = False
+            self._call_count = 0
         except Exception as e:
             print(f"[SageAttention] ✗ Error loading sageattention: {e}")
             self._available = False
+            self._call_count = 0
 
     def __call__(
         self,
@@ -47,6 +50,11 @@ class SageAttnProcessor:
         *args,
         **kwargs,
     ) -> torch.Tensor:
+        # Log first call to confirm processor is being used
+        self._call_count += 1
+        if self._call_count == 1:
+            print("[SageAttention] First attention call - processor is ACTIVE and being called")
+
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -84,8 +92,14 @@ class SageAttnProcessor:
         # Apply SageAttention or fallback to normal
         if self._available:
             try:
+                # Log first actual sageattn call
+                if self._call_count == 1:
+                    print(f"[SageAttention] Calling sageattn with shapes: Q={query.shape}, K={key.shape}, V={value.shape}")
                 # SageAttention expects (batch, heads, seq_len, head_dim) - "HND" layout
                 hidden_states = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
+                # Log success on first call
+                if self._call_count == 1:
+                    print(f"[SageAttention] ✓ sageattn succeeded, output shape: {hidden_states.shape}")
             except Exception as e:
                 print(f"[SageAttention] ✗ Error during attention computation: {e}")
                 print(f"[SageAttention] Falling back to standard SDPA")
@@ -95,6 +109,8 @@ class SageAttnProcessor:
                 )
         else:
             # Fallback to standard attention
+            if self._call_count == 1:
+                print(f"[SageAttention] SageAttention not available, using SDPA fallback")
             hidden_states = F.scaled_dot_product_attention(
                 query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
             )

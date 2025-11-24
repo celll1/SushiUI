@@ -1224,6 +1224,7 @@ class DiffusionPipelineManager:
                 nag_sigma_end=params.get("nag_sigma_end", 0.0),
                 nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
+                attention_type=attention_type,
                 **controlnet_kwargs,
             )
 
@@ -1594,6 +1595,7 @@ class DiffusionPipelineManager:
                 nag_sigma_end=params.get("nag_sigma_end", 3.0),
                 nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
+                attention_type=attention_type,
                 **controlnet_kwargs,
             )
 
@@ -1828,6 +1830,7 @@ class DiffusionPipelineManager:
             nag_sigma_end=params.get("nag_sigma_end", 3.0),
             nag_negative_prompt_embeds=nag_negative_prompt_embeds,
             nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
+            attention_type=params.get("attention_type", "normal"),
             **controlnet_kwargs,
         )
 

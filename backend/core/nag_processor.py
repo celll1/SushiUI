@@ -30,6 +30,7 @@ class NAGAttnProcessor2_0:
         nag_scale: Extrapolation scale φ (default: 5.0)
         nag_tau: L1 normalization threshold (default: 3.5)
         nag_alpha: Blending factor α (default: 0.25)
+        attention_type: Attention backend - "normal", "sage", or "flash" (default: "normal")
     """
 
     def __init__(
@@ -37,12 +38,70 @@ class NAGAttnProcessor2_0:
         nag_scale: float = 5.0,
         nag_tau: float = 3.5,
         nag_alpha: float = 0.25,
+        attention_type: str = "normal",
     ):
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("NAGAttnProcessor2_0 requires PyTorch 2.0+")
         self.nag_scale = nag_scale
         self.nag_tau = nag_tau
         self.nag_alpha = nag_alpha
+        self.attention_type = attention_type
+        self._call_count = 0
+
+        # Initialize SageAttention if requested
+        if attention_type == "sage":
+            try:
+                from sageattention import sageattn
+                self.sageattn = sageattn
+                self._sage_available = True
+                print(f"[NAG-SageAttention] Successfully loaded SageAttention module")
+            except ImportError:
+                print(f"[NAG-SageAttention] Warning: sageattention not installed, falling back to normal")
+                self._sage_available = False
+                self.attention_type = "normal"
+        else:
+            self._sage_available = False
+
+    def _compute_attention(self, query, key, value, attention_mask=None):
+        """
+        Compute attention using the selected backend (normal/sage/flash)
+
+        Args:
+            query: [batch, heads, seq_len, head_dim]
+            key: [batch, heads, seq_len, head_dim]
+            value: [batch, heads, seq_len, head_dim]
+
+        Returns:
+            [batch, heads, seq_len, head_dim]
+        """
+        self._call_count += 1
+
+        if self.attention_type == "sage" and self._sage_available:
+            # Log first call
+            if self._call_count == 1:
+                print(f"[NAG-SageAttention] First attention call - using SageAttention backend")
+
+            # SageAttention expects HND layout
+            try:
+                output = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
+                if self._call_count == 1:
+                    print(f"[NAG-SageAttention] sageattn call succeeded")
+                return output
+            except Exception as e:
+                if self._call_count == 1:
+                    print(f"[NAG-SageAttention] Error, falling back to SDPA: {e}")
+                return F.scaled_dot_product_attention(
+                    query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+                )
+        else:
+            # Normal or Flash (both use PyTorch SDPA which auto-selects Flash if available)
+            if self._call_count == 1:
+                backend = "FlashAttention-2" if self.attention_type == "flash" else "PyTorch SDPA"
+                print(f"[NAG-{backend}] First attention call - using {backend} backend")
+
+            return F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
 
     def __call__(
         self,
@@ -128,10 +187,7 @@ class NAGAttnProcessor2_0:
             key_neg_heads = key_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
             value_neg_heads = value_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
 
-            A_negative = F.scaled_dot_product_attention(
-                query_neg_heads, key_neg_heads, value_neg_heads,
-                attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+            A_negative = self._compute_attention(query_neg_heads, key_neg_heads, value_neg_heads)
             A_negative = A_negative.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # Batch 1: NAG guidance on positive batch
@@ -143,17 +199,11 @@ class NAGAttnProcessor2_0:
             key_pos_heads = key_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
             value_pos_heads = value_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
 
-            Ap = F.scaled_dot_product_attention(
-                query_pos_heads, key_pos_heads, value_pos_heads,
-                attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+            Ap = self._compute_attention(query_pos_heads, key_pos_heads, value_pos_heads)
             Ap = Ap.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # An = Attn(Q_positive, K_negative, V_negative) - use negative context for NAG
-            An = F.scaled_dot_product_attention(
-                query_pos_heads, key_neg_heads, value_neg_heads,
-                attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+            An = self._compute_attention(query_pos_heads, key_neg_heads, value_neg_heads)
             An = An.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
             # NAG guidance: A~ = Ap * (1+φ) - An * φ
@@ -187,9 +237,7 @@ class NAGAttnProcessor2_0:
             key = key.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
             value = value.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
 
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
+            hidden_states = self._compute_attention(query, key, value, attention_mask)
 
             hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
             hidden_states = hidden_states.to(query.dtype)
@@ -210,9 +258,16 @@ class NAGAttnProcessor2_0:
         return hidden_states
 
 
-def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float):
+def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float, attention_type: str = "normal"):
     """
     Set NAG attention processors on cross-attention layers (attn2)
+
+    Args:
+        unet: The UNet model
+        nag_scale: NAG scale parameter
+        nag_tau: NAG tau parameter
+        nag_alpha: NAG alpha parameter
+        attention_type: Attention backend - "normal", "sage", or "flash"
 
     Returns:
         dict: Original processors for restoration
@@ -228,6 +283,7 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float)
                 nag_scale=nag_scale,
                 nag_tau=nag_tau,
                 nag_alpha=nag_alpha,
+                attention_type=attention_type,
             )
         else:
             new_processors[name] = processor
@@ -238,7 +294,7 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float)
     # Verify processors were set
     nag_count = sum(1 for proc in unet.attn_processors.values() if isinstance(proc, NAGAttnProcessor2_0))
     attn2_count = len([n for n in unet.attn_processors.keys() if 'attn2' in n])
-    print(f"[NAG] Set {attn2_count} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha})")
+    print(f"[NAG] Set {attn2_count} NAG processors (scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, attention={attention_type})")
     print(f"[NAG] Verification: {nag_count} NAGAttnProcessor2_0 instances found in unet.attn_processors")
 
     return original_processors

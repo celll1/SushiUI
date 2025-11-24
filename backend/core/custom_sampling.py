@@ -252,6 +252,7 @@ def custom_sampling_loop(
     nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG (0.0 = always enabled)
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
+    attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -342,7 +343,7 @@ def custom_sampling_loop(
 
     if nag_active:
         from core.nag_processor import set_nag_processors
-        print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
+        print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}, attention={attention_type}")
 
         # Set NAG processors on cross-attention layers
         original_processors = set_nag_processors(
@@ -350,6 +351,7 @@ def custom_sampling_loop(
             nag_scale=nag_scale,
             nag_tau=nag_tau,
             nag_alpha=nag_alpha,
+            attention_type=attention_type,
         )
 
         # Ensure NAG embeddings on correct device/dtype
@@ -714,6 +716,7 @@ def custom_img2img_sampling_loop(
     nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
+    attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -843,7 +846,7 @@ def custom_img2img_sampling_loop(
         from core.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
-        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha)
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
 
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
@@ -1180,6 +1183,7 @@ def custom_inpaint_sampling_loop(
     nag_sigma_end: float = 0.0,  # Sigma threshold to disable NAG
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
+    attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     device = pipeline.device
@@ -1347,7 +1351,7 @@ def custom_inpaint_sampling_loop(
         from core.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
-        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha)
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
 
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:

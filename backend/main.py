@@ -14,8 +14,18 @@ from utils.logger import setup_logging
 # Setup logging capture
 setup_logging()
 
+# Custom log filter to exclude specific endpoints
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude gpu-stats endpoint from logs
+        return record.getMessage().find("/api/system/gpu-stats") == -1
+
 # Disable uvicorn access logs
 logging.getLogger("uvicorn.access").disabled = True
+
+# Add filter to uvicorn logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+logging.getLogger("uvicorn").addFilter(EndpointFilter())
 
 # Initialize database
 init_db()
@@ -125,4 +135,5 @@ if __name__ == "__main__":
         port=actual_port,
         timeout_keep_alive=600,  # Keep connections alive for 10 minutes
         timeout_graceful_shutdown=30,  # 30 seconds for graceful shutdown
+        access_log=False,  # Disable access logs
     )

@@ -309,12 +309,18 @@ export default function ImageGrid() {
       txt2imgParams.width = image.width;
       txt2imgParams.height = image.height;
 
-      // Add Advanced CFG parameters
-      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+      // Add Advanced CFG parameters (always load, even if constant)
+      if (image.cfg_schedule_type) {
         txt2imgParams.cfg_schedule_type = image.cfg_schedule_type;
-        txt2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
-        txt2imgParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
-        if (image.cfg_schedule_power) txt2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_schedule_min) {
+        txt2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min);
+      }
+      if (image.cfg_schedule_max) {
+        txt2imgParams.cfg_schedule_max = parseFloat(image.cfg_schedule_max);
+      }
+      if (image.cfg_schedule_power) {
+        txt2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
       }
       if (image.cfg_rescale_snr_alpha) {
         txt2imgParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
@@ -391,12 +397,18 @@ export default function ImageGrid() {
       img2imgParams.height = image.height;
       img2imgParams.denoising_strength = 0.75;
 
-      // Add Advanced CFG parameters
-      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+      // Add Advanced CFG parameters (always load, even if constant)
+      if (image.cfg_schedule_type) {
         img2imgParams.cfg_schedule_type = image.cfg_schedule_type;
-        img2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
-        img2imgParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
-        if (image.cfg_schedule_power) img2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_schedule_min) {
+        img2imgParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min);
+      }
+      if (image.cfg_schedule_max) {
+        img2imgParams.cfg_schedule_max = parseFloat(image.cfg_schedule_max);
+      }
+      if (image.cfg_schedule_power) {
+        img2imgParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
       }
       if (image.cfg_rescale_snr_alpha) {
         img2imgParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
@@ -463,12 +475,18 @@ export default function ImageGrid() {
       inpaintParams.height = image.height;
       inpaintParams.denoising_strength = 0.75;
 
-      // Add Advanced CFG parameters
-      if (image.cfg_schedule_type && image.cfg_schedule_type !== 'constant') {
+      // Add Advanced CFG parameters (always load, even if constant)
+      if (image.cfg_schedule_type) {
         inpaintParams.cfg_schedule_type = image.cfg_schedule_type;
-        inpaintParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min || "1.0");
-        inpaintParams.cfg_schedule_max = image.cfg_schedule_max ? parseFloat(image.cfg_schedule_max) : undefined;
-        if (image.cfg_schedule_power) inpaintParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_schedule_min) {
+        inpaintParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min);
+      }
+      if (image.cfg_schedule_max) {
+        inpaintParams.cfg_schedule_max = parseFloat(image.cfg_schedule_max);
+      }
+      if (image.cfg_schedule_power) {
+        inpaintParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
       }
       if (image.cfg_rescale_snr_alpha) {
         inpaintParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);

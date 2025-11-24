@@ -449,11 +449,18 @@ def custom_sampling_loop(
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-            # Prepare prompt embeddings: [negative, positive]
-            # NAG mode: use NAG negative embeddings for cross-attention guidance
+            # Prepare prompt embeddings based on CFG and NAG configuration
+            # Official NAG implementation concatenates: [cfg_negative, cfg_positive] + [nag_negative]
             if nag_active:
-                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+                # NAG mode (following official implementation):
+                # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+                prompt_embeds_input = torch.cat([
+                    current_negative_prompt_embeds,
+                    current_prompt_embeds,
+                    nag_negative_prompt_embeds
+                ], dim=0)
             else:
+                # Standard CFG: [negative, positive] (batch=2)
                 prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
         else:
             # CFG = 1.0: only use conditional (positive) pass
@@ -473,13 +480,32 @@ def custom_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
             if do_classifier_free_guidance:
-                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+                # NAG mode: need 3 time_ids for [cfg_negative, cfg_positive, nag_negative]
+                # Standard CFG: need 2 time_ids for [cfg_negative, cfg_positive]
+                if nag_active:
+                    add_time_ids = torch.cat([add_time_ids] * 3, dim=0)
+                else:
+                    add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
                 if current_pooled_prompt_embeds is not None:
-                    # NAG mode: use NAG negative pooled embeddings
+                    # NAG mode (following official implementation):
+                    # add_text_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
                     if nag_active and nag_negative_pooled_prompt_embeds is not None:
-                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                        if current_negative_pooled_prompt_embeds is not None:
+                            add_text_embeds = torch.cat([
+                                current_negative_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
+                        else:
+                            # Fallback if negative pooled embeds missing
+                            add_text_embeds = torch.cat([
+                                current_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
                     elif current_negative_pooled_prompt_embeds is not None:
+                        # Standard CFG: [cfg_negative, cfg_positive] (batch=2)
                         add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
                     else:
                         add_text_embeds = None
@@ -916,11 +942,18 @@ def custom_img2img_sampling_loop(
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-            # Prepare prompt embeddings: [negative, positive]
-            # NAG mode: use NAG negative embeddings for cross-attention guidance
+            # Prepare prompt embeddings based on CFG and NAG configuration
+            # Official NAG implementation concatenates: [cfg_negative, cfg_positive] + [nag_negative]
             if nag_active:
-                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+                # NAG mode (following official implementation):
+                # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+                prompt_embeds_input = torch.cat([
+                    current_negative_prompt_embeds,
+                    current_prompt_embeds,
+                    nag_negative_prompt_embeds
+                ], dim=0)
             else:
+                # Standard CFG: [negative, positive] (batch=2)
                 prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
         else:
             # CFG = 1.0: only use conditional (positive) pass
@@ -940,13 +973,32 @@ def custom_img2img_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
             if do_classifier_free_guidance:
-                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+                # NAG mode: need 3 time_ids for [cfg_negative, cfg_positive, nag_negative]
+                # Standard CFG: need 2 time_ids for [cfg_negative, cfg_positive]
+                if nag_active:
+                    add_time_ids = torch.cat([add_time_ids] * 3, dim=0)
+                else:
+                    add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
                 if current_pooled_prompt_embeds is not None:
-                    # NAG mode: use NAG negative pooled embeddings
+                    # NAG mode (following official implementation):
+                    # add_text_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
                     if nag_active and nag_negative_pooled_prompt_embeds is not None:
-                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                        if current_negative_pooled_prompt_embeds is not None:
+                            add_text_embeds = torch.cat([
+                                current_negative_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
+                        else:
+                            # Fallback if negative pooled embeds missing
+                            add_text_embeds = torch.cat([
+                                current_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
                     elif current_negative_pooled_prompt_embeds is not None:
+                        # Standard CFG: [cfg_negative, cfg_positive] (batch=2)
                         add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
                     else:
                         add_text_embeds = None
@@ -1455,13 +1507,32 @@ def custom_inpaint_sampling_loop(
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
             if do_classifier_free_guidance:
-                add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
+                # NAG mode: need 3 time_ids for [cfg_negative, cfg_positive, nag_negative]
+                # Standard CFG: need 2 time_ids for [cfg_negative, cfg_positive]
+                if nag_active:
+                    add_time_ids = torch.cat([add_time_ids] * 3, dim=0)
+                else:
+                    add_time_ids = torch.cat([add_time_ids] * 2, dim=0)
 
                 if current_pooled_prompt_embeds is not None:
-                    # NAG mode: use NAG negative pooled embeddings
+                    # NAG mode (following official implementation):
+                    # add_text_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
                     if nag_active and nag_negative_pooled_prompt_embeds is not None:
-                        add_text_embeds = torch.cat([nag_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
+                        if current_negative_pooled_prompt_embeds is not None:
+                            add_text_embeds = torch.cat([
+                                current_negative_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
+                        else:
+                            # Fallback if negative pooled embeds missing
+                            add_text_embeds = torch.cat([
+                                current_pooled_prompt_embeds,
+                                current_pooled_prompt_embeds,
+                                nag_negative_pooled_prompt_embeds
+                            ], dim=0)
                     elif current_negative_pooled_prompt_embeds is not None:
+                        # Standard CFG: [cfg_negative, cfg_positive] (batch=2)
                         add_text_embeds = torch.cat([current_negative_pooled_prompt_embeds, current_pooled_prompt_embeds], dim=0)
                     else:
                         add_text_embeds = None

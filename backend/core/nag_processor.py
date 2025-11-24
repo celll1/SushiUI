@@ -162,76 +162,70 @@ class NAGAttnProcessor2_0:
             print(f"[NAG DEBUG] is_cross={is_cross_attention_original}, batch_size={batch_size}, context_batch={context_batch}, has_nag_scale={hasattr(self, 'nag_scale')}", file=sys.stderr)
             self._debug_logged = True
 
-        if is_nag_mode and batch_size == 2 and context_batch == 2:
-            # NAG mode: encoder_hidden_states = [negative, positive]
-            # Query = [negative_batch, positive_batch]
-            # Apply NAG only to positive batch
+        if is_nag_mode and batch_size == 2 and context_batch == 3:
+            # NAG mode (official implementation):
+            # encoder_hidden_states = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+            # Query from hidden_states = [uncond_query, cond_query] (batch=2, from CFG latent duplication)
+            #
+            # Official implementation:
+            # 1. Tile query: [uncond, cond] → [uncond, uncond, cond, cond] (batch=4)
+            # 2. Compute attention with 3 contexts to get results
+            # 3. Extract positive and negative for NAG guidance
+            # 4. Apply NAG formula, normalization, and blending
+            # 5. Return final result
 
             # Log NAG execution (only once)
             if not hasattr(self, '_nag_executed_logged'):
                 print(f"[NAG EXEC] Applying NAG guidance: scale={self.nag_scale}, tau={self.nag_tau}, alpha={self.nag_alpha}", file=sys.stderr)
+                print(f"[NAG EXEC] batch_size={batch_size}, context_batch={context_batch}", file=sys.stderr)
                 self._nag_executed_logged = True
 
-            # In NAG mode, encoder_hidden_states contains [nag_negative, positive]
-            # But for CFG batch 0, we should use regular processing (not NAG negative)
-            nag_negative_context = encoder_hidden_states[0:1]
-            positive_context = encoder_hidden_states[1:2]
+            # Origin batch size (number of images being generated, usually 1)
+            origin_batch_size = 1
 
-            # Split query
-            query_negative = query[0:1]
-            query_positive = query[1:2]
+            # Compute key and value for ALL 3 contexts at once
+            key = attn.to_k(encoder_hidden_states)  # [3, seq, dim] - cfg_neg, cfg_pos, nag_neg
+            value = attn.to_v(encoder_hidden_states)
 
-            inner_dim = attn.to_k(positive_context).shape[-1]
+            inner_dim = key.shape[-1]
             head_dim = inner_dim // attn.heads
 
-            # Batch 0: Standard attention for CFG unconditioned batch
-            # Use nag_negative_context (which is typically empty or negative prompt)
-            key_cfg_uncond = attn.to_k(nag_negative_context)
-            value_cfg_uncond = attn.to_v(nag_negative_context)
+            # Official implementation: tile query to match batch expansion
+            # For batch_size=2*origin_batch_size (CFG), tile each query:
+            # [uncond, cond] → [uncond, uncond, cond, cond]
+            query_tiled = query.tile(2, 1, 1)  # [4, seq, dim]
 
-            query_neg_heads = query_negative.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            key_cfg_uncond_heads = key_cfg_uncond.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            value_cfg_uncond_heads = value_cfg_uncond.view(1, -1, attn.heads, head_dim).transpose(1, 2)
+            # Reshape for multi-head attention
+            query_tiled = query_tiled.view(batch_size * 2, -1, attn.heads, head_dim).transpose(1, 2)
+            key = key.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
+            value = value.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
 
-            A_uncond = self._compute_attention(query_neg_heads, key_cfg_uncond_heads, value_cfg_uncond_heads)
-            A_uncond = A_uncond.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+            # Compute attention: [4 queries] × [3 contexts] via broadcasting
+            # Result indices (batch=4):
+            # 0: uncond→cfg_negative, 1: uncond→cfg_positive
+            # 2: cond→cfg_positive, 3: cond→nag_negative
+            hidden_states_all = self._compute_attention(query_tiled, key, value, attention_mask)
+            hidden_states_all = hidden_states_all.transpose(1, 2).reshape(batch_size * 2, -1, attn.heads * head_dim).to(query.dtype)
 
-            # Batch 1: NAG guidance on positive batch
-            # Step 1: Compute positive attention - Ap = Attn(Q_positive, K_positive, V_positive)
-            key_positive = attn.to_k(positive_context)
-            value_positive = attn.to_v(positive_context)
-
-            query_pos_heads = query_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            key_pos_heads = key_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            value_pos_heads = value_positive.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-
-            hidden_states_positive = self._compute_attention(query_pos_heads, key_pos_heads, value_pos_heads)
-            hidden_states_positive = hidden_states_positive.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
-
-            # Step 2: Compute negative attention - An = Attn(Q_positive, K_nag_negative, V_nag_negative)
-            # Use NAG negative context (not CFG negative)
-            key_nag_neg = attn.to_k(nag_negative_context)
-            value_nag_neg = attn.to_v(nag_negative_context)
-            key_nag_neg_heads = key_nag_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-            value_nag_neg_heads = value_nag_neg.view(1, -1, attn.heads, head_dim).transpose(1, 2)
-
-            hidden_states_negative_attn = self._compute_attention(query_pos_heads, key_nag_neg_heads, value_nag_neg_heads)
-            hidden_states_negative_attn = hidden_states_negative_attn.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
+            # Extract results following official implementation:
+            # For NAG: use results from cond queries (indices 2 and 3)
+            hidden_states_negative = hidden_states_all[-origin_batch_size:]  # cond→nag_negative (index 3)
+            hidden_states_positive = hidden_states_all[batch_size:batch_size + origin_batch_size]  # cond→cfg_positive (index 2)
 
             # Debug logging - tensor statistics (first cross-attention call only)
             if not hasattr(self, '_tensor_stats_logged'):
                 pos_norm = torch.norm(hidden_states_positive, p=2).item()
-                neg_norm = torch.norm(hidden_states_negative_attn, p=2).item()
+                neg_norm = torch.norm(hidden_states_negative, p=2).item()
                 pos_mean = hidden_states_positive.mean().item()
-                neg_mean = hidden_states_negative_attn.mean().item()
+                neg_mean = hidden_states_negative.mean().item()
                 print(f"[NAG STATS] Positive: norm={pos_norm:.4f}, mean={pos_mean:.6f}, shape={hidden_states_positive.shape}", file=sys.stderr)
-                print(f"[NAG STATS] Negative: norm={neg_norm:.4f}, mean={neg_mean:.6f}, shape={hidden_states_negative_attn.shape}", file=sys.stderr)
+                print(f"[NAG STATS] Negative: norm={neg_norm:.4f}, mean={neg_mean:.6f}, shape={hidden_states_negative.shape}", file=sys.stderr)
                 self._tensor_stats_logged = True
 
-            # Step 3: NAG guidance formula (official implementation)
+            # NAG guidance formula (official implementation)
             # guidance = positive * φ - negative * (φ - 1)
             phi = self.nag_scale
-            hidden_states_guidance = hidden_states_positive * phi - hidden_states_negative_attn * (phi - 1)
+            hidden_states_guidance = hidden_states_positive * phi - hidden_states_negative * (phi - 1)
 
             # Debug: guidance after formula
             if not hasattr(self, '_guidance_stats_logged'):
@@ -240,10 +234,10 @@ class NAGAttnProcessor2_0:
                 print(f"[NAG STATS] Guidance (φ={phi}): norm={guid_norm:.4f}, mean={guid_mean:.6f}", file=sys.stderr)
                 self._guidance_stats_logged = True
 
-            # Step 4: L1 Normalization with tau threshold
-            eps = 1e-6
-            norm_positive = torch.norm(hidden_states_positive, p=1, dim=-1, keepdim=True).clamp_min(eps)
-            norm_guidance = torch.norm(hidden_states_guidance, p=1, dim=-1, keepdim=True).clamp_min(eps)
+            # L1 Normalization with tau threshold (official implementation)
+            norm_positive = torch.norm(hidden_states_positive, p=1, dim=-1, keepdim=True).expand(*hidden_states_positive.shape)
+            norm_guidance = torch.norm(hidden_states_guidance, p=1, dim=-1, keepdim=True).expand(*hidden_states_guidance.shape)
+
             scale = norm_guidance / norm_positive
 
             # Debug: scale statistics
@@ -254,9 +248,8 @@ class NAGAttnProcessor2_0:
                 print(f"[NAG STATS] Scale before clamp: mean={scale_mean:.4f}, min={scale_min:.4f}, max={scale_max:.4f}, tau={self.nag_tau}", file=sys.stderr)
                 self._scale_stats_logged = True
 
-            # Clamp scale to tau threshold
-            scale_clamped = torch.minimum(scale, torch.full_like(scale, self.nag_tau))
-            hidden_states_guidance = hidden_states_guidance * scale_clamped / scale
+            # Clamp and normalize
+            hidden_states_guidance = hidden_states_guidance * torch.minimum(scale, scale.new_ones(1) * self.nag_tau) / scale
 
             # Debug: guidance after normalization
             if not hasattr(self, '_normalized_stats_logged'):
@@ -265,7 +258,7 @@ class NAGAttnProcessor2_0:
                 print(f"[NAG STATS] Guidance after norm: norm={guid_norm_after:.4f}, mean={guid_mean_after:.6f}", file=sys.stderr)
                 self._normalized_stats_logged = True
 
-            # Step 5: Alpha blending (interpolation between guidance and positive)
+            # Alpha blending (official implementation)
             alpha = self.nag_alpha
             A_cond = hidden_states_guidance * alpha + hidden_states_positive * (1 - alpha)
 
@@ -276,17 +269,33 @@ class NAGAttnProcessor2_0:
                 print(f"[NAG STATS] Final A_cond (α={alpha}): norm={final_norm:.4f}, mean={final_mean:.6f}", file=sys.stderr)
                 self._final_stats_logged = True
 
+            # Reconstruct final output following official implementation
+            # For batch_size == 2 * origin_batch_size (CFG with NAG):
+            # hidden_states = guidance (batch=2)
+            # We need to extract uncond result and combine with NAG guidance result
+
+            # Extract uncond result (index 0 or 1)
+            A_uncond = hidden_states_all[0:origin_batch_size]  # uncond→cfg_negative
+
             # Debug: compare uncond vs cond
             if not hasattr(self, '_uncond_cond_logged'):
                 uncond_norm = torch.norm(A_uncond, p=2).item()
                 uncond_mean = A_uncond.mean().item()
                 diff_norm = torch.norm(A_cond - A_uncond, p=2).item()
                 print(f"[NAG STATS] A_uncond: norm={uncond_norm:.4f}, mean={uncond_mean:.6f}", file=sys.stderr)
+                print(f"[NAG STATS] A_cond: norm={torch.norm(A_cond, p=2).item():.4f}, mean={A_cond.mean().item():.6f}", file=sys.stderr)
                 print(f"[NAG STATS] Difference (A_cond - A_uncond): norm={diff_norm:.4f}", file=sys.stderr)
                 self._uncond_cond_logged = True
 
-            # Combine: [uncond_batch, cond_batch_with_nag]
-            hidden_states = torch.cat([A_uncond, A_cond], dim=0)
+            # Official implementation: For batch_size == 2 * origin_batch_size, return guidance directly (batch=1)
+            # But we need batch=2 for CFG [uncond, cond]
+            # Actually, looking at official code more carefully:
+            # "if batch_size == 2 * origin_batch_size: hidden_states = hidden_states_guidance"
+            # This returns ONLY the guidance (batch=1), not [uncond, cond]
+            # Then CFG is applied in the pipeline on the noise prediction, not here
+
+            # So the final output should be: [uncond_result, nag_guidance_result]
+            hidden_states = torch.cat([A_uncond, A_cond], dim=0)  # [2, seq, dim]
 
         else:
             # Standard attention (not NAG mode)

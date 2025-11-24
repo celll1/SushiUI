@@ -141,7 +141,7 @@ class NAGAttnProcessor2_0:
         query = attn.to_q(hidden_states)
 
         # Check if this is cross-attention with NAG-formatted embeddings
-        is_cross_attention = encoder_hidden_states is not None
+        is_cross_attention_original = encoder_hidden_states is not None
         if encoder_hidden_states is None:
             # Self-attention: use original processing
             encoder_hidden_states = hidden_states
@@ -153,7 +153,8 @@ class NAGAttnProcessor2_0:
         context_batch = encoder_hidden_states.shape[0]
 
         # NAG marker: Check if this processor was set as NAG processor
-        is_nag_mode = is_cross_attention and hasattr(self, 'nag_scale')
+        # IMPORTANT: Only apply NAG to cross-attention (not self-attention)
+        is_nag_mode = is_cross_attention_original and hasattr(self, 'nag_scale')
 
         # Debug logging (only log first few times to avoid spam)
         import sys

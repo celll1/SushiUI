@@ -218,10 +218,27 @@ class NAGAttnProcessor2_0:
             hidden_states_negative_attn = self._compute_attention(query_pos_heads, key_nag_neg_heads, value_nag_neg_heads)
             hidden_states_negative_attn = hidden_states_negative_attn.transpose(1, 2).reshape(1, -1, attn.heads * head_dim).to(query.dtype)
 
+            # Debug logging - tensor statistics (first cross-attention call only)
+            if not hasattr(self, '_tensor_stats_logged'):
+                pos_norm = torch.norm(hidden_states_positive, p=2).item()
+                neg_norm = torch.norm(hidden_states_negative_attn, p=2).item()
+                pos_mean = hidden_states_positive.mean().item()
+                neg_mean = hidden_states_negative_attn.mean().item()
+                print(f"[NAG STATS] Positive: norm={pos_norm:.4f}, mean={pos_mean:.6f}, shape={hidden_states_positive.shape}", file=sys.stderr)
+                print(f"[NAG STATS] Negative: norm={neg_norm:.4f}, mean={neg_mean:.6f}, shape={hidden_states_negative_attn.shape}", file=sys.stderr)
+                self._tensor_stats_logged = True
+
             # Step 3: NAG guidance formula (official implementation)
             # guidance = positive * φ - negative * (φ - 1)
             phi = self.nag_scale
             hidden_states_guidance = hidden_states_positive * phi - hidden_states_negative_attn * (phi - 1)
+
+            # Debug: guidance after formula
+            if not hasattr(self, '_guidance_stats_logged'):
+                guid_norm = torch.norm(hidden_states_guidance, p=2).item()
+                guid_mean = hidden_states_guidance.mean().item()
+                print(f"[NAG STATS] Guidance (φ={phi}): norm={guid_norm:.4f}, mean={guid_mean:.6f}", file=sys.stderr)
+                self._guidance_stats_logged = True
 
             # Step 4: L1 Normalization with tau threshold
             eps = 1e-6
@@ -229,13 +246,44 @@ class NAGAttnProcessor2_0:
             norm_guidance = torch.norm(hidden_states_guidance, p=1, dim=-1, keepdim=True).clamp_min(eps)
             scale = norm_guidance / norm_positive
 
+            # Debug: scale statistics
+            if not hasattr(self, '_scale_stats_logged'):
+                scale_mean = scale.mean().item()
+                scale_max = scale.max().item()
+                scale_min = scale.min().item()
+                print(f"[NAG STATS] Scale before clamp: mean={scale_mean:.4f}, min={scale_min:.4f}, max={scale_max:.4f}, tau={self.nag_tau}", file=sys.stderr)
+                self._scale_stats_logged = True
+
             # Clamp scale to tau threshold
             scale_clamped = torch.minimum(scale, torch.full_like(scale, self.nag_tau))
             hidden_states_guidance = hidden_states_guidance * scale_clamped / scale
 
+            # Debug: guidance after normalization
+            if not hasattr(self, '_normalized_stats_logged'):
+                guid_norm_after = torch.norm(hidden_states_guidance, p=2).item()
+                guid_mean_after = hidden_states_guidance.mean().item()
+                print(f"[NAG STATS] Guidance after norm: norm={guid_norm_after:.4f}, mean={guid_mean_after:.6f}", file=sys.stderr)
+                self._normalized_stats_logged = True
+
             # Step 5: Alpha blending (interpolation between guidance and positive)
             alpha = self.nag_alpha
             A_cond = hidden_states_guidance * alpha + hidden_states_positive * (1 - alpha)
+
+            # Debug: final output
+            if not hasattr(self, '_final_stats_logged'):
+                final_norm = torch.norm(A_cond, p=2).item()
+                final_mean = A_cond.mean().item()
+                print(f"[NAG STATS] Final A_cond (α={alpha}): norm={final_norm:.4f}, mean={final_mean:.6f}", file=sys.stderr)
+                self._final_stats_logged = True
+
+            # Debug: compare uncond vs cond
+            if not hasattr(self, '_uncond_cond_logged'):
+                uncond_norm = torch.norm(A_uncond, p=2).item()
+                uncond_mean = A_uncond.mean().item()
+                diff_norm = torch.norm(A_cond - A_uncond, p=2).item()
+                print(f"[NAG STATS] A_uncond: norm={uncond_norm:.4f}, mean={uncond_mean:.6f}", file=sys.stderr)
+                print(f"[NAG STATS] Difference (A_cond - A_uncond): norm={diff_norm:.4f}", file=sys.stderr)
+                self._uncond_cond_logged = True
 
             # Combine: [uncond_batch, cond_batch_with_nag]
             hidden_states = torch.cat([A_uncond, A_cond], dim=0)

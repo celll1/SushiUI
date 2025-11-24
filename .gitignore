@@ -35,6 +35,8 @@ tagother/
 *.swo
 *~
 SageAttention/
+flash-attention-for-windows/
+flash-attention/
 
 # フロントエンド
 node_modules/

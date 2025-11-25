@@ -414,6 +414,11 @@ def custom_sampling_loop(
                     from core.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
+                    # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps
+                    # Following official implementation: prompt_embeds = prompt_embeds[:len(latent_model_input)]
+                    # After NAG ends, we only use [cfg_negative, cfg_positive] without nag_negative
+                    nag_negative_prompt_embeds = None
+                    print(f"[CustomSampling] NAG negative embeddings cleared for subsequent steps")
 
         # Check if prompt should be updated at this step
         if prompt_embeds_callback is not None:
@@ -911,6 +916,11 @@ def custom_img2img_sampling_loop(
                     from core.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
+                    # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps
+                    # Following official implementation: prompt_embeds = prompt_embeds[:len(latent_model_input)]
+                    # After NAG ends, we only use [cfg_negative, cfg_positive] without nag_negative
+                    nag_negative_prompt_embeds = None
+                    print(f"[CustomSampling] NAG negative embeddings cleared for subsequent steps")
 
         # Check if prompt should be updated
         if prompt_embeds_callback is not None:
@@ -1444,6 +1454,11 @@ def custom_inpaint_sampling_loop(
                     from core.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
+                    # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps
+                    # Following official implementation: prompt_embeds = prompt_embeds[:len(latent_model_input)]
+                    # After NAG ends, we only use [cfg_negative, cfg_positive] without nag_negative
+                    nag_negative_prompt_embeds = None
+                    print(f"[CustomSampling] NAG negative embeddings cleared for subsequent steps")
 
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)

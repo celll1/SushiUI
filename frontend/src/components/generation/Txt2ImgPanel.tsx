@@ -174,30 +174,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     };
   }, [params.negative_prompt]);
 
-  // WebSocket progress callback
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
-    if (isGenerating) {
-      setProgress(step);
-      setTotalSteps(totalSteps);
-      if (preview) {
-        setPreviewImage(preview);
-      }
-      if (metrics && developerMode) {
-        setCfgMetrics(prev => [...prev, metrics]);
-      }
-    }
-  }, [isGenerating, developerMode]);
-
-  // Setup WebSocket connection
-  useEffect(() => {
-    wsClient.connect();
-    wsClient.subscribe(handleProgress);
-
-    return () => {
-      wsClient.unsubscribe(handleProgress);
-    };
-  }, [handleProgress]);
-
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
     console.clear();
@@ -530,6 +506,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   };
 
   const { addToQueue, updateQueueItem, updateQueueItemByLoop, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+
+  // WebSocket progress callback
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
+    if (isGenerating) {
+      setProgress(step);
+      setTotalSteps(totalSteps);
+      if (preview) {
+        setPreviewImage(preview);
+      }
+      if (metrics && developerMode) {
+        setCfgMetrics(prev => [...prev, metrics]);
+      }
+    }
+  }, [isGenerating, developerMode]);
+
+  // Setup WebSocket connection
+  useEffect(() => {
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+
+    return () => {
+      wsClient.unsubscribe(handleProgress);
+    };
+  }, [handleProgress]);
+
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
@@ -1879,7 +1880,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
             {/* Right: Generation Queue */}
             <div className="w-full lg:w-60 lg:flex-shrink-0">
-              <GenerationQueue />
+              <GenerationQueue currentStep={progress} />
             </div>
           </div>
         </Card>

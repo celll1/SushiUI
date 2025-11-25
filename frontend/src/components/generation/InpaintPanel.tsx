@@ -2444,7 +2444,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
             {/* Right: Generation Queue */}
             <div className="w-full lg:w-60 lg:flex-shrink-0">
-              <GenerationQueue />
+              <GenerationQueue currentStep={progress} />
             </div>
           </div>
         </Card>

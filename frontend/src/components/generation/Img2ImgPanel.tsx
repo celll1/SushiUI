@@ -2128,7 +2128,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
             {/* Right: Generation Queue */}
             <div className="w-full lg:w-60 lg:flex-shrink-0">
-              <GenerationQueue />
+              <GenerationQueue currentStep={progress} />
             </div>
           </div>
         </Card>

@@ -10,9 +10,14 @@ interface LastGenerationInfo {
   steps: number;
   sampler: string;
   elapsedTime: number;
+  currentStep: number;
 }
 
-export default function GenerationQueue() {
+interface GenerationQueueProps {
+  currentStep?: number;
+}
+
+export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProps) {
   const { queue, currentItem, removeFromQueue } = useGenerationQueue();
   const [elapsedTime, setElapsedTime] = useState(0);
   const [lastGenInfo, setLastGenInfo] = useState<LastGenerationInfo | null>(null);
@@ -36,15 +41,17 @@ export default function GenerationQueue() {
   useEffect(() => {
     if (currentItem && currentItem.status === "generating") {
       // Store current generation info while it's running
-      setLastGenInfo({
+      const info = {
         width: currentItem.params.width || 0,
         height: currentItem.params.height || 0,
         steps: currentItem.params.steps || 0,
         sampler: currentItem.params.sampler || "",
         elapsedTime: elapsedTime,
-      });
+        currentStep: currentStep,
+      };
+      setLastGenInfo(info);
     }
-  }, [currentItem, elapsedTime]);
+  }, [currentItem, elapsedTime, currentStep]);
 
   const pendingItems = queue.filter((item) => item.status === "pending");
   const completedItems = queue.filter((item) => item.status === "completed");
@@ -104,8 +111,8 @@ export default function GenerationQueue() {
             <div className="flex items-center justify-between">
               <span className="text-gray-400">Speed:</span>
               <span className="text-blue-400 font-mono">
-                {lastGenInfo.steps > 0 && lastGenInfo.elapsedTime > 0
-                  ? `${(lastGenInfo.elapsedTime / lastGenInfo.steps).toFixed(3)}s/it`
+                {lastGenInfo.elapsedTime > 0 && (lastGenInfo.currentStep > 0 || lastGenInfo.steps > 0)
+                  ? `${(lastGenInfo.elapsedTime / (lastGenInfo.currentStep > 0 ? lastGenInfo.currentStep : lastGenInfo.steps)).toFixed(3)}s/it`
                   : "—"}
               </span>
             </div>

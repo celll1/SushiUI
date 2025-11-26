@@ -1188,12 +1188,20 @@ class DiffusionPipelineManager:
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
                     if new_prompt is not None:
                         if new_prompt not in embeds_cache:
+                            # Prompt editing requires Text Encoder, move to GPU temporarily
+                            print(f"[PromptEditing] Encoding new prompt, moving Text Encoders to GPU...")
+                            move_text_encoders_to_gpu(pipeline_to_use)
+
                             new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
                                 new_prompt,
                                 params.get("negative_prompt", ""),
                                 pipeline=pipeline_to_use
                             )
                             embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
+
+                            # Move Text Encoders back to CPU
+                            print(f"[PromptEditing] Encoding complete, moving Text Encoders back to CPU...")
+                            move_text_encoders_to_cpu(pipeline_to_use)
                         return embeds_cache[new_prompt]
                     return None
 

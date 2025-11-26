@@ -706,6 +706,12 @@ def custom_sampling_loop(
     with torch.no_grad():
         image = vae.decode(latents).sample
 
+    # Offload VAE to CPU after decoding to free VRAM
+    print("[CustomSampling] Offloading VAE to CPU after decode...")
+    vae.to('cpu')
+    torch.cuda.empty_cache()
+    print("[CustomSampling] VAE offloaded to CPU")
+
     # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
@@ -1203,6 +1209,12 @@ def custom_img2img_sampling_loop(
     latents = latents / vae.config.scaling_factor
     with torch.no_grad():
         image = vae.decode(latents).sample
+
+    # Offload VAE to CPU after decoding to free VRAM
+    print("[CustomSampling] Offloading VAE to CPU after decode...")
+    vae.to('cpu')
+    torch.cuda.empty_cache()
+    print("[CustomSampling] VAE offloaded to CPU")
 
     # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)

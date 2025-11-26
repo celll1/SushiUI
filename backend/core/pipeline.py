@@ -997,6 +997,15 @@ class DiffusionPipelineManager:
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
 
+        # Offload text encoders to CPU after all encoding is complete
+        print("[Pipeline] Offloading text encoders to CPU to free VRAM...")
+        if hasattr(self.txt2img_pipeline, 'text_encoder') and self.txt2img_pipeline.text_encoder is not None:
+            self.txt2img_pipeline.text_encoder.to('cpu')
+        if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
+            self.txt2img_pipeline.text_encoder_2.to('cpu')
+        torch.cuda.empty_cache()
+        print("[Pipeline] Text encoders offloaded to CPU")
+
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
         pipeline_to_use = self.txt2img_pipeline

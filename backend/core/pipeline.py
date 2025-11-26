@@ -1011,6 +1011,21 @@ class DiffusionPipelineManager:
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
 
+        # Pre-calculate all prompt editing embeddings if needed
+        embeds_cache = {}
+        if prompt_processor:
+            print("[PromptEditing] Pre-calculating all prompt variations...")
+            all_prompts = prompt_processor.get_all_prompts(params.get("steps", settings.default_steps))
+            for prompt_text in all_prompts:
+                if prompt_text not in embeds_cache:
+                    edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled = self._encode_prompt_with_weights(
+                        prompt_text,
+                        params.get("negative_prompt", ""),
+                        pipeline=self.txt2img_pipeline
+                    )
+                    embeds_cache[prompt_text] = (edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled)
+            print(f"[PromptEditing] Pre-calculated {len(embeds_cache)} prompt variations")
+
         # Ensure all embeddings are on GPU before offloading text encoders
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         if prompt_embeds is not None:
@@ -1025,6 +1040,16 @@ class DiffusionPipelineManager:
             nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
+
+        # Also ensure all prompt editing embeddings are on GPU
+        for prompt_text in embeds_cache:
+            edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled = embeds_cache[prompt_text]
+            embeds_cache[prompt_text] = (
+                edit_embeds.to(device) if edit_embeds is not None else None,
+                edit_neg_embeds.to(device) if edit_neg_embeds is not None else None,
+                edit_pooled.to(device) if edit_pooled is not None else None,
+                edit_neg_pooled.to(device) if edit_neg_pooled is not None else None
+            )
 
         # Offload text encoders to CPU after all encoding is complete
         move_text_encoders_to_cpu(self.txt2img_pipeline)
@@ -1180,28 +1205,12 @@ class DiffusionPipelineManager:
             print("[Pipeline] Using custom sampling loop")
 
             # Prepare prompt embeddings callback for prompt editing
+            # embeds_cache is already pre-calculated above with all variations
             prompt_embeds_callback_fn = None
             if prompt_processor:
-                embeds_cache = {}
-
                 def prompt_embeds_callback_fn(step_index):
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
-                    if new_prompt is not None:
-                        if new_prompt not in embeds_cache:
-                            # Prompt editing requires Text Encoder, move to GPU temporarily
-                            print(f"[PromptEditing] Encoding new prompt, moving Text Encoders to GPU...")
-                            move_text_encoders_to_gpu(pipeline_to_use)
-
-                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
-                                new_prompt,
-                                params.get("negative_prompt", ""),
-                                pipeline=pipeline_to_use
-                            )
-                            embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
-
-                            # Move Text Encoders back to CPU
-                            print(f"[PromptEditing] Encoding complete, moving Text Encoders back to CPU...")
-                            move_text_encoders_to_cpu(pipeline_to_use)
+                    if new_prompt is not None and new_prompt in embeds_cache:
                         return embeds_cache[new_prompt]
                     return None
 

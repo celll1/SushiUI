@@ -141,6 +141,32 @@ class PromptEditingProcessor(PromptProcessor):
 
         return result, edits
 
+    def get_all_prompts(self, total_steps: int) -> List[str]:
+        """Get all unique prompt variations needed for all steps
+
+        Args:
+            total_steps: Total number of steps
+
+        Returns:
+            List of unique prompts (including initial prompt)
+        """
+        prompts = set()
+        prompts.add(self.current_prompt)  # Add initial prompt
+
+        # Simulate all steps and collect unique prompts
+        current = self.current_prompt
+        for step in range(total_steps):
+            for edit_step, edit in self.edits:
+                if edit_step == step:
+                    # Apply this edit
+                    if edit.from_text:
+                        current = current.replace(edit.from_text, edit.to_text)
+                    else:
+                        current = current + " " + edit.to_text
+                    prompts.add(current)
+
+        return list(prompts)
+
     def get_prompt_at_step(self, step: int, total_steps: int) -> Optional[str]:
         """Get the prompt that should be used at a specific step
 

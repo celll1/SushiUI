@@ -64,22 +64,6 @@ class DiffusionPipelineManager:
         if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
             self.txt2img_pipeline.text_encoder_2.to('cpu')
 
-        # After moving text encoders, explicitly ensure ALL U-Net submodules are on GPU
-        # This fixes the issue where .to('cpu') on text encoders somehow affects U-Net submodules
-        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
-            unet = self.txt2img_pipeline.unet
-            print("[Pipeline] Moving U-Net and all submodules to GPU after text encoder offload...")
-
-            # Recursively move all submodules to GPU
-            for name, module in unet.named_modules():
-                if module is not unet:  # Don't move the parent twice
-                    module.to('cuda:0')
-
-            # Move the parent U-Net
-            unet.to('cuda:0')
-            self._module_in_gpu = unet
-            print("[Pipeline] U-Net fully restored to GPU")
-
         torch.cuda.empty_cache()
 
     def _ensure_unet_on_gpu_hook(self, module, input):
@@ -1065,6 +1049,21 @@ class DiffusionPipelineManager:
                 pipeline=self.txt2img_pipeline
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
+
+        # Ensure all embeddings are on GPU before offloading text encoders
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        if prompt_embeds is not None:
+            prompt_embeds = prompt_embeds.to(device)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(device)
+        if pooled_prompt_embeds is not None:
+            pooled_prompt_embeds = pooled_prompt_embeds.to(device)
+        if negative_pooled_prompt_embeds is not None:
+            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device)
+        if nag_negative_prompt_embeds is not None:
+            nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
+        if nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
 
         # Offload text encoders to CPU after all encoding is complete
         # Use hook-based approach to avoid shared submodule device conflicts

@@ -281,7 +281,12 @@ def custom_sampling_loop(
     Returns:
         Generated PIL Image
     """
-    device = pipeline.device
+    # CRITICAL FIX: Use U-Net's device instead of pipeline.device
+    # pipeline.device returns cpu after text encoders are offloaded
+    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    print(f"[CustomSampling] Device from pipeline.device: {pipeline.device}")
+    print(f"[CustomSampling] Device from unet.device: {device}")
+
     # Use unet's dtype for consistency with diffusers
     dtype = pipeline.unet.dtype
 
@@ -794,7 +799,9 @@ def custom_img2img_sampling_loop(
     Returns:
         Generated PIL Image
     """
-    device = pipeline.device
+    # CRITICAL FIX: Use U-Net's device instead of pipeline.device
+    # pipeline.device returns cpu after text encoders are offloaded
+    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
     dtype = pipeline.unet.dtype
 
     # Check if SDXL by checking if text_encoder_2 exists
@@ -1289,7 +1296,9 @@ def custom_inpaint_sampling_loop(
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
-    device = pipeline.device
+    # CRITICAL FIX: Use U-Net's device instead of pipeline.device
+    # pipeline.device returns cpu after text encoders are offloaded
+    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
     dtype = pipeline.unet.dtype
 
     # Check if SDXL by checking if text_encoder_2 exists

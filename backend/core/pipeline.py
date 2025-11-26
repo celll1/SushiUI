@@ -48,8 +48,66 @@ class DiffusionPipelineManager:
         # Cancellation flag
         self.cancel_requested = False
 
+        # VRAM optimization: Track which module is currently in GPU
+        self._module_in_gpu = None
+        self._unet_hook_handle = None
+
         # Auto-load last used model on startup
         self._auto_load_last_model()
+
+    def _offload_text_encoders(self):
+        """Offload text encoders to CPU to free VRAM"""
+        if hasattr(self.txt2img_pipeline, 'text_encoder') and self.txt2img_pipeline.text_encoder is not None:
+            # Only move if it's the currently active GPU module
+            if self._module_in_gpu == self.txt2img_pipeline.text_encoder:
+                self._module_in_gpu = None
+            self.txt2img_pipeline.text_encoder.to('cpu')
+
+        if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
+            # Only move if it's the currently active GPU module
+            if self._module_in_gpu == self.txt2img_pipeline.text_encoder_2:
+                self._module_in_gpu = None
+            self.txt2img_pipeline.text_encoder_2.to('cpu')
+
+        torch.cuda.empty_cache()
+
+    def _ensure_unet_on_gpu_hook(self, module, input):
+        """Forward pre-hook to ensure U-Net is on GPU before execution"""
+        # Get the target device
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+        # Check if U-Net is already on GPU
+        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
+            unet = self.txt2img_pipeline.unet
+            current_device = next(unet.parameters()).device
+
+            if current_device != device:
+                print(f"[Pipeline Hook] Moving U-Net from {current_device} to {device}")
+
+                # If another module is in GPU, move it to CPU first
+                if self._module_in_gpu is not None and self._module_in_gpu != unet:
+                    prev_device = next(self._module_in_gpu.parameters()).device
+                    print(f"[Pipeline Hook] Moving previous module from {prev_device} to CPU")
+                    self._module_in_gpu.to('cpu')
+                    torch.cuda.empty_cache()
+
+                # Move U-Net to GPU
+                unet.to(device)
+                self._module_in_gpu = unet
+                print(f"[Pipeline Hook] U-Net now on GPU")
+
+    def _ensure_unet_on_gpu_with_hook(self):
+        """Register forward pre-hook on U-Net to ensure GPU placement"""
+        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
+            # Remove existing hook if any
+            if self._unet_hook_handle is not None:
+                self._unet_hook_handle.remove()
+
+            # Register new hook
+            self._unet_hook_handle = self.txt2img_pipeline.unet.register_forward_pre_hook(
+                self._ensure_unet_on_gpu_hook
+            )
+            print("[Pipeline] Registered forward pre-hook on U-Net for automatic GPU placement")
 
     def load_model(
         self,
@@ -998,20 +1056,13 @@ class DiffusionPipelineManager:
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
 
         # Offload text encoders to CPU after all encoding is complete
+        # Use hook-based approach to avoid shared submodule device conflicts
         print("[Pipeline] Offloading text encoders to CPU to free VRAM...")
-        if hasattr(self.txt2img_pipeline, 'text_encoder') and self.txt2img_pipeline.text_encoder is not None:
-            self.txt2img_pipeline.text_encoder.to('cpu')
-        if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
-            self.txt2img_pipeline.text_encoder_2.to('cpu')
-        torch.cuda.empty_cache()
+        self._offload_text_encoders()
         print("[Pipeline] Text encoders offloaded to CPU")
 
-        # Ensure U-Net and all its submodules are on GPU after text encoder offload
-        # Text encoder .to() call may inadvertently move shared submodules to CPU
-        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
-            print(f"[Pipeline] Ensuring U-Net is fully on GPU after text encoder offload...")
-            self.txt2img_pipeline.unet.to('cuda:0')
-            print(f"[Pipeline] U-Net moved to GPU")
+        # Register forward pre-hook on U-Net to ensure it's on GPU before execution
+        self._ensure_unet_on_gpu_with_hook()
 
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])

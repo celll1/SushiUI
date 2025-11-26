@@ -706,6 +706,12 @@ def custom_sampling_loop(
         from core.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
+    # Ensure VAE is on GPU for decode
+    vae_device = next(vae.parameters()).device
+    if vae_device.type != device:
+        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for decode")
+        vae.to(device)
+
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
     with torch.no_grad():
@@ -1213,6 +1219,12 @@ def custom_img2img_sampling_loop(
     if nag_active and original_processors is not None:
         from core.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
+
+    # Ensure VAE is on GPU for decode
+    vae_device = next(vae.parameters()).device
+    if vae_device.type != device:
+        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for decode")
+        vae.to(device)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor

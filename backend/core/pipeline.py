@@ -1006,6 +1006,14 @@ class DiffusionPipelineManager:
         torch.cuda.empty_cache()
         print("[Pipeline] Text encoders offloaded to CPU")
 
+        # Verify U-Net is still on GPU after text encoder offload
+        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
+            unet_device = next(self.txt2img_pipeline.unet.parameters()).device
+            print(f"[Pipeline] U-Net device after text encoder offload: {unet_device}")
+            if str(unet_device) != 'cuda:0':
+                print(f"[Pipeline] WARNING: U-Net moved to {unet_device}! Moving back to cuda:0...")
+                self.txt2img_pipeline.unet.to('cuda:0')
+
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
         pipeline_to_use = self.txt2img_pipeline

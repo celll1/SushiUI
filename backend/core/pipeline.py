@@ -1405,6 +1405,12 @@ class DiffusionPipelineManager:
         else:
             initial_prompt = params["prompt"]
 
+        # ===== STAGE 1: TEXT ENCODING =====
+        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
+
+        log_device_status("Before text encoding (img2img)", self.img2img_pipeline)
+        move_text_encoders_to_gpu(self.img2img_pipeline)
+
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
         pipeline_to_use = self.img2img_pipeline
@@ -1443,6 +1449,48 @@ class DiffusionPipelineManager:
                 pipeline=pipeline_to_use
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
+
+        # Pre-calculate all prompt editing embeddings if needed
+        embeds_cache = {}
+        if prompt_processor:
+            print("[PromptEditing] Pre-calculating all prompt variations...")
+            all_prompts = prompt_processor.get_all_prompts(params.get("steps", settings.default_steps))
+            for prompt_text in all_prompts:
+                if prompt_text not in embeds_cache:
+                    edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled = self._encode_prompt_with_weights(
+                        prompt_text,
+                        params.get("negative_prompt", ""),
+                        pipeline=pipeline_to_use
+                    )
+                    # Keep prompt editing embeddings on CPU to save VRAM
+                    embeds_cache[prompt_text] = (
+                        edit_embeds.to('cpu') if edit_embeds is not None else None,
+                        edit_neg_embeds.to('cpu') if edit_neg_embeds is not None else None,
+                        edit_pooled.to('cpu') if edit_pooled is not None else None,
+                        edit_neg_pooled.to('cpu') if edit_neg_pooled is not None else None
+                    )
+            print(f"[PromptEditing] Pre-calculated {len(embeds_cache)} prompt variations (stored on CPU)")
+
+        # Ensure main embeddings are on GPU before offloading text encoders
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        if prompt_embeds is not None:
+            prompt_embeds = prompt_embeds.to(device)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(device)
+        if pooled_prompt_embeds is not None:
+            pooled_prompt_embeds = pooled_prompt_embeds.to(device)
+        if negative_pooled_prompt_embeds is not None:
+            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device)
+        if nag_negative_prompt_embeds is not None:
+            nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
+        if nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
+
+        # Offload text encoders to CPU after all encoding is complete
+        move_text_encoders_to_cpu(pipeline_to_use)
+
+        # ===== STAGE 2: U-NET INFERENCE (after VAE operations) =====
+        # Note: For img2img, we need VAE first for initial latent encoding
 
         # Handle latent resize mode by encoding, resizing latent, then decoding
         if resize_mode == "latent" and target_width and target_height:
@@ -1568,21 +1616,22 @@ class DiffusionPipelineManager:
             print("[Pipeline] Using custom img2img sampling loop")
 
             # Prepare prompt embeddings callback for prompt editing
+            # embeds_cache is already pre-calculated above with all variations
             prompt_embeds_callback_fn = None
             if prompt_processor:
-                embeds_cache = {}
-
                 def prompt_embeds_callback_fn(step_index):
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
-                    if new_prompt is not None:
-                        if new_prompt not in embeds_cache:
-                            new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
-                                new_prompt,
-                                params.get("negative_prompt", ""),
-                                pipeline=pipeline_to_use
-                            )
-                            embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
-                        return embeds_cache[new_prompt]
+                    if new_prompt is not None and new_prompt in embeds_cache:
+                        # Move embeddings from CPU to GPU on-demand
+                        cpu_embeds = embeds_cache[new_prompt]
+                        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+                        gpu_embeds = (
+                            cpu_embeds[0].to(device) if cpu_embeds[0] is not None else None,
+                            cpu_embeds[1].to(device) if cpu_embeds[1] is not None else None,
+                            cpu_embeds[2].to(device) if cpu_embeds[2] is not None else None,
+                            cpu_embeds[3].to(device) if cpu_embeds[3] is not None else None
+                        )
+                        return gpu_embeds
                     return None
 
             # Prepare ControlNet parameters
@@ -1622,6 +1671,11 @@ class DiffusionPipelineManager:
             t_start_override = t_start if fix_steps else None
             if fix_steps:
                 print(f"[img2img] Using t_start={t_start_override} for Do full steps mode")
+
+            # Move U-Net to GPU for inference
+            from core.vram_optimization import move_unet_to_gpu
+            log_device_status("Before U-Net inference (img2img)", pipeline_to_use)
+            move_unet_to_gpu(pipeline_to_use)
 
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(

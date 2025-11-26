@@ -57,17 +57,28 @@ class DiffusionPipelineManager:
 
     def _offload_text_encoders(self):
         """Offload text encoders to CPU to free VRAM"""
+        # Move text encoders to CPU
         if hasattr(self.txt2img_pipeline, 'text_encoder') and self.txt2img_pipeline.text_encoder is not None:
-            # Only move if it's the currently active GPU module
-            if self._module_in_gpu == self.txt2img_pipeline.text_encoder:
-                self._module_in_gpu = None
             self.txt2img_pipeline.text_encoder.to('cpu')
 
         if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
-            # Only move if it's the currently active GPU module
-            if self._module_in_gpu == self.txt2img_pipeline.text_encoder_2:
-                self._module_in_gpu = None
             self.txt2img_pipeline.text_encoder_2.to('cpu')
+
+        # After moving text encoders, explicitly ensure ALL U-Net submodules are on GPU
+        # This fixes the issue where .to('cpu') on text encoders somehow affects U-Net submodules
+        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
+            unet = self.txt2img_pipeline.unet
+            print("[Pipeline] Moving U-Net and all submodules to GPU after text encoder offload...")
+
+            # Recursively move all submodules to GPU
+            for name, module in unet.named_modules():
+                if module is not unet:  # Don't move the parent twice
+                    module.to('cuda:0')
+
+            # Move the parent U-Net
+            unet.to('cuda:0')
+            self._module_in_gpu = unet
+            print("[Pipeline] U-Net fully restored to GPU")
 
         torch.cuda.empty_cache()
 

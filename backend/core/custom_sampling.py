@@ -369,6 +369,11 @@ def custom_sampling_loop(
         latent_height = height // 8
         latent_width = width // 8
 
+        # Ensure generator is on the correct device
+        if generator.device.type != device:
+            current_seed = generator.initial_seed()
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+
         latents = torch.randn(
             (1, latent_channels, latent_height, latent_width),
             generator=generator,
@@ -870,6 +875,10 @@ def custom_img2img_sampling_loop(
         init_latents = init_latents * vae.config.scaling_factor
 
     # Add noise to latents based on timestep
+    # Ensure generator is on the correct device
+    if generator.device.type != device:
+        current_seed = generator.initial_seed()
+        generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 
@@ -1409,6 +1418,10 @@ def custom_inpaint_sampling_loop(
 
         elif inpaint_fill_mode == "noise":
             # Fill masked region with random latent noise (mask=1 is inpaint area)
+            # Ensure generator is on the correct device
+            if generator.device.type != device:
+                current_seed = generator.initial_seed()
+                generator = torch.Generator(device=device).manual_seed(current_seed)
             random_latents = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
             init_latents = init_latents * (1 - mask_latent) + random_latents * mask_latent * inpaint_fill_strength + init_latents * mask_latent * (1 - inpaint_fill_strength)
 
@@ -1417,6 +1430,10 @@ def custom_inpaint_sampling_loop(
             # Keep original where mask=0, zero out where mask=1 (scaled by strength)
             init_latents = init_latents * (1 - mask_latent * inpaint_fill_strength)
 
+    # Ensure generator is on the correct device
+    if generator.device.type != device:
+        current_seed = generator.initial_seed()
+        generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 

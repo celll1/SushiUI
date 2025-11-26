@@ -870,6 +870,13 @@ def custom_img2img_sampling_loop(
 
     timesteps = timesteps[t_start:]
 
+    # Ensure VAE is on GPU for initial encoding
+    from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
+    vae_device = next(vae.parameters()).device
+    if vae_device.type != device:
+        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
+        move_vae_to_gpu(pipeline)
+
     # Encode initial image to latents
     # Convert PIL image to tensor if needed
     if isinstance(init_image, Image.Image):
@@ -882,6 +889,10 @@ def custom_img2img_sampling_loop(
             init_image.to(device=device, dtype=dtype)
         ).latent_dist.sample(generator)
         init_latents = init_latents * vae.config.scaling_factor
+
+    # Move VAE back to CPU after initial encoding
+    print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
+    move_vae_to_cpu(pipeline)
 
     # Add noise to latents based on timestep
     # Ensure generator is on the correct device
@@ -1366,6 +1377,13 @@ def custom_inpaint_sampling_loop(
 
     timesteps = timesteps[t_start:]
 
+    # Ensure VAE is on GPU for initial encoding
+    from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
+    vae_device = next(vae.parameters()).device
+    if vae_device.type != device:
+        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
+        move_vae_to_gpu(pipeline)
+
     # Prepare images
     if isinstance(init_image, Image.Image):
         init_image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
@@ -1453,6 +1471,10 @@ def custom_inpaint_sampling_loop(
         generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+
+    # Move VAE back to CPU after initial encoding
+    print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
+    move_vae_to_cpu(pipeline)
 
     current_prompt_embeds = prompt_embeds
     current_negative_prompt_embeds = negative_prompt_embeds
@@ -1766,9 +1788,22 @@ def custom_inpaint_sampling_loop(
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})
             latents = callback_kwargs.get("latents", latents)
 
+    # ===== STAGE 3: VAE DECODE =====
+    from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+
+    # Offload U-Net to CPU to free VRAM for VAE
+    move_unet_to_cpu(pipeline)
+
+    log_device_status("Before VAE decode (inpaint)", pipeline)
+    move_vae_to_gpu(pipeline)
+
+    # Decode latents to image
     latents = latents / vae.config.scaling_factor
     with torch.no_grad():
         image = vae.decode(latents).sample
+
+    # Offload VAE to CPU after decoding
+    move_vae_to_cpu(pipeline)
 
     image = (image / 2 + 0.5).clamp(0, 1)
 

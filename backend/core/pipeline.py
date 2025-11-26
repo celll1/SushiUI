@@ -1406,7 +1406,7 @@ class DiffusionPipelineManager:
             initial_prompt = params["prompt"]
 
         # ===== STAGE 1: TEXT ENCODING =====
-        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
+        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         log_device_status("Before text encoding (img2img)", self.img2img_pipeline)
         move_text_encoders_to_gpu(self.img2img_pipeline)
@@ -1500,6 +1500,9 @@ class DiffusionPipelineManager:
                 # Encode image to latent space
                 import torch.nn.functional as F
 
+                # Move VAE to GPU for latent resize encoding/decoding
+                move_vae_to_gpu(pipeline_to_use)
+
                 # Prepare image for VAE encoding
                 image_tensor = self.img2img_pipeline.image_processor.preprocess(init_image)
                 image_tensor = image_tensor.to(device=self.device, dtype=self.img2img_pipeline.vae.dtype)
@@ -1568,6 +1571,9 @@ class DiffusionPipelineManager:
                 decoded = decoded.cpu().permute(0, 2, 3, 1).float().numpy()
                 decoded = (decoded * 255).round().astype("uint8")
                 init_image = Image.fromarray(decoded[0])
+
+                # Move VAE back to CPU after latent resize operations
+                move_vae_to_cpu(pipeline_to_use)
 
         # Calculate proper steps for img2img
         requested_steps = params.get("steps", settings.default_steps)
@@ -1813,6 +1819,12 @@ class DiffusionPipelineManager:
         else:
             initial_prompt = params["prompt"]
 
+        # ===== STAGE 1: TEXT ENCODING =====
+        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+
+        log_device_status("Before text encoding (inpaint)", self.inpaint_pipeline)
+        move_text_encoders_to_gpu(self.inpaint_pipeline)
+
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
 
@@ -1837,6 +1849,27 @@ class DiffusionPipelineManager:
             pipeline=pipeline_to_use
         )
 
+        # Pre-calculate all prompt editing embeddings if needed
+        embeds_cache = {}
+        if prompt_processor:
+            print("[PromptEditing] Pre-calculating all prompt variations...")
+            all_prompts = prompt_processor.get_all_prompts(total_steps)
+            for prompt_text in all_prompts:
+                if prompt_text not in embeds_cache:
+                    edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled = self._encode_prompt_with_weights(
+                        prompt_text,
+                        params.get("negative_prompt", ""),
+                        pipeline=pipeline_to_use
+                    )
+                    # Keep prompt editing embeddings on CPU to save VRAM
+                    embeds_cache[prompt_text] = (
+                        edit_embeds.to('cpu') if edit_embeds is not None else None,
+                        edit_neg_embeds.to('cpu') if edit_neg_embeds is not None else None,
+                        edit_pooled.to('cpu') if edit_pooled is not None else None,
+                        edit_neg_pooled.to('cpu') if edit_neg_pooled is not None else None
+                    )
+            print(f"[PromptEditing] Pre-calculated {len(embeds_cache)} prompt variations (stored on CPU)")
+
         # Encode NAG negative prompt if NAG is enabled
         nag_negative_prompt_embeds = None
         nag_negative_pooled_prompt_embeds = None
@@ -1853,22 +1886,38 @@ class DiffusionPipelineManager:
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
 
+        # Move embeddings to device
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        prompt_embeds = prompt_embeds.to(device)
+        negative_prompt_embeds = negative_prompt_embeds.to(device)
+        if pooled_prompt_embeds is not None:
+            pooled_prompt_embeds = pooled_prompt_embeds.to(device)
+        if negative_pooled_prompt_embeds is not None:
+            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device)
+        if nag_negative_prompt_embeds is not None:
+            nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
+        if nag_negative_pooled_prompt_embeds is not None:
+            nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
+
+        # Offload text encoders to CPU after all encoding is complete
+        move_text_encoders_to_cpu(pipeline_to_use)
+
         # Prepare callback for prompt editing
         prompt_embeds_callback_fn = None
         if prompt_processor:
-            embeds_cache = {}
             def prompt_embeds_callback_fn(step_index):
                 new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
-                if new_prompt is not None:
-                    if new_prompt not in embeds_cache:
-                        print(f"[PromptEditing] Step {step_index}/{total_steps}: Switching to prompt: {new_prompt}")
-                        new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
-                            new_prompt,
-                            params.get("negative_prompt", ""),
-                            pipeline=pipeline_to_use
-                        )
-                        embeds_cache[new_prompt] = (new_embeds, new_neg_embeds, new_pooled, new_neg_pooled)
-                    return embeds_cache[new_prompt]
+                if new_prompt is not None and new_prompt in embeds_cache:
+                    # Move embeddings from CPU to GPU on-demand
+                    cpu_embeds = embeds_cache[new_prompt]
+                    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+                    gpu_embeds = (
+                        cpu_embeds[0].to(device) if cpu_embeds[0] is not None else None,
+                        cpu_embeds[1].to(device) if cpu_embeds[1] is not None else None,
+                        cpu_embeds[2].to(device) if cpu_embeds[2] is not None else None,
+                        cpu_embeds[3].to(device) if cpu_embeds[3] is not None else None
+                    )
+                    return gpu_embeds
                 return None
 
         # Prepare ControlNet parameters
@@ -1899,14 +1948,21 @@ class DiffusionPipelineManager:
 
         # Set attention processor based on attention_type (unless NAG is enabled)
         # NAG has its own processors that will be set in custom_sampling_loop
-        if not params.get("nag_enable", False) and self.attention_type != "normal":
+        attention_type = params.get("attention_type", "normal")
+        if not params.get("nag_enable", False) and attention_type != "normal":
             from core.attention_processors import set_attention_processor
-            self.original_processors = set_attention_processor(pipeline_to_use.unet, self.attention_type)
+            self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
         # Use t_start directly for custom sampling loop
         t_start_override = t_start if fix_steps else None
         if fix_steps:
             print(f"[inpaint] Using t_start={t_start_override} for Do full steps mode")
+
+        # ===== STAGE 2: U-NET INFERENCE =====
+        from core.vram_optimization import move_unet_to_gpu
+
+        log_device_status("Before U-Net inference (inpaint)", pipeline_to_use)
+        move_unet_to_gpu(pipeline_to_use)
 
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(

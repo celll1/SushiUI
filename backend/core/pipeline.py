@@ -48,61 +48,8 @@ class DiffusionPipelineManager:
         # Cancellation flag
         self.cancel_requested = False
 
-        # VRAM optimization: Track which module is currently in GPU
-        self._module_in_gpu = None
-        self._unet_hook_handle = None
-
         # Auto-load last used model on startup
         self._auto_load_last_model()
-
-    def _offload_text_encoders(self):
-        """Offload text encoders to CPU to free VRAM"""
-        # Move text encoders to CPU
-        if hasattr(self.txt2img_pipeline, 'text_encoder') and self.txt2img_pipeline.text_encoder is not None:
-            self.txt2img_pipeline.text_encoder.to('cpu')
-
-        if hasattr(self.txt2img_pipeline, 'text_encoder_2') and self.txt2img_pipeline.text_encoder_2 is not None:
-            self.txt2img_pipeline.text_encoder_2.to('cpu')
-
-        torch.cuda.empty_cache()
-
-    def _ensure_unet_on_gpu_hook(self, module, input):
-        """Forward pre-hook to ensure U-Net is on GPU before execution"""
-        # Get the target device
-        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-        # Check if U-Net is already on GPU
-        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
-            unet = self.txt2img_pipeline.unet
-            current_device = next(unet.parameters()).device
-
-            if current_device != device:
-                print(f"[Pipeline Hook] Moving U-Net from {current_device} to {device}")
-
-                # If another module is in GPU, move it to CPU first
-                if self._module_in_gpu is not None and self._module_in_gpu != unet:
-                    prev_device = next(self._module_in_gpu.parameters()).device
-                    print(f"[Pipeline Hook] Moving previous module from {prev_device} to CPU")
-                    self._module_in_gpu.to('cpu')
-                    torch.cuda.empty_cache()
-
-                # Move U-Net to GPU
-                unet.to(device)
-                self._module_in_gpu = unet
-                print(f"[Pipeline Hook] U-Net now on GPU")
-
-    def _ensure_unet_on_gpu_with_hook(self):
-        """Register forward pre-hook on U-Net to ensure GPU placement"""
-        if hasattr(self.txt2img_pipeline, 'unet') and self.txt2img_pipeline.unet is not None:
-            # Remove existing hook if any
-            if self._unet_hook_handle is not None:
-                self._unet_hook_handle.remove()
-
-            # Register new hook
-            self._unet_hook_handle = self.txt2img_pipeline.unet.register_forward_pre_hook(
-                self._ensure_unet_on_gpu_hook
-            )
-            print("[Pipeline] Registered forward pre-hook on U-Net for automatic GPU placement")
 
     def load_model(
         self,
@@ -212,6 +159,14 @@ class DiffusionPipelineManager:
                 self.inpaint_pipeline = StableDiffusionInpaintPipeline(**base_pipeline.components)
 
             print(f"[Pipeline] All pipelines created successfully on device: {self.device}")
+
+            # Initialize VRAM optimization: Move all components to CPU except what's immediately needed
+            print("[VRAM] Initializing sequential loading strategy...")
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            move_text_encoders_to_cpu(self.txt2img_pipeline)
+            move_unet_to_cpu(self.txt2img_pipeline)
+            move_vae_to_cpu(self.txt2img_pipeline)
+            print("[VRAM] All components moved to CPU. Will load to GPU as needed.")
 
             self.current_model = model_id
 
@@ -1015,6 +970,12 @@ class DiffusionPipelineManager:
         else:
             initial_prompt = params["prompt"]
 
+        # ===== STAGE 1: TEXT ENCODING =====
+        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
+
+        log_device_status("Before text encoding", self.txt2img_pipeline)
+        move_text_encoders_to_gpu(self.txt2img_pipeline)
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
@@ -1066,13 +1027,13 @@ class DiffusionPipelineManager:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
 
         # Offload text encoders to CPU after all encoding is complete
-        # Use hook-based approach to avoid shared submodule device conflicts
-        print("[Pipeline] Offloading text encoders to CPU to free VRAM...")
-        self._offload_text_encoders()
-        print("[Pipeline] Text encoders offloaded to CPU")
+        move_text_encoders_to_cpu(self.txt2img_pipeline)
 
-        # Register forward pre-hook on U-Net to ensure it's on GPU before execution
-        self._ensure_unet_on_gpu_with_hook()
+        # ===== STAGE 2: U-NET INFERENCE =====
+        from core.vram_optimization import move_unet_to_gpu
+
+        log_device_status("Before U-Net inference", self.txt2img_pipeline)
+        move_unet_to_gpu(self.txt2img_pipeline)
 
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])

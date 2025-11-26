@@ -284,10 +284,6 @@ def custom_sampling_loop(
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
-    print(f"[CustomSampling] Device from pipeline.device: {pipeline.device}")
-    print(f"[CustomSampling] Device from unet.device: {device}")
-
-    # Use unet's dtype for consistency with diffusers
     dtype = pipeline.unet.dtype
 
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
@@ -711,22 +707,22 @@ def custom_sampling_loop(
         from core.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
-    # Ensure VAE is on GPU for decode
-    vae_device = next(vae.parameters()).device
-    if vae_device.type != device:
-        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for decode")
-        vae.to(device)
+    # ===== STAGE 3: VAE DECODE =====
+    from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+
+    # Offload U-Net to CPU to free VRAM for VAE
+    move_unet_to_cpu(pipeline)
+
+    log_device_status("Before VAE decode", pipeline)
+    move_vae_to_gpu(pipeline)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
     with torch.no_grad():
         image = vae.decode(latents).sample
 
-    # Offload VAE to CPU after decoding to free VRAM
-    print("[CustomSampling] Offloading VAE to CPU after decode...")
-    vae.to('cpu')
-    torch.cuda.empty_cache()
-    print("[CustomSampling] VAE offloaded to CPU")
+    # Offload VAE to CPU after decoding
+    move_vae_to_cpu(pipeline)
 
     # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)
@@ -1227,22 +1223,22 @@ def custom_img2img_sampling_loop(
         from core.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
-    # Ensure VAE is on GPU for decode
-    vae_device = next(vae.parameters()).device
-    if vae_device.type != device:
-        print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for decode")
-        vae.to(device)
+    # ===== STAGE 3: VAE DECODE =====
+    from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+
+    # Offload U-Net to CPU to free VRAM for VAE
+    move_unet_to_cpu(pipeline)
+
+    log_device_status("Before VAE decode", pipeline)
+    move_vae_to_gpu(pipeline)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
     with torch.no_grad():
         image = vae.decode(latents).sample
 
-    # Offload VAE to CPU after decoding to free VRAM
-    print("[CustomSampling] Offloading VAE to CPU after decode...")
-    vae.to('cpu')
-    torch.cuda.empty_cache()
-    print("[CustomSampling] VAE offloaded to CPU")
+    # Offload VAE to CPU after decoding
+    move_vae_to_cpu(pipeline)
 
     # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)

@@ -1023,10 +1023,17 @@ class DiffusionPipelineManager:
                         params.get("negative_prompt", ""),
                         pipeline=self.txt2img_pipeline
                     )
-                    embeds_cache[prompt_text] = (edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled)
-            print(f"[PromptEditing] Pre-calculated {len(embeds_cache)} prompt variations")
+                    # Keep prompt editing embeddings on CPU to save VRAM
+                    # They will be moved to GPU on-demand in the callback
+                    embeds_cache[prompt_text] = (
+                        edit_embeds.to('cpu') if edit_embeds is not None else None,
+                        edit_neg_embeds.to('cpu') if edit_neg_embeds is not None else None,
+                        edit_pooled.to('cpu') if edit_pooled is not None else None,
+                        edit_neg_pooled.to('cpu') if edit_neg_pooled is not None else None
+                    )
+            print(f"[PromptEditing] Pre-calculated {len(embeds_cache)} prompt variations (stored on CPU)")
 
-        # Ensure all embeddings are on GPU before offloading text encoders
+        # Ensure main embeddings are on GPU before offloading text encoders
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         if prompt_embeds is not None:
             prompt_embeds = prompt_embeds.to(device)
@@ -1040,16 +1047,6 @@ class DiffusionPipelineManager:
             nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
-
-        # Also ensure all prompt editing embeddings are on GPU
-        for prompt_text in embeds_cache:
-            edit_embeds, edit_neg_embeds, edit_pooled, edit_neg_pooled = embeds_cache[prompt_text]
-            embeds_cache[prompt_text] = (
-                edit_embeds.to(device) if edit_embeds is not None else None,
-                edit_neg_embeds.to(device) if edit_neg_embeds is not None else None,
-                edit_pooled.to(device) if edit_pooled is not None else None,
-                edit_neg_pooled.to(device) if edit_neg_pooled is not None else None
-            )
 
         # Offload text encoders to CPU after all encoding is complete
         move_text_encoders_to_cpu(self.txt2img_pipeline)
@@ -1211,7 +1208,16 @@ class DiffusionPipelineManager:
                 def prompt_embeds_callback_fn(step_index):
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
                     if new_prompt is not None and new_prompt in embeds_cache:
-                        return embeds_cache[new_prompt]
+                        # Move embeddings from CPU to GPU on-demand
+                        cpu_embeds = embeds_cache[new_prompt]
+                        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+                        gpu_embeds = (
+                            cpu_embeds[0].to(device) if cpu_embeds[0] is not None else None,
+                            cpu_embeds[1].to(device) if cpu_embeds[1] is not None else None,
+                            cpu_embeds[2].to(device) if cpu_embeds[2] is not None else None,
+                            cpu_embeds[3].to(device) if cpu_embeds[3] is not None else None
+                        )
+                        return gpu_embeds
                     return None
 
             # Prepare ControlNet parameters

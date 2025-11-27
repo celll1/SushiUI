@@ -1007,6 +1007,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return;
     }
 
+    console.log('[Inpaint] Adding loop steps with mainParams.unet_quantization:', mainParams.unet_quantization);
+
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
 

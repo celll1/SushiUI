@@ -637,6 +637,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return;
     }
 
+    console.log('[Txt2Img] Adding loop steps with mainParams.unet_quantization:', mainParams.unet_quantization);
+
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
 
@@ -667,6 +669,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         img2img_fix_steps: step.doFullSteps,
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
+        unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
       };
 
       // Use custom settings or inherit from main

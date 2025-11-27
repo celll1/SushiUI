@@ -847,6 +847,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
+    console.log('[Img2Img] Adding loop steps with mainParams.unet_quantization:', mainParams.unet_quantization);
+
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
 

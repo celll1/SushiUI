@@ -30,8 +30,10 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   // Form states
   const [huggingfaceRepo, setHuggingfaceRepo] = useState("");
   const [huggingfaceRevision, setHuggingfaceRevision] = useState("");
-  const [localModelPath, setLocalModelPath] = useState("");
-  const [browseFile, setBrowseFile] = useState<File | null>(null);
+
+  // Filter states
+  const [selectedModelPath, setSelectedModelPath] = useState<string>("");
+  const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
 
   useEffect(() => {
     loadModels();
@@ -91,55 +93,6 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     } catch (error) {
       console.error("Failed to load model:", error);
       alert("Failed to load model");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBrowseAndLoad = async () => {
-    if (!browseFile) return;
-
-    setLoading(true);
-    try {
-      // First, upload the file
-      const formData = new FormData();
-      formData.append("file", browseFile);
-
-      const uploadResponse = await fetch("/api/models/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const uploadData = await uploadResponse.json();
-      if (!uploadData.success) {
-        throw new Error("Upload failed");
-      }
-
-      // Reload models list
-      await loadModels();
-
-      // Then load the uploaded model
-      const loadFormData = new FormData();
-      loadFormData.append("source_type", "safetensors");
-      loadFormData.append("source", uploadData.path);
-
-      const loadResponse = await fetch("/api/models/load", {
-        method: "POST",
-        body: loadFormData,
-      });
-
-      const loadData = await loadResponse.json();
-      if (loadData.success) {
-        setCurrentModel(loadData.model_info);
-        if (onModelLoad) {
-          onModelLoad(loadData.model_info);
-        }
-        alert("Model uploaded and loaded successfully!");
-        setBrowseFile(null);
-      }
-    } catch (error) {
-      console.error("Failed to upload and load model:", error);
-      alert("Failed to upload and load model");
     } finally {
       setLoading(false);
     }
@@ -205,99 +158,98 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
 
         {/* Local Files Tab */}
         {selectedTab === "local" && (
-          <div className="space-y-2">
+          <div className="space-y-4">
             {models.length === 0 ? (
               <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
             ) : (
-              <div className="space-y-2">
-                {models.map((model, idx) => (
-                  <div key={idx} className="flex items-center justify-between bg-gray-800 p-3 rounded-lg">
-                    <div>
-                      <p className="text-white">{model.name}</p>
-                      <p className="text-xs text-gray-500">
-                        {model.type} {model.size_gb && `• ${model.size_gb} GB`}
-                      </p>
-                    </div>
-                    <Button
-                      onClick={() => handleLoadModel(model.source_type, model.path)}
-                      disabled={loading}
-                      size="sm"
-                    >
-                      Load
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
+              <div className="space-y-3">
+                {/* Directory Filter */}
+                {(() => {
+                  const uniqueDirs = Array.from(new Set(models.map(m => m.source_dir || "Unknown")));
+                  if (uniqueDirs.length > 1) {
+                    return (
+                      <Select
+                        label="Filter by Directory"
+                        value={selectedSourceDir}
+                        onChange={(e) => setSelectedSourceDir(e.target.value)}
+                        options={[
+                          { value: "all", label: "All Directories" },
+                          ...uniqueDirs.map(dir => ({
+                            value: dir,
+                            label: dir
+                          }))
+                        ]}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
 
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Or select a local file
-              </label>
-              <div className="space-y-2">
-                <div className="flex space-x-2">
-                  <Input
-                    placeholder="Select .safetensors file"
-                    value={browseFile?.name || ""}
-                    readOnly
-                    className="flex-1"
+                {/* Model Dropdown */}
+                <div className="space-y-2">
+                  <Select
+                    label="Select Model"
+                    value={selectedModelPath}
+                    onChange={(e) => setSelectedModelPath(e.target.value)}
+                    options={[
+                      { value: "", label: "-- Select a model --" },
+                      ...models
+                        .filter(model =>
+                          selectedSourceDir === "all" ||
+                          model.source_dir === selectedSourceDir
+                        )
+                        .map(model => ({
+                          value: model.path,
+                          label: `${model.name} (${model.type}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
+                        }))
+                    ]}
                   />
-                  <input
-                    type="file"
-                    accept=".safetensors"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setBrowseFile(file);
+
+                  {/* Model Details */}
+                  {selectedModelPath && (() => {
+                    const selectedModel = models.find(m => m.path === selectedModelPath);
+                    if (selectedModel) {
+                      return (
+                        <div className="bg-gray-800 p-3 rounded-lg text-sm">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="text-gray-400">Type:</span>
+                              <span className="ml-2 text-white">{selectedModel.type}</span>
+                            </div>
+                            {selectedModel.size_gb && (
+                              <div>
+                                <span className="text-gray-400">Size:</span>
+                                <span className="ml-2 text-white">{selectedModel.size_gb} GB</span>
+                              </div>
+                            )}
+                            <div className="col-span-2">
+                              <span className="text-gray-400">Path:</span>
+                              <div className="mt-1 text-xs text-white break-all bg-gray-900 p-2 rounded">
+                                {selectedModel.path}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  <Button
+                    onClick={() => {
+                      const selectedModel = models.find(m => m.path === selectedModelPath);
+                      if (selectedModel) {
+                        handleLoadModel(selectedModel.source_type, selectedModel.path);
                       }
                     }}
-                    className="hidden"
-                    id="local-file-browse"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => document.getElementById('local-file-browse')?.click()}
+                    disabled={!selectedModelPath || loading}
+                    className="w-full"
                   >
-                    Browse
+                    {loading ? "Loading..." : "Load Selected Model"}
                   </Button>
                 </div>
-                {browseFile && (
-                  <div className="bg-gray-800 p-2 rounded-lg">
-                    <p className="text-xs text-gray-400">
-                      {(browseFile.size / (1024 ** 3)).toFixed(2)} GB
-                    </p>
-                  </div>
-                )}
-                <Button
-                  onClick={handleBrowseAndLoad}
-                  disabled={!browseFile || loading}
-                  className="w-full"
-                >
-                  {loading ? "Uploading and Loading..." : "Upload and Load"}
-                </Button>
               </div>
-            </div>
-
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Or enter full path manually
-              </label>
-              <Input
-                placeholder="/path/to/model or model.safetensors"
-                value={localModelPath}
-                onChange={(e) => setLocalModelPath(e.target.value)}
-              />
-              <Button
-                onClick={() => {
-                  const sourceType = localModelPath.endsWith('.safetensors') ? 'safetensors' : 'diffusers';
-                  handleLoadModel(sourceType, localModelPath);
-                }}
-                disabled={!localModelPath || loading}
-                className="mt-2 w-full"
-              >
-                Load Path
-              </Button>
-            </div>
+            )}
           </div>
         )}
 

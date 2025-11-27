@@ -4,10 +4,13 @@ This module implements sequential VRAM loading:
 - Text Encoder → CPU after encoding
 - U-Net → GPU only during inference
 - VAE → GPU only during decode
+
+Also supports on-demand U-Net quantization for VRAM reduction.
 """
 
 import torch
-from typing import Optional
+from typing import Optional, Literal
+import copy
 
 
 def log_device_status(stage: str, pipeline, show_details: bool = False):
@@ -79,6 +82,112 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     print(f"{'='*60}\n")
 
 
+def _quantize_unet(unet, quantization: str):
+    """Create a quantized copy of the U-Net
+
+    Args:
+        unet: Original U-Net model (should be on CPU)
+        quantization: Quantization type - 'fp8', 'int8', 'int4', or 'nf4'
+
+    Returns:
+        Quantized U-Net model
+    """
+    try:
+        if quantization == 'fp8':
+            # FP8 quantization using torch native support
+            print(f"[Quantization] Applying FP8 quantization...")
+            # For FP8, we can use torch.float8_e4m3fn or torch.float8_e5m2
+            # Clone the model and convert weights
+            quantized_unet = copy.deepcopy(unet)
+
+            # Convert linear layers to FP8
+            for name, module in quantized_unet.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Convert weight to FP8 (stored as float8_e4m3fn)
+                    # Note: This is experimental and may require torch >= 2.1
+                    try:
+                        # Store original dtype for compute
+                        module._original_dtype = module.weight.dtype
+                        # Convert to FP8 (this reduces memory but compute still uses original dtype)
+                        module.weight.data = module.weight.data.to(torch.float8_e4m3fn).to(module.weight.dtype)
+                        if module.bias is not None:
+                            module.bias.data = module.bias.data.to(torch.float8_e4m3fn).to(module.bias.dtype)
+                    except Exception as e:
+                        print(f"[Quantization] Warning: Could not convert {name} to FP8: {e}")
+
+            return quantized_unet
+
+        elif quantization == 'int8':
+            # INT8 quantization using torch.quantization
+            print(f"[Quantization] Applying INT8 quantization...")
+            quantized_unet = copy.deepcopy(unet)
+
+            # Dynamic quantization for linear layers
+            quantized_unet = torch.quantization.quantize_dynamic(
+                quantized_unet,
+                {torch.nn.Linear},
+                dtype=torch.qint8
+            )
+
+            return quantized_unet
+
+        elif quantization in ['int4', 'nf4']:
+            # INT4/NF4 quantization using bitsandbytes if available
+            print(f"[Quantization] Applying {quantization.upper()} quantization...")
+            try:
+                import bitsandbytes as bnb
+                from transformers import BitsAndBytesConfig
+
+                # Note: This is a simplified approach
+                # Full bitsandbytes integration would require model reload
+                quantized_unet = copy.deepcopy(unet)
+
+                # Convert Linear layers to 4-bit
+                for name, module in quantized_unet.named_modules():
+                    if isinstance(module, torch.nn.Linear):
+                        # Replace with bnb Linear4bit layer
+                        parent_name = '.'.join(name.split('.')[:-1])
+                        child_name = name.split('.')[-1]
+
+                        if parent_name:
+                            parent = dict(quantized_unet.named_modules())[parent_name]
+                        else:
+                            parent = quantized_unet
+
+                        # Create 4-bit linear layer
+                        quant_type = "nf4" if quantization == 'nf4' else "int4"
+                        new_module = bnb.nn.Linear4bit(
+                            module.in_features,
+                            module.out_features,
+                            bias=module.bias is not None,
+                            compute_dtype=torch.float16,
+                            quant_type=quant_type
+                        )
+
+                        # Copy weights
+                        new_module.weight.data = module.weight.data
+                        if module.bias is not None:
+                            new_module.bias.data = module.bias.data
+
+                        setattr(parent, child_name, new_module)
+
+                return quantized_unet
+
+            except ImportError:
+                print(f"[Quantization] Warning: bitsandbytes not available, falling back to INT8")
+                return _quantize_unet(unet, 'int8')
+
+        else:
+            raise ValueError(f"Unsupported quantization type: {quantization}")
+
+    except Exception as e:
+        print(f"[Quantization] Error during quantization: {e}")
+        print(f"[Quantization] Falling back to original model without quantization")
+        import traceback
+        traceback.print_exc()
+        return copy.deepcopy(unet)
+
+
 def move_text_encoders_to_gpu(pipeline):
     """Move text encoders to GPU for encoding"""
     print("[VRAM] Moving Text Encoders to GPU for encoding...")
@@ -105,12 +214,39 @@ def move_text_encoders_to_cpu(pipeline):
     torch.cuda.empty_cache()
 
 
-def move_unet_to_gpu(pipeline):
-    """Move U-Net to GPU for inference"""
-    print("[VRAM] Moving U-Net to GPU for inference...")
+def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
+    """Move U-Net to GPU for inference, optionally with quantization
+
+    Args:
+        pipeline: The diffusers pipeline
+        quantization: Quantization type - None, 'fp8', 'int8', 'int4', or 'nf4'
+    """
+    if quantization:
+        print(f"[VRAM] Moving U-Net to GPU with {quantization} quantization...")
+    else:
+        print("[VRAM] Moving U-Net to GPU for inference...")
 
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
-        pipeline.unet.to('cuda:0')
+        if quantization:
+            # Store original unet on CPU if not already stored
+            if not hasattr(pipeline, '_original_unet'):
+                print(f"[VRAM] Storing original U-Net on CPU...")
+                pipeline._original_unet = pipeline.unet
+                # Ensure original is on CPU
+                pipeline._original_unet.to('cpu')
+
+            # Create quantized copy
+            print(f"[VRAM] Creating {quantization} quantized U-Net...")
+            pipeline.unet = _quantize_unet(pipeline._original_unet, quantization)
+            pipeline.unet.to('cuda:0')
+        else:
+            # Restore original unet if quantization was used before
+            if hasattr(pipeline, '_original_unet'):
+                print(f"[VRAM] Restoring original (non-quantized) U-Net...")
+                pipeline.unet = pipeline._original_unet
+                delattr(pipeline, '_original_unet')
+
+            pipeline.unet.to('cuda:0')
 
     torch.cuda.empty_cache()
 

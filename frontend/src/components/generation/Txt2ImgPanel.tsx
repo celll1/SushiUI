@@ -53,6 +53,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_alpha: 0.25,
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
+  unet_quantization: null,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -1378,6 +1379,36 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               )}
             </div>
             )}
+
+            {/* U-Net Quantization */}
+            {visibility.advancedSettings && (
+            <div className="space-y-2">
+              <Select
+                label="U-Net Quantization (VRAM Reduction)"
+                value={params.unet_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  unet_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None (Full Precision)" },
+                  { value: "int8", label: "INT8 (Moderate reduction, good quality)" },
+                  { value: "fp8", label: "FP8 (Experimental, Ada/Hopper GPUs)" },
+                  { value: "int4", label: "INT4 (Maximum reduction, quality loss)" },
+                  { value: "nf4", label: "NF4 (4-bit NormalFloat, requires bitsandbytes)" },
+                ]}
+              />
+              {params.unet_quantization && params.unet_quantization !== "none" && (
+                <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                  <p className="text-xs text-yellow-200">
+                    ⚠️ Quantization reduces VRAM usage but may affect image quality.
+                    Original model stays on CPU; quantized version created on-demand for inference.
+                  </p>
+                </div>
+              )}
+            </div>
+            )}
+
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider

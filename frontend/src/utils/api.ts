@@ -170,6 +170,8 @@ export interface GenerationParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  // U-Net Quantization
+  unet_quantization?: string | null;
 }
 
 export interface Img2ImgParams extends GenerationParams {

@@ -713,8 +713,8 @@ def custom_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    log_device_status("Before VAE decode", pipeline)
     move_vae_to_gpu(pipeline)
+    log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
@@ -1240,8 +1240,8 @@ def custom_img2img_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    log_device_status("Before VAE decode", pipeline)
     move_vae_to_gpu(pipeline)
+    log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor
@@ -1794,8 +1794,8 @@ def custom_inpaint_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    log_device_status("Before VAE decode (inpaint)", pipeline)
     move_vae_to_gpu(pipeline)
+    log_device_status("Ready for VAE decode (inpaint)", pipeline)
 
     # Decode latents to image
     latents = latents / vae.config.scaling_factor

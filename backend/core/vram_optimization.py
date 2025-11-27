@@ -17,7 +17,7 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     """Log device status of all pipeline components
 
     Args:
-        stage: Description of current stage (e.g., "Before text encoding")
+        stage: Description of current stage (e.g., "After moving to GPU")
         pipeline: The diffusers pipeline
         show_details: Show detailed submodule information
     """
@@ -25,11 +25,30 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     print(f"[VRAM] Device Status: {stage}")
     print(f"{'='*60}")
 
+    def get_dtype_info(module):
+        """Get dtype information from module parameters"""
+        try:
+            param = next(module.parameters())
+            return param.dtype
+        except:
+            return "unknown"
+
+    def check_quantization(module):
+        """Check if module is quantized"""
+        # Check for quantized linear layers
+        for name, submodule in module.named_modules():
+            if hasattr(submodule, '_packed_params'):
+                return "quantized (qint8)"
+            if 'quantized' in str(type(submodule)).lower():
+                return f"quantized ({type(submodule).__name__})"
+        return None
+
     # Text Encoder
     if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
         try:
             device = next(pipeline.text_encoder.parameters()).device
-            print(f"  Text Encoder:   {device}")
+            dtype = get_dtype_info(pipeline.text_encoder)
+            print(f"  Text Encoder:   {device} ({dtype})")
         except:
             print(f"  Text Encoder:   no parameters")
 
@@ -37,7 +56,8 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
         try:
             device = next(pipeline.text_encoder_2.parameters()).device
-            print(f"  Text Encoder 2: {device}")
+            dtype = get_dtype_info(pipeline.text_encoder_2)
+            print(f"  Text Encoder 2: {device} ({dtype})")
         except:
             print(f"  Text Encoder 2: no parameters")
 
@@ -45,7 +65,13 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
         try:
             device = next(pipeline.unet.parameters()).device
-            print(f"  U-Net:          {device}")
+            dtype = get_dtype_info(pipeline.unet)
+            quant_info = check_quantization(pipeline.unet)
+
+            if quant_info:
+                print(f"  U-Net:          {device} ({dtype}, {quant_info})")
+            else:
+                print(f"  U-Net:          {device} ({dtype})")
 
             if show_details:
                 # Check for any CPU submodules
@@ -69,7 +95,8 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
     if hasattr(pipeline, 'vae') and pipeline.vae is not None:
         try:
             device = next(pipeline.vae.parameters()).device
-            print(f"  VAE:            {device}")
+            dtype = get_dtype_info(pipeline.vae)
+            print(f"  VAE:            {device} ({dtype})")
         except:
             print(f"  VAE:            no parameters")
 
@@ -119,7 +146,12 @@ def _quantize_unet(unet, quantization: str):
 
         elif quantization == 'int8':
             # INT8 quantization using torch.quantization
-            print(f"[Quantization] Applying INT8 quantization...")
+            print(f"[Quantization] Applying INT8 dynamic quantization...")
+
+            # Count linear layers before quantization
+            linear_count = sum(1 for m in unet.modules() if isinstance(m, torch.nn.Linear))
+            print(f"[Quantization] Found {linear_count} Linear layers to quantize")
+
             quantized_unet = copy.deepcopy(unet)
 
             # Dynamic quantization for linear layers
@@ -128,6 +160,23 @@ def _quantize_unet(unet, quantization: str):
                 {torch.nn.Linear},
                 dtype=torch.qint8
             )
+
+            # Count quantized layers
+            quantized_count = 0
+            for name, module in quantized_unet.named_modules():
+                if hasattr(module, '_packed_params') or 'quantized' in str(type(module)).lower():
+                    quantized_count += 1
+
+            print(f"[Quantization] Successfully quantized {quantized_count} layers to INT8")
+
+            # Calculate memory reduction estimate
+            original_params = sum(p.numel() * p.element_size() for p in unet.parameters())
+            quantized_params = sum(
+                p.numel() * p.element_size() if hasattr(p, 'numel') else 0
+                for p in quantized_unet.parameters()
+            )
+            reduction = (1 - quantized_params / original_params) * 100 if original_params > 0 else 0
+            print(f"[Quantization] Memory reduction: {reduction:.1f}% ({original_params/1024**3:.2f}GB -> {quantized_params/1024**3:.2f}GB)")
 
             return quantized_unet
 

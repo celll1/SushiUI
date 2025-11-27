@@ -973,8 +973,8 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
 
-        log_device_status("Before text encoding", self.txt2img_pipeline)
         move_text_encoders_to_gpu(self.txt2img_pipeline)
+        log_device_status("Ready for text encoding", self.txt2img_pipeline)
 
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
@@ -1054,11 +1054,11 @@ class DiffusionPipelineManager:
         # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
 
-        log_device_status("Before U-Net inference", self.txt2img_pipeline)
-
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
         move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization)
+
+        log_device_status("Ready for U-Net inference", self.txt2img_pipeline)
 
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
@@ -1411,8 +1411,8 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-        log_device_status("Before text encoding (img2img)", self.img2img_pipeline)
         move_text_encoders_to_gpu(self.img2img_pipeline)
+        log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline)
 
         # Handle ControlNet if specified
         controlnet_images = params.get("controlnet_images", [])
@@ -1683,11 +1683,12 @@ class DiffusionPipelineManager:
 
             # Move U-Net to GPU for inference
             from core.vram_optimization import move_unet_to_gpu
-            log_device_status("Before U-Net inference (img2img)", pipeline_to_use)
 
             # Get quantization option from params
             unet_quantization = params.get("unet_quantization", None)
             move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization)
+
+            log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use)
 
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
@@ -1828,8 +1829,8 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-        log_device_status("Before text encoding (inpaint)", self.inpaint_pipeline)
         move_text_encoders_to_gpu(self.inpaint_pipeline)
+        log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline)
 
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
@@ -1967,11 +1968,11 @@ class DiffusionPipelineManager:
         # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
 
-        log_device_status("Before U-Net inference (inpaint)", pipeline_to_use)
-
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
         move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization)
+
+        log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use)
 
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(

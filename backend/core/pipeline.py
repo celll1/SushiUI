@@ -83,6 +83,14 @@ class DiffusionPipelineManager:
                     if hasattr(pipeline, 'remove_all_hooks'):
                         pipeline.remove_all_hooks()
 
+                    # Clear quantization cache
+                    if hasattr(pipeline, '_quantized_unet_cache'):
+                        print(f"[Pipeline] Clearing quantization cache ({len(pipeline._quantized_unet_cache)} cached models)")
+                        pipeline._quantized_unet_cache.clear()
+                        delattr(pipeline, '_quantized_unet_cache')
+                    if hasattr(pipeline, '_original_unet'):
+                        delattr(pipeline, '_original_unet')
+
                     # Move each component to CPU and free from CUDA memory
                     component_names = ['unet', 'text_encoder', 'text_encoder_2', 'vae']
                     for comp_name in component_names:

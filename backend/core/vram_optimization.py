@@ -256,7 +256,7 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
 
     Args:
         pipeline: The diffusers pipeline
-        quantization: Quantization type - None, 'none', 'fp8', 'int8', 'int4', or 'nf4'
+        quantization: Quantization type - None, 'none', 'fp8_e4m3fn', 'fp8_e5m2', etc.
     """
     # Normalize quantization parameter
     if quantization in [None, "", "none"]:
@@ -276,16 +276,31 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
                 # Ensure original is on CPU
                 pipeline._original_unet.to('cpu')
 
-            # Create quantized copy
-            print(f"[VRAM] Creating {quantization} quantized U-Net...")
-            pipeline.unet = _quantize_unet(pipeline._original_unet, quantization)
+            # Check if we have a cached quantized model
+            if not hasattr(pipeline, '_quantized_unet_cache'):
+                pipeline._quantized_unet_cache = {}
+
+            # Use cached quantized model if available
+            if quantization in pipeline._quantized_unet_cache:
+                print(f"[VRAM] Using cached {quantization} quantized U-Net...")
+                pipeline.unet = pipeline._quantized_unet_cache[quantization]
+            else:
+                # Create new quantized copy and cache it
+                print(f"[VRAM] Creating {quantization} quantized U-Net...")
+                quantized_unet = _quantize_unet(pipeline._original_unet, quantization)
+                # Keep quantized model on CPU for caching
+                quantized_unet.to('cpu')
+                pipeline._quantized_unet_cache[quantization] = quantized_unet
+                pipeline.unet = quantized_unet
+
+            # Move to GPU
             pipeline.unet.to('cuda:0')
         else:
             # Restore original unet if quantization was used before
             if hasattr(pipeline, '_original_unet'):
                 print(f"[VRAM] Restoring original (non-quantized) U-Net...")
                 pipeline.unet = pipeline._original_unet
-                delattr(pipeline, '_original_unet')
+                # Keep cache but don't delete it (for future use)
 
             pipeline.unet.to('cuda:0')
 

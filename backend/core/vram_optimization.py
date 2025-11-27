@@ -114,10 +114,16 @@ def _quantize_unet(unet, quantization: str):
 
     Args:
         unet: Original U-Net model (should be on CPU)
-        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', etc.
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
 
     Returns:
         Quantized U-Net model
+
+    Supported quantization types:
+        - fp8_e4m3fn, fp8_e5m2: FP8 quantization (via .to(), ~50% VRAM reduction)
+        - uint2-uint8: UintX weight-only quantization (via torchao, for future training support)
+        - int4, nf4: 4-bit quantization (via bitsandbytes, not recommended)
+        - int8: INT8 quantization (not recommended, causes slowdown)
     """
     try:
         if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
@@ -167,6 +173,67 @@ def _quantize_unet(unet, quantization: str):
             print(f"[Quantization] Sequential offloading already provides efficient VRAM usage")
             print(f"[Quantization] Falling back to original model without quantization")
             return copy.deepcopy(unet)
+
+        elif quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
+            # UintX quantization using torchao (for future training support)
+            print(f"[Quantization] Applying {quantization.upper()} weight-only quantization...")
+
+            try:
+                from torchao.quantization.quant_api import quantize_, UIntXWeightOnlyConfig
+
+                # Map string to torch dtype
+                uint_dtypes = {
+                    'uint2': torch.uint2,
+                    'uint3': torch.uint3,
+                    'uint4': torch.uint4,
+                    'uint5': torch.uint5,
+                    'uint6': torch.uint6,
+                    'uint7': torch.uint7,
+                    'uint8': torch.uint8,
+                }
+
+                if not hasattr(torch, quantization):
+                    print(f"[Quantization] ERROR: PyTorch does not support {quantization}")
+                    print(f"[Quantization] This may require a newer PyTorch version")
+                    print(f"[Quantization] Falling back to original model without quantization")
+                    return copy.deepcopy(unet)
+
+                # Clone the model
+                quantized_unet = copy.deepcopy(unet)
+
+                # Create quantization config
+                # group_size: controls quantization granularity (smaller = more fine-grained)
+                config = UIntXWeightOnlyConfig(
+                    dtype=uint_dtypes[quantization],
+                    group_size=64,  # Default from torchao
+                )
+
+                # Apply quantization (modifies model in-place)
+                print(f"[Quantization] Quantizing model weights to {quantization}...")
+                quantize_(quantized_unet, config)
+
+                # Estimate memory reduction based on bit width
+                bit_width = int(quantization.replace('uint', ''))
+                reduction_pct = (1 - bit_width / 16) * 100  # Assuming FP16 baseline
+
+                print(f"[Quantization] Successfully quantized U-Net to {quantization.upper()}")
+                print(f"[Quantization] Note: This is weight-only quantization")
+                print(f"[Quantization] Estimated memory reduction: ~{reduction_pct:.0f}%")
+                print(f"[Quantization] Quality: Lower bits = higher compression but more quality loss")
+
+                return quantized_unet
+
+            except ImportError:
+                print(f"[Quantization] ERROR: torchao library not installed")
+                print(f"[Quantization] Install with: pip install torchao")
+                print(f"[Quantization] Falling back to original model without quantization")
+                return copy.deepcopy(unet)
+            except Exception as e:
+                print(f"[Quantization] ERROR during {quantization.upper()} conversion: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"[Quantization] Falling back to original model without quantization")
+                return copy.deepcopy(unet)
 
         elif quantization in ['int4', 'nf4']:
             # INT4/NF4 quantization using bitsandbytes if available

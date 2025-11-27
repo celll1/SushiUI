@@ -1837,8 +1837,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 })}
                 options={[
                   { value: "none", label: "None (Full Precision)" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended, ~50% VRAM)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2 (~50% VRAM)" },
+                  { value: "uint8", label: "UINT8 (~50% VRAM)" },
+                  { value: "uint7", label: "UINT7 (~56% VRAM)" },
+                  { value: "uint6", label: "UINT6 (~63% VRAM)" },
+                  { value: "uint5", label: "UINT5 (~69% VRAM)" },
+                  { value: "uint4", label: "UINT4 (~75% VRAM, More Quality Loss)" },
+                  { value: "uint3", label: "UINT3 (~81% VRAM, Significant Quality Loss)" },
+                  { value: "uint2", label: "UINT2 (~88% VRAM, Experimental)" },
                 ]}
               />
             </div>

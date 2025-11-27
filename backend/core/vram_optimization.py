@@ -145,40 +145,66 @@ def _quantize_unet(unet, quantization: str):
             return quantized_unet
 
         elif quantization == 'int8':
-            # INT8 quantization using torch.quantization
-            print(f"[Quantization] Applying INT8 dynamic quantization...")
+            # INT8 quantization using bitsandbytes (CUDA-compatible)
+            print(f"[Quantization] Applying INT8 quantization with bitsandbytes...")
 
-            # Count linear layers before quantization
-            linear_count = sum(1 for m in unet.modules() if isinstance(m, torch.nn.Linear))
-            print(f"[Quantization] Found {linear_count} Linear layers to quantize")
+            try:
+                import bitsandbytes as bnb
 
-            quantized_unet = copy.deepcopy(unet)
+                # Count linear layers before quantization
+                linear_count = sum(1 for m in unet.modules() if isinstance(m, torch.nn.Linear))
+                print(f"[Quantization] Found {linear_count} Linear layers to quantize")
 
-            # Dynamic quantization for linear layers
-            quantized_unet = torch.quantization.quantize_dynamic(
-                quantized_unet,
-                {torch.nn.Linear},
-                dtype=torch.qint8
-            )
+                quantized_unet = copy.deepcopy(unet)
 
-            # Count quantized layers
-            quantized_count = 0
-            for name, module in quantized_unet.named_modules():
-                if hasattr(module, '_packed_params') or 'quantized' in str(type(module)).lower():
-                    quantized_count += 1
+                # Replace Linear layers with Int8 layers
+                replaced_count = 0
+                for name, module in list(quantized_unet.named_modules()):
+                    if isinstance(module, torch.nn.Linear):
+                        # Get parent module
+                        parent_name = '.'.join(name.split('.')[:-1])
+                        child_name = name.split('.')[-1]
 
-            print(f"[Quantization] Successfully quantized {quantized_count} layers to INT8")
+                        if parent_name:
+                            parent = dict(quantized_unet.named_modules())[parent_name]
+                        else:
+                            parent = quantized_unet
 
-            # Calculate memory reduction estimate
-            original_params = sum(p.numel() * p.element_size() for p in unet.parameters())
-            quantized_params = sum(
-                p.numel() * p.element_size() if hasattr(p, 'numel') else 0
-                for p in quantized_unet.parameters()
-            )
-            reduction = (1 - quantized_params / original_params) * 100 if original_params > 0 else 0
-            print(f"[Quantization] Memory reduction: {reduction:.1f}% ({original_params/1024**3:.2f}GB -> {quantized_params/1024**3:.2f}GB)")
+                        # Create Int8 linear layer
+                        new_module = bnb.nn.Linear8bitLt(
+                            module.in_features,
+                            module.out_features,
+                            bias=module.bias is not None,
+                            has_fp16_weights=False,  # Use int8 weights
+                            threshold=6.0
+                        )
 
-            return quantized_unet
+                        # Copy weights
+                        with torch.no_grad():
+                            new_module.weight.data = module.weight.data
+                            if module.bias is not None:
+                                new_module.bias.data = module.bias.data
+
+                        setattr(parent, child_name, new_module)
+                        replaced_count += 1
+
+                print(f"[Quantization] Successfully quantized {replaced_count} layers to INT8")
+                print(f"[Quantization] Estimated memory reduction: ~50%")
+
+                return quantized_unet
+
+            except ImportError:
+                print(f"[Quantization] ERROR: bitsandbytes not available")
+                print(f"[Quantization] INT8 quantization requires bitsandbytes for CUDA support")
+                print(f"[Quantization] Install with: pip install bitsandbytes")
+                print(f"[Quantization] Falling back to original model without quantization")
+                return copy.deepcopy(unet)
+            except Exception as e:
+                print(f"[Quantization] ERROR during INT8 quantization: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"[Quantization] Falling back to original model without quantization")
+                return copy.deepcopy(unet)
 
         elif quantization in ['int4', 'nf4']:
             # INT4/NF4 quantization using bitsandbytes if available

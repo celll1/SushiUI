@@ -34,13 +34,57 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
             return "unknown"
 
     def check_quantization(module):
-        """Check if module is quantized"""
-        # Check for quantized linear layers
+        """Check if module is quantized (torchao, bitsandbytes, etc.)"""
+        # Check first few Linear layers for quantization
+        checked_count = 0
+        max_check = 5  # Check first 5 linear layers
+
         for name, submodule in module.named_modules():
+            if not isinstance(submodule, torch.nn.Linear):
+                continue
+
+            checked_count += 1
+            if checked_count > max_check:
+                break
+
+            submodule_type = type(submodule).__name__
+
+            # torchao AffineQuantizedTensor or related classes in module type
+            if 'AffineQuantized' in submodule_type or 'Quantized' in submodule_type:
+                return f"quantized (torchao: {submodule_type})"
+
+            # Check weight attributes for quantization
+            if hasattr(submodule, 'weight'):
+                weight = submodule.weight
+                weight_type = type(weight).__name__
+
+                # torchao quantized weights (AffineQuantizedTensor, etc.)
+                if 'AffineQuantized' in weight_type:
+                    # Try to extract layout/dtype info
+                    if hasattr(weight, 'layout_type'):
+                        try:
+                            layout = weight.layout_type
+                            layout_name = layout.__name__ if hasattr(layout, '__name__') else str(layout)
+                            # Extract dtype if possible
+                            if hasattr(layout, 'dtype'):
+                                dtype = str(layout.dtype).replace('torch.', '')
+                                return f"quantized (torchao {dtype.upper()})"
+                            return f"quantized (torchao: {layout_name})"
+                        except:
+                            pass
+                    return f"quantized (torchao: {weight_type})"
+
+                # Check weight dtype for FP8
+                if hasattr(weight, 'dtype'):
+                    dtype_str = str(weight.dtype)
+                    if 'float8' in dtype_str:
+                        dtype_name = dtype_str.replace('torch.', '').upper()
+                        return f"quantized ({dtype_name})"
+
+            # Legacy quantization checks
             if hasattr(submodule, '_packed_params'):
                 return "quantized (qint8)"
-            if 'quantized' in str(type(submodule)).lower():
-                return f"quantized ({type(submodule).__name__})"
+
         return None
 
     # Text Encoder

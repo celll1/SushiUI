@@ -341,6 +341,7 @@ async def generate_img2img(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
+    unet_quantization: Optional[str] = Form(None),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -419,6 +420,7 @@ async def generate_img2img(
             "nag_alpha": nag_alpha,
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
+            "unet_quantization": unet_quantization,
         }
         # Log params without large image objects
         params_for_log = params.copy()
@@ -607,6 +609,7 @@ async def generate_inpaint(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
+    unet_quantization: Optional[str] = Form(None),
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -704,6 +707,7 @@ async def generate_inpaint(
             "nag_alpha": nag_alpha,
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
+            "unet_quantization": unet_quantization,
         }
         # Log params without large image objects
         params_for_log = params.copy()

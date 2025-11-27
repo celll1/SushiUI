@@ -711,6 +711,11 @@ export default function ImageGrid() {
                       </span>
                     </div>
                   )}
+                  {selectedImage.unet_quantization && (
+                    <div>
+                      <span className="text-gray-400">U-Net Quantization:</span> {selectedImage.unet_quantization}
+                    </div>
+                  )}
                 </div>
 
                 {/* img2img/Inpaint Parameters */}

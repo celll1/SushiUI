@@ -1501,10 +1501,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 })}
                 options={[
                   { value: "none", label: "None (Full Precision)" },
-                  { value: "int8", label: "INT8 (~50% VRAM)" },
-                  { value: "fp8", label: "FP8 (Ada/Hopper)" },
-                  { value: "int4", label: "INT4 (~75% VRAM)" },
-                  { value: "nf4", label: "NF4 (needs bnb)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
                 ]}
               />
             </div>

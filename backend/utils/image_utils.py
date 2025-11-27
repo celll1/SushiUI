@@ -124,6 +124,11 @@ def save_image_with_metadata(
         if model_hash:
             metadata.add_text("model_hash", model_hash)
 
+    # Add U-Net quantization if used
+    unet_quantization = params.get("unet_quantization")
+    if unet_quantization and unet_quantization != "none":
+        metadata.add_text("unet_quantization", unet_quantization)
+
     # Save image
     try:
         image.save(filepath, pnginfo=metadata)

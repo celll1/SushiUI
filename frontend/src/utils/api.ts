@@ -215,6 +215,7 @@ export interface GeneratedImage {
   mask_data?: string;
   lora_names?: string;
   model_hash?: string;
+  unet_quantization?: string;
   // Advanced CFG parameters
   cfg_schedule_type?: string;
   cfg_schedule_min?: string;

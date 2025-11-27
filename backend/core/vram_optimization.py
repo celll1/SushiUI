@@ -114,15 +114,22 @@ def _quantize_unet(unet, quantization: str):
 
     Args:
         unet: Original U-Net model (should be on CPU)
-        quantization: Quantization type - 'fp8', 'int8', 'int4', or 'nf4'
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', etc.
 
     Returns:
         Quantized U-Net model
     """
     try:
-        if quantization == 'fp8':
-            # FP8 quantization using torch native support
-            print(f"[Quantization] Applying FP8 quantization...")
+        if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
+            # Determine FP8 dtype
+            if quantization == 'fp8_e4m3fn':
+                fp8_dtype = torch.float8_e4m3fn
+                dtype_name = "FP8 E4M3FN"
+            else:  # fp8_e5m2
+                fp8_dtype = torch.float8_e5m2
+                dtype_name = "FP8 E5M2"
+
+            print(f"[Quantization] Applying {dtype_name} quantization...")
 
             # Check PyTorch version
             if not hasattr(torch, 'float8_e4m3fn'):
@@ -135,18 +142,18 @@ def _quantize_unet(unet, quantization: str):
                 # Clone the model
                 quantized_unet = copy.deepcopy(unet)
 
-                # Convert to FP8 - simple and effective approach from kohya-ss
+                # Convert to FP8 - approach based on kohya-ss
                 # Note: nn.Embedding layers don't support FP8, but .to() handles this gracefully
-                quantized_unet = quantized_unet.to(dtype=torch.float8_e4m3fn)
+                quantized_unet = quantized_unet.to(dtype=fp8_dtype)
 
-                print(f"[Quantization] Successfully converted U-Net to FP8")
-                print(f"[Quantization] Note: Compute will use mixed precision automatically")
+                print(f"[Quantization] Successfully converted U-Net to {dtype_name}")
+                print(f"[Quantization] Note: Compute will use mixed precision automatically (autocast)")
                 print(f"[Quantization] Estimated memory reduction: ~50%")
 
                 return quantized_unet
 
             except Exception as e:
-                print(f"[Quantization] ERROR during FP8 conversion: {e}")
+                print(f"[Quantization] ERROR during {dtype_name} conversion: {e}")
                 import traceback
                 traceback.print_exc()
                 print(f"[Quantization] Falling back to original model without quantization")

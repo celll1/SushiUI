@@ -77,6 +77,8 @@ sd-app-requirements.md
 
 # Claude Code
 .claude/
+CLAUDE.md
+DEVELOPMENT.md
 
 # OS
 Thumbs.db

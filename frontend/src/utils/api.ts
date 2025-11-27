@@ -306,8 +306,14 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
-  if (paramsWithImages.unet_quantization) {
+
+  // Debug log for quantization
+  console.log('[API] img2img unet_quantization:', paramsWithImages.unet_quantization);
+  if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
+    console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
+  } else {
+    console.log('[API] No quantization or "none" selected');
   }
 
   const response = await api.post("/generate/img2img", formData, {
@@ -385,8 +391,14 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
-  if (paramsWithImages.unet_quantization) {
+
+  // Debug log for quantization
+  console.log('[API] inpaint unet_quantization:', paramsWithImages.unet_quantization);
+  if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
+    console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
+  } else {
+    console.log('[API] No quantization or "none" selected');
   }
 
   const response = await api.post("/generate/inpaint", formData, {

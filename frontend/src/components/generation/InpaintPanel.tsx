@@ -1193,11 +1193,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         nag_alpha: nextItem.params.nag_alpha,
         nag_sigma_end: nextItem.params.nag_sigma_end,
         nag_negative_prompt: nextItem.params.nag_negative_prompt,
+        unet_quantization: nextItem.params.unet_quantization,
       };
 
       console.log('[Inpaint] Generating with params:', {
         loras: apiParams.loras?.length || 0,
         controlnets: apiParams.controlnets?.length || 0,
+        unet_quantization: apiParams.unet_quantization,
       });
 
       const result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);

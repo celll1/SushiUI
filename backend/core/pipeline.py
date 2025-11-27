@@ -1069,10 +1069,12 @@ class DiffusionPipelineManager:
 
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
+        use_torch_compile = params.get("use_torch_compile", False)
         print(f"[Pipeline] U-Net quantization parameter: {repr(unet_quantization)}")
+        print(f"[Pipeline] torch.compile parameter: {use_torch_compile}")
         if unet_quantization and unet_quantization != "none":
             print(f"[Pipeline] Applying U-Net quantization: {unet_quantization}")
-        move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization)
+        move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline)
 
@@ -1702,7 +1704,8 @@ class DiffusionPipelineManager:
 
             # Get quantization option from params
             unet_quantization = params.get("unet_quantization", None)
-            move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization)
+            use_torch_compile = params.get("use_torch_compile", False)
+            move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
             log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use)
 
@@ -1986,7 +1989,8 @@ class DiffusionPipelineManager:
 
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
-        move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization)
+        use_torch_compile = params.get("use_torch_compile", False)
+        move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
         log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use)
 

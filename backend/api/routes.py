@@ -106,6 +106,8 @@ class GenerationParams(BaseModel):
     attention_type: str = "normal"  # "normal", "sage", "flash"
     # U-Net Quantization
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
+    # torch.compile optimization
+    use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -342,6 +344,7 @@ async def generate_img2img(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
+    use_torch_compile: bool = Form(False),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -421,6 +424,7 @@ async def generate_img2img(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "unet_quantization": unet_quantization,
+            "use_torch_compile": use_torch_compile,
         }
         # Log params without large image objects
         params_for_log = params.copy()
@@ -610,6 +614,7 @@ async def generate_inpaint(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
+    use_torch_compile: bool = Form(False),
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -708,6 +713,7 @@ async def generate_inpaint(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "unet_quantization": unet_quantization,
+            "use_torch_compile": use_torch_compile,
         }
         # Log params without large image objects
         params_for_log = params.copy()

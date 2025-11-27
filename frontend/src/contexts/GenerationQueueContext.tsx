@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { GenerationParams, Img2ImgParams, InpaintParams } from "@/utils/api";
 
 export interface QueueItem {
@@ -162,6 +163,23 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     setQueue([]);
     setCurrentItem(null);
   }, []);
+
+  // Track pathname to detect page navigation
+  const pathname = usePathname();
+  const [prevPathname, setPrevPathname] = useState(pathname);
+
+  useEffect(() => {
+    // If pathname changed and there's a current item generating
+    if (pathname !== prevPathname && currentItem) {
+      console.log("[QueueContext] Page navigation detected while generating, marking current item as completed");
+      console.log(`[QueueContext] Navigated from ${prevPathname} to ${pathname}`);
+
+      // Remove current item from queue (generation continues in background)
+      setQueue((prev) => prev.filter((item) => item.id !== currentItem.id));
+      setCurrentItem(null);
+    }
+    setPrevPathname(pathname);
+  }, [pathname, prevPathname, currentItem]);
 
   return (
     <GenerationQueueContext.Provider

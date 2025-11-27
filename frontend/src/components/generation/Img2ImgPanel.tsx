@@ -98,6 +98,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   nag_alpha: 0.25,
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
+  use_torch_compile: false,
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -880,6 +881,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
+        use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
       };
 
       // Use custom settings or inherit from main
@@ -1836,16 +1838,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   unet_quantization: e.target.value === "none" ? null : e.target.value
                 })}
                 options={[
-                  { value: "none", label: "None (Full Precision)" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended, ~50% VRAM)" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2 (~50% VRAM)" },
-                  { value: "uint8", label: "UINT8 (~50% VRAM)" },
-                  { value: "uint7", label: "UINT7 (~56% VRAM)" },
-                  { value: "uint6", label: "UINT6 (~63% VRAM)" },
-                  { value: "uint5", label: "UINT5 (~69% VRAM)" },
-                  { value: "uint4", label: "UINT4 (~75% VRAM, More Quality Loss)" },
-                  { value: "uint3", label: "UINT3 (~81% VRAM, Significant Quality Loss)" },
-                  { value: "uint2", label: "UINT2 (~88% VRAM, Experimental)" },
+                  { value: "none", label: "None" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  { value: "uint8", label: "UINT8" },
+                  { value: "uint7", label: "UINT7" },
+                  { value: "uint6", label: "UINT6" },
+                  { value: "uint5", label: "UINT5" },
+                  { value: "uint4", label: "UINT4" },
+                  { value: "uint3", label: "UINT3" },
+                  { value: "uint2", label: "UINT2" },
                 ]}
               />
             </div>
@@ -1855,6 +1857,31 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
                 </p>
               </div>
+            )}
+
+            {params.developer_mode && (
+              <>
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    type="checkbox"
+                    id="use_torch_compile"
+                    checked={params.use_torch_compile || false}
+                    onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="use_torch_compile" className="text-sm text-gray-300">
+                    ⚠️ torch.compile (Experimental, slow first run)
+                  </label>
+                </div>
+                {params.use_torch_compile && (
+                  <div className="bg-orange-900/20 border border-orange-600/30 rounded-lg p-3 mt-2">
+                    <p className="text-xs text-orange-200">
+                      ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
+                      Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

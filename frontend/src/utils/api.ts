@@ -172,6 +172,8 @@ export interface GenerationParams {
   nag_negative_prompt?: string;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // torch.compile optimization
+  use_torch_compile?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -316,6 +318,9 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
     console.log('[API] No quantization or "none" selected');
   }
 
+  // torch.compile optimization
+  formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -400,6 +405,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   } else {
     console.log('[API] No quantization or "none" selected');
   }
+
+  // torch.compile optimization
+  formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

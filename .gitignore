@@ -65,6 +65,10 @@ tmp/
 temp/
 .cache/
 
+# デバッグスクリプト
+debug_*.py
+patch_torch_dll.py
+
 # 設定ファイル
 last_model.json
 model_hash_cache.json

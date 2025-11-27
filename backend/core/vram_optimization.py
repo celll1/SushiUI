@@ -254,16 +254,37 @@ def _quantize_unet(unet, quantization: str):
 
                 # Apply quantization (modifies model in-place)
                 print(f"[Quantization] Quantizing model weights to {quantization}...")
+
+                # Calculate model size before quantization (on CPU)
+                def get_model_size(model):
+                    """Calculate model size in bytes"""
+                    total_size = 0
+                    for param in model.parameters():
+                        total_size += param.nelement() * param.element_size()
+                    return total_size
+
+                size_before = get_model_size(quantized_unet) / (1024**3)  # GB
+                print(f"[Quantization] Model size before: {size_before:.3f} GB")
+
                 quantize_(quantized_unet, config)
+
+                size_after = get_model_size(quantized_unet) / (1024**3)  # GB
+                actual_reduction_pct = (1 - size_after / size_before) * 100
+
+                print(f"[Quantization] Model size after:  {size_after:.3f} GB")
+                print(f"[Quantization] Actual reduction:   {actual_reduction_pct:.1f}%")
 
                 # Estimate memory reduction based on bit width
                 bit_width = int(quantization.replace('uint', ''))
-                reduction_pct = (1 - bit_width / 16) * 100  # Assuming FP16 baseline
+                expected_reduction_pct = (1 - bit_width / 16) * 100  # Assuming FP16 baseline
 
+                print(f"[Quantization] Expected reduction: {expected_reduction_pct:.0f}%")
                 print(f"[Quantization] Successfully quantized U-Net to {quantization.upper()}")
                 print(f"[Quantization] Note: This is weight-only quantization")
-                print(f"[Quantization] Estimated memory reduction: ~{reduction_pct:.0f}%")
-                print(f"[Quantization] Quality: Lower bits = higher compression but more quality loss")
+
+                if actual_reduction_pct < expected_reduction_pct * 0.5:
+                    print(f"[Quantization] WARNING: Actual reduction is much lower than expected")
+                    print(f"[Quantization] This may indicate fake quantization (model still in high precision)")
 
                 return quantized_unet
 
@@ -362,12 +383,13 @@ def move_text_encoders_to_cpu(pipeline):
     torch.cuda.empty_cache()
 
 
-def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
-    """Move U-Net to GPU for inference, optionally with quantization
+def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_compile: bool = False):
+    """Move U-Net to GPU for inference, optionally with quantization and torch.compile
 
     Args:
         pipeline: The diffusers pipeline
         quantization: Quantization type - None, 'none', 'fp8_e4m3fn', 'fp8_e5m2', etc.
+        use_torch_compile: Whether to apply torch.compile for speedup (recommended with quantization)
     """
     # Normalize quantization parameter
     if quantization in [None, "", "none"]:
@@ -391,17 +413,37 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
             if not hasattr(pipeline, '_quantized_unet_cache'):
                 pipeline._quantized_unet_cache = {}
 
+            # Cache key includes both quantization and compile status
+            cache_key = f"{quantization}_compile" if use_torch_compile else quantization
+
             # Use cached quantized model if available
-            if quantization in pipeline._quantized_unet_cache:
+            if cache_key in pipeline._quantized_unet_cache:
                 print(f"[VRAM] Using cached {quantization} quantized U-Net...")
-                pipeline.unet = pipeline._quantized_unet_cache[quantization]
+                pipeline.unet = pipeline._quantized_unet_cache[cache_key]
             else:
                 # Create new quantized copy and cache it
                 print(f"[VRAM] Creating {quantization} quantized U-Net...")
                 quantized_unet = _quantize_unet(pipeline._original_unet, quantization)
+
+                # Apply torch.compile if requested
+                if use_torch_compile:
+                    print(f"[torch.compile] Compiling quantized U-Net for optimized inference...")
+                    print(f"[torch.compile] Note: First inference will be slower due to compilation")
+                    print(f"[torch.compile] Subsequent inferences will be significantly faster (1.3-2x speedup)")
+                    try:
+                        quantized_unet = torch.compile(
+                            quantized_unet,
+                            mode="max-autotune",  # Maximum optimization
+                            fullgraph=False,  # Allow graph breaks for compatibility
+                        )
+                        print(f"[torch.compile] Successfully compiled U-Net")
+                    except Exception as e:
+                        print(f"[torch.compile] Warning: Compilation failed: {e}")
+                        print(f"[torch.compile] Continuing without torch.compile")
+
                 # Keep quantized model on CPU for caching
                 quantized_unet.to('cpu')
-                pipeline._quantized_unet_cache[quantization] = quantized_unet
+                pipeline._quantized_unet_cache[cache_key] = quantized_unet
                 pipeline.unet = quantized_unet
 
             # Move to GPU
@@ -412,6 +454,22 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
                 print(f"[VRAM] Restoring original (non-quantized) U-Net...")
                 pipeline.unet = pipeline._original_unet
                 # Keep cache but don't delete it (for future use)
+
+            # Apply torch.compile to original model if requested
+            if use_torch_compile and not hasattr(pipeline.unet, '_compiled'):
+                print(f"[torch.compile] Compiling U-Net for optimized inference...")
+                print(f"[torch.compile] Note: First inference will be slower due to compilation")
+                try:
+                    pipeline.unet = torch.compile(
+                        pipeline.unet,
+                        mode="max-autotune",
+                        fullgraph=False,
+                    )
+                    pipeline.unet._compiled = True
+                    print(f"[torch.compile] Successfully compiled U-Net")
+                except Exception as e:
+                    print(f"[torch.compile] Warning: Compilation failed: {e}")
+                    print(f"[torch.compile] Continuing without torch.compile")
 
             pipeline.unet.to('cuda:0')
 

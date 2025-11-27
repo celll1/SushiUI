@@ -877,6 +877,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         img2img_fix_steps: step.doFullSteps,
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
+        unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
       };
 
       // Use custom settings or inherit from main

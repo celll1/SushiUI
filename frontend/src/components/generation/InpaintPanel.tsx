@@ -1043,6 +1043,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_fill_mode: mainParams.inpaint_fill_mode,
         inpaint_fill_strength: mainParams.inpaint_fill_strength,
         inpaint_blur_strength: mainParams.inpaint_blur_strength,
+        unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
       };
 
       // Use custom settings or inherit from main

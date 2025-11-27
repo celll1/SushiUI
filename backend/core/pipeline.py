@@ -487,6 +487,11 @@ class DiffusionPipelineManager:
             # Ensure all pipeline components are on the correct device
             cn_pipeline = cn_pipeline.to(self.device)
 
+            # Move VAE back to CPU to preserve VRAM optimization
+            # (VAE will be moved to GPU only when needed for encode/decode)
+            if hasattr(cn_pipeline, 'vae') and cn_pipeline.vae is not None:
+                cn_pipeline.vae.to('cpu')
+
             print(f"ControlNet pipeline created with {len(controlnets)} ControlNet(s)")
             return cn_pipeline
 

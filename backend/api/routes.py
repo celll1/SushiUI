@@ -104,6 +104,8 @@ class GenerationParams(BaseModel):
     nag_negative_prompt: Optional[str] = ""  # Separate negative prompt for NAG (empty = use main negative prompt)
     # Attention processor type
     attention_type: str = "normal"  # "normal", "sage", "flash"
+    # U-Net Quantization
+    unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
 
 class Txt2ImgRequest(GenerationParams):
     pass

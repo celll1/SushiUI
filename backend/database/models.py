@@ -107,4 +107,8 @@ class GeneratedImage(Base):
             if "dynamic_threshold_mimic_scale" in self.parameters:
                 result["dynamic_threshold_mimic_scale"] = str(self.parameters["dynamic_threshold_mimic_scale"])
 
+            # U-Net Quantization
+            if "unet_quantization" in self.parameters:
+                result["unet_quantization"] = self.parameters["unet_quantization"]
+
         return result

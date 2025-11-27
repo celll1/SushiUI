@@ -572,6 +572,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     controlnet: true,
     aspectRatioPresets: true,
     fixedResolutionPresets: true,
+    advancedSettings: true,
   });
 
   // Open prompt editor
@@ -1380,35 +1381,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
             )}
 
-            {/* U-Net Quantization */}
-            {visibility.advancedSettings && (
-            <div className="space-y-2">
-              <Select
-                label="U-Net Quantization (VRAM Reduction)"
-                value={params.unet_quantization || "none"}
-                onChange={(e) => setParams({
-                  ...params,
-                  unet_quantization: e.target.value === "none" ? null : e.target.value
-                })}
-                options={[
-                  { value: "none", label: "None (Full Precision)" },
-                  { value: "int8", label: "INT8 (Moderate reduction, good quality)" },
-                  { value: "fp8", label: "FP8 (Experimental, Ada/Hopper GPUs)" },
-                  { value: "int4", label: "INT4 (Maximum reduction, quality loss)" },
-                  { value: "nf4", label: "NF4 (4-bit NormalFloat, requires bitsandbytes)" },
-                ]}
-              />
-              {params.unet_quantization && params.unet_quantization !== "none" && (
-                <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                  <p className="text-xs text-yellow-200">
-                    ⚠️ Quantization reduces VRAM usage but may affect image quality.
-                    Original model stays on CPU; quantized version created on-demand for inference.
-                  </p>
-                </div>
-              )}
-            </div>
-            )}
-
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider
@@ -1515,7 +1487,29 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.schedule_type}
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
+              <Select
+                label="U-Net Quantization"
+                value={params.unet_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  unet_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None (Full Precision)" },
+                  { value: "int8", label: "INT8 (~50% VRAM)" },
+                  { value: "fp8", label: "FP8 (Ada/Hopper)" },
+                  { value: "int4", label: "INT4 (~75% VRAM)" },
+                  { value: "nf4", label: "NF4 (needs bnb)" },
+                ]}
+              />
             </div>
+            {params.unet_quantization && params.unet_quantization !== "none" && (
+              <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                <p className="text-xs text-yellow-200">
+                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Prompt Chunking Mode"

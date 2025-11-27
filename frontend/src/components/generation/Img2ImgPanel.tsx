@@ -1009,6 +1009,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           dynamic_threshold_percentile: 0.0,
         };
       }
+
+      // Debug log for quantization
+      console.log('[Img2Img] Generating with params.unet_quantization:', paramsWithDevMode.unet_quantization);
+
       const result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
       const imageUrl = `/outputs/${result.image.filename}`;
       setGeneratedImage(imageUrl);

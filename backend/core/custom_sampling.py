@@ -284,7 +284,15 @@ def custom_sampling_loop(
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
-    dtype = pipeline.unet.dtype
+
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
+    # (torch.randn doesn't support FP8)
+    unet_dtype = pipeline.unet.dtype
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+        dtype = torch.float16  # Use float16 for latents
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+    else:
+        dtype = unet_dtype
 
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
@@ -622,11 +630,20 @@ def custom_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            noise_pred = unet(
-                latent_model_input,
-                t,
-                **unet_kwargs
-            ).sample
+            # Use autocast for FP8 U-Net (required for mixed precision inference)
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    noise_pred = unet(
+                        latent_model_input,
+                        t,
+                        **unet_kwargs
+                    ).sample
+            else:
+                noise_pred = unet(
+                    latent_model_input,
+                    t,
+                    **unet_kwargs
+                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
@@ -798,7 +815,15 @@ def custom_img2img_sampling_loop(
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
-    dtype = pipeline.unet.dtype
+
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
+    # (torch.randn doesn't support FP8)
+    unet_dtype = pipeline.unet.dtype
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+        dtype = torch.float16  # Use float16 for latents
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+    else:
+        dtype = unet_dtype
 
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
@@ -1151,11 +1176,20 @@ def custom_img2img_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            noise_pred = unet(
-                latent_model_input,
-                t,
-                **unet_kwargs
-            ).sample
+            # Use autocast for FP8 U-Net (required for mixed precision inference)
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    noise_pred = unet(
+                        latent_model_input,
+                        t,
+                        **unet_kwargs
+                    ).sample
+            else:
+                noise_pred = unet(
+                    latent_model_input,
+                    t,
+                    **unet_kwargs
+                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
@@ -1306,7 +1340,15 @@ def custom_inpaint_sampling_loop(
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
-    dtype = pipeline.unet.dtype
+
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
+    # (torch.randn doesn't support FP8)
+    unet_dtype = pipeline.unet.dtype
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+        dtype = torch.float16  # Use float16 for latents
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+    else:
+        dtype = unet_dtype
 
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
@@ -1697,11 +1739,20 @@ def custom_inpaint_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            noise_pred = unet(
-                latent_model_input,
-                t,
-                **unet_kwargs
-            ).sample
+            # Use autocast for FP8 U-Net (required for mixed precision inference)
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    noise_pred = unet(
+                        latent_model_input,
+                        t,
+                        **unet_kwargs
+                    ).sample
+            else:
+                noise_pred = unet(
+                    latent_model_input,
+                    t,
+                    **unet_kwargs
+                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:

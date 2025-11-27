@@ -39,6 +39,8 @@ interface ControlNetSelectorProps {
   onChange: (controlnets: ControlNetConfig[]) => void;
   disabled?: boolean;
   inputImagePreview?: string;  // For img2img/inpaint: input image to copy
+  hideImageInput?: boolean;  // Hide image input UI (for loop generation)
+  imageInputOverride?: React.ReactNode;  // Custom content to show above image input
 }
 
 interface ControlNetSelectorPropsWithStorage extends ControlNetSelectorProps {
@@ -123,7 +125,7 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
   );
 }
 
-export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview }: ControlNetSelectorPropsWithStorage) {
+export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview, hideImageInput, imageInputOverride }: ControlNetSelectorPropsWithStorage) {
   const { modelLoaded } = useStartup();
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
@@ -630,9 +632,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Left column: Control Image */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Control Image
-                </label>
+                {/* Custom override content (e.g., for loop generation checkbox) */}
+                {imageInputOverride}
+
+                {!hideImageInput && (
+                  <>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Control Image
+                    </label>
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/jpg,image/webp"
@@ -775,6 +782,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       </button>
                     )}
                   </div>
+                )}
+                  </>
                 )}
               </div>
 

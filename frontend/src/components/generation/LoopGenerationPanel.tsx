@@ -817,33 +817,33 @@ export default function LoopGenerationPanel({
                         });
                       }}
                       storageKey={`loop_controlnet_${step.id}`}
-                    />
-
-                    {step.controlnets.length > 0 && (
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={step.controlnets.every(cn => cn.useLoopImage ?? true)}
-                            onChange={(e) => {
-                              updateStep(step.id, {
-                                controlnets: step.controlnets.map(cn => ({
-                                  ...cn,
-                                  useLoopImage: e.target.checked,
-                                }))
-                              });
-                            }}
-                            className="cursor-pointer"
-                          />
-                          <label className="text-xs text-gray-400 cursor-pointer">
-                            Use loop output as ControlNet reference (uncheck to use custom images)
-                          </label>
+                      hideImageInput={step.controlnets.every(cn => cn.useLoopImage ?? true)}
+                      imageInputOverride={step.controlnets.length > 0 ? (
+                        <div className="space-y-1 mb-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={step.controlnets.every(cn => cn.useLoopImage ?? true)}
+                              onChange={(e) => {
+                                updateStep(step.id, {
+                                  controlnets: step.controlnets.map(cn => ({
+                                    ...cn,
+                                    useLoopImage: e.target.checked,
+                                  }))
+                                });
+                              }}
+                              className="cursor-pointer"
+                            />
+                            <label className="text-xs text-gray-400 cursor-pointer">
+                              ✅ Use loop output as ControlNet reference
+                            </label>
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            Note: Loop output image will be used at its original resolution (no upscaling). Applies to all {step.controlnets.length} ControlNet(s).
+                          </p>
                         </div>
-                        <p className="text-xs text-gray-500">
-                          Note: Loop output image will be used at its original resolution (no upscaling). Applies to all {step.controlnets.length} ControlNet(s).
-                        </p>
-                      </div>
-                    )}
+                      ) : undefined}
+                    />
                   </div>
                 </div>
               )}

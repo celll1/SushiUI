@@ -1495,50 +1495,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.schedule_type}
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
-              <Select
-                label="U-Net Quantization"
-                value={params.unet_quantization || "none"}
-                onChange={(e) => setParams({
-                  ...params,
-                  unet_quantization: e.target.value === "none" ? null : e.target.value
-                })}
-                options={[
-                  { value: "none", label: "None (Full Precision)" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
-                ]}
-              />
-            </div>
-            {params.unet_quantization && params.unet_quantization !== "none" && (
-              <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                <p className="text-xs text-yellow-200">
-                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
-                </p>
-              </div>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Select
-                label="Prompt Chunking Mode"
-                options={[
-                  { value: "a1111", label: "A1111 (Separate chunks)" },
-                  { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
-                  { value: "nobos", label: "No BOS/EOS" },
-                ]}
-                value={params.prompt_chunking_mode || "a1111"}
-                onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
-              />
-              <Select
-                label="Max Chunks"
-                options={[
-                  { value: "0", label: "Unlimited" },
-                  { value: "1", label: "1 chunk (75 tokens)" },
-                  { value: "2", label: "2 chunks (150 tokens)" },
-                  { value: "3", label: "3 chunks (225 tokens)" },
-                  { value: "4", label: "4 chunks (300 tokens)" },
-                ]}
-                value={params.max_prompt_chunks?.toString() || "0"}
-                onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
-              />
             </div>
           </div>
 
@@ -1624,6 +1580,54 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 -1 = use main seed (default). Set a different value to vary details while keeping composition.
               </p>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Select
+              label="U-Net Quantization"
+              value={params.unet_quantization || "none"}
+              onChange={(e) => setParams({
+                ...params,
+                unet_quantization: e.target.value === "none" ? null : e.target.value
+              })}
+              options={[
+                { value: "none", label: "None (Full Precision)" },
+                { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                { value: "fp8_e5m2", label: "FP8 E5M2" },
+              ]}
+            />
+          </div>
+          {params.unet_quantization && params.unet_quantization !== "none" && (
+            <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+              <p className="text-xs text-yellow-200">
+                ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Select
+              label="Prompt Chunking Mode"
+              options={[
+                { value: "a1111", label: "A1111 (Separate chunks)" },
+                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+                { value: "nobos", label: "No BOS/EOS" },
+              ]}
+              value={params.prompt_chunking_mode || "a1111"}
+              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+            />
+            <Select
+              label="Max Chunks"
+              options={[
+                { value: "0", label: "Unlimited" },
+                { value: "1", label: "1 chunk (75 tokens)" },
+                { value: "2", label: "2 chunks (150 tokens)" },
+                { value: "3", label: "3 chunks (225 tokens)" },
+                { value: "4", label: "4 chunks (300 tokens)" },
+              ]}
+              value={params.max_prompt_chunks?.toString() || "0"}
+              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+            />
           </div>
         </Card>
 

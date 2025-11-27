@@ -268,8 +268,12 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None):
 
     Args:
         pipeline: The diffusers pipeline
-        quantization: Quantization type - None, 'fp8', 'int8', 'int4', or 'nf4'
+        quantization: Quantization type - None, 'none', 'fp8', 'int8', 'int4', or 'nf4'
     """
+    # Normalize quantization parameter
+    if quantization in [None, "", "none"]:
+        quantization = None
+
     if quantization:
         print(f"[VRAM] Moving U-Net to GPU with {quantization} quantization...")
     else:

@@ -1056,6 +1056,9 @@ class DiffusionPipelineManager:
 
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
+        print(f"[Pipeline] U-Net quantization parameter: {repr(unet_quantization)}")
+        if unet_quantization and unet_quantization != "none":
+            print(f"[Pipeline] Applying U-Net quantization: {unet_quantization}")
         move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization)
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline)

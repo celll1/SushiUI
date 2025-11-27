@@ -603,6 +603,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
 
     // Add main generation to queue
+    // Debug log for quantization
+    if (params.unet_quantization) {
+      console.log('[Txt2Img] Adding to queue with quantization:', params.unet_quantization);
+    }
+
     addToQueue({
       type: "txt2img",
       params: {

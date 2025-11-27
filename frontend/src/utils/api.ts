@@ -241,6 +241,11 @@ export const generateTxt2Img = async (params: GenerationParams) => {
     controlnets: await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed"),
   };
 
+  // Debug log for quantization
+  if (params.unet_quantization) {
+    console.log('[API] U-Net quantization enabled:', params.unet_quantization);
+  }
+
   const response = await api.post("/generate/txt2img", paramsWithImages);
   return response.data;
 };

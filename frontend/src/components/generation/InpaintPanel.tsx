@@ -67,6 +67,8 @@ interface InpaintParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  // U-Net Quantization
+  unet_quantization?: string | null;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -107,6 +109,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   nag_alpha: 0.25,
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
+  unet_quantization: null,
 };
 
 const STORAGE_KEY = "inpaint_params";
@@ -2029,7 +2032,27 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 value={params.schedule_type}
                 onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
               />
+              <Select
+                label="U-Net Quantization"
+                value={params.unet_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  unet_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None (Full Precision)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                ]}
+              />
             </div>
+            {params.unet_quantization && params.unet_quantization !== "none" && (
+              <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                <p className="text-xs text-yellow-200">
+                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+                </p>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>

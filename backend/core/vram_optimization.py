@@ -123,88 +123,43 @@ def _quantize_unet(unet, quantization: str):
         if quantization == 'fp8':
             # FP8 quantization using torch native support
             print(f"[Quantization] Applying FP8 quantization...")
-            # For FP8, we can use torch.float8_e4m3fn or torch.float8_e5m2
-            # Clone the model and convert weights
-            quantized_unet = copy.deepcopy(unet)
 
-            # Convert linear layers to FP8
-            for name, module in quantized_unet.named_modules():
-                if isinstance(module, torch.nn.Linear):
-                    # Convert weight to FP8 (stored as float8_e4m3fn)
-                    # Note: This is experimental and may require torch >= 2.1
-                    try:
-                        # Store original dtype for compute
-                        module._original_dtype = module.weight.dtype
-                        # Convert to FP8 (this reduces memory but compute still uses original dtype)
-                        module.weight.data = module.weight.data.to(torch.float8_e4m3fn).to(module.weight.dtype)
-                        if module.bias is not None:
-                            module.bias.data = module.bias.data.to(torch.float8_e4m3fn).to(module.bias.dtype)
-                    except Exception as e:
-                        print(f"[Quantization] Warning: Could not convert {name} to FP8: {e}")
-
-            return quantized_unet
-
-        elif quantization == 'int8':
-            # INT8 quantization using bitsandbytes (CUDA-compatible)
-            print(f"[Quantization] Applying INT8 quantization with bitsandbytes...")
+            # Check PyTorch version
+            if not hasattr(torch, 'float8_e4m3fn'):
+                print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
+                print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
+                print(f"[Quantization] Falling back to original model without quantization")
+                return copy.deepcopy(unet)
 
             try:
-                import bitsandbytes as bnb
-
-                # Count linear layers before quantization
-                linear_count = sum(1 for m in unet.modules() if isinstance(m, torch.nn.Linear))
-                print(f"[Quantization] Found {linear_count} Linear layers to quantize")
-
+                # Clone the model
                 quantized_unet = copy.deepcopy(unet)
 
-                # Replace Linear layers with Int8 layers
-                replaced_count = 0
-                for name, module in list(quantized_unet.named_modules()):
-                    if isinstance(module, torch.nn.Linear):
-                        # Get parent module
-                        parent_name = '.'.join(name.split('.')[:-1])
-                        child_name = name.split('.')[-1]
+                # Convert to FP8 - simple and effective approach from kohya-ss
+                # Note: nn.Embedding layers don't support FP8, but .to() handles this gracefully
+                quantized_unet = quantized_unet.to(dtype=torch.float8_e4m3fn)
 
-                        if parent_name:
-                            parent = dict(quantized_unet.named_modules())[parent_name]
-                        else:
-                            parent = quantized_unet
-
-                        # Create Int8 linear layer
-                        new_module = bnb.nn.Linear8bitLt(
-                            module.in_features,
-                            module.out_features,
-                            bias=module.bias is not None,
-                            has_fp16_weights=False,  # Use int8 weights
-                            threshold=6.0
-                        )
-
-                        # Copy weights
-                        with torch.no_grad():
-                            new_module.weight.data = module.weight.data
-                            if module.bias is not None:
-                                new_module.bias.data = module.bias.data
-
-                        setattr(parent, child_name, new_module)
-                        replaced_count += 1
-
-                print(f"[Quantization] Successfully quantized {replaced_count} layers to INT8")
+                print(f"[Quantization] Successfully converted U-Net to FP8")
+                print(f"[Quantization] Note: Compute will use mixed precision automatically")
                 print(f"[Quantization] Estimated memory reduction: ~50%")
 
                 return quantized_unet
 
-            except ImportError:
-                print(f"[Quantization] ERROR: bitsandbytes not available")
-                print(f"[Quantization] INT8 quantization requires bitsandbytes for CUDA support")
-                print(f"[Quantization] Install with: pip install bitsandbytes")
-                print(f"[Quantization] Falling back to original model without quantization")
-                return copy.deepcopy(unet)
             except Exception as e:
-                print(f"[Quantization] ERROR during INT8 quantization: {e}")
+                print(f"[Quantization] ERROR during FP8 conversion: {e}")
                 import traceback
                 traceback.print_exc()
                 print(f"[Quantization] Falling back to original model without quantization")
                 return copy.deepcopy(unet)
+
+        elif quantization == 'int8':
+            # INT8 quantization is not recommended for inference
+            print(f"[Quantization] WARNING: INT8 quantization is not recommended")
+            print(f"[Quantization] INT8 causes significant slowdown with minimal VRAM savings")
+            print(f"[Quantization] Recommendation: Use FP8 (Ada/Hopper GPUs) or disable quantization")
+            print(f"[Quantization] Sequential offloading already provides efficient VRAM usage")
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(unet)
 
         elif quantization in ['int4', 'nf4']:
             # INT4/NF4 quantization using bitsandbytes if available

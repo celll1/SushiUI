@@ -318,6 +318,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     loadInitialData();
   }, []);
 
+  // Reset torch.compile when developer mode is disabled
+  useEffect(() => {
+    if (!developerMode && params.use_torch_compile) {
+      setParams({ ...params, use_torch_compile: false });
+    }
+  }, [developerMode]);
+
   // When model loads on startup, load samplers and schedule types
   useEffect(() => {
     if (modelLoaded) {
@@ -1859,7 +1866,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
             )}
 
-            {params.developer_mode && (
+            {developerMode && (
               <>
                 <div className="flex items-center gap-2 mt-2">
                   <input

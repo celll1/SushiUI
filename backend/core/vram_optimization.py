@@ -165,7 +165,9 @@ def _quantize_unet(unet, quantization: str):
 
     Supported quantization types:
         - fp8_e4m3fn, fp8_e5m2: FP8 quantization (via .to(), ~50% VRAM reduction)
+          * Weight: FP8, Activation: FP16 (via autocast)
         - uint2-uint8: UintX weight-only quantization (via torchao, for future training support)
+          * Weight: UINTX (internally), Activation: FP16 (via autocast)
         - int4, nf4: 4-bit quantization (via bitsandbytes, not recommended)
         - int8: INT8 quantization (not recommended, causes slowdown)
     """
@@ -281,10 +283,15 @@ def _quantize_unet(unet, quantization: str):
                 print(f"[Quantization] Expected reduction: {expected_reduction_pct:.0f}%")
                 print(f"[Quantization] Successfully quantized U-Net to {quantization.upper()}")
                 print(f"[Quantization] Note: This is weight-only quantization")
+                print(f"[Quantization] Activations will use FP16 (via autocast)")
 
                 if actual_reduction_pct < expected_reduction_pct * 0.5:
                     print(f"[Quantization] WARNING: Actual reduction is much lower than expected")
                     print(f"[Quantization] This may indicate fake quantization (model still in high precision)")
+
+                # Mark as UINT quantized for autocast detection
+                # Store as a custom attribute since AffineQuantizedTensor reports dtype as float32
+                quantized_unet._is_uint_quantized = True
 
                 return quantized_unet
 

@@ -285,12 +285,17 @@ def custom_sampling_loop(
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
-    # (torch.randn doesn't support FP8)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
+    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
     unet_dtype = pipeline.unet.dtype
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
+
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
         dtype = torch.float16  # Use float16 for latents
-        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        if is_uint_quantized:
+            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
+        else:
+            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -630,8 +635,9 @@ def custom_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            # Use autocast for FP8 U-Net (required for mixed precision inference)
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
+            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     noise_pred = unet(
                         latent_model_input,
@@ -816,12 +822,17 @@ def custom_img2img_sampling_loop(
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
-    # (torch.randn doesn't support FP8)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
+    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
     unet_dtype = pipeline.unet.dtype
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
+
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
         dtype = torch.float16  # Use float16 for latents
-        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        if is_uint_quantized:
+            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
+        else:
+            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -1176,8 +1187,9 @@ def custom_img2img_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            # Use autocast for FP8 U-Net (required for mixed precision inference)
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
+            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     noise_pred = unet(
                         latent_model_input,
@@ -1341,12 +1353,17 @@ def custom_inpaint_sampling_loop(
     # pipeline.device returns cpu after text encoders are offloaded
     device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8
-    # (torch.randn doesn't support FP8)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
+    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
     unet_dtype = pipeline.unet.dtype
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
+    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
+
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
         dtype = torch.float16  # Use float16 for latents
-        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        if is_uint_quantized:
+            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
+        else:
+            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -1739,8 +1756,9 @@ def custom_inpaint_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-            # Use autocast for FP8 U-Net (required for mixed precision inference)
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2:
+            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
+            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
+            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
                     noise_pred = unet(
                         latent_model_input,

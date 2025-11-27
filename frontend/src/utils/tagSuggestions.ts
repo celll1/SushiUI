@@ -207,15 +207,80 @@ const SPECIAL_TAGS = {
   ],
 };
 
+export type TagFilterMode = 'all' | 'categories_only' | 'other_names_only' | string; // string for category keys
+
+/**
+ * Get the filter cycle based on loaded categories
+ */
+function getFilterCycle(): TagFilterMode[] {
+  const cycle: TagFilterMode[] = ['all', 'categories_only'];
+
+  // Add all loaded categories
+  for (const categoryKey of Object.keys(categories)) {
+    if (categories[categoryKey].loaded) {
+      cycle.push(categoryKey);
+    }
+  }
+
+  // Add other names if loaded
+  if (otherNamesLoaded) {
+    cycle.push('other_names_only');
+  }
+
+  return cycle;
+}
+
+/**
+ * Get the next filter mode in the cycle
+ */
+export function getNextFilterMode(current: TagFilterMode): TagFilterMode {
+  const cycle = getFilterCycle();
+  const currentIndex = cycle.indexOf(current);
+  if (currentIndex === -1) {
+    return 'all'; // Fallback
+  }
+  return cycle[(currentIndex + 1) % cycle.length];
+}
+
+/**
+ * Get the previous filter mode in the cycle
+ */
+export function getPreviousFilterMode(current: TagFilterMode): TagFilterMode {
+  const cycle = getFilterCycle();
+  const currentIndex = cycle.indexOf(current);
+  if (currentIndex === -1) {
+    return 'all'; // Fallback
+  }
+  return cycle[(currentIndex - 1 + cycle.length) % cycle.length];
+}
+
+/**
+ * Get display name for filter mode
+ */
+export function getFilterDisplayName(mode: TagFilterMode): string {
+  if (mode === 'all') return 'All Tags';
+  if (mode === 'categories_only') return 'Categories Only';
+  if (mode === 'other_names_only') return 'Other Names Only';
+
+  // Check if it's a category key
+  if (categories[mode]) {
+    return categories[mode].name;
+  }
+
+  return mode; // Fallback
+}
+
 /**
  * Search for tags matching the input (optimized with indexing)
  * @param input - User input (can be in any format: aaaa_bbbb_(c, aaaa bbbb \(c, etc.)
  * @param limit - Maximum number of results
+ * @param filterMode - Filter mode to apply
  * @returns Array of matching tags with their counts, sorted by count (descending)
  */
 export async function searchTags(
   input: string,
-  limit: number = 20
+  limit: number = 20,
+  filterMode: TagFilterMode = 'all'
 ): Promise<Array<{ tag: string; count: number; category: string; alias?: string }>> {
   if (!input.trim()) {
     return [];
@@ -233,16 +298,23 @@ export async function searchTags(
   const searchStartTime = performance.now();
   const results: Array<{ tag: string; count: number; category: string; alias?: string }> = [];
 
-  // Search special tags first
-  const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
-  for (const specialTag of allSpecialTags) {
-    const normalizedTag = normalizeTag(specialTag.tag);
-    if (normalizedTag.startsWith(normalizedInput)) {
-      results.push({
-        tag: specialTag.tag,
-        count: -1, // Special marker for special tags
-        category: specialTag.category,
-      });
+  // Apply filter mode logic
+  const shouldIncludeSpecialTags = filterMode === 'all' || filterMode === 'categories_only';
+  const shouldIncludeCategoryTags = filterMode === 'all' || filterMode === 'categories_only' || categories[filterMode as string];
+  const shouldIncludeOtherNames = filterMode === 'all' || filterMode === 'other_names_only';
+
+  // Search special tags first (if allowed by filter)
+  if (shouldIncludeSpecialTags) {
+    const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
+    for (const specialTag of allSpecialTags) {
+      const normalizedTag = normalizeTag(specialTag.tag);
+      if (normalizedTag.startsWith(normalizedInput)) {
+        results.push({
+          tag: specialTag.tag,
+          count: -1, // Special marker for special tags
+          category: specialTag.category,
+        });
+      }
     }
   }
 
@@ -250,42 +322,49 @@ export async function searchTags(
   const searchPrefix = normalizedInput.substring(0, Math.min(2, normalizedInput.length));
   let totalScanned = 0;
 
-  // Search in all categories using index
-  for (const [categoryKey, category] of Object.entries(categories)) {
-    if (!category.loaded || !category.index) {
-      continue;
-    }
-
-    // Get all tags that start with the same 2-character prefix
-    const candidates = category.index.get(searchPrefix) || [];
-    totalScanned += candidates.length;
-
-    for (const { tag, count } of candidates) {
-      // Skip tags below minimum count (except count 0 which are deprecated)
-      if (count < minCount && count !== 0) {
+  // Search in categories using index (if allowed by filter)
+  if (shouldIncludeCategoryTags) {
+    for (const [categoryKey, category] of Object.entries(categories)) {
+      if (!category.loaded || !category.index) {
         continue;
       }
 
-      // Skip deprecated tags (count = 0)
-      if (count === 0) {
+      // Skip this category if filtering for a specific category
+      if (filterMode !== 'all' && filterMode !== 'categories_only' && categoryKey !== filterMode) {
         continue;
       }
 
-      const normalizedTag = normalizeTag(tag);
+      // Get all tags that start with the same 2-character prefix
+      const candidates = category.index.get(searchPrefix) || [];
+      totalScanned += candidates.length;
 
-      // Check if the normalized tag starts with the normalized input
-      if (normalizedTag.startsWith(normalizedInput)) {
-        results.push({
-          tag,
-          count,
-          category: category.name,
-        });
+      for (const { tag, count } of candidates) {
+        // Skip tags below minimum count (except count 0 which are deprecated)
+        if (count < minCount && count !== 0) {
+          continue;
+        }
+
+        // Skip deprecated tags (count = 0)
+        if (count === 0) {
+          continue;
+        }
+
+        const normalizedTag = normalizeTag(tag);
+
+        // Check if the normalized tag starts with the normalized input
+        if (normalizedTag.startsWith(normalizedInput)) {
+          results.push({
+            tag,
+            count,
+            category: category.name,
+          });
+        }
       }
     }
   }
 
-  // Search in tag other names (aliases) - partial match
-  if (otherNamesLoaded) {
+  // Search in tag other names (aliases) - partial match (if allowed by filter)
+  if (shouldIncludeOtherNames && otherNamesLoaded) {
     for (const [normalizedOtherName, data] of otherNamesIndex.entries()) {
       // Check for partial match (contains)
       if (normalizedOtherName.includes(normalizedInput)) {

@@ -13,6 +13,9 @@ import {
   jumpToPreviousDelimiter,
   addToRecentTags,
   removeFromRecentTags,
+  TagFilterMode,
+  getNextFilterMode,
+  getPreviousFilterMode,
 } from "@/utils/tagSuggestions";
 
 interface TagSuggestion {
@@ -49,6 +52,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [suggestionsPosition, setSuggestionsPosition] = useState({ top: 0, left: 0 });
+  const [filterMode, setFilterMode] = useState<TagFilterMode>('all');
   const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -155,8 +159,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     // Debounce search with 150ms delay (optimized with indexed search)
     searchTimeoutRef.current = setTimeout(async () => {
-      console.log('[TagSuggestions] Searching for:', currentTag);
-      const results = await searchTags(currentTag, 20);
+      console.log('[TagSuggestions] Searching for:', currentTag, 'with filter:', filterMode);
+      const results = await searchTags(currentTag, 20, filterMode);
       console.log('[TagSuggestions] Found results:', results.length);
 
       // Check if the tag is still valid (user might have continued typing)
@@ -321,9 +325,62 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (currentTag !== previousTag) {
       setSuggestions([]);
       setSelectedIndex(-1);
+      setFilterMode('all'); // Reset filter when tag changes
     }
 
     updateSuggestions(e.target.value, cursorPos);
+  };
+
+  // Handle filter change (recursively skip filters with no results)
+  const handleFilterChange = async (direction: 'next' | 'prev', startMode?: TagFilterMode, visited: Set<TagFilterMode> = new Set()) => {
+    const textarea = internalTextareaRef.current;
+    if (!textarea || textarea.tagName !== "TEXTAREA") return;
+
+    const cursorPos = textarea.selectionStart;
+    const currentTag = getCurrentTag(value, cursorPos);
+    if (currentTag.length < 2) return;
+
+    // Use startMode if provided (for recursion), otherwise use current filterMode
+    const currentMode = startMode || filterMode;
+
+    // Prevent infinite loop - if we've visited all modes, stop
+    if (visited.has(currentMode)) {
+      console.log('[TagSuggestions] All filters visited, stopping cycle');
+      return;
+    }
+    visited.add(currentMode);
+
+    const newFilterMode = direction === 'next'
+      ? getNextFilterMode(currentMode)
+      : getPreviousFilterMode(currentMode);
+
+    console.log('[TagSuggestions] Filter changed:', currentMode, '->', newFilterMode);
+
+    // Try searching with the new filter
+    const results = await searchTags(currentTag, 20, newFilterMode);
+
+    // Check if tag hasn't changed
+    const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
+    if (latestTag !== currentTag) {
+      console.log('[TagSuggestions] Tag changed during search, aborting');
+      return;
+    }
+
+    const currentTagLower = currentTag.toLowerCase().replace(/_/g, ' ');
+    const hasOnlyExactMatch = results.length === 1 &&
+      results[0].tag.toLowerCase().replace(/_/g, ' ') === currentTagLower;
+
+    // If no results or only exact match, skip to next filter
+    if (results.length === 0 || hasOnlyExactMatch) {
+      console.log('[TagSuggestions] No results in filter:', newFilterMode, '- skipping to next');
+      // Recursively try next filter
+      await handleFilterChange(direction, newFilterMode, visited);
+    } else {
+      // Found results, update state
+      setFilterMode(newFilterMode);
+      setSuggestions(results);
+      setSelectedIndex(results.length > 0 ? 0 : -1);
+    }
   };
 
   // Handle key down for navigation and shortcuts
@@ -336,6 +393,21 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
         return;
       }
     }
+
+    // Alt+Right: Next filter (when suggestions are visible)
+    if (e.altKey && e.key === "ArrowRight" && suggestions.length > 0) {
+      e.preventDefault();
+      handleFilterChange('next');
+      return;
+    }
+
+    // Alt+Left: Previous filter (when suggestions are visible)
+    if (e.altKey && e.key === "ArrowLeft" && suggestions.length > 0) {
+      e.preventDefault();
+      handleFilterChange('prev');
+      return;
+    }
+
     // Ctrl+Z: Undo
     if (e.ctrlKey && !e.shiftKey && e.key === "z") {
       e.preventDefault();
@@ -516,6 +588,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       } else if (e.key === "Escape") {
         setSuggestions([]);
         setSelectedIndex(-1);
+        setFilterMode('all'); // Reset filter when suggestions are dismissed
       }
     }
   };
@@ -551,6 +624,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     setSuggestions([]);
     setSelectedIndex(-1);
+    setFilterMode('all'); // Reset filter to 'all' when suggestions are hidden
   };
 
   // Handle blur - clear suggestions when focus is lost
@@ -559,6 +633,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     setTimeout(() => {
       setSuggestions([]);
       setSelectedIndex(-1);
+      setFilterMode('all'); // Reset filter to 'all' when suggestions are hidden
     }, 200);
   };
 
@@ -581,6 +656,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
           selectedIndex={selectedIndex}
           onSelect={acceptSuggestion}
           position={suggestionsPosition}
+          filterMode={filterMode}
+          onFilterChange={handleFilterChange}
         />
       )}
     </div>

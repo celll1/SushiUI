@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { TagFilterMode, getFilterDisplayName } from "@/utils/tagSuggestions";
 
 interface TagSuggestion {
   tag: string;
@@ -14,6 +15,8 @@ interface TagSuggestionsProps {
   selectedIndex: number;
   onSelect: (tag: string) => void;
   position: { top: number; left: number };
+  filterMode: TagFilterMode;
+  onFilterChange: (direction: 'next' | 'prev') => void;
 }
 
 // Category colors
@@ -37,10 +40,16 @@ export default function TagSuggestions({
   selectedIndex,
   onSelect,
   position,
+  filterMode,
+  onFilterChange,
 }: TagSuggestionsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [adjustedPosition, setAdjustedPosition] = useState(position);
+
+  // Swipe gesture state
+  const touchStartX = useRef<number>(0);
+  const touchEndX = useRef<number>(0);
 
   // Detect mobile
   useEffect(() => {
@@ -79,12 +88,43 @@ export default function TagSuggestions({
   // Scroll selected item into view
   useEffect(() => {
     if (containerRef.current && selectedIndex >= 0) {
-      const selectedElement = containerRef.current.children[selectedIndex] as HTMLElement;
-      if (selectedElement) {
-        selectedElement.scrollIntoView({ block: "nearest" });
+      const listElement = containerRef.current.querySelector('.suggestions-list');
+      if (listElement) {
+        const selectedElement = listElement.children[selectedIndex] as HTMLElement;
+        if (selectedElement) {
+          selectedElement.scrollIntoView({ block: "nearest" });
+        }
       }
     }
   }, [selectedIndex]);
+
+  // Handle touch gestures for mobile swipe
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    touchEndX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = () => {
+    const swipeThreshold = 50; // Minimum swipe distance in pixels
+    const diff = touchStartX.current - touchEndX.current;
+
+    if (Math.abs(diff) > swipeThreshold) {
+      if (diff > 0) {
+        // Swipe left -> next filter
+        onFilterChange('next');
+      } else {
+        // Swipe right -> previous filter
+        onFilterChange('prev');
+      }
+    }
+
+    // Reset
+    touchStartX.current = 0;
+    touchEndX.current = 0;
+  };
 
   if (suggestions.length === 0) {
     return null;
@@ -93,7 +133,7 @@ export default function TagSuggestions({
   return (
     <div
       ref={containerRef}
-      className={`fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto ${
+      className={`fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-lg ${
         isMobile ? 'text-sm' : ''
       }`}
       style={{
@@ -103,8 +143,23 @@ export default function TagSuggestions({
         maxWidth: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "500px",
         width: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "auto",
       }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
     >
-      {suggestions.map((suggestion, index) => {
+      {/* Filter mode indicator */}
+      <div className="px-3 py-2 bg-gray-700 border-b border-gray-600 flex items-center justify-between">
+        <span className="text-xs text-gray-300">
+          Filter: <span className="font-semibold text-blue-400">{getFilterDisplayName(filterMode)}</span>
+        </span>
+        <span className="text-xs text-gray-400">
+          {isMobile ? '← Swipe →' : 'Alt+←/→'}
+        </span>
+      </div>
+
+      {/* Suggestions list */}
+      <div className="suggestions-list max-h-56 overflow-y-auto">
+        {suggestions.map((suggestion, index) => {
         const categoryColor = CATEGORY_COLORS[suggestion.category] || "text-gray-400";
         const isSpecialTag = suggestion.count === -1;
 
@@ -151,6 +206,7 @@ export default function TagSuggestions({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }

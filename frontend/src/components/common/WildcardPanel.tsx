@@ -47,10 +47,14 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
       return;
     }
 
-    await createWildcardGroup(newGroupName.trim());
-    setNewGroupName("");
-    setIsCreatingGroup(false);
-    await loadGroups();
+    try {
+      await createWildcardGroup(newGroupName.trim());
+      setNewGroupName("");
+      setIsCreatingGroup(false);
+      await loadGroups();
+    } catch (error: any) {
+      alert(error.message || "Failed to create wildcard group");
+    }
   };
 
   const handleDeleteGroup = async (groupId: string) => {

@@ -82,9 +82,17 @@ export async function getWildcardGroup(id: string): Promise<WildcardGroup | null
 
 /**
  * Create a new wildcard group
+ * Throws error if a group with the same name already exists
  */
 export async function createWildcardGroup(name: string): Promise<WildcardGroup> {
   const db = await getDB();
+
+  // Check for duplicate name
+  const allGroups = await db.getAll(STORE_NAME);
+  const duplicate = allGroups.find(g => g.name === name);
+  if (duplicate) {
+    throw new Error(`A wildcard group named "${name}" already exists.`);
+  }
 
   const newGroup: WildcardGroup = {
     id: Date.now().toString(),

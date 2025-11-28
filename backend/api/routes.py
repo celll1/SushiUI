@@ -135,28 +135,96 @@ class Img2ImgRequest(GenerationParams):
 
 # Routes
 @router.post("/generate/txt2img")
-async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db)):
+async def generate_txt2img(
+    prompt: str = Form(...),
+    negative_prompt: str = Form(""),
+    steps: int = Form(20),
+    cfg_scale: float = Form(7.0),
+    sampler: str = Form("euler"),
+    schedule_type: str = Form("uniform"),
+    seed: int = Form(-1),
+    ancestral_seed: int = Form(-1),
+    width: int = Form(1024),
+    height: int = Form(1024),
+    batch_size: int = Form(1),
+    prompt_chunking_mode: str = Form("a1111"),
+    max_prompt_chunks: int = Form(0),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
+    controlnets: str = Form("[]"),  # JSON string of ControlNet configs
+    controlnet_images: List[UploadFile] = File(default=[]),  # Direct ControlNet image upload
+    developer_mode: bool = Form(False),
+    cfg_schedule_type: str = Form("constant"),
+    cfg_schedule_min: float = Form(1.0),
+    cfg_schedule_max: Optional[float] = Form(None),
+    cfg_schedule_power: float = Form(2.0),
+    cfg_rescale_snr_alpha: float = Form(0.0),
+    dynamic_threshold_percentile: float = Form(0.0),
+    dynamic_threshold_mimic_scale: float = Form(7.0),
+    nag_enable: bool = Form(False),
+    nag_scale: float = Form(5.0),
+    nag_tau: float = Form(3.5),
+    nag_alpha: float = Form(0.25),
+    nag_sigma_end: float = Form(3.0),
+    nag_negative_prompt: str = Form(""),
+    unet_quantization: Optional[str] = Form(None),
+    use_torch_compile: bool = Form(False),
+    db: Session = Depends(get_db)
+):
     """Generate image from text"""
     lora_configs = []
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
+        # Parse LoRA configs
+        import json
+        lora_configs = json.loads(loras) if loras else []
+
+        # Parse ControlNet configs
+        controlnet_configs = json.loads(controlnets) if controlnets else []
+
         # Generate image
-        params = request.dict()
+        params = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "sampler": sampler,
+            "schedule_type": schedule_type,
+            "seed": seed,
+            "ancestral_seed": ancestral_seed,
+            "width": width,
+            "height": height,
+            "batch_size": batch_size,
+            "developer_mode": developer_mode,
+            "cfg_schedule_type": cfg_schedule_type,
+            "cfg_schedule_min": cfg_schedule_min,
+            "cfg_schedule_max": cfg_schedule_max,
+            "cfg_schedule_power": cfg_schedule_power,
+            "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
+            "dynamic_threshold_percentile": dynamic_threshold_percentile,
+            "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
+            "nag_enable": nag_enable,
+            "nag_scale": nag_scale,
+            "nag_tau": nag_tau,
+            "nag_alpha": nag_alpha,
+            "nag_sigma_end": nag_sigma_end,
+            "nag_negative_prompt": nag_negative_prompt,
+            "unet_quantization": unet_quantization,
+            "use_torch_compile": use_torch_compile,
+        }
 
         # Log params without large base64 data
-        print(f"Generation params: {sanitize_params_for_logging(params)}")
+        print(f"txt2img generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
-            params.get("prompt_chunking_mode", "a1111"),
-            params.get("max_prompt_chunks", 0)
+            prompt_chunking_mode,
+            max_prompt_chunks
         )
 
         # Load LoRAs if specified
-        lora_configs = params.get("loras", [])
         pipeline_manager.txt2img_pipeline, has_step_range_loras = load_loras_for_generation(
             lora_manager,
             pipeline_manager.txt2img_pipeline,
@@ -164,12 +232,27 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
             "txt2img"
         )
 
-        # Load ControlNets if specified
-        controlnet_images = process_controlnet_configs(
-            params.get("controlnets", []),
-            generation_type="txt2img"
-        )
-        params["controlnet_images"] = controlnet_images
+        # Process ControlNet images
+        # Handle direct image uploads (multipart) or base64 (JSON)
+        processed_controlnet_images = []
+        if controlnet_images and len(controlnet_images) > 0:
+            # Direct image upload via multipart
+            import io
+            for uploaded_file in controlnet_images:
+                image_data = await uploaded_file.read()
+                cn_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+                processed_controlnet_images.append(cn_image)
+
+        # Also process base64 images from controlnets JSON
+        if controlnet_configs:
+            base64_images = process_controlnet_configs(
+                controlnet_configs,
+                generation_type="txt2img"
+            )
+            processed_controlnet_images.extend(base64_images)
+
+        params["controlnet_images"] = processed_controlnet_images
+        params["controlnets"] = controlnet_configs
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \

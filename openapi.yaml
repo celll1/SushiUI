@@ -17,8 +17,8 @@ info:
     url: https://github.com/celll1/SushiUI
 
 servers:
-  - url: http://localhost:8000
-    description: Local development server
+  - url: http://localhost:8000/api/v1
+    description: Local development server (API v1)
 
 tags:
   - name: generation
@@ -47,12 +47,23 @@ paths:
     post:
       tags: [generation]
       summary: Generate image from text prompt
-      description: Text-to-image generation using Stable Diffusion
+      description: |
+        Text-to-image generation using Stable Diffusion.
+
+        **Key parameters:**
+        - `prompt`: Main generation prompt (required)
+        - `steps`: Number of inference steps (1-150, default: 28)
+        - `cfg_scale`: Classifier-free guidance scale (1.0-30.0, default: 7.0)
+        - `controlnet_images`: Optional ControlNet images for direct upload (multipart)
+
+        **ControlNet usage:**
+        - Can upload images directly via `controlnet_images` field
+        - Or use base64 encoding in `controlnets` JSON parameter
       operationId: generateTxt2Img
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               $ref: '#/components/schemas/Txt2ImgRequest'
       responses:
@@ -62,6 +73,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
+              example:
+                image_path: "/outputs/2025-11-28/txt2img_20251128_123456_001.png"
+                image_id: 42
+                seed: 1234567890
+                metadata:
+                  prompt: "1girl, beautiful anime character, detailed face, long hair, standing in garden, cherry blossoms"
+                  model_name: "animagine-xl-3.1"
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -73,7 +97,12 @@ paths:
     post:
       tags: [generation]
       summary: Generate image from image and prompt
-      description: Image-to-image generation
+      description: |
+        Image-to-image generation. Transforms an input image according to the prompt.
+
+        **Key parameters:**
+        - `denoising_strength`: Controls how much the image is changed (0.0-1.0). Lower = closer to original.
+        - `image`: Input image (PNG/JPEG, binary file upload)
       operationId: generateImg2Img
       requestBody:
         required: true
@@ -88,6 +117,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
+              example:
+                image_path: "/outputs/2025-11-28/img2img_20251128_123456_001.png"
+                image_id: 43
+                seed: 9876543210
         '400':
           description: Invalid parameters
           content:
@@ -105,7 +138,14 @@ paths:
     post:
       tags: [generation]
       summary: Inpaint image with mask
-      description: Inpainting generation with mask
+      description: |
+        Inpainting generation. Fills masked areas of an image according to the prompt.
+
+        **Key parameters:**
+        - `image`: Original image (PNG/JPEG, binary file upload)
+        - `mask`: Mask image (PNG/JPEG, white = inpaint area, black = keep original)
+        - `denoising_strength`: Controls strength of generation (0.0-1.0)
+        - `mask_blur`: Blur radius for mask edge smoothing (default: 4)
       operationId: generateInpaint
       requestBody:
         required: true
@@ -120,6 +160,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
+              example:
+                image_path: "/outputs/2025-11-28/inpaint_20251128_123456_001.png"
+                image_id: 44
+                seed: 5555555555
         '400':
           description: Invalid parameters
           content:
@@ -342,7 +386,15 @@ paths:
     post:
       tags: [models]
       summary: Load a model
-      description: Load specified model into memory
+      description: |
+        Load a Stable Diffusion model into memory for generation.
+
+        **Supported formats:**
+        - `.safetensors` (recommended)
+        - `.ckpt` (legacy)
+        - Diffusers format (directory)
+
+        **Note:** Loading a new model will unload the currently loaded model and clear VRAM.
       operationId: loadModel
       requestBody:
         required: true
@@ -354,7 +406,8 @@ paths:
               properties:
                 model_path:
                   type: string
-                  description: Relative path to model file
+                  description: Relative path to model file from models directory
+                  example: "animagine-xl-3.1.safetensors"
       responses:
         '200':
           description: Model loaded successfully
@@ -365,8 +418,10 @@ paths:
                 properties:
                   message:
                     type: string
+                    example: "Model loaded successfully"
                   model_hash:
                     type: string
+                    example: "a1b2c3d4e5f6"
 
   /models/upload:
     post:
@@ -412,17 +467,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  loras:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        name:
-                          type: string
-                        path:
-                          type: string
+                $ref: '#/components/schemas/LoRAListResponse'
 
   /loras/{lora_name}:
     get:
@@ -438,6 +483,10 @@ paths:
       responses:
         '200':
           description: LoRA information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoRAInfo'
 
   /samplers:
     get:
@@ -450,17 +499,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  samplers:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
+                $ref: '#/components/schemas/SamplerListResponse'
 
   /schedule-types:
     get:
@@ -473,17 +512,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  schedule_types:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
+                $ref: '#/components/schemas/ScheduleTypeListResponse'
 
   /tokenize:
     post:
@@ -511,12 +540,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tokens:
-                    type: integer
-                  max_tokens:
-                    type: integer
+                $ref: '#/components/schemas/TokenizeResponse'
 
   /controlnets:
     get:
@@ -529,12 +553,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  controlnets:
-                    type: array
-                    items:
-                      type: object
+                $ref: '#/components/schemas/ControlNetListResponse'
 
   /controlnets/{controlnet_path}/info:
     get:
@@ -550,6 +569,10 @@ paths:
       responses:
         '200':
           description: ControlNet information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlNetInfo'
 
   /controlnet/detect-preprocessor:
     get:
@@ -584,12 +607,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  preprocessors:
-                    type: array
-                    items:
-                      type: object
+                $ref: '#/components/schemas/PreprocessorListResponse'
 
   /controlnet/preprocess-image:
     post:
@@ -1131,6 +1149,14 @@ components:
     Txt2ImgRequest:
       allOf:
         - $ref: '#/components/schemas/GenerationParams'
+        - type: object
+          properties:
+            controlnet_images:
+              type: array
+              items:
+                type: string
+                format: binary
+              description: "Optional ControlNet images for direct upload (alternative to base64)"
 
     Img2ImgRequest:
       allOf:
@@ -1265,3 +1291,158 @@ components:
           type: string
           description: Request path that caused the error
           example: "/generate/txt2img"
+
+    ControlNetInfo:
+      type: object
+      required:
+        - name
+        - path
+      properties:
+        name:
+          type: string
+          description: ControlNet model name
+          example: "control_canny-fp16"
+        path:
+          type: string
+          description: Relative path to model file
+          example: "controlnet/control_canny-fp16.safetensors"
+        type:
+          type: string
+          enum: [standard, lllite]
+          description: ControlNet type
+          default: standard
+        size:
+          type: integer
+          description: File size in bytes
+          example: 1456734208
+        hash:
+          type: string
+          description: Model hash (SHA256)
+          example: "a1b2c3d4e5f6..."
+
+    ControlNetListResponse:
+      type: object
+      properties:
+        controlnets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ControlNetInfo'
+
+    LoRAInfo:
+      type: object
+      required:
+        - name
+        - path
+      properties:
+        name:
+          type: string
+          description: LoRA model name
+          example: "my_style_lora"
+        path:
+          type: string
+          description: Relative path to LoRA file
+          example: "lora/my_style_lora.safetensors"
+        size:
+          type: integer
+          description: File size in bytes
+          example: 143654912
+        hash:
+          type: string
+          description: Model hash (SHA256)
+          example: "f1e2d3c4b5a6..."
+
+    LoRAListResponse:
+      type: object
+      properties:
+        loras:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoRAInfo'
+
+    SamplerInfo:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Sampler identifier
+          example: "euler_a"
+        name:
+          type: string
+          description: Display name
+          example: "Euler a"
+        description:
+          type: string
+          description: Sampler description
+          example: "Euler Ancestral sampler (stochastic)"
+
+    SamplerListResponse:
+      type: object
+      properties:
+        samplers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SamplerInfo'
+
+    ScheduleTypeInfo:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Schedule type identifier
+          example: "karras"
+        name:
+          type: string
+          description: Display name
+          example: "Karras"
+        description:
+          type: string
+          description: Schedule type description
+          example: "Karras noise schedule"
+
+    ScheduleTypeListResponse:
+      type: object
+      properties:
+        schedule_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleTypeInfo'
+
+    PreprocessorInfo:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Preprocessor name
+          example: "canny"
+        description:
+          type: string
+          description: Preprocessor description
+          example: "Canny edge detection"
+
+    PreprocessorListResponse:
+      type: object
+      properties:
+        preprocessors:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreprocessorInfo'
+
+    TokenizeResponse:
+      type: object
+      properties:
+        tokens:
+          type: integer
+          description: Number of tokens in the prompt
+          example: 42
+        max_tokens:
+          type: integer
+          description: Maximum tokens allowed
+          example: 75

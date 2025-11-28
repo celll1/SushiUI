@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
       // Get backend port from environment or use default
       const backendPort = process.env.BACKEND_PORT || '8000';
       const backendHost = process.env.BACKEND_HOST || 'localhost';
-      const wsUrl = `ws://${backendHost}:${backendPort}/ws/progress`;
+      const wsUrl = `ws://${backendHost}:${backendPort}/api/v1/ws/progress`;
 
       console.log(`[SSE] Connecting to backend WebSocket: ${wsUrl}`);
 

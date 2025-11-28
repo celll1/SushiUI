@@ -19,7 +19,7 @@ setup_logging()
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Exclude gpu-stats endpoint from logs
-        return record.getMessage().find("/api/system/gpu-stats") == -1
+        return record.getMessage().find("/api/v1/system/gpu-stats") == -1
 
 # Disable uvicorn access logs
 logging.getLogger("uvicorn.access").disabled = True
@@ -64,7 +64,7 @@ async def startup_event():
         print(f"[Startup] Error loading user directory settings: {e}")
 
 # WebSocket endpoint BEFORE middleware (to bypass CORS)
-@app.websocket("/ws/progress")
+@app.websocket("/api/v1/ws/progress")
 async def websocket_route(websocket: WebSocket):
     await websocket_endpoint(websocket)
 
@@ -77,9 +77,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(router, prefix="/api")
-app.include_router(logs_router, prefix="/api")
+# Include routers with versioning
+app.include_router(router, prefix="/api/v1")
+app.include_router(logs_router, prefix="/api/v1")
+
+# Backward compatibility: redirect old /api/* endpoints to /api/v1/*
+@app.middleware("http")
+async def redirect_legacy_endpoints(request: Request, call_next):
+    """Redirect old /api/* endpoints to /api/v1/* for backward compatibility"""
+    path = request.url.path
+
+    # If path starts with /api/ but NOT /api/v1/, redirect to /api/v1/
+    if path.startswith("/api/") and not path.startswith("/api/v1/"):
+        # Extract the part after /api/
+        suffix = path[5:]  # Remove "/api/"
+        new_path = f"/api/v1/{suffix}"
+
+        # Preserve query parameters
+        query_string = request.url.query
+        new_url = new_path if not query_string else f"{new_path}?{query_string}"
+
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=new_url, status_code=308)  # 308 = Permanent Redirect, preserves method
+
+    # Otherwise, proceed normally
+    response = await call_next(request)
+    return response
 
 # Serve static files
 if os.path.exists(settings.outputs_dir):

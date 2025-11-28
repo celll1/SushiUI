@@ -1729,41 +1729,121 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
 
 ---
 
-### ⏰ 次のステップ（Phase 2: P1）
+### 🎉 Phase 2開始（P1-2: OpenAPI仕様完全化）✅ **完了**
+
+**実装済み**:
+3. ✅ **P1-2: OpenAPI仕様完全化** (2025-11-28完了)
+   - 10個の新規スキーマ定義を追加
+   - エンドポイントレスポンスを完全なスキーマ参照に更新
+   - 生成エンドポイント（txt2img, img2img, inpaint）に詳細な説明とサンプル追加
+   - モデルロードエンドポイントに詳細な説明とサンプル追加
+
+**追加されたスキーマ**:
+- ControlNetInfo, ControlNetListResponse
+- LoRAInfo, LoRAListResponse
+- SamplerInfo, SamplerListResponse
+- ScheduleTypeInfo, ScheduleTypeListResponse
+- PreprocessorInfo, PreprocessorListResponse
+- TokenizeResponse
+
+**更新されたエンドポイント**:
+- `/controlnets` → ControlNetListResponse使用
+- `/controlnets/{controlnet_path}/info` → ControlNetInfo使用
+- `/loras` → LoRAListResponse使用
+- `/loras/{lora_name}` → LoRAInfo使用
+- `/samplers` → SamplerListResponse使用
+- `/schedule-types` → ScheduleTypeListResponse使用
+- `/controlnet/preprocessors` → PreprocessorListResponse使用
+- `/tokenize` → TokenizeResponse使用
+- `/generate/txt2img` → 詳細説明とリクエスト/レスポンス例追加
+- `/generate/img2img` → 詳細説明とレスポンス例追加
+- `/generate/inpaint` → 詳細説明とレスポンス例追加
+- `/models/load` → 詳細説明とサンプル追加
+
+**達成した成果**:
+- ✅ API仕様書の完全性向上: 不完全な `type: object` 定義を排除
+- ✅ ドキュメント品質向上: 実用的な例とパラメータ説明を追加
+- ✅ クライアント開発効率向上: 完全なスキーマによる型生成が可能に
+- ✅ API理解容易性向上: 生成エンドポイントの使い方が明確に
+
+---
+
+### 🎉 Phase 2継続（P1-3: バージョニング導入）✅ **完了**
+
+**実装済み**:
+4. ✅ **P1-3: バージョニング導入** (2025-11-28完了)
+   - すべてのエンドポイントに `/api/v1` prefixを追加
+   - OpenAPI仕様書のサーバーURLを更新
+   - バックエンドルーティングを更新
+   - フロントエンドAPIクライアントのbaseURLを更新
+   - WebSocketエンドポイントも更新（`/api/v1/ws/progress`）
+   - 後方互換性のための自動リダイレクト実装（`/api/*` → `/api/v1/*`）
+
+**実装内容**:
+- **OpenAPI仕様書**: `servers.url` を `http://localhost:8000/api/v1` に更新
+- **バックエンド**: `main.py` でルーター prefix を `/api/v1` に変更
+- **フロントエンド**: `api.ts` の baseURL を `/api/v1` に変更
+- **WebSocket**: `/api/v1/ws/progress` に更新（バックエンド・フロントエンド両方）
+- **後方互換性**: HTTPミドルウェアで旧エンドポイントを自動リダイレクト（308 Permanent Redirect）
+
+**達成した成果**:
+- ✅ 将来のAPI変更に対する基盤確立: 破壊的変更時は `/api/v2` として展開可能
+- ✅ 後方互換性の確保: 旧URLも自動的に動作
+- ✅ クリーンなURL構造: バージョン番号が明示的
+- ✅ OpenAPI仕様との完全一致: 仕様書通りの実装
+
+---
+
+### 🎉 Phase 2完了（P1: 高優先度改善）✅ **全完了**
+
+**実装済み**:
+5. ✅ **P1-1: リクエスト形式統一** (2025-11-28完了)
+   - txt2imgエンドポイントをmultipart/form-dataに変更
+   - 3つの生成エンドポイント全てが統一されたリクエスト形式に
+   - ControlNet画像の直接アップロード対応（base64エンコード不要）
+   - OpenAPI仕様書を先に更新（OpenAPI駆動開発の実践）
+
+**実装内容**:
+- **OpenAPI仕様書**: txt2imgをmultipart/form-data化、controlnet_imagesフィールド追加
+- **バックエンド**: routes.pyのgenerate_txt2imgをForm parametersに変更（33パラメータ）
+- **フロントエンド**: api.tsのgenerateTxt2ImgをFormData送信に変更（全パラメータ対応）
+- **ControlNet強化**: 直接アップロード（multipart）とbase64の両方をサポート
+
+**達成した成果**:
+- ✅ API一貫性の向上: txt2img, img2img, inpaint全てが同じリクエスト形式（multipart/form-data）
+- ✅ ControlNet利便性向上: base64エンコード不要、直接画像ファイルアップロード可能
+- ✅ コード保守性向上: パラメータアクセス方法が統一（Form parameters）
+- ✅ 将来の拡張性: 画像を含む新機能も同じパターンで実装可能
+- ✅ OpenAPI駆動開発の実践: 仕様書→バックエンド→フロントエンドの順で実装
+
+---
+
+## 🎊 Phase 1 & Phase 2 完全達成
+
+**Phase 1 (P0: 緊急対応)** ✅:
+- P0-1: コード重複の解消（468行→150行、68%削減）
+- P0-2: エラーハンドリング統一（7つのカスタム例外クラス）
+
+**Phase 2 (P1: 高優先度改善)** ✅:
+- P1-2: OpenAPI仕様完全化（10スキーマ追加、8エンドポイント更新）
+- P1-3: バージョニング導入（`/api/v1` prefix、後方互換性）
+- P1-1: リクエスト形式統一（全生成エンドポイントをmultipart/form-dataに統一）
+
+**総合成果**:
+- ✅ コード品質: 重複コード68%削減、統一されたエラー処理
+- ✅ API品質: 完全なOpenAPI仕様書、統一されたリクエスト形式、バージョン管理
+- ✅ 保守性: 共通ユーティリティ10関数、一貫したコーディングパターン
+- ✅ 拡張性: OpenAPI駆動開発、バージョニング、将来のv2への移行準備完了
+
+---
+
+### ⏰ 次のステップ（Phase 3: P2 - 中優先度改善）
+
+Phase 2が完全に完了しました。次はPhase 3（P2）に進みます。
 
 **推奨する優先順位**:
 
-#### オプション A: P1-2 OpenAPI仕様完全化（推奨）
-**理由**:
-- Phase 1で既にエラーレスポンスは改善済み
-- API仕様書の完全化により、今後の開発がスムーズに
-- 実装時間が短い（約1日）
-- 他のタスクへの影響が少ない
-
-**タスク内容**:
-1. 不完全なレスポンススキーマの完全化（ControlNet, LoRA等）
-2. リクエスト/レスポンスのサンプル追加
-3. エンドポイントのdescription充実化
-
-#### オプション B: P1-3 バージョニング導入
-**理由**:
-- 将来の破壊的変更に備える基盤作り
-- 実装時間が短い（約半日）
-- Phase 2以降の作業に影響しない
-
-**タスク内容**:
-1. `/api/v1` prefixの追加
-2. 将来の `/api/v2` 用の構造準備
-
-#### オプション C: P1-1 リクエスト形式統一
-**理由**:
-- 根本的な改善だが、フロントエンドへの影響が大きい
-- テストが必要
-- 実装時間が長い（1-2日）
-
-**タスク内容**:
-1. txt2imgをmultipart/form-dataに変更
-2. フロントエンドの対応
+#### オプション A: P2-1 RESTful API設計の改善（推奨）
 
 ---
 

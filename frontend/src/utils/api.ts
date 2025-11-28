@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "/api",
+  baseURL: "/api/v1",
   headers: {
     "Content-Type": "application/json",
   },
@@ -244,12 +244,54 @@ export const generateTxt2Img = async (params: GenerationParams) => {
     controlnets: await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed"),
   };
 
+  const formData = new FormData();
+
+  formData.append("prompt", paramsWithImages.prompt);
+  formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
+  formData.append("steps", String(paramsWithImages.steps || 20));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("sampler", paramsWithImages.sampler || "euler");
+  formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
+  formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("ancestral_seed", String(paramsWithImages.ancestral_seed ?? -1));
+  formData.append("width", String(paramsWithImages.width || 1024));
+  formData.append("height", String(paramsWithImages.height || 1024));
+  formData.append("batch_size", String(paramsWithImages.batch_size || 1));
+  formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
+  formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
+  formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
+  formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
+  formData.append("developer_mode", String(paramsWithImages.developer_mode ?? false));
+  formData.append("cfg_schedule_type", paramsWithImages.cfg_schedule_type || "constant");
+  formData.append("cfg_schedule_min", String(paramsWithImages.cfg_schedule_min ?? 1.0));
+  formData.append("cfg_schedule_max", String(paramsWithImages.cfg_schedule_max ?? ""));
+  formData.append("cfg_schedule_power", String(paramsWithImages.cfg_schedule_power ?? 2.0));
+  formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
+  formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
+  formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
+  formData.append("nag_enable", String(paramsWithImages.nag_enable ?? false));
+  formData.append("nag_scale", String(paramsWithImages.nag_scale ?? 5.0));
+  formData.append("nag_tau", String(paramsWithImages.nag_tau ?? 3.5));
+  formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
+  formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
+  formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
+  formData.append("attention_type", paramsWithImages.attention_type || "normal");
+
   // Debug log for quantization
-  if (params.unet_quantization) {
-    console.log('[API] U-Net quantization enabled:', params.unet_quantization);
+  console.log('[API] txt2img unet_quantization:', paramsWithImages.unet_quantization);
+  if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
+    formData.append("unet_quantization", paramsWithImages.unet_quantization);
+    console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
+  } else {
+    console.log('[API] No quantization or "none" selected');
   }
 
-  const response = await api.post("/generate/txt2img", paramsWithImages);
+  // torch.compile optimization
+  formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+
+  const response = await api.post("/generate/txt2img", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
   return response.data;
 };
 

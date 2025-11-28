@@ -174,6 +174,8 @@ export interface GenerationParams {
   unet_quantization?: string | null;
   // torch.compile optimization
   use_torch_compile?: boolean;
+  // Feeling Lucky mode (auto-generate prompt with TIPO)
+  feeling_lucky?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {

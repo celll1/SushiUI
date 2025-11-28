@@ -55,6 +55,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_negative_prompt: "",
   unet_quantization: null,
   use_torch_compile: false,
+  feeling_lucky: false,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -604,8 +605,44 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
 
     // Replace wildcards in prompts
-    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+
+    // Feeling Lucky mode: Generate prompt with TIPO before queueing
+    if (params.feeling_lucky) {
+      try {
+        // Load shared TIPO settings from localStorage (same as Prompt Editor)
+        const saved = localStorage.getItem("tipo_settings");
+        const sharedTipoSettings = saved ? JSON.parse(saved) : tipoSettings;
+
+        // Build category order and enabled map from settings
+        const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
+        const enabledCategories: Record<string, boolean> = {};
+        sharedTipoSettings.categories.forEach((c: any) => {
+          enabledCategories[c.id] = c.enabled;
+        });
+
+        console.log('[Txt2Img] Feeling Lucky: Generating prompt with TIPO...');
+        const result = await generateTIPOPrompt({
+          input_prompt: processedPrompt,
+          model_name: sharedTipoSettings.model_name,
+          tag_length: sharedTipoSettings.tag_length,
+          nl_length: sharedTipoSettings.nl_length,
+          temperature: sharedTipoSettings.temperature,
+          top_p: sharedTipoSettings.top_p,
+          top_k: sharedTipoSettings.top_k,
+          max_new_tokens: sharedTipoSettings.max_new_tokens,
+          category_order: categoryOrder,
+          enabled_categories: enabledCategories
+        });
+
+        processedPrompt = result.generated_prompt;
+        console.log('[Txt2Img] Feeling Lucky: Generated prompt:', processedPrompt.substring(0, 100) + '...');
+      } catch (error) {
+        console.error("TIPO generation failed in Feeling Lucky mode:", error);
+        alert("Failed to generate prompt with TIPO. Using original prompt.");
+      }
+    }
 
     // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
@@ -630,10 +667,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     });
 
     // If loop generation is enabled, add all loop steps immediately
+    // Use the processed (and potentially TIPO-generated) prompt for all loop steps
     if (loopGenerationConfig.enabled && loopGroupId) {
       await addLoopStepsToQueueImmediate({
         ...params,
-        prompt: processedPrompt,
+        prompt: processedPrompt,  // Keep the same prompt for all loop steps
         negative_prompt: processedNegativePrompt,
       } as GenerationParams, loopGroupId);
     }
@@ -1182,27 +1220,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               enableWeightControl={true}
             />
             <div className="absolute -top-1 right-0 flex items-center gap-1 px-2 py-1">
-              <button
-                onClick={handleGenerateTIPO}
-                disabled={isGeneratingTIPO || isGenerating}
-                className="p-1 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Generate enhanced prompt with TIPO"
-              >
-                {isGeneratingTIPO ? "⏳" : "✨"}
-              </button>
-              <button
-                onClick={() => setIsTIPODialogOpen(true)}
-                disabled={isGenerating}
-                className="p-1 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                title="TIPO Settings"
-              >
-                ⚙️
-              </button>
-              <span className="text-xs text-gray-400 pointer-events-none ml-1">
+              <span className="text-xs text-gray-400 pointer-events-none">
                 {promptTokenCount} tokens
               </span>
             </div>
           </div>
+
+          {/* Feeling Lucky Mode */}
+          <div className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.feeling_lucky || false}
+                onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+            </label>
+            <button
+              onClick={() => setIsTIPODialogOpen(true)}
+              className="ml-auto px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
+              title="Configure TIPO settings"
+            >
+              ⚙️ Settings
+            </button>
+          </div>
+
           <div className="relative">
             <TextareaWithTagSuggestions
               label="Negative Prompt"

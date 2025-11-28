@@ -31,6 +31,18 @@ from utils import save_image_with_metadata, create_thumbnail, calculate_image_ha
 from config.settings import settings
 from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
+from api.generation_utils import (
+    process_controlnet_configs,
+    create_progress_callback_factory,
+    create_db_image_record,
+    load_loras_for_generation,
+    prepare_params_for_db,
+    create_lora_step_callback,
+    extract_model_info,
+    sanitize_params_for_logging,
+    set_prompt_chunking_settings,
+    calculate_generation_metadata
+)
 
 router = APIRouter()
 
@@ -119,113 +131,58 @@ class Img2ImgRequest(GenerationParams):
 @router.post("/generate/txt2img")
 async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db)):
     """Generate image from text"""
+    lora_configs = []
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
         # Generate image
         params = request.dict()
+
         # Log params without large base64 data
-        params_for_log = params.copy()
-        if "controlnets" in params_for_log and params_for_log["controlnets"]:
-            params_for_log["controlnets"] = [
-                {k: ("<base64_data>" if k == "image_base64" else v) for k, v in cn.items()}
-                for cn in params_for_log["controlnets"]
-            ]
-        print(f"Generation params: {params_for_log}")
+        print(f"Generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
-        prompt_chunking_mode = params.get("prompt_chunking_mode", "a1111")
-        max_prompt_chunks = params.get("max_prompt_chunks", 0)
-        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
-        pipeline_manager.max_prompt_chunks = max_prompt_chunks
+        set_prompt_chunking_settings(
+            pipeline_manager,
+            params.get("prompt_chunking_mode", "a1111"),
+            params.get("max_prompt_chunks", 0)
+        )
 
         # Load LoRAs if specified
         lora_configs = params.get("loras", [])
-        has_step_range_loras = False
-        if lora_configs and pipeline_manager.txt2img_pipeline:
-            print(f"Loading {len(lora_configs)} LoRA(s)...")
-            pipeline_manager.txt2img_pipeline = lora_manager.load_loras(
-                pipeline_manager.txt2img_pipeline,
-                lora_configs
-            )
-            # Check if any LoRA has non-default step range
-            has_step_range_loras = any(
-                lora.get("step_range", [0, 1000]) != [0, 1000]
-                for lora in lora_configs
-            )
+        pipeline_manager.txt2img_pipeline, has_step_range_loras = load_loras_for_generation(
+            lora_manager,
+            pipeline_manager.txt2img_pipeline,
+            lora_configs,
+            "txt2img"
+        )
 
         # Load ControlNets if specified
-        controlnet_configs = params.get("controlnets", [])
-        controlnet_images = []
-        if controlnet_configs:
-            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
-            import base64
-            from io import BytesIO
-
-            for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
-
-                # For txt2img, we must have image_base64 since there's no input image
-                if cn_config.get("image_base64"):
-                    try:
-                        image_data = base64.b64decode(cn_config["image_base64"])
-                        image = Image.open(BytesIO(image_data))
-                        print(f"[ControlNet {idx}] Image decoded successfully: {image.size}")
-                        controlnet_images.append({
-                            "model_path": cn_config["model_path"],
-                            "image": image,
-                            "strength": cn_config.get("strength", 1.0),
-                            "start_step": cn_config.get("start_step", 0.0),
-                            "end_step": cn_config.get("end_step", 1.0),
-                            "layer_weights": cn_config.get("layer_weights"),
-                            "prompt": cn_config.get("prompt"),
-                            "is_lllite": cn_config.get("is_lllite", False),
-                        })
-                    except Exception as e:
-                        print(f"[ControlNet {idx}] Error decoding image: {e}")
-                else:
-                    print(f"[ControlNet {idx}] WARNING: No image_base64 provided for txt2img. ControlNet will be skipped.")
-
-        # Pass ControlNet images to params
+        controlnet_images = process_controlnet_configs(
+            params.get("controlnets", []),
+            generation_type="txt2img"
+        )
         params["controlnet_images"] = controlnet_images
-        print(f"[Routes] Total controlnet_images added to params: {len(controlnet_images)}")
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents, cfg_metrics=None):
-            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
-            # Generate preview image from latent (every 5 steps to reduce overhead)
-            preview_image = None
-            send_metrics = None
-            if step % 5 == 0 or step == total_steps - 1:
-                try:
-                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
-                    if preview_pil:
-                        import base64
-                        from io import BytesIO
-                        buffered = BytesIO()
-                        preview_pil.save(buffered, format="JPEG", quality=85)
-                        preview_image = base64.b64encode(buffered.getvalue()).decode()
-                except Exception as e:
-                    print(f"Preview generation error: {e}")
-                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
-                send_metrics = cfg_metrics
-
-            # Send synchronously from callback thread
-            manager.send_progress_sync(step + 1, total_steps, f"Step {step + 1}/{total_steps}", preview_image=preview_image, cfg_metrics=send_metrics)
+        progress_callback = create_progress_callback_factory(
+            taesd_manager,
+            manager,
+            is_sdxl
+        )
 
         # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
-            total_steps = params.get("steps", 20)
-            step_callback = lora_manager.create_step_callback(
+            step_callback = create_lora_step_callback(
+                lora_manager,
                 pipeline_manager.txt2img_pipeline,
-                total_steps,
-                original_callback=None
+                params.get("steps", 20)
             )
 
         # Run generation in thread pool to avoid blocking event loop
@@ -251,47 +208,30 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
         create_thumbnail(image_path)
 
         # Calculate metadata
-        image_hash = calculate_image_hash(image)
-        lora_names = extract_lora_names(lora_configs)
+        metadata = calculate_generation_metadata(
+            image,
+            lora_configs,
+            extract_lora_names,
+            calculate_image_hash
+        )
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
-        params_for_db = params.copy()
-        if "controlnet_images" in params_for_db:
-            params_for_db["controlnet_images"] = [
-                {
-                    k: (calculate_image_hash(v) if k == "image" else v)
-                    for k, v in cn.items()
-                }
-                for cn in params_for_db["controlnet_images"]
-            ]
+        params_for_db = prepare_params_for_db(params, calculate_image_hash)
 
         # Extract model name and hash from current_model_info
-        model_name = ""
-        model_hash = ""
-        if pipeline_manager.current_model_info:
-            model_source = pipeline_manager.current_model_info.get("source", "")
-            if model_source:
-                model_name = os.path.basename(model_source)
-            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+        model_name, model_hash = extract_model_info(pipeline_manager)
 
         # Save to database
-        db_image = GeneratedImage(
+        db_image = create_db_image_record(
+            GeneratedImage,
             filename=filename,
-            prompt=request.prompt,
-            negative_prompt=request.negative_prompt,
-            model_name=model_name,
-            sampler=f"{request.sampler} ({request.schedule_type})",
-            steps=request.steps,
-            cfg_scale=request.cfg_scale,
-            seed=actual_seed,
-            ancestral_seed=request.ancestral_seed if (request.ancestral_seed != -1 and request.sampler in ["euler_a", "dpm2_a"]) else None,
-            width=request.width,
-            height=request.height,
+            params=params_for_db,
+            actual_seed=actual_seed,
             generation_type="txt2img",
-            parameters=params_for_db,
-            image_hash=image_hash,
-            lora_names=lora_names if lora_names else None,
-            model_hash=model_hash if model_hash else None,
+            image_hash=metadata["image_hash"],
+            lora_names=metadata["lora_names"],
+            model_name=model_name,
+            model_hash=model_hash
         )
         db.add(db_image)
         db.commit()
@@ -349,6 +289,7 @@ async def generate_img2img(
     db: Session = Depends(get_db)
 ):
     """Generate image from image"""
+    lora_configs = []
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -363,34 +304,10 @@ async def generate_img2img(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images = []
-        if controlnet_configs:
-            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
-            import base64
-            from io import BytesIO
-
-            for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
-
-                if cn_config.get("image_base64"):
-                    try:
-                        image_data = base64.b64decode(cn_config["image_base64"])
-                        cn_image = Image.open(BytesIO(image_data))
-                        print(f"[ControlNet {idx}] Image decoded successfully: {cn_image.size}")
-                        controlnet_images.append({
-                            "model_path": cn_config["model_path"],
-                            "image": cn_image,
-                            "strength": cn_config.get("strength", 1.0),
-                            "start_step": cn_config.get("start_step", 0.0),
-                            "end_step": cn_config.get("end_step", 1.0),
-                            "layer_weights": cn_config.get("layer_weights"),
-                            "prompt": cn_config.get("prompt"),
-                            "is_lllite": cn_config.get("is_lllite", False),
-                        })
-                    except Exception as e:
-                        print(f"[ControlNet {idx}] Error decoding image: {e}")
-                else:
-                    print(f"[ControlNet {idx}] WARNING: No image_base64 provided for img2img. ControlNet will be skipped.")
+        controlnet_images = process_controlnet_configs(
+            controlnet_configs,
+            generation_type="img2img"
+        )
 
         # Generate image
         params = {
@@ -426,71 +343,45 @@ async def generate_img2img(
             "unet_quantization": unet_quantization,
             "use_torch_compile": use_torch_compile,
         }
-        # Log params without large image objects
-        params_for_log = params.copy()
-        if "controlnet_images" in params_for_log and params_for_log["controlnet_images"]:
-            params_for_log["controlnet_images"] = [
-                {k: ("<PIL.Image>" if k == "image" else v) for k, v in cn.items()}
-                for cn in params_for_log["controlnet_images"]
-            ]
-        print(f"img2img generation params: {params_for_log}")
+        print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
-        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
-        pipeline_manager.max_prompt_chunks = max_prompt_chunks
+        set_prompt_chunking_settings(
+            pipeline_manager,
+            prompt_chunking_mode,
+            max_prompt_chunks
+        )
 
         # Load LoRAs if specified
-        has_step_range_loras = False
-        if lora_configs and pipeline_manager.img2img_pipeline:
-            print(f"Loading {len(lora_configs)} LoRA(s)...")
-            pipeline_manager.img2img_pipeline = lora_manager.load_loras(
-                pipeline_manager.img2img_pipeline,
-                lora_configs
-            )
-            # Check if any LoRA has non-default step range
-            has_step_range_loras = any(
-                lora.get("step_range", [0, 1000]) != [0, 1000]
-                for lora in lora_configs
-            )
+        pipeline_manager.img2img_pipeline, has_step_range_loras = load_loras_for_generation(
+            lora_manager,
+            pipeline_manager.img2img_pipeline,
+            lora_configs,
+            "img2img"
+        )
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.img2img_pipeline is not None and \
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents, cfg_metrics=None):
-            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
-            # For img2img with "Do full steps" enabled, display requested_steps instead
-            display_total = steps if img2img_fix_steps else total_steps
-
-            # Generate preview image from latent
-            preview_image = None
-            send_metrics = None
-            if step % 5 == 0 or step == total_steps - 1:
-                try:
-                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
-                    if preview_pil:
-                        import base64
-                        from io import BytesIO
-                        buffered = BytesIO()
-                        preview_pil.save(buffered, format="JPEG", quality=85)
-                        preview_image = base64.b64encode(buffered.getvalue()).decode()
-                except Exception as e:
-                    print(f"Preview generation error: {e}")
-                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
-                send_metrics = cfg_metrics
-
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=send_metrics)
+        progress_callback = create_progress_callback_factory(
+            taesd_manager,
+            manager,
+            is_sdxl,
+            img2img_fix_steps,
+            steps
+        )
 
         # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
             # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
-            step_callback = lora_manager.create_step_callback(
+            step_callback = create_lora_step_callback(
+                lora_manager,
                 pipeline_manager.img2img_pipeline,
-                actual_steps,
-                original_callback=None
+                actual_steps
             )
 
         # Run generation in thread pool to avoid blocking event loop
@@ -514,50 +405,33 @@ async def generate_img2img(
         create_thumbnail(image_path)
 
         # Calculate metadata
-        image_hash = calculate_image_hash(result_image)
-        source_image_hash = calculate_image_hash(init_image)
-        lora_names = extract_lora_names(lora_configs)
+        metadata = calculate_generation_metadata(
+            result_image,
+            lora_configs,
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=init_image
+        )
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
-        params_for_db = params.copy()
-        if "controlnet_images" in params_for_db:
-            params_for_db["controlnet_images"] = [
-                {
-                    k: (calculate_image_hash(v) if k == "image" else v)
-                    for k, v in cn.items()
-                }
-                for cn in params_for_db["controlnet_images"]
-            ]
+        params_for_db = prepare_params_for_db(params, calculate_image_hash)
 
         # Extract model name and hash from current_model_info
-        model_name = ""
-        model_hash = ""
-        if pipeline_manager.current_model_info:
-            model_source = pipeline_manager.current_model_info.get("source", "")
-            if model_source:
-                model_name = os.path.basename(model_source)
-            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+        model_name, model_hash = extract_model_info(pipeline_manager)
 
         # Save to database
-        ancestral_seed_value = params.get("ancestral_seed", -1)
-        db_image = GeneratedImage(
+        db_image = create_db_image_record(
+            GeneratedImage,
             filename=filename,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            model_name=model_name,
-            sampler=f"{sampler} ({schedule_type})",
-            steps=steps,
-            cfg_scale=cfg_scale,
-            seed=actual_seed,
-            ancestral_seed=ancestral_seed_value if (ancestral_seed_value != -1 and sampler in ["euler_a", "dpm2_a"]) else None,
-            width=result_image.width,
-            height=result_image.height,
+            params=params_for_db,
+            actual_seed=actual_seed,
             generation_type="img2img",
-            parameters=params_for_db,
-            image_hash=image_hash,
-            source_image_hash=source_image_hash,
-            lora_names=lora_names if lora_names else None,
-            model_hash=model_hash if model_hash else None,
+            image_hash=metadata["image_hash"],
+            lora_names=metadata["lora_names"],
+            model_name=model_name,
+            model_hash=model_hash,
+            result_image=result_image,
+            source_image_hash=metadata.get("source_image_hash")
         )
         db.add(db_image)
         db.commit()
@@ -620,6 +494,7 @@ async def generate_inpaint(
     db: Session = Depends(get_db)
 ):
     """Generate inpainted image"""
+    lora_configs = []
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -648,34 +523,10 @@ async def generate_inpaint(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images = []
-        if controlnet_configs:
-            print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
-            import base64
-            from io import BytesIO
-
-            for idx, cn_config in enumerate(controlnet_configs):
-                print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, has_image_base64: {bool(cn_config.get('image_base64'))}")
-
-                if cn_config.get("image_base64"):
-                    try:
-                        image_data = base64.b64decode(cn_config["image_base64"])
-                        cn_image = Image.open(BytesIO(image_data))
-                        print(f"[ControlNet {idx}] Image decoded successfully: {cn_image.size}")
-                        controlnet_images.append({
-                            "model_path": cn_config["model_path"],
-                            "image": cn_image,
-                            "strength": cn_config.get("strength", 1.0),
-                            "start_step": cn_config.get("start_step", 0.0),
-                            "end_step": cn_config.get("end_step", 1.0),
-                            "layer_weights": cn_config.get("layer_weights"),
-                            "prompt": cn_config.get("prompt"),
-                            "is_lllite": cn_config.get("is_lllite", False),
-                        })
-                    except Exception as e:
-                        print(f"[ControlNet {idx}] Error decoding image: {e}")
-                else:
-                    print(f"[ControlNet {idx}] WARNING: No image_base64 provided for inpaint. ControlNet will be skipped.")
+        controlnet_images = process_controlnet_configs(
+            controlnet_configs,
+            generation_type="inpaint"
+        )
 
         # Generate image
         params = {
@@ -715,71 +566,45 @@ async def generate_inpaint(
             "unet_quantization": unet_quantization,
             "use_torch_compile": use_torch_compile,
         }
-        # Log params without large image objects
-        params_for_log = params.copy()
-        if "controlnet_images" in params_for_log and params_for_log["controlnet_images"]:
-            params_for_log["controlnet_images"] = [
-                {k: ("<PIL.Image>" if k == "image" else v) for k, v in cn.items()}
-                for cn in params_for_log["controlnet_images"]
-            ]
-        print(f"inpaint generation params: {params_for_log}")
+        print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
-        pipeline_manager.prompt_chunking_mode = prompt_chunking_mode
-        pipeline_manager.max_prompt_chunks = max_prompt_chunks
+        set_prompt_chunking_settings(
+            pipeline_manager,
+            prompt_chunking_mode,
+            max_prompt_chunks
+        )
 
         # Load LoRAs if specified
-        has_step_range_loras = False
-        if lora_configs and pipeline_manager.inpaint_pipeline:
-            print(f"Loading {len(lora_configs)} LoRA(s)...")
-            pipeline_manager.inpaint_pipeline = lora_manager.load_loras(
-                pipeline_manager.inpaint_pipeline,
-                lora_configs
-            )
-            # Check if any LoRA has non-default step range
-            has_step_range_loras = any(
-                lora.get("step_range", [0, 1000]) != [0, 1000]
-                for lora in lora_configs
-            )
+        pipeline_manager.inpaint_pipeline, has_step_range_loras = load_loras_for_generation(
+            lora_manager,
+            pipeline_manager.inpaint_pipeline,
+            lora_configs,
+            "inpaint"
+        )
 
         # Detect if SDXL
         is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
 
         # Progress callback to send updates via WebSocket
-        def progress_callback(step, total_steps, latents, cfg_metrics=None):
-            # Note: total_steps is the actual number of timesteps (may be 2x for DPM2/DPM2a)
-            # For inpaint with "Do full steps" enabled, display requested_steps instead
-            display_total = steps if img2img_fix_steps else total_steps
-
-            # Generate preview image from latent (every 5 steps to reduce overhead)
-            preview_image = None
-            send_metrics = None
-            if step % 5 == 0 or step == total_steps - 1:
-                try:
-                    preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
-                    if preview_pil:
-                        import base64
-                        from io import BytesIO
-                        buffered = BytesIO()
-                        preview_pil.save(buffered, format="JPEG", quality=85)
-                        preview_image = base64.b64encode(buffered.getvalue()).decode()
-                except Exception as e:
-                    print(f"Preview generation error: {e}")
-                # Only send CFG metrics when preview is generated (every 5 steps) to reduce network traffic
-                send_metrics = cfg_metrics
-
-            manager.send_progress_sync(step + 1, display_total, f"Step {step + 1}/{display_total}", preview_image=preview_image, cfg_metrics=send_metrics)
+        progress_callback = create_progress_callback_factory(
+            taesd_manager,
+            manager,
+            is_sdxl,
+            img2img_fix_steps,
+            steps
+        )
 
         # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
             # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
-            step_callback = lora_manager.create_step_callback(
+            step_callback = create_lora_step_callback(
+                lora_manager,
                 pipeline_manager.inpaint_pipeline,
-                actual_steps,
-                original_callback=None
+                actual_steps
             )
 
         # Run generation in thread pool to avoid blocking event loop
@@ -803,52 +628,36 @@ async def generate_inpaint(
         create_thumbnail(image_path)
 
         # Calculate metadata
-        image_hash = calculate_image_hash(result_image)
-        source_image_hash = calculate_image_hash(init_image)
-        mask_data_base64 = encode_mask_to_base64(mask_image)
-        lora_names = extract_lora_names(lora_configs)
+        metadata = calculate_generation_metadata(
+            result_image,
+            lora_configs,
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=init_image,
+            mask_image=mask_image,
+            encode_mask_func=encode_mask_to_base64
+        )
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
-        params_for_db = params.copy()
-        if "controlnet_images" in params_for_db:
-            params_for_db["controlnet_images"] = [
-                {
-                    k: (calculate_image_hash(v) if k == "image" else v)
-                    for k, v in cn.items()
-                }
-                for cn in params_for_db["controlnet_images"]
-            ]
+        params_for_db = prepare_params_for_db(params, calculate_image_hash)
 
         # Extract model name and hash from current_model_info
-        model_name = ""
-        model_hash = ""
-        if pipeline_manager.current_model_info:
-            model_source = pipeline_manager.current_model_info.get("source", "")
-            if model_source:
-                model_name = os.path.basename(model_source)
-            model_hash = pipeline_manager.current_model_info.get("model_hash", "")
+        model_name, model_hash = extract_model_info(pipeline_manager)
 
         # Save to database
-        ancestral_seed_value = params.get("ancestral_seed", -1)
-        db_image = GeneratedImage(
+        db_image = create_db_image_record(
+            GeneratedImage,
             filename=filename,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            model_name=model_name,
-            sampler=f"{sampler} ({schedule_type})",
-            steps=steps,
-            cfg_scale=cfg_scale,
-            seed=actual_seed,
-            ancestral_seed=ancestral_seed_value if (ancestral_seed_value != -1 and sampler in ["euler_a", "dpm2_a"]) else None,
-            width=result_image.width,
-            height=result_image.height,
+            params=params_for_db,
+            actual_seed=actual_seed,
             generation_type="inpaint",
-            parameters=params_for_db,
-            image_hash=image_hash,
-            source_image_hash=source_image_hash,
-            mask_data=mask_data_base64,
-            lora_names=lora_names if lora_names else None,
-            model_hash=model_hash if model_hash else None,
+            image_hash=metadata["image_hash"],
+            lora_names=metadata["lora_names"],
+            model_name=model_name,
+            model_hash=model_hash,
+            result_image=result_image,
+            source_image_hash=metadata.get("source_image_hash"),
+            mask_data_base64=metadata.get("mask_data_base64")
         )
         db.add(db_image)
         db.commit()

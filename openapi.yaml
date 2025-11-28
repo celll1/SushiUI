@@ -1,0 +1,1221 @@
+openapi: 3.0.3
+info:
+  title: SushiUI - Stable Diffusion WebUI API
+  description: |
+    Backend API for SushiUI, a Stable Diffusion web interface with advanced features.
+
+    Features:
+    - Multiple generation modes (txt2img, img2img, inpaint)
+    - LoRA support
+    - ControlNet integration
+    - TIPO tag generation
+    - Image tagging
+    - Quantization support (FP8, UINT)
+  version: 1.0.0
+  contact:
+    name: SushiUI GitHub
+    url: https://github.com/celll1/SushiUI
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: generation
+    description: Image generation endpoints
+  - name: images
+    description: Image management and gallery
+  - name: models
+    description: Model management and loading
+  - name: controlnet
+    description: ControlNet preprocessors and detection
+  - name: tags
+    description: Tag suggestions and autocomplete
+  - name: tipo
+    description: TIPO tag generation AI
+  - name: tagger
+    description: Image tag prediction
+  - name: settings
+    description: Application settings
+  - name: system
+    description: System control and monitoring
+  - name: auth
+    description: Authentication (if enabled)
+
+paths:
+  /generate/txt2img:
+    post:
+      tags: [generation]
+      summary: Generate image from text prompt
+      description: Text-to-image generation using Stable Diffusion
+      operationId: generateTxt2Img
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Txt2ImgRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/img2img:
+    post:
+      tags: [generation]
+      summary: Generate image from image and prompt
+      description: Image-to-image generation
+      operationId: generateImg2Img
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Img2ImgRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+
+  /generate/inpaint:
+    post:
+      tags: [generation]
+      summary: Inpaint image with mask
+      description: Inpainting generation with mask
+      operationId: generateInpaint
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InpaintRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+
+  /cancel:
+    post:
+      tags: [generation]
+      summary: Cancel current generation
+      description: Cancels the currently running generation task
+      operationId: cancelGeneration
+      responses:
+        '200':
+          description: Cancellation successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /images:
+    get:
+      tags: [images]
+      summary: List generated images
+      description: Get list of generated images with optional filtering
+      operationId: listImages
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: generation_type
+          in: query
+          schema:
+            type: string
+            enum: [txt2img, img2img, inpaint]
+        - name: model_name
+          in: query
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of images
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageListResponse'
+
+  /images/{image_id}:
+    get:
+      tags: [images]
+      summary: Get image by ID
+      operationId: getImage
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Image details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedImage'
+
+    delete:
+      tags: [images]
+      summary: Delete image
+      operationId: deleteImage
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Image deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /temp-images/upload:
+    post:
+      tags: [images]
+      summary: Upload temporary image
+      description: Upload image for img2img/inpaint (stored temporarily)
+      operationId: uploadTempImage
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                purpose:
+                  type: string
+                  enum: [img2img, inpaint_image, inpaint_mask]
+      responses:
+        '200':
+          description: Upload successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  image_id:
+                    type: string
+                  url:
+                    type: string
+
+  /temp-images/{image_id}:
+    get:
+      tags: [images]
+      summary: Get temporary image
+      operationId: getTempImage
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Temporary image
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+
+    delete:
+      tags: [images]
+      summary: Delete temporary image
+      operationId: deleteTempImage
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Image deleted
+
+  /temp-images/cleanup:
+    post:
+      tags: [images]
+      summary: Cleanup old temporary images
+      description: Delete temporary images older than specified hours
+      operationId: cleanupTempImages
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hours_old:
+                  type: number
+                  default: 24
+      responses:
+        '200':
+          description: Cleanup successful
+
+  /models:
+    get:
+      tags: [models]
+      summary: List available models
+      description: Get list of all available Stable Diffusion models
+      operationId: listModels
+      responses:
+        '200':
+          description: List of models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelInfo'
+
+  /models/load:
+    post:
+      tags: [models]
+      summary: Load a model
+      description: Load specified model into memory
+      operationId: loadModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model_path]
+              properties:
+                model_path:
+                  type: string
+                  description: Relative path to model file
+      responses:
+        '200':
+          description: Model loaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  model_hash:
+                    type: string
+
+  /models/upload:
+    post:
+      tags: [models]
+      summary: Upload new model
+      description: Upload a new model file (safetensors)
+      operationId: uploadModel
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Model uploaded successfully
+
+  /models/current:
+    get:
+      tags: [models]
+      summary: Get currently loaded model
+      operationId: getCurrentModel
+      responses:
+        '200':
+          description: Current model info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelInfo'
+
+  /loras:
+    get:
+      tags: [models]
+      summary: List available LoRAs
+      operationId: listLoras
+      responses:
+        '200':
+          description: List of LoRAs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loras:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+
+  /loras/{lora_name}:
+    get:
+      tags: [models]
+      summary: Get LoRA info
+      operationId: getLoraInfo
+      parameters:
+        - name: lora_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: LoRA information
+
+  /samplers:
+    get:
+      tags: [models]
+      summary: List available samplers
+      operationId: listSamplers
+      responses:
+        '200':
+          description: List of samplers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  samplers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+
+  /schedule-types:
+    get:
+      tags: [models]
+      summary: List scheduler types
+      operationId: listScheduleTypes
+      responses:
+        '200':
+          description: List of scheduler types
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedule_types:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+
+  /tokenize:
+    post:
+      tags: [models]
+      summary: Tokenize prompt
+      description: Count tokens in a prompt using loaded model's tokenizer
+      operationId: tokenizePrompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                prompt_chunking_mode:
+                  type: string
+                  enum: [a1111, sd_scripts, nobos]
+                  default: a1111
+      responses:
+        '200':
+          description: Token count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: integer
+                  max_tokens:
+                    type: integer
+
+  /controlnets:
+    get:
+      tags: [controlnet]
+      summary: List available ControlNets
+      operationId: listControlNets
+      responses:
+        '200':
+          description: List of ControlNets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  controlnets:
+                    type: array
+                    items:
+                      type: object
+
+  /controlnets/{controlnet_path}/info:
+    get:
+      tags: [controlnet]
+      summary: Get ControlNet info
+      operationId: getControlNetInfo
+      parameters:
+        - name: controlnet_path
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ControlNet information
+
+  /controlnet/detect-preprocessor:
+    get:
+      tags: [controlnet]
+      summary: Detect preprocessor from ControlNet name
+      operationId: detectPreprocessor
+      parameters:
+        - name: controlnet_name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detected preprocessor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preprocessor:
+                    type: string
+
+  /controlnet/preprocessors:
+    get:
+      tags: [controlnet]
+      summary: List available preprocessors
+      operationId: listPreprocessors
+      responses:
+        '200':
+          description: List of preprocessors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preprocessors:
+                    type: array
+                    items:
+                      type: object
+
+  /controlnet/preprocess-image:
+    post:
+      tags: [controlnet]
+      summary: Preprocess image with ControlNet preprocessor
+      operationId: preprocessImage
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, preprocessor]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                preprocessor:
+                  type: string
+                resolution:
+                  type: integer
+                  default: 512
+      responses:
+        '200':
+          description: Preprocessed image
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+
+  /taglist/{category}:
+    get:
+      tags: [tags]
+      summary: Get tag list for category
+      description: Get autocomplete tag suggestions for specified category
+      operationId: getTagList
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [general, character, artist, copyright, meta, model]
+      responses:
+        '200':
+          description: Tag list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+
+  /tagother/tag_other_names:
+    get:
+      tags: [tags]
+      summary: Get tag aliases (other names)
+      description: Get tag aliases in different languages
+      operationId: getTagOtherNames
+      responses:
+        '200':
+          description: Tag aliases
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+
+  /tipo/load-model:
+    post:
+      tags: [tipo]
+      summary: Load TIPO model
+      description: Load TIPO tag generation model
+      operationId: loadTipoModel
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_name:
+                  type: string
+                  default: KBlueLeaf/TIPO-500M
+      responses:
+        '200':
+          description: Model loaded
+
+  /tipo/generate:
+    post:
+      tags: [tipo]
+      summary: Generate tags with TIPO
+      description: Generate tags from image using TIPO
+      operationId: generateTipoTags
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                tag_length:
+                  type: string
+                  enum: [short, long, very_long]
+                  default: short
+                nl_length:
+                  type: string
+                  enum: [short, long]
+                  default: short
+                categories:
+                  type: array
+                  items:
+                    type: string
+                temperature:
+                  type: number
+                  default: 0.5
+                top_p:
+                  type: number
+                  default: 0.9
+                top_k:
+                  type: integer
+                  default: 40
+                max_new_tokens:
+                  type: integer
+                  default: 256
+      responses:
+        '200':
+          description: Generated tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: string
+
+  /tipo/status:
+    get:
+      tags: [tipo]
+      summary: Get TIPO model status
+      operationId: getTipoStatus
+      responses:
+        '200':
+          description: Model status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loaded:
+                    type: boolean
+                  model_name:
+                    type: string
+
+  /tipo/unload:
+    post:
+      tags: [tipo]
+      summary: Unload TIPO model
+      operationId: unloadTipoModel
+      responses:
+        '200':
+          description: Model unloaded
+
+  /tagger/load-model:
+    post:
+      tags: [tagger]
+      summary: Load tagger model
+      description: Load image tagging model
+      operationId: loadTaggerModel
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_name:
+                  type: string
+      responses:
+        '200':
+          description: Model loaded
+
+  /tagger/predict:
+    post:
+      tags: [tagger]
+      summary: Predict tags from image
+      description: Predict tags using loaded tagger model
+      operationId: predictTags
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                threshold:
+                  type: number
+                  default: 0.35
+      responses:
+        '200':
+          description: Predicted tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: object
+                    additionalProperties:
+                      type: number
+
+  /tagger/status:
+    get:
+      tags: [tagger]
+      summary: Get tagger model status
+      operationId: getTaggerStatus
+      responses:
+        '200':
+          description: Model status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loaded:
+                    type: boolean
+
+  /tagger/unload:
+    post:
+      tags: [tagger]
+      summary: Unload tagger model
+      operationId: unloadTaggerModel
+      responses:
+        '200':
+          description: Model unloaded
+
+  /settings/directories:
+    get:
+      tags: [settings]
+      summary: Get directory settings
+      operationId: getDirectorySettings
+      responses:
+        '200':
+          description: Directory settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outputs_dir:
+                    type: string
+                  models_dir:
+                    type: string
+                  lora_dir:
+                    type: string
+                  controlnet_dir:
+                    type: string
+
+    post:
+      tags: [settings]
+      summary: Update directory settings
+      operationId: updateDirectorySettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outputs_dir:
+                  type: string
+                models_dir:
+                  type: string
+                lora_dir:
+                  type: string
+                controlnet_dir:
+                  type: string
+      responses:
+        '200':
+          description: Settings updated
+
+  /system/restart-backend:
+    post:
+      tags: [system]
+      summary: Restart backend server
+      operationId: restartBackend
+      responses:
+        '200':
+          description: Restart initiated
+
+  /system/restart-frontend:
+    post:
+      tags: [system]
+      summary: Restart frontend dev server
+      operationId: restartFrontend
+      responses:
+        '200':
+          description: Restart initiated
+
+  /system/gpu-stats:
+    get:
+      tags: [system]
+      summary: Get GPU statistics
+      description: Get current GPU memory usage and statistics
+      operationId: getGpuStats
+      responses:
+        '200':
+          description: GPU statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gpu_name:
+                    type: string
+                  total_memory:
+                    type: number
+                  used_memory:
+                    type: number
+                  free_memory:
+                    type: number
+                  utilization:
+                    type: number
+
+  /port-info:
+    get:
+      tags: [system]
+      summary: Get port information
+      description: Get backend port number
+      operationId: getPortInfo
+      responses:
+        '200':
+          description: Port information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  port:
+                    type: integer
+
+  /auth/status:
+    get:
+      tags: [auth]
+      summary: Get authentication status
+      operationId: getAuthStatus
+      responses:
+        '200':
+          description: Auth status
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+
+  /auth/verify:
+    get:
+      tags: [auth]
+      summary: Verify token
+      operationId: verifyToken
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Token valid
+
+  /download/{filename}:
+    get:
+      tags: [system]
+      summary: Download generated image
+      description: Download image file by filename
+      operationId: downloadFile
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File download
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    GenerationParams:
+      type: object
+      required:
+        - prompt
+        - sampler
+        - schedule_type
+        - steps
+        - cfg_scale
+        - width
+        - height
+      properties:
+        prompt:
+          type: string
+        negative_prompt:
+          type: string
+          default: ""
+        sampler:
+          type: string
+          example: "euler_a"
+        schedule_type:
+          type: string
+          example: "karras"
+        steps:
+          type: integer
+          minimum: 1
+          maximum: 150
+          default: 20
+        cfg_scale:
+          type: number
+          minimum: 0
+          maximum: 30
+          default: 7.0
+        seed:
+          type: integer
+          default: -1
+        ancestral_seed:
+          type: integer
+          default: -1
+        width:
+          type: integer
+          multipleOf: 8
+          default: 1024
+        height:
+          type: integer
+          multipleOf: 8
+          default: 1024
+        loras:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              weight:
+                type: number
+        prompt_chunking_mode:
+          type: string
+          enum: [a1111, sd_scripts, nobos]
+          default: a1111
+        max_prompt_chunks:
+          type: integer
+          default: 0
+        controlnets:
+          type: array
+          items:
+            type: object
+        cfg_schedule_type:
+          type: string
+          enum: [constant, linear, cosine, exponential]
+          default: constant
+        cfg_schedule_min:
+          type: number
+          default: 1.0
+        cfg_schedule_max:
+          type: number
+        cfg_schedule_power:
+          type: number
+          default: 2.0
+        cfg_rescale_snr_alpha:
+          type: number
+          default: 0.0
+        dynamic_threshold_percentile:
+          type: number
+          default: 0.0
+        dynamic_threshold_mimic_scale:
+          type: number
+          default: 7.0
+        nag_enable:
+          type: boolean
+          default: false
+        nag_scale:
+          type: number
+          default: 5.0
+        nag_tau:
+          type: number
+          default: 3.5
+        nag_alpha:
+          type: number
+          default: 0.25
+        nag_sigma_end:
+          type: number
+          default: 3.0
+        nag_negative_prompt:
+          type: string
+          default: ""
+        unet_quantization:
+          type: string
+          enum: [none, fp8_e4m3fn, fp8_e5m2, uint2, uint3, uint4, uint5, uint6, uint7, uint8]
+        use_torch_compile:
+          type: boolean
+          default: false
+
+    Txt2ImgRequest:
+      allOf:
+        - $ref: '#/components/schemas/GenerationParams'
+
+    Img2ImgRequest:
+      allOf:
+        - $ref: '#/components/schemas/GenerationParams'
+        - type: object
+          required:
+            - image
+          properties:
+            image:
+              type: string
+              format: binary
+            denoising_strength:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.75
+            denoising_schedule_type:
+              type: string
+              default: constant
+
+    InpaintRequest:
+      allOf:
+        - $ref: '#/components/schemas/GenerationParams'
+        - type: object
+          required:
+            - image
+            - mask
+          properties:
+            image:
+              type: string
+              format: binary
+            mask:
+              type: string
+              format: binary
+            denoising_strength:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.75
+            denoising_schedule_type:
+              type: string
+              default: constant
+            mask_blur:
+              type: integer
+              default: 4
+
+    GenerationResponse:
+      type: object
+      properties:
+        image_path:
+          type: string
+        image_id:
+          type: integer
+        seed:
+          type: integer
+        metadata:
+          type: object
+
+    GeneratedImage:
+      type: object
+      properties:
+        id:
+          type: integer
+        filename:
+          type: string
+        generation_type:
+          type: string
+          enum: [txt2img, img2img, inpaint]
+        model_name:
+          type: string
+        prompt:
+          type: string
+        negative_prompt:
+          type: string
+        parameters:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    ImageListResponse:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeneratedImage'
+        total:
+          type: integer
+
+    ModelInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        type:
+          type: string
+          enum: [safetensors, ckpt, diffusers]
+        hash:
+          type: string
+        size:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string

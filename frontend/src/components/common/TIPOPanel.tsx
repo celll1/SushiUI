@@ -137,6 +137,11 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
     setError(null);
 
     try {
+      // Replace wildcards BEFORE TIPO generation
+      const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+      const processedPrompt = await replaceWildcardsInPrompt(inputPrompt.trim());
+      console.log('[TIPO Panel] Wildcard replaced prompt:', processedPrompt);
+
       // Get category order settings
       const categoryOrder = getCategoryOrder();
       const categoryOrderIds = categoryOrder.map(cat => cat.id);
@@ -145,9 +150,9 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
         return acc;
       }, {} as Record<string, boolean>);
 
-      // Call TIPO API with local settings
+      // Call TIPO API with wildcard-replaced prompt
       const response = await generateTIPOPrompt({
-        input_prompt: inputPrompt.trim(),
+        input_prompt: processedPrompt,
         model_name: localSettings.model_name,
         tag_length: localSettings.tag_length,
         nl_length: localSettings.nl_length,

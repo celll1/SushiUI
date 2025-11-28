@@ -89,8 +89,38 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
   };
 
   const handleSave = () => {
+    // Save TIPO settings to localStorage
     onSettingsChange(localSettings);
+
+    // Also save category order back to CategoryOrderPanel settings
+    const categoryOrderKey = "category_order";
+    const categoryOrderSettings = localSettings.categories.map(cat => ({
+      id: cat.id,
+      label: cat.label,
+      enabled: cat.enabled,
+    }));
+    localStorage.setItem(categoryOrderKey, JSON.stringify(categoryOrderSettings));
+
     onClose();
+  };
+
+  const handleToggleCategory = (index: number) => {
+    const newCategories = [...localSettings.categories];
+    newCategories[index].enabled = !newCategories[index].enabled;
+    setLocalSettings({ ...localSettings, categories: newCategories });
+  };
+
+  const handleMoveCategory = (index: number, direction: 'up' | 'down') => {
+    const newCategories = [...localSettings.categories];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+
+    if (targetIndex < 0 || targetIndex >= newCategories.length) {
+      return;
+    }
+
+    // Swap categories
+    [newCategories[index], newCategories[targetIndex]] = [newCategories[targetIndex], newCategories[index]];
+    setLocalSettings({ ...localSettings, categories: newCategories });
   };
 
   if (!isOpen) return null;
@@ -195,20 +225,22 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
                 <input
                   type="checkbox"
                   checked={category.enabled}
-                  disabled
-                  className="w-4 h-4 opacity-50 cursor-not-allowed"
+                  onChange={() => handleToggleCategory(index)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500 cursor-pointer"
                 />
                 <span className="flex-1 text-sm text-gray-300">{category.label}</span>
-                <div className="flex gap-1 opacity-50">
+                <div className="flex gap-1">
                   <button
-                    disabled
-                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs cursor-not-allowed"
+                    onClick={() => handleMoveCategory(index, 'up')}
+                    disabled={index === 0}
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     ↑
                   </button>
                   <button
-                    disabled
-                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs cursor-not-allowed"
+                    onClick={() => handleMoveCategory(index, 'down')}
+                    disabled={index === localSettings.categories.length - 1}
+                    className="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     ↓
                   </button>
@@ -217,8 +249,8 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
             ))}
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Category order is configured in Prompt Editor → Category Order panel.
-            This is a read-only view.
+            Drag categories using ↑/↓ buttons to reorder. Toggle checkboxes to enable/disable categories.
+            Settings are shared with Prompt Editor.
           </p>
         </div>
 

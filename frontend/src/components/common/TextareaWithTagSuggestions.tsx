@@ -77,6 +77,22 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }
   }, []);
 
+  // Validate selectedIndex when suggestions change
+  useEffect(() => {
+    if (suggestions.length === 0) {
+      if (selectedIndex !== -1) {
+        setSelectedIndex(-1);
+      }
+    } else if (selectedIndex >= suggestions.length) {
+      // If selectedIndex is out of bounds, reset to first item
+      console.log('[TagSuggestions] selectedIndex out of bounds, resetting to 0');
+      setSelectedIndex(0);
+    } else if (selectedIndex < 0 && suggestions.length > 0) {
+      // If no selection but have suggestions, select first item
+      setSelectedIndex(0);
+    }
+  }, [suggestions, selectedIndex]);
+
   // Calculate cursor position in pixels using a hidden div mirror
   const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
     const style = window.getComputedStyle(textarea);
@@ -563,18 +579,26 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (suggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0));
+        setSelectedIndex((prev) => {
+          // Ensure prev is within bounds
+          const validPrev = Math.max(0, Math.min(prev, suggestions.length - 1));
+          return validPrev < suggestions.length - 1 ? validPrev + 1 : 0;
+        });
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1));
+        setSelectedIndex((prev) => {
+          // Ensure prev is within bounds
+          const validPrev = Math.max(0, Math.min(prev, suggestions.length - 1));
+          return validPrev > 0 ? validPrev - 1 : suggestions.length - 1;
+        });
       } else if (e.key === "Enter" || e.key === "Tab") {
-        if (selectedIndex >= 0) {
+        if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
           e.preventDefault();
           acceptSuggestion(suggestions[selectedIndex].tag);
         }
       } else if (e.key === "Delete") {
         // Remove selected tag from recent history
-        if (selectedIndex >= 0) {
+        if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
           e.preventDefault();
           const tagToRemove = suggestions[selectedIndex].tag;
           removeFromRecentTags(tagToRemove);

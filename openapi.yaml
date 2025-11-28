@@ -88,6 +88,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /generate/inpaint:
     post:
@@ -108,6 +120,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /cancel:
     post:
@@ -1214,8 +1238,30 @@ components:
 
     ErrorResponse:
       type: object
+      required:
+        - error
+        - status_code
+        - timestamp
+        - path
       properties:
         error:
           type: string
+          description: Error message
+          example: "Generation failed"
         detail:
           type: string
+          description: Detailed error information
+          example: "Invalid parameter: steps must be between 1 and 150"
+        status_code:
+          type: integer
+          description: HTTP status code
+          example: 400
+        timestamp:
+          type: string
+          format: date-time
+          description: Error occurrence timestamp (ISO 8601)
+          example: "2025-11-28T12:34:56.789Z"
+        path:
+          type: string
+          description: Request path that caused the error
+          example: "/generate/txt2img"

@@ -43,6 +43,12 @@ from api.generation_utils import (
     set_prompt_chunking_settings,
     calculate_generation_metadata
 )
+from api.error_handlers import (
+    GenerationError,
+    ModelError,
+    NotFoundError,
+    ValidationError as CustomValidationError
+)
 
 router = APIRouter()
 
@@ -239,11 +245,17 @@ async def generate_txt2img(request: Txt2ImgRequest, db: Session = Depends(get_db
 
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
+    except GenerationError:
+        # Re-raise custom errors as-is
+        raise
     except Exception as e:
+        # Wrap unexpected errors in GenerationError
         import traceback
-        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        print(f"Error generating image: {error_detail}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = traceback.format_exc()
+        raise GenerationError(
+            "Text-to-image generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
     finally:
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.txt2img_pipeline:
@@ -439,11 +451,17 @@ async def generate_img2img(
 
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
+    except GenerationError:
+        # Re-raise custom errors as-is
+        raise
     except Exception as e:
+        # Wrap unexpected errors in GenerationError
         import traceback
-        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        print(f"Error generating img2img: {error_detail}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = traceback.format_exc()
+        raise GenerationError(
+            "Image-to-image generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
     finally:
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.img2img_pipeline:
@@ -665,11 +683,17 @@ async def generate_inpaint(
 
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
+    except GenerationError:
+        # Re-raise custom errors as-is
+        raise
     except Exception as e:
+        # Wrap unexpected errors in GenerationError
         import traceback
-        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        print(f"Error generating inpaint: {error_detail}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = traceback.format_exc()
+        raise GenerationError(
+            "Inpaint generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
     finally:
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.inpaint_pipeline:

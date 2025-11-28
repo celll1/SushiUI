@@ -7,6 +7,7 @@ import logging
 
 from api import router, websocket_endpoint
 from api.logs import router as logs_router
+from api.error_handlers import register_error_handlers
 from database import init_db
 from config.settings import settings
 from utils.logger import setup_logging
@@ -32,6 +33,9 @@ init_db()
 
 # Create FastAPI app
 app = FastAPI(title="Stable Diffusion WebUI API", version="0.1.0")
+
+# Register error handlers
+register_error_handlers(app)
 
 # Start WebSocket message sender on startup and load user directory settings
 @app.on_event("startup")

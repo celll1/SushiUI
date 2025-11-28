@@ -209,8 +209,8 @@ export async function getRandomEntry(groupId: string): Promise<string | null> {
  * Example: "1girl, __hair_color__ hair, __background__"
  */
 export async function replaceWildcardsInPrompt(prompt: string): Promise<string> {
-  // Find all wildcards in format __name__
-  const wildcardPattern = /__([a-zA-Z0-9_]+)__/g;
+  // Find all wildcards in format __name__ (supports spaces and special characters)
+  const wildcardPattern = /__([a-zA-Z0-9_ ]+)__/g;
   let result = prompt;
   const matches = [...prompt.matchAll(wildcardPattern)];
 

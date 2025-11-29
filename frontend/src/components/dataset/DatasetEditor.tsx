@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Scan, Save, FileText } from "lucide-react";
+import { X, Scan, Save } from "lucide-react";
+import { getDataset, scanDataset, Dataset } from "@/utils/api";
+import DatasetViewer from "./DatasetViewer";
 
 interface DatasetEditorProps {
   datasetId: number;
@@ -10,7 +12,9 @@ interface DatasetEditorProps {
 
 export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps) {
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
   const [dataset, setDataset] = useState<any>(null);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadDataset();
@@ -19,15 +23,8 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   const loadDataset = async () => {
     setLoading(true);
     try {
-      // TODO: Implement API call
-      // const response = await api.get(`/datasets/${datasetId}`);
-      // setDataset(response.data);
-      setDataset({
-        id: datasetId,
-        name: "Example Dataset",
-        path: "/path/to/dataset",
-        total_items: 0,
-      }); // Placeholder
+      const data = await getDataset(datasetId);
+      setDataset(data);
     } catch (err) {
       console.error("Failed to load dataset:", err);
     } finally {
@@ -36,8 +33,19 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   };
 
   const handleScan = async () => {
-    console.log("Scanning dataset:", datasetId);
-    // TODO: Implement scan
+    setScanning(true);
+    setScanMessage(null);
+    try {
+      const result = await scanDataset(datasetId);
+      setDataset(result.dataset);
+      setScanMessage(`Scan complete: ${result.items_found} items, ${result.captions_found} captions found`);
+      setTimeout(() => setScanMessage(null), 5000);
+    } catch (err) {
+      console.error("Failed to scan dataset:", err);
+      setScanMessage("Scan failed. Please check console for details.");
+    } finally {
+      setScanning(false);
+    }
   };
 
   const handleSave = async () => {
@@ -62,56 +70,35 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   }
 
   return (
-    <div className="bg-gray-800 rounded-lg">
+    <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-700">
-        <h2 className="text-lg font-semibold">{dataset.name}</h2>
+      <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-700 bg-gray-800/50">
+        <div className="flex items-center space-x-3">
+          <h2 className="text-base font-semibold">{dataset.name}</h2>
+          <span className="text-xs text-gray-400">{dataset.total_items} items</span>
+        </div>
         <div className="flex space-x-2">
           <button
             onClick={handleScan}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm flex items-center space-x-1 transition-colors"
+            disabled={scanning}
+            className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs flex items-center space-x-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Scan className="h-4 w-4" />
-            <span>Scan</span>
-          </button>
-          <button
-            onClick={handleSave}
-            className="px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm flex items-center space-x-1 transition-colors"
-          >
-            <Save className="h-4 w-4" />
-            <span>Save</span>
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded hover:bg-gray-700 transition-colors"
-          >
-            <X className="h-5 w-5" />
+            <Scan className="h-3.5 w-3.5" />
+            <span>{scanning ? "Scanning..." : "Scan"}</span>
           </button>
         </div>
       </div>
 
-      {/* Content */}
-      <div className="p-4 space-y-4">
-        {/* Dataset Info */}
-        <div className="bg-gray-900/50 rounded p-4">
-          <h3 className="text-sm font-semibold mb-2">Dataset Information</h3>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="text-gray-400">Path:</div>
-            <div className="text-gray-200">{dataset.path}</div>
-            <div className="text-gray-400">Items:</div>
-            <div className="text-gray-200">{dataset.total_items}</div>
-          </div>
+      {/* Scan Message */}
+      {scanMessage && (
+        <div className="mx-4 mt-3 bg-green-900/20 border border-green-500 text-green-400 rounded p-2 text-xs">
+          {scanMessage}
         </div>
+      )}
 
-        {/* Items Browser (Placeholder) */}
-        <div className="bg-gray-900/50 rounded p-4">
-          <h3 className="text-sm font-semibold mb-2">Dataset Items</h3>
-          <div className="text-center text-gray-400 py-8">
-            <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
-            <p>Item browser coming soon</p>
-            <p className="text-xs mt-1">Scan the dataset to populate items</p>
-          </div>
-        </div>
+      {/* Content - 3 Column Viewer */}
+      <div className="flex-1 px-4 py-3 overflow-hidden">
+        <DatasetViewer datasetId={datasetId} />
       </div>
     </div>
   );

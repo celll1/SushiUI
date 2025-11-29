@@ -2,17 +2,7 @@
 
 import { useState } from "react";
 import { X, Folder, AlertCircle } from "lucide-react";
-
-interface Dataset {
-  id: number;
-  name: string;
-  path: string;
-  total_items: number;
-  total_captions: number;
-  total_tags: number;
-  created_at: string;
-  last_scanned_at: string | null;
-}
+import { createDataset, scanDataset, Dataset } from "@/utils/api";
 
 interface CreateDatasetModalProps {
   initialPath: string | null;
@@ -33,42 +23,38 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
     e.preventDefault();
 
     // Validation
-    if (!name.trim()) {
-      setError("Dataset name is required");
-      return;
-    }
     if (!path.trim()) {
       setError("Dataset path is required");
       return;
+    }
+
+    // Auto-generate name from folder if not provided
+    let datasetName = name.trim();
+    if (!datasetName) {
+      const pathParts = path.trim().replace(/\\/g, "/").split("/");
+      datasetName = pathParts[pathParts.length - 1] || "unnamed_dataset";
     }
 
     setLoading(true);
     setError(null);
 
     try {
-      // TODO: Implement API call
-      // const response = await api.post("/datasets", {
-      //   name: name.trim(),
-      //   path: path.trim(),
-      //   description: description.trim() || undefined,
-      //   recursive,
-      //   read_exif: readExif,
-      //   file_extensions: [".png", ".jpg", ".jpeg", ".webp"],
-      // });
-      // onCreate(response.data);
-
-      // Placeholder
-      const newDataset: Dataset = {
-        id: Date.now(),
-        name: name.trim(),
+      const newDataset = await createDataset({
+        name: datasetName,
         path: path.trim(),
-        total_items: 0,
-        total_captions: 0,
-        total_tags: 0,
-        created_at: new Date().toISOString(),
-        last_scanned_at: null,
-      };
-      onCreate(newDataset);
+        description: description.trim() || undefined,
+        recursive,
+        read_exif: readExif,
+      });
+
+      // Automatically scan the dataset after creation
+      try {
+        const scanResult = await scanDataset(newDataset.id);
+        onCreate(scanResult.dataset); // Return scanned dataset with updated counts
+      } catch (scanErr) {
+        console.error("Failed to scan dataset:", scanErr);
+        onCreate(newDataset); // Return dataset even if scan fails
+      }
     } catch (err: any) {
       setError(err.response?.data?.error || "Failed to create dataset");
       console.error("Failed to create dataset:", err);
@@ -103,17 +89,16 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
           {/* Dataset Name */}
           <div>
             <label className="block text-sm font-medium mb-2">
-              Dataset Name <span className="text-red-400">*</span>
+              Dataset Name (optional)
             </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., character_training_dataset"
+              placeholder="e.g., character_training_dataset (auto-filled from folder name if empty)"
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              required
             />
-            <p className="text-xs text-gray-400 mt-1">Unique identifier for this dataset</p>
+            <p className="text-xs text-gray-400 mt-1">Unique identifier for this dataset (uses folder name if left empty)</p>
           </div>
 
           {/* Dataset Path */}
@@ -204,7 +189,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={loading}
             >
-              {loading ? "Creating..." : "Create Dataset"}
+              {loading ? "Creating & Scanning..." : "Create Dataset"}
             </button>
           </div>
         </form>

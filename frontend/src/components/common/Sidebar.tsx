@@ -3,12 +3,12 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Image, ImagePlus, Settings, FileImage, Terminal, Menu, X } from "lucide-react";
+import { Home, Image, ImagePlus, Settings, FileImage, Terminal, Menu, X, Database } from "lucide-react";
 
 const navigation = [
   { name: "Generate", href: "/generate", icon: ImagePlus },
   { name: "Gallery", href: "/gallery", icon: Image },
-  { name: "Console", href: "/console", icon: Terminal },
+  { name: "Dataset", href: "/dataset", icon: Database },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 

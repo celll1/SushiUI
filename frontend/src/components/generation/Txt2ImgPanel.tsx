@@ -608,13 +608,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
 
-    // Feeling Lucky mode: Generate prompt with TIPO before queueing
+    // Feeling Lucky mode: Prepare TIPO settings for queue processing
+    // TIPO generation will happen in processQueue() to avoid blocking UI
+    let tipoSettings = null;
     if (params.feeling_lucky) {
-      try {
-        // Load shared TIPO settings from localStorage (same as Prompt Editor)
-        const saved = localStorage.getItem("tipo_settings");
-        const sharedTipoSettings = saved ? JSON.parse(saved) : tipoSettings;
+      // Load shared TIPO settings from localStorage (same as Prompt Editor)
+      const saved = localStorage.getItem("tipo_settings");
+      const sharedTipoSettings = saved ? JSON.parse(saved) : null;
 
+      if (sharedTipoSettings) {
         // Build category order and enabled map from settings
         const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
         const enabledCategories: Record<string, boolean> = {};
@@ -622,8 +624,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           enabledCategories[c.id] = c.enabled;
         });
 
-        console.log('[Txt2Img] Feeling Lucky: Generating prompt with TIPO...');
-        const result = await generateTIPOPrompt({
+        tipoSettings = {
           input_prompt: processedPrompt,
           model_name: sharedTipoSettings.model_name,
           tag_length: sharedTipoSettings.tag_length,
@@ -634,13 +635,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           max_new_tokens: sharedTipoSettings.max_new_tokens,
           category_order: categoryOrder,
           enabled_categories: enabledCategories
-        });
+        };
 
-        processedPrompt = result.generated_prompt;
-        console.log('[Txt2Img] Feeling Lucky: Generated prompt:', processedPrompt.substring(0, 100) + '...');
-      } catch (error) {
-        console.error("TIPO generation failed in Feeling Lucky mode:", error);
-        alert("Failed to generate prompt with TIPO. Using original prompt.");
+        console.log('[Txt2Img] Feeling Lucky: TIPO generation will be done in queue processing');
       }
     }
 
@@ -664,6 +661,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined, // -1 indicates main generation
       isLoopStep: false,
+      needsTipo: params.feeling_lucky && tipoSettings !== null,
+      tipoSettings: tipoSettings,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -905,6 +904,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
       return;
+    }
+
+    // If TIPO generation is needed, run it now (between image generations)
+    if (nextItem.needsTipo && nextItem.tipoSettings) {
+      console.log('[Txt2Img] Running TIPO generation before image generation...');
+      try {
+        const result = await generateTIPOPrompt(nextItem.tipoSettings);
+        const generatedPrompt = result.generated_prompt;
+        console.log('[Txt2Img] TIPO generated prompt:', generatedPrompt.substring(0, 100) + '...');
+
+        // Update the queue item with generated prompt
+        updateQueueItem(nextItem.id, {
+          params: { ...nextItem.params, prompt: generatedPrompt },
+          prompt: generatedPrompt,
+          needsTipo: false, // Clear flag so we don't run TIPO again
+        });
+
+        // Restart processQueue with updated item
+        console.log('[Txt2Img] TIPO complete, restarting processQueue');
+        setTimeout(() => {
+          if (processQueueRef.current) {
+            processQueueRef.current();
+          }
+        }, 100);
+        return;
+      } catch (error) {
+        console.error('[Txt2Img] TIPO generation failed:', error);
+        alert('TIPO generation failed. Using original prompt.');
+        // Clear TIPO flag and continue with original prompt
+        updateQueueItem(nextItem.id, { needsTipo: false });
+      }
     }
 
     // Save current image before starting new generation

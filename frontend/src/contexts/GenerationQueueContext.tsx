@@ -27,6 +27,7 @@ interface GenerationQueueContextType {
   removeFromQueue: (id: string) => void;
   updateQueueItem: (id: string, updates: Partial<QueueItem>) => void;
   updateQueueItemByLoop: (loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => void;
+  cancelLoopGroup: (loopGroupId: string) => void;
   startNextInQueue: () => QueueItem | null;
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
@@ -75,12 +76,31 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         console.log(`[QueueContext] updateQueueItemByLoop: Found item with loopGroupId=${loopGroupId}, loopStepIndex=${loopStepIndex}`);
         const actualUpdates = typeof updates === 'function' ? updates(item) : updates;
         return prev.map((i) =>
-          i.id === item.id ? { ...i, ...actualUpdates } : i
+          i.id === item.id ? { ...i, ...actualUpdates} : i
         );
       } else {
         console.log(`[QueueContext] updateQueueItemByLoop: Item not found with loopGroupId=${loopGroupId}, loopStepIndex=${loopStepIndex}`);
         return prev;
       }
+    });
+  }, []);
+
+  const cancelLoopGroup = useCallback((loopGroupId: string) => {
+    console.log(`[QueueContext] Cancelling all pending items in loop group: ${loopGroupId}`);
+
+    // Remove all pending items with this loopGroupId
+    setQueue((prev) => prev.filter((item) =>
+      !(item.loopGroupId === loopGroupId && item.status === "pending")
+    ));
+
+    // If currentItem is part of this loop group, clear its loopGroupId
+    // to prevent trying to continue the cancelled loop sequence
+    setCurrentItem((prev) => {
+      if (prev && prev.loopGroupId === loopGroupId) {
+        console.log(`[QueueContext] Clearing loopGroupId from currentItem to break loop sequence`);
+        return { ...prev, loopGroupId: undefined, loopStepIndex: undefined };
+      }
+      return prev;
     });
   }, []);
 
@@ -190,6 +210,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         removeFromQueue,
         updateQueueItem,
         updateQueueItemByLoop,
+        cancelLoopGroup,
         startNextInQueue,
         completeCurrentItem,
         failCurrentItem,

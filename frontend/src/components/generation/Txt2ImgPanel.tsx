@@ -515,7 +515,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
 
   // WebSocket progress callback
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
@@ -982,18 +982,19 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }
 
       // If this item has a loop group, update the next loop step's input image and ControlNets
-      if (nextItem.loopGroupId !== undefined) {
-        const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
+      // Use currentItem instead of nextItem to respect cancellation
+      if (currentItem?.loopGroupId !== undefined) {
+        const nextLoopStepIndex = (currentItem.loopStepIndex ?? -1) + 1;
 
         console.log(`[Txt2Img] Processing loop step completion:`, {
-          loopGroupId: nextItem.loopGroupId,
-          currentStepIndex: nextItem.loopStepIndex,
+          loopGroupId: currentItem.loopGroupId,
+          currentStepIndex: currentItem.loopStepIndex,
           nextLoopStepIndex,
         });
 
         // Update input image first
         console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+        updateQueueItemByLoop(currentItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
 
         // Find step config to check if ControlNet processing is needed
         const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
@@ -1041,7 +1042,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               const scaledHeight = Math.round(imageHeight * stepConfig.scale);
               console.log(`[Txt2Img] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
 
-              updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => ({
+              updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => ({
                 params: {
                   ...item.params,
                   width: scaledWidth,
@@ -1072,7 +1073,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           console.log(`[Txt2Img] Converted image to base64, length: ${imageBase64.length}`);
 
           // Update ControlNets with useLoopImage enabled using callback to preserve existing params
-          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => {
+          updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => {
             const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
               console.log(`[Txt2Img] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
               if (cnConfig.useLoopImage) {
@@ -1801,13 +1802,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   onClick={async () => {
                     try {
                       await cancelGeneration();
-                      setIsGenerating(false);
-                      setProgress(0);
-                      // Stop generate forever when cancelling
                       setGenerateForever(false);
-                      // Move to next in queue after cancelling
-                      failCurrentItem();
-                      setTimeout(() => processQueue(), 600);
+                      // Cancel all pending loop steps if this is part of a loop group
+                      if (currentItem?.loopGroupId) {
+                        cancelLoopGroup(currentItem.loopGroupId);
+                      }
+                      // Don't call processQueue() here - let the error handler handle it
+                      // to avoid race condition with reset_cancel_flag()
                     } catch (error) {
                       console.error("Failed to cancel generation:", error);
                     }
@@ -1852,11 +1853,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                           onClick={async () => {
                             try {
                               await cancelGeneration();
-                              setIsGenerating(false);
-                              setProgress(0);
                               setGenerateForever(false);
-                              failCurrentItem();
-                              setTimeout(() => processQueue(), 600);
+                              // Cancel all pending loop steps if this is part of a loop group
+                              if (currentItem?.loopGroupId) {
+                                cancelLoopGroup(currentItem.loopGroupId);
+                              }
+                              // Don't call processQueue() here - let the error handler handle it
+                              // to avoid race condition with reset_cancel_flag()
                             } catch (error) {
                               console.error("Failed to cancel generation:", error);
                             }

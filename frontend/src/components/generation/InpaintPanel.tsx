@@ -915,7 +915,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
@@ -2360,13 +2360,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     onClick={async () => {
                       try {
                         await cancelGeneration();
-                        setIsGenerating(false);
-                        setProgress(0);
-                        // Stop generate forever when cancelling
                         setGenerateForever(false);
-                        // Move to next in queue after cancelling
-                        failCurrentItem();
-                        setTimeout(() => processQueue(), 600);
+                        // Cancel all pending loop steps if this is part of a loop group
+                        if (currentItem?.loopGroupId) {
+                          cancelLoopGroup(currentItem.loopGroupId);
+                        }
+                        // Don't call processQueue() here - let the error handler handle it
+                        // to avoid race condition with reset_cancel_flag()
                       } catch (error) {
                         console.error("Failed to cancel generation:", error);
                       }
@@ -2411,11 +2411,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                           onClick={async () => {
                             try {
                               await cancelGeneration();
-                              setIsGenerating(false);
-                              setProgress(0);
                               setGenerateForever(false);
-                              failCurrentItem();
-                              setTimeout(() => processQueue(), 600);
+                              // Cancel all pending loop steps if this is part of a loop group
+                              if (currentItem?.loopGroupId) {
+                                cancelLoopGroup(currentItem.loopGroupId);
+                              }
+                              // Don't call processQueue() here - let the error handler handle it
+                              // to avoid race condition with reset_cancel_flag()
                             } catch (error) {
                               console.error("Failed to cancel generation:", error);
                             }

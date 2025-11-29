@@ -214,7 +214,18 @@ async def generate_txt2img(
                     enabled_categories=tipo_config_dict.get("enabled_categories", {})
                 )
 
-                prompt = upsampled_prompt
+                # If result is dict (tipo-kgen mode), format it to string
+                if isinstance(upsampled_prompt, dict):
+                    category_order = tipo_config_dict.get("category_order", [])
+                    enabled_categories = tipo_config_dict.get("enabled_categories", {})
+                    prompt = tipo_manager.format_kgen_result(
+                        upsampled_prompt,
+                        category_order,
+                        enabled_categories
+                    )
+                else:
+                    prompt = upsampled_prompt
+
                 print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
                 print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
 
@@ -475,7 +486,18 @@ async def generate_img2img(
                     enabled_categories=tipo_config_dict.get("enabled_categories", {})
                 )
 
-                prompt = upsampled_prompt
+                # If result is dict (tipo-kgen mode), format it to string
+                if isinstance(upsampled_prompt, dict):
+                    category_order = tipo_config_dict.get("category_order", [])
+                    enabled_categories = tipo_config_dict.get("enabled_categories", {})
+                    prompt = tipo_manager.format_kgen_result(
+                        upsampled_prompt,
+                        category_order,
+                        enabled_categories
+                    )
+                else:
+                    prompt = upsampled_prompt
+
                 print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
                 print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
 
@@ -740,7 +762,18 @@ async def generate_inpaint(
                     enabled_categories=tipo_config_dict.get("enabled_categories", {})
                 )
 
-                prompt = upsampled_prompt
+                # If result is dict (tipo-kgen mode), format it to string
+                if isinstance(upsampled_prompt, dict):
+                    category_order = tipo_config_dict.get("category_order", [])
+                    enabled_categories = tipo_config_dict.get("enabled_categories", {})
+                    prompt = tipo_manager.format_kgen_result(
+                        upsampled_prompt,
+                        category_order,
+                        enabled_categories
+                    )
+                else:
+                    prompt = upsampled_prompt
+
                 print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
                 print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
 

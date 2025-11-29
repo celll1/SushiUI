@@ -13,7 +13,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_db
-from database.models import GeneratedImage, UserSettings
+from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
@@ -2176,3 +2176,294 @@ async def download_image(filename: str, include_metadata: bool = False):
     except Exception as e:
         print(f"Error downloading image: {e}")
         raise HTTPException(status_code=500, detail=f"Error downloading image: {str(e)}")
+
+
+# ============================================================
+# Dataset Management Endpoints
+# ============================================================
+
+class DatasetCreateRequest(BaseModel):
+    name: str
+    path: str
+    description: Optional[str] = None
+    recursive: bool = True
+    read_exif: bool = False
+
+@router.get("/datasets")
+async def list_datasets(db: Session = Depends(get_db)):
+    """List all datasets"""
+    try:
+        datasets = db.query(Dataset).order_by(Dataset.created_at.desc()).all()
+        return {"datasets": [d.to_dict() for d in datasets], "total": len(datasets)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/datasets", status_code=201)
+async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(get_db)):
+    """Create a new dataset"""
+    try:
+        existing = db.query(Dataset).filter(Dataset.name == request.name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Dataset '{request.name}' already exists")
+        
+        if not os.path.exists(request.path):
+            raise HTTPException(status_code=400, detail=f"Directory not found: {request.path}")
+        
+        dataset = Dataset(
+            name=request.name,
+            path=request.path,
+            description=request.description,
+            recursive=request.recursive,
+            read_exif=request.read_exif,
+            file_extensions=[".png", ".jpg", ".jpeg", ".webp"]
+        )
+        db.add(dataset)
+        db.commit()
+        db.refresh(dataset)
+        return dataset.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/datasets/{dataset_id}")
+async def get_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    """Get dataset by ID"""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return dataset.to_dict()
+
+@router.delete("/datasets/{dataset_id}", status_code=204)
+async def delete_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    """Delete dataset"""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    db.delete(dataset)
+    db.commit()
+    return Response(status_code=204)
+
+@router.get("/tag-dictionary")
+async def search_tag_dictionary(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Search tag dictionary"""
+    query = db.query(TagDictionary)
+    if search:
+        query = query.filter(TagDictionary.tag.like(f"%{search}%"))
+    if category:
+        query = query.filter(TagDictionary.category == category)
+    
+    total = query.count()
+    offset = (page - 1) * page_size
+    tags = query.order_by(TagDictionary.count.desc()).offset(offset).limit(page_size).all()
+    
+    return {"tags": [t.to_dict() for t in tags], "total": total, "page": page, "page_size": page_size}
+
+@router.get("/tag-dictionary/stats")
+async def get_tag_dictionary_stats(db: Session = Depends(get_db)):
+    """Get tag dictionary statistics"""
+    from sqlalchemy import func
+    total_tags = db.query(func.count(TagDictionary.id)).scalar()
+    return {"total_tags": total_tags or 0}
+
+@router.post("/datasets/{dataset_id}/scan")
+async def scan_dataset(
+    dataset_id: int,
+    db: Session = Depends(get_db)
+):
+    """Scan dataset directory and register images/captions"""
+    import os
+    from PIL import Image
+    import hashlib
+    
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    if not os.path.exists(dataset.path):
+        raise HTTPException(status_code=400, detail=f"Directory not found: {dataset.path}")
+    
+    # Supported image extensions
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    caption_exts = {".txt"}
+    
+    # Scan directory
+    items_found = 0
+    captions_found = 0
+    
+    def scan_directory(dir_path, current_depth=0):
+        nonlocal items_found, captions_found
+        
+        try:
+            entries = os.listdir(dir_path)
+        except PermissionError:
+            print(f"[Dataset Scan] Permission denied: {dir_path}")
+            return
+        
+        # Group files by base name
+        file_groups = {}
+        for entry in entries:
+            entry_path = os.path.join(dir_path, entry)
+            
+            if os.path.isfile(entry_path):
+                base_name, ext = os.path.splitext(entry)
+                ext_lower = ext.lower()
+                
+                if ext_lower in image_exts:
+                    if base_name not in file_groups:
+                        file_groups[base_name] = {"images": [], "captions": []}
+                    file_groups[base_name]["images"].append(entry_path)
+                elif ext_lower in caption_exts:
+                    if base_name not in file_groups:
+                        file_groups[base_name] = {"images": [], "captions": []}
+                    file_groups[base_name]["captions"].append(entry_path)
+            
+            elif os.path.isdir(entry_path) and dataset.recursive:
+                max_depth = dataset.max_depth if dataset.max_depth else float('inf')
+                if current_depth < max_depth:
+                    scan_directory(entry_path, current_depth + 1)
+        
+        # Process file groups
+        for base_name, files in file_groups.items():
+            if not files["images"]:
+                continue
+            
+            # Use first image as primary
+            image_path = files["images"][0]
+            
+            try:
+                # Read image metadata
+                with Image.open(image_path) as img:
+                    width, height = img.size
+                    file_size = os.path.getsize(image_path)
+                    
+                    # Calculate image hash
+                    with open(image_path, 'rb') as f:
+                        image_hash = hashlib.sha256(f.read()).hexdigest()
+                    
+                    # Check if item already exists
+                    existing_item = db.query(DatasetItem).filter(
+                        DatasetItem.dataset_id == dataset_id,
+                        DatasetItem.image_hash == image_hash
+                    ).first()
+                    
+                    if existing_item:
+                        continue  # Skip duplicate
+                    
+                    # Create dataset item
+                    item = DatasetItem(
+                        dataset_id=dataset_id,
+                        item_type="single",
+                        base_name=base_name,
+                        image_path=image_path,
+                        width=width,
+                        height=height,
+                        file_size=file_size,
+                        image_hash=image_hash
+                    )
+                    db.add(item)
+                    db.flush()  # Get item.id
+                    items_found += 1
+                    
+                    # Process captions
+                    for caption_path in files["captions"]:
+                        try:
+                            with open(caption_path, 'r', encoding='utf-8') as f:
+                                content = f.read().strip()
+                                if content:
+                                    caption = DatasetCaption(
+                                        item_id=item.id,
+                                        caption_type="tags",
+                                        content=content,
+                                        source="file"
+                                    )
+                                    db.add(caption)
+                                    captions_found += 1
+                        except Exception as e:
+                            print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
+            
+            except Exception as e:
+                print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
+    
+    # Start scanning
+    scan_directory(dataset.path)
+    
+    # Update dataset statistics
+    dataset.total_items = items_found
+    dataset.total_captions = captions_found
+    dataset.last_scanned_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(dataset)
+    
+    return {
+        "items_found": items_found,
+        "captions_found": captions_found,
+        "dataset": dataset.to_dict()
+    }
+
+@router.get("/datasets/{dataset_id}/items")
+async def list_dataset_items(
+    dataset_id: int,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """List dataset items with pagination and search"""
+    query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    
+    if search:
+        query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
+    
+    total = query.count()
+    offset = (page - 1) * page_size
+    items = query.order_by(DatasetItem.id).offset(offset).limit(page_size).all()
+    
+    return {
+        "items": [item.to_dict() for item in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
+
+@router.get("/datasets/{dataset_id}/items/{item_id}")
+async def get_dataset_item(
+    dataset_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get detailed dataset item with captions"""
+    item = db.query(DatasetItem).filter(
+        DatasetItem.dataset_id == dataset_id,
+        DatasetItem.id == item_id
+    ).first()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+    
+    # Get all captions for this item
+    captions = db.query(DatasetCaption).filter(DatasetCaption.item_id == item_id).all()
+    
+    result = item.to_dict()
+    result["captions"] = [c.to_dict() for c in captions]
+    
+    return result
+
+@router.get("/serve-image")
+async def serve_image(path: str):
+    """Serve image file from filesystem"""
+    from fastapi.responses import FileResponse
+    import os
+    
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    return FileResponse(path)

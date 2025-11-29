@@ -868,3 +868,158 @@ export const getGPUStats = async (): Promise<GPUStatsResponse> => {
 };
 
 export default api;
+
+// ============================================================
+// Dataset Management API
+// ============================================================
+
+export interface Dataset {
+  id: number;
+  name: string;
+  path: string;
+  description?: string;
+  recursive: boolean;
+  read_exif: boolean;
+  total_items: number;
+  total_captions: number;
+  total_tags: number;
+  created_at: string;
+  updated_at: string;
+  last_scanned_at?: string;
+}
+
+export interface DatasetListResponse {
+  datasets: Dataset[];
+  total: number;
+}
+
+export interface DatasetCreateRequest {
+  name: string;
+  path: string;
+  description?: string;
+  recursive?: boolean;
+  read_exif?: boolean;
+}
+
+export const listDatasets = async (): Promise<DatasetListResponse> => {
+  const response = await api.get("/datasets");
+  return response.data;
+};
+
+export const createDataset = async (data: DatasetCreateRequest): Promise<Dataset> => {
+  const response = await api.post("/datasets", data);
+  return response.data;
+};
+
+export const getDataset = async (id: number): Promise<Dataset> => {
+  const response = await api.get(`/datasets/${id}`);
+  return response.data;
+};
+
+export const deleteDataset = async (id: number): Promise<void> => {
+  await api.delete(`/datasets/${id}`);
+};
+
+export interface DatasetScanResponse {
+  items_found: number;
+  captions_found: number;
+  dataset: Dataset;
+}
+
+export const scanDataset = async (id: number): Promise<DatasetScanResponse> => {
+  const response = await api.post(`/datasets/${id}/scan`);
+  return response.data;
+};
+
+export interface TagDictionaryEntry {
+  id: number;
+  tag: string;
+  category: string;
+  count: number;
+  display_name?: string;
+  aliases?: string[];
+  description?: string;
+  source: string;
+  is_official: boolean;
+  is_deprecated: boolean;
+  replacement_tag?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TagDictionarySearchResponse {
+  tags: TagDictionaryEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface TagDictionaryStatsResponse {
+  total_tags: number;
+}
+
+export const searchTagDictionary = async (
+  search?: string,
+  category?: string,
+  page: number = 1,
+  page_size: number = 100
+): Promise<TagDictionarySearchResponse> => {
+  const response = await api.get("/tag-dictionary", {
+    params: { search, category, page, page_size },
+  });
+  return response.data;
+};
+
+export const getTagDictionaryStats = async (): Promise<TagDictionaryStatsResponse> => {
+  const response = await api.get("/tag-dictionary/stats");
+  return response.data;
+};
+
+export interface DatasetItem {
+  id: number;
+  dataset_id: number;
+  item_type: string;
+  base_name: string;
+  image_path: string;
+  width: number;
+  height: number;
+  file_size: number;
+  image_hash: string;
+  created_at: string;
+  updated_at: string;
+  captions?: DatasetCaptionData[];
+}
+
+export interface DatasetCaptionData {
+  id: number;
+  item_id: number;
+  caption_type: string;
+  content: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DatasetItemListResponse {
+  items: DatasetItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export const listDatasetItems = async (
+  datasetId: number,
+  page: number = 1,
+  pageSize: number = 50,
+  search?: string
+): Promise<DatasetItemListResponse> => {
+  const params: any = { page, page_size: pageSize };
+  if (search) params.search = search;
+  const response = await api.get(`/datasets/${datasetId}/items`, { params });
+  return response.data;
+};
+
+export const getDatasetItem = async (datasetId: number, itemId: number): Promise<DatasetItem> => {
+  const response = await api.get(`/datasets/${datasetId}/items/${itemId}`);
+  return response.data;
+};

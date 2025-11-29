@@ -76,8 +76,11 @@ model_hash_cache.json
 backend/.port_info
 frontend/.package_hash
 
-# 要件定義
+# 要件定義・仕様書
 sd-app-requirements.md
+DATASET_REQUIREMENTS.md
+DATASET_VIEWER_DESIGN.md
+TRAINING_REQUIREMENTS.md
 
 # Claude Code
 .claude/

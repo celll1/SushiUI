@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -112,3 +113,213 @@ class GeneratedImage(Base):
                 result["unet_quantization"] = self.parameters["unet_quantization"]
 
         return result
+
+
+# ============================================================
+# Dataset Management Models
+# ============================================================
+
+class Dataset(Base):
+    """Dataset for training/fine-tuning models"""
+    __tablename__ = "datasets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+    path = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Caption settings
+    caption_suffixes = Column(JSON, default=list)
+    default_caption_type = Column(String, default="tags")
+
+    # Image pair settings
+    image_suffixes = Column(JSON, default=list)
+
+    # Scanning settings
+    recursive = Column(Boolean, default=True)
+    max_depth = Column(Integer, nullable=True)
+    file_extensions = Column(JSON, default=list)
+
+    # Metadata settings
+    read_exif = Column(Boolean, default=False)
+    exif_caption_fields = Column(JSON, nullable=True)
+
+    # Statistics
+    total_items = Column(Integer, default=0)
+    total_captions = Column(Integer, default=0)
+    total_tags = Column(Integer, default=0)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_scanned_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    items = relationship("DatasetItem", back_populates="dataset", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "path": self.path,
+            "description": self.description,
+            "caption_suffixes": self.caption_suffixes or [],
+            "default_caption_type": self.default_caption_type,
+            "image_suffixes": self.image_suffixes or [],
+            "recursive": self.recursive,
+            "max_depth": self.max_depth,
+            "file_extensions": self.file_extensions or [],
+            "read_exif": self.read_exif,
+            "exif_caption_fields": self.exif_caption_fields,
+            "total_items": self.total_items,
+            "total_captions": self.total_captions,
+            "total_tags": self.total_tags,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "last_scanned_at": self.last_scanned_at.isoformat() if self.last_scanned_at else None,
+        }
+
+
+class DatasetItem(Base):
+    """Individual item (image or image group) in a dataset"""
+    __tablename__ = "dataset_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Item identification
+    item_type = Column(String, default="single", index=True)
+    base_name = Column(String, index=True, nullable=False)
+    group_id = Column(String, nullable=True, index=True)
+
+    # Image paths
+    image_path = Column(String, nullable=False, index=True)
+    image_suffix = Column(String, nullable=True)
+    related_images = Column(JSON, nullable=True)
+
+    # Image properties
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    image_hash = Column(String, nullable=True, index=True)
+
+    # EXIF metadata
+    exif_data = Column(JSON, nullable=True)
+
+    # Statistics
+    total_captions = Column(Integer, default=0)
+    total_tags = Column(Integer, default=0)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="items")
+    captions = relationship("DatasetCaption", back_populates="item", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "item_type": self.item_type,
+            "base_name": self.base_name,
+            "group_id": self.group_id,
+            "image_path": self.image_path,
+            "image_suffix": self.image_suffix,
+            "related_images": self.related_images,
+            "width": self.width,
+            "height": self.height,
+            "file_size": self.file_size,
+            "image_hash": self.image_hash,
+            "exif_data": self.exif_data,
+            "total_captions": self.total_captions,
+            "total_tags": self.total_tags,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DatasetCaption(Base):
+    """Caption associated with a dataset item"""
+    __tablename__ = "dataset_captions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    item_id = Column(Integer, ForeignKey("dataset_items.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Caption type and content
+    caption_type = Column(String, index=True, nullable=False)
+    caption_subtype = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+
+    # Metadata
+    language = Column(String, nullable=True)
+    source = Column(String, default="manual", index=True)
+    source_field = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    item = relationship("DatasetItem", back_populates="captions")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "item_id": self.item_id,
+            "caption_type": self.caption_type,
+            "caption_subtype": self.caption_subtype,
+            "content": self.content,
+            "language": self.language,
+            "source": self.source,
+            "source_field": self.source_field,
+            "confidence": self.confidence,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TagDictionary(Base):
+    """Global tag dictionary (Danbooru tags + custom tags)"""
+    __tablename__ = "tag_dictionary"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tag = Column(String, unique=True, index=True, nullable=False)
+
+    # Tag metadata
+    category = Column(String, index=True, nullable=False)
+    count = Column(Integer, default=0, index=True)
+
+    # Display and aliases
+    display_name = Column(String, nullable=True)
+    aliases = Column(JSON, nullable=True)
+    description = Column(Text, nullable=True)
+
+    # Source tracking
+    source = Column(String, default="danbooru", index=True)
+    is_official = Column(Boolean, default=True, index=True)
+    is_deprecated = Column(Boolean, default=False, index=True)
+    replacement_tag = Column(String, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tag": self.tag,
+            "category": self.category,
+            "count": self.count,
+            "display_name": self.display_name,
+            "aliases": self.aliases,
+            "description": self.description,
+            "source": self.source,
+            "is_official": self.is_official,
+            "is_deprecated": self.is_deprecated,
+            "replacement_tag": self.replacement_tag,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

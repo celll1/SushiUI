@@ -3,17 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Folder, RefreshCw, FolderPlus } from "lucide-react";
 import CreateDatasetModal from "./CreateDatasetModal";
-
-interface Dataset {
-  id: number;
-  name: string;
-  path: string;
-  total_items: number;
-  total_captions: number;
-  total_tags: number;
-  created_at: string;
-  last_scanned_at: string | null;
-}
+import { listDatasets, Dataset } from "@/utils/api";
 
 interface DatasetListProps {
   selectedDatasetId: number | null;
@@ -30,10 +20,8 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
     setLoading(true);
     setError(null);
     try {
-      // TODO: Implement API call
-      // const response = await api.get("/datasets");
-      // setDatasets(response.data.datasets);
-      setDatasets([]); // Placeholder
+      const response = await listDatasets();
+      setDatasets(response.datasets);
     } catch (err) {
       setError("Failed to load datasets");
       console.error("Failed to load datasets:", err);
@@ -59,66 +47,65 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
 
   return (
     <>
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Datasets</h2>
-          <div className="flex space-x-2">
+      <div className="bg-gray-800 rounded-lg p-3">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold">Datasets</h2>
+          <div className="flex space-x-1.5">
             <button
               onClick={loadDatasets}
-              className="p-2 rounded bg-gray-700 hover:bg-gray-600 transition-colors"
+              className="p-1.5 rounded bg-gray-700 hover:bg-gray-600 transition-colors"
               title="Refresh"
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={() => handleCreateDataset()}
-              className="p-2 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
+              className="p-1.5 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
               title="Create Dataset"
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 mb-4">
+          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-2 mb-2 text-xs">
             {error}
           </div>
         )}
 
         {loading && (
-          <div className="text-center text-gray-400 py-8">Loading datasets...</div>
+          <div className="text-center text-gray-400 py-4 text-xs">Loading datasets...</div>
         )}
 
         {!loading && datasets.length === 0 && (
-          <div className="text-center text-gray-400 py-8">
-            <FolderPlus className="h-12 w-12 mx-auto mb-2 opacity-50" />
-            <p className="font-medium mb-1">No datasets yet</p>
-            <p className="text-sm">Click the + button to create a dataset</p>
+          <div className="text-center text-gray-400 py-4">
+            <FolderPlus className="h-8 w-8 mx-auto mb-1 opacity-50" />
+            <p className="text-xs font-medium mb-0.5">No datasets yet</p>
+            <p className="text-[10px]">Click + to create</p>
           </div>
         )}
 
         {!loading && datasets.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {datasets.map((dataset) => (
               <button
                 key={dataset.id}
                 onClick={() => onSelectDataset(dataset.id)}
-                className={`w-full text-left p-3 rounded transition-colors ${
+                className={`w-full text-left p-2 rounded transition-colors ${
                   selectedDatasetId === dataset.id
                     ? "bg-blue-600 text-white"
                     : "bg-gray-700 hover:bg-gray-600 text-gray-100"
                 }`}
               >
-                <div className="flex items-center space-x-2 mb-1">
-                  <Folder className="h-4 w-4" />
-                  <span className="font-medium">{dataset.name}</span>
+                <div className="flex items-center space-x-1.5 mb-0.5">
+                  <Folder className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="text-xs font-medium truncate">{dataset.name}</span>
                 </div>
-                <div className="text-xs text-gray-300 space-y-0.5">
+                <div className="text-[10px] text-gray-300 space-y-0.5 ml-5">
                   <p className="truncate">{dataset.path}</p>
                   <p>
-                    {dataset.total_items} items • {dataset.total_captions} captions •{" "}
-                    {dataset.total_tags} tags
+                    {dataset.total_items} items • {dataset.total_captions} captions
                   </p>
                 </div>
               </button>

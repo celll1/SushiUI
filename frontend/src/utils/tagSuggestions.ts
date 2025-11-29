@@ -14,6 +14,41 @@ interface TagCategory {
   index?: Map<string, Array<{ tag: string; count: number }>>;
 }
 
+// Progressive loading callbacks
+type ProgressCallback = (category: string, loaded: boolean) => void;
+const progressCallbacks: Set<ProgressCallback> = new Set();
+
+/**
+ * Register a callback to be called when a category finishes loading
+ */
+export function onCategoryLoaded(callback: ProgressCallback): () => void {
+  progressCallbacks.add(callback);
+  // Return unsubscribe function
+  return () => progressCallbacks.delete(callback);
+}
+
+/**
+ * Notify all progress callbacks
+ */
+function notifyProgress(category: string, loaded: boolean): void {
+  progressCallbacks.forEach(cb => cb(category, loaded));
+}
+
+/**
+ * Get loading status of all categories
+ */
+export function getCategoriesLoadStatus(): Record<string, boolean> {
+  return {
+    general: categories.general?.loaded || false,
+    character: categories.character?.loaded || false,
+    artist: categories.artist?.loaded || false,
+    copyright: categories.copyright?.loaded || false,
+    meta: categories.meta?.loaded || false,
+    model: categories.model?.loaded || false,
+    other_names: otherNamesLoaded,
+  };
+}
+
 const categories: Record<string, TagCategory> = {
   general: { name: "General", tags: {}, loaded: false },
   character: { name: "Character", tags: {}, loaded: false },
@@ -86,6 +121,92 @@ function normalizeTag(tag: string): string {
   return tag.toLowerCase().replace(/[_\s]/g, "");
 }
 
+// IndexedDB cache for tag indices
+const DB_NAME = 'TagSuggestionsCache';
+const DB_VERSION = 1;
+const STORE_NAME = 'tagIndices';
+
+interface CachedIndex {
+  category: string;
+  hash: string;
+  index: Array<[string, Array<{ tag: string; count: number }>]>; // Serialized Map
+  timestamp: number;
+}
+
+/**
+ * Calculate SHA-256 hash of JSON data
+ */
+async function calculateHash(data: any): Promise<string> {
+  const jsonString = JSON.stringify(data);
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(jsonString);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Open IndexedDB connection
+ */
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'category' });
+      }
+    };
+  });
+}
+
+/**
+ * Get cached index from IndexedDB
+ */
+async function getCachedIndex(category: string): Promise<CachedIndex | null> {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(category);
+
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error(`[TagSuggestions] Failed to get cached index for ${category}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Save index to IndexedDB cache
+ */
+async function saveCachedIndex(cached: CachedIndex): Promise<void> {
+  if (typeof window === 'undefined') return;
+
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(cached);
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error(`[TagSuggestions] Failed to save cached index for ${cached.category}:`, error);
+  }
+}
+
 /**
  * Convert tag from storage format (aaaa_bbbb_(cccc)) to display format (aaaa bbbb \(cccc\))
  */
@@ -122,7 +243,7 @@ function buildIndex(tags: TagData, categoryName: string): Map<string, Array<{ ta
 }
 
 /**
- * Load tags from a specific category
+ * Load tags from a specific category with caching
  */
 async function loadCategory(category: keyof typeof categories): Promise<void> {
   if (categories[category].loaded) {
@@ -131,23 +252,58 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
 
   try {
     console.log(`[TagSuggestions] Loading ${category} tags from API`);
+    const startTime = performance.now();
+
     const response = await fetch(`/api/taglist/${category}`);
-    if (response.ok) {
-      const data: TagData = await response.json();
-      categories[category].tags = data;
-      categories[category].index = buildIndex(data, category);
-      categories[category].loaded = true;
-      console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags for ${category}`);
-    } else {
+    if (!response.ok) {
       console.error(`[TagSuggestions] Failed to load ${category} tags: HTTP ${response.status}`);
+      return;
     }
+
+    const data: TagData = await response.json();
+    const dataHash = await calculateHash(data);
+
+    // Check if we have a valid cached index
+    const cached = await getCachedIndex(category);
+    let index: Map<string, Array<{ tag: string; count: number }>>;
+
+    if (cached && cached.hash === dataHash) {
+      // Use cached index
+      console.log(`[TagSuggestions] Using cached index for ${category} (hash match)`);
+      index = new Map(cached.index);
+    } else {
+      // Build new index
+      console.log(`[TagSuggestions] Building new index for ${category}`);
+      index = buildIndex(data, category);
+
+      // Save to cache
+      const serializedIndex: Array<[string, Array<{ tag: string; count: number }>]> = Array.from(index.entries());
+      await saveCachedIndex({
+        category,
+        hash: dataHash,
+        index: serializedIndex,
+        timestamp: Date.now()
+      });
+      console.log(`[TagSuggestions] Cached index saved for ${category}`);
+    }
+
+    categories[category].tags = data;
+    categories[category].index = index;
+    categories[category].loaded = true;
+
+    const elapsed = (performance.now() - startTime).toFixed(0);
+    console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags for ${category} in ${elapsed}ms`);
+
+    // Notify progress callbacks
+    notifyProgress(category, true);
   } catch (error) {
     console.error(`Failed to load ${category} tags:`, error);
+    notifyProgress(category, false);
   }
 }
 
 /**
- * Load tag other names (aliases in different languages)
+ * Load tag other names (aliases in different languages) with caching
  */
 async function loadTagOtherNames(): Promise<void> {
   if (otherNamesLoaded) {
@@ -156,38 +312,76 @@ async function loadTagOtherNames(): Promise<void> {
 
   try {
     console.log('[TagSuggestions] Loading tag other names');
-    const response = await fetch('/api/tagother/tag_other_names');
-    if (response.ok) {
-      const data: TagOtherNames = await response.json();
-      tagOtherNames = data;
+    const startTime = performance.now();
 
-      // Build index: normalized other_name -> {original tag, display name}
-      otherNamesIndex.clear();
+    const response = await fetch('/api/tagother/tag_other_names');
+    if (!response.ok) {
+      console.error(`[TagSuggestions] Failed to load tag other names: HTTP ${response.status}`);
+      return;
+    }
+
+    const data: TagOtherNames = await response.json();
+    const dataHash = await calculateHash(data);
+
+    // Check if we have a valid cached index
+    const cached = await getCachedIndex('other_names');
+    let index: Map<string, { originalTag: string; displayName: string }>;
+
+    if (cached && cached.hash === dataHash) {
+      // Use cached index
+      console.log(`[TagSuggestions] Using cached index for other_names (hash match)`);
+      index = new Map(cached.index as any); // Deserialize Map
+    } else {
+      // Build new index
+      console.log(`[TagSuggestions] Building new index for other_names`);
+      index = new Map();
       for (const [originalTag, otherNames] of Object.entries(data)) {
         for (const otherName of otherNames) {
           const normalized = normalizeTag(otherName);
-          otherNamesIndex.set(normalized, { originalTag, displayName: otherName });
+          index.set(normalized, { originalTag, displayName: otherName });
         }
       }
 
-      otherNamesLoaded = true;
-      console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags with other names, ${otherNamesIndex.size} total aliases`);
-    } else {
-      console.error(`[TagSuggestions] Failed to load tag other names: HTTP ${response.status}`);
+      // Save to cache
+      const serializedIndex = Array.from(index.entries());
+      await saveCachedIndex({
+        category: 'other_names',
+        hash: dataHash,
+        index: serializedIndex as any,
+        timestamp: Date.now()
+      });
+      console.log(`[TagSuggestions] Cached index saved for other_names`);
     }
+
+    tagOtherNames = data;
+    otherNamesIndex = index;
+    otherNamesLoaded = true;
+
+    const elapsed = (performance.now() - startTime).toFixed(0);
+    console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags with other names, ${otherNamesIndex.size} total aliases in ${elapsed}ms`);
+
+    // Notify progress callbacks
+    notifyProgress('other_names', true);
   } catch (error) {
     console.error('Failed to load tag other names:', error);
+    notifyProgress('other_names', false);
   }
 }
 
 /**
- * Load all tag categories
+ * Load all tag categories (now supports progressive loading via callbacks)
+ * Each category will trigger onCategoryLoaded callback when it finishes
  */
 export async function loadAllTags(): Promise<void> {
-  await Promise.all([
+  // Load all categories in parallel, each will notify via callbacks when done
+  const promises = [
     ...Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories)),
     loadTagOtherNames()
-  ]);
+  ];
+
+  // Wait for all to complete (though UI can update progressively via callbacks)
+  await Promise.all(promises);
+  console.log('[TagSuggestions] All tag categories loaded');
 }
 
 // Special tags that should always be available

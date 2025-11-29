@@ -1283,18 +1283,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         }
 
         // If this item has a loop group, update the next loop step's input image and ControlNets
-        if (nextItem.loopGroupId !== undefined) {
-          const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
+        // Use currentItem instead of nextItem to respect cancellation
+        if (currentItem?.loopGroupId !== undefined) {
+          const nextLoopStepIndex = (currentItem.loopStepIndex ?? -1) + 1;
 
           console.log(`[Inpaint] Processing loop step completion:`, {
-            loopGroupId: nextItem.loopGroupId,
-            currentStepIndex: nextItem.loopStepIndex,
+            loopGroupId: currentItem.loopGroupId,
+            currentStepIndex: currentItem.loopStepIndex,
             nextLoopStepIndex,
           });
 
           // Update input image first
           console.log(`[Inpaint] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+          updateQueueItemByLoop(currentItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
 
           // Find step config to check if ControlNet processing is needed
           const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
@@ -1342,7 +1343,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 const scaledHeight = Math.round(imageHeight * stepConfig.scale);
                 console.log(`[Inpaint] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
 
-                updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => ({
+                updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => ({
                   params: {
                     ...item.params,
                     width: scaledWidth,
@@ -1373,7 +1374,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             console.log(`[Inpaint] Converted image to base64, length: ${imageBase64.length}`);
 
             // Update ControlNets with useLoopImage enabled using callback to preserve existing params
-            updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, (item) => {
+            updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => {
               const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
                 console.log(`[Inpaint] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
                 if (cnConfig.useLoopImage) {

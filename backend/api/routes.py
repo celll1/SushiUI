@@ -1620,10 +1620,9 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
                     default_enabled
                 )
 
-        # Auto-unload model to free VRAM if we auto-loaded it
-        if auto_loaded:
-            print(f"[TIPO] Auto-unloading model to free VRAM")
-            tipo_manager.unload_model()
+        # ALWAYS auto-unload model to free VRAM (TIPO should not occupy VRAM during image generation)
+        print(f"[TIPO] Auto-unloading model to free VRAM (auto_loaded={auto_loaded})")
+        tipo_manager.unload_model()
 
         # Build response
         response = {

@@ -18,6 +18,8 @@ export interface QueueItem {
   isLoopStep?: boolean; // Whether this is a loop step (vs main generation)
   startTime?: number; // When generation started (for timing)
   endTime?: number; // When generation completed (for timing)
+  needsTipo?: boolean; // Whether TIPO prompt generation is needed before generation
+  tipoSettings?: any; // TIPO settings for generation
 }
 
 interface GenerationQueueContextType {

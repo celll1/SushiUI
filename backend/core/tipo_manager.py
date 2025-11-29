@@ -279,17 +279,34 @@ class TIPOManager:
             return input_prompt
 
     def unload_model(self):
-        """Unload TIPO model from memory"""
+        """Unload TIPO model from memory and move to CPU"""
+        print("[TIPO] Unloading model and clearing VRAM...")
+
+        # Move model to CPU first to ensure VRAM is released
         if self.model is not None:
+            try:
+                # Explicitly move to CPU before deletion
+                self.model.to('cpu')
+                print("[TIPO] Model moved to CPU")
+            except Exception as e:
+                print(f"[TIPO] Warning: Failed to move model to CPU: {e}")
+
             del self.model
             self.model = None
+
         if self.tokenizer is not None:
             del self.tokenizer
             self.tokenizer = None
+
+        # Clear CUDA cache multiple times to ensure VRAM is freed
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+            torch.cuda.empty_cache()  # Clear cache again
+            print("[TIPO] CUDA cache cleared")
+
         self.loaded = False
-        print("[TIPO] Model unloaded")
+        print("[TIPO] Model unloaded successfully")
 
     def parse_tipo_output(self, output: str) -> Dict[str, Any]:
         """Parse TIPO output into structured format

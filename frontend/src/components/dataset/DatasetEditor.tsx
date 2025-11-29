@@ -25,7 +25,7 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
       setDataset({
         id: datasetId,
         name: "Example Dataset",
-        path: "M:\\dataset_control\\cref",
+        path: "/path/to/dataset",
         total_items: 0,
       }); // Placeholder
     } catch (err) {

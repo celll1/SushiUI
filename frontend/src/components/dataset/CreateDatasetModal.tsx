@@ -127,7 +127,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
                 type="text"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
-                placeholder="e.g., M:\dataset_control\cref"
+                placeholder="e.g., /path/to/your/dataset"
                 className="w-full pl-10 pr-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 font-mono"
                 required
               />
@@ -136,7 +136,8 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
               Full path to the directory containing your training images
             </p>
             <p className="text-xs text-blue-400 mt-1">
-              Example: <code className="bg-gray-900 px-1 rounded">M:\dataset_control\cref</code>
+              Windows: <code className="bg-gray-900 px-1 rounded">D:\training\anime_dataset</code> |
+              Linux/Mac: <code className="bg-gray-900 px-1 rounded">/mnt/data/training/dataset</code>
             </p>
           </div>
 

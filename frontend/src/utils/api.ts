@@ -174,8 +174,9 @@ export interface GenerationParams {
   unet_quantization?: string | null;
   // torch.compile optimization
   use_torch_compile?: boolean;
-  // Feeling Lucky mode (auto-generate prompt with TIPO)
-  feeling_lucky?: boolean;
+  // TIPO prompt upsampling
+  use_tipo?: boolean;
+  tipo_config?: any;  // TIPO configuration object
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -291,6 +292,10 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
 
+  // TIPO prompt upsampling
+  formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
+  formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -364,6 +369,10 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+
+  // TIPO prompt upsampling
+  formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
+  formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -452,6 +461,10 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+
+  // TIPO prompt upsampling
+  formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
+  formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

@@ -120,6 +120,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
   const [developerMode, setDeveloperMode] = useState(false);
 
+  // Cache TIPO-generated prompts for loop groups
+  const tipoPromptCache = useRef<Map<string, string>>(new Map());
+
   const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -928,6 +931,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
         imageUrl = `/outputs/${result.image.filename}`;
       } else if (nextItem.type === "img2img") {
+        console.log(`[Txt2Img] Starting img2img generation with prompt:`, nextItem.params.prompt?.substring(0, 100));
+
         // For loop steps after the first, use the previous output as input
         const inputImageToUse = nextItem.inputImage || previousImage;
         if (!inputImageToUse) {
@@ -973,20 +978,52 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onImageGenerated(imageUrl);
       }
 
-      // If this item has a loop group, update the next loop step's input image and ControlNets
-      // Use currentItem instead of nextItem to respect cancellation
-      if (currentItem?.loopGroupId !== undefined) {
-        const nextLoopStepIndex = (currentItem.loopStepIndex ?? -1) + 1;
+      // If this item has a loop group, update the next loop step's input image, prompt, and ControlNets
+      // Use nextItem (not currentItem from context) to avoid timing issues
+      console.log(`[Txt2Img] Checking loop group:`, {
+        hasNextItem: !!nextItem,
+        nextItemType: nextItem?.type,
+        loopGroupId: nextItem?.loopGroupId,
+        loopStepIndex: nextItem?.loopStepIndex,
+      });
+
+      if (nextItem?.loopGroupId !== undefined) {
+        const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
 
         console.log(`[Txt2Img] Processing loop step completion:`, {
-          loopGroupId: currentItem.loopGroupId,
-          currentStepIndex: currentItem.loopStepIndex,
+          loopGroupId: nextItem.loopGroupId,
+          currentStepIndex: nextItem.loopStepIndex,
           nextLoopStepIndex,
         });
 
         // Update input image first
         console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-        updateQueueItemByLoop(currentItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+
+        // If TIPO was used for base generation, update loop steps with TIPO-generated prompt
+        console.log(`[Txt2Img] TIPO inheritance check:`, {
+          loopStepIndex: nextItem.loopStepIndex,
+          use_tipo: nextItem.params.use_tipo,
+          hasResultPrompt: !!result.image.prompt,
+          resultPrompt: result.image.prompt?.substring(0, 100)
+        });
+
+        if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image.prompt) {
+          console.log(`[Txt2Img] Base generation used TIPO, updating all loop steps with TIPO prompt`);
+          console.log(`[Txt2Img] Original prompt: ${nextItem.params.prompt?.substring(0, 100)}...`);
+          console.log(`[Txt2Img] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
+
+          // Update all loop steps (not just the next one) with TIPO-generated prompt
+          const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
+          for (let i = 0; i < enabledSteps.length; i++) {
+            updateQueueItemByLoop(nextItem.loopGroupId, i, (item) => ({
+              params: {
+                ...item.params,
+                prompt: result.image.prompt,
+              } as any,
+            }));
+          }
+        }
 
         // Find step config to check if ControlNet processing is needed
         const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
@@ -1034,7 +1071,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               const scaledHeight = Math.round(imageHeight * stepConfig.scale);
               console.log(`[Txt2Img] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
 
-              updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => ({
+              updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => ({
                 params: {
                   ...item.params,
                   width: scaledWidth,
@@ -1065,7 +1102,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           console.log(`[Txt2Img] Converted image to base64, length: ${imageBase64.length}`);
 
           // Update ControlNets with useLoopImage enabled using callback to preserve existing params
-          updateQueueItemByLoop(currentItem.loopGroupId!, nextLoopStepIndex, (item) => {
+          updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => {
             const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
               console.log(`[Txt2Img] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
               if (cnConfig.useLoopImage) {

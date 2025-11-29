@@ -126,6 +126,9 @@ class GenerationParams(BaseModel):
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
     # torch.compile optimization
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
+    # TIPO (prompt upsampling)
+    use_tipo: bool = False  # Enable TIPO prompt upsampling
+    tipo_config: Optional[Dict] = None  # TIPO configuration (model, lengths, etc.)
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -168,6 +171,8 @@ async def generate_txt2img(
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    use_tipo: bool = Form(False),
+    tipo_config: str = Form("{}"),  # JSON string of TIPO config
     db: Session = Depends(get_db)
 ):
     """Generate image from text"""
@@ -182,6 +187,44 @@ async def generate_txt2img(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
+
+        # Parse TIPO config
+        tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
+
+        # TIPO prompt upsampling (if enabled)
+        original_prompt = prompt
+        if use_tipo:
+            print(f"[TIPO] Upsampling prompt with TIPO...")
+            try:
+                # Load TIPO model if needed
+                model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
+                if not tipo_manager.loaded or tipo_manager.model_name != model_name:
+                    tipo_manager.load_model(model_name)
+
+                # Generate upsampled prompt
+                upsampled_prompt = tipo_manager.generate_prompt(
+                    input_prompt=prompt,
+                    tag_length=tipo_config_dict.get("tag_length", "long"),
+                    nl_length=tipo_config_dict.get("nl_length", "long"),
+                    temperature=tipo_config_dict.get("temperature", 1.0),
+                    top_p=tipo_config_dict.get("top_p", 0.95),
+                    top_k=tipo_config_dict.get("top_k", 50),
+                    max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
+                    category_order=tipo_config_dict.get("category_order", []),
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                )
+
+                prompt = upsampled_prompt
+                print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
+                print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
+
+                # Unload TIPO model to free VRAM
+                tipo_manager.unload_model()
+
+            except Exception as e:
+                print(f"[TIPO] Error during upsampling: {e}")
+                print(f"[TIPO] Using original prompt")
+                # Continue with original prompt on error
 
         # Generate image
         params = {
@@ -380,6 +423,8 @@ async def generate_img2img(
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    use_tipo: bool = Form(False),
+    tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -403,6 +448,44 @@ async def generate_img2img(
             controlnet_configs,
             generation_type="img2img"
         )
+
+        # Parse TIPO config
+        tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
+
+        # TIPO prompt upsampling (if enabled)
+        original_prompt = prompt
+        if use_tipo:
+            print(f"[TIPO] Upsampling prompt with TIPO...")
+            try:
+                # Load TIPO model if needed
+                model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
+                if not tipo_manager.loaded or tipo_manager.model_name != model_name:
+                    tipo_manager.load_model(model_name)
+
+                # Generate upsampled prompt
+                upsampled_prompt = tipo_manager.generate_prompt(
+                    input_prompt=prompt,
+                    tag_length=tipo_config_dict.get("tag_length", "long"),
+                    nl_length=tipo_config_dict.get("nl_length", "long"),
+                    temperature=tipo_config_dict.get("temperature", 1.0),
+                    top_p=tipo_config_dict.get("top_p", 0.95),
+                    top_k=tipo_config_dict.get("top_k", 50),
+                    max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
+                    category_order=tipo_config_dict.get("category_order", []),
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                )
+
+                prompt = upsampled_prompt
+                print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
+                print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
+
+                # Unload TIPO model to free VRAM
+                tipo_manager.unload_model()
+
+            except Exception as e:
+                print(f"[TIPO] Error during upsampling: {e}")
+                print(f"[TIPO] Using original prompt")
+                # Continue with original prompt on error
 
         # Generate image
         params = {
@@ -590,6 +673,8 @@ async def generate_inpaint(
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    use_tipo: bool = Form(False),
+    tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -628,6 +713,44 @@ async def generate_inpaint(
             controlnet_configs,
             generation_type="inpaint"
         )
+
+        # Parse TIPO config
+        tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
+
+        # TIPO prompt upsampling (if enabled)
+        original_prompt = prompt
+        if use_tipo:
+            print(f"[TIPO] Upsampling prompt with TIPO...")
+            try:
+                # Load TIPO model if needed
+                model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
+                if not tipo_manager.loaded or tipo_manager.model_name != model_name:
+                    tipo_manager.load_model(model_name)
+
+                # Generate upsampled prompt
+                upsampled_prompt = tipo_manager.generate_prompt(
+                    input_prompt=prompt,
+                    tag_length=tipo_config_dict.get("tag_length", "long"),
+                    nl_length=tipo_config_dict.get("nl_length", "long"),
+                    temperature=tipo_config_dict.get("temperature", 1.0),
+                    top_p=tipo_config_dict.get("top_p", 0.95),
+                    top_k=tipo_config_dict.get("top_k", 50),
+                    max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
+                    category_order=tipo_config_dict.get("category_order", []),
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                )
+
+                prompt = upsampled_prompt
+                print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
+                print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
+
+                # Unload TIPO model to free VRAM
+                tipo_manager.unload_model()
+
+            except Exception as e:
+                print(f"[TIPO] Error during upsampling: {e}")
+                print(f"[TIPO] Using original prompt")
+                # Continue with original prompt on error
 
         # Generate image
         params = {

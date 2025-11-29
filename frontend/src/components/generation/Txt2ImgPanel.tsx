@@ -55,7 +55,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_negative_prompt: "",
   unet_quantization: null,
   use_torch_compile: false,
-  feeling_lucky: false,
+  use_tipo: false,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -608,24 +608,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
 
-    // Feeling Lucky mode: Prepare TIPO settings for queue processing
-    // TIPO generation will happen in processQueue() to avoid blocking UI
-    let tipoSettings = null;
-    if (params.feeling_lucky) {
-      // Load shared TIPO settings from localStorage (same as Prompt Editor)
+    // Prepare TIPO config if use_tipo is enabled
+    let tipo_config = undefined;
+    if (params.use_tipo) {
       const saved = localStorage.getItem("tipo_settings");
       const sharedTipoSettings = saved ? JSON.parse(saved) : null;
 
       if (sharedTipoSettings) {
-        // Build category order and enabled map from settings
         const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
         const enabledCategories: Record<string, boolean> = {};
         sharedTipoSettings.categories.forEach((c: any) => {
           enabledCategories[c.id] = c.enabled;
         });
 
-        tipoSettings = {
-          input_prompt: processedPrompt,
+        tipo_config = {
           model_name: sharedTipoSettings.model_name,
           tag_length: sharedTipoSettings.tag_length,
           nl_length: sharedTipoSettings.nl_length,
@@ -636,8 +632,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           category_order: categoryOrder,
           enabled_categories: enabledCategories
         };
-
-        console.log('[Txt2Img] Feeling Lucky: TIPO generation will be done in queue processing');
       }
     }
 
@@ -656,13 +650,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
+        tipo_config: tipo_config,  // TIPO config will be sent to backend
       },
       prompt: processedPrompt,
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined, // -1 indicates main generation
       isLoopStep: false,
-      needsTipo: params.feeling_lucky && tipoSettings !== null,
-      tipoSettings: tipoSettings,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -904,37 +897,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
       return;
-    }
-
-    // If TIPO generation is needed, run it now (between image generations)
-    if (nextItem.needsTipo && nextItem.tipoSettings) {
-      console.log('[Txt2Img] Running TIPO generation before image generation...');
-      try {
-        const result = await generateTIPOPrompt(nextItem.tipoSettings);
-        const generatedPrompt = result.generated_prompt;
-        console.log('[Txt2Img] TIPO generated prompt:', generatedPrompt.substring(0, 100) + '...');
-
-        // Update the queue item with generated prompt
-        updateQueueItem(nextItem.id, {
-          params: { ...nextItem.params, prompt: generatedPrompt },
-          prompt: generatedPrompt,
-          needsTipo: false, // Clear flag so we don't run TIPO again
-        });
-
-        // Restart processQueue with updated item
-        console.log('[Txt2Img] TIPO complete, restarting processQueue');
-        setTimeout(() => {
-          if (processQueueRef.current) {
-            processQueueRef.current();
-          }
-        }, 100);
-        return;
-      } catch (error) {
-        console.error('[Txt2Img] TIPO generation failed:', error);
-        alert('TIPO generation failed. Using original prompt.');
-        // Clear TIPO flag and continue with original prompt
-        updateQueueItem(nextItem.id, { needsTipo: false });
-      }
     }
 
     // Save current image before starting new generation
@@ -1262,8 +1224,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
-                checked={params.feeling_lucky || false}
-                onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
+                checked={params.use_tipo || false}
+                onChange={(e) => setParams({ ...params, use_tipo: e.target.checked })}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
               />
               <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>

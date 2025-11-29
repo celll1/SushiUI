@@ -218,6 +218,16 @@ async def generate_txt2img(
                 if isinstance(upsampled_prompt, dict):
                     category_order = tipo_config_dict.get("category_order", [])
                     enabled_categories = tipo_config_dict.get("enabled_categories", {})
+
+                    # If no category order specified, use default
+                    if not category_order:
+                        category_order = ["special", "quality", "rating", "artist", "copyright", "characters", "meta", "general"]
+
+                    # If no enabled categories specified, enable all by default
+                    if not enabled_categories:
+                        enabled_categories = {cat: True for cat in category_order}
+                        enabled_categories["meta"] = False  # Meta disabled by default
+
                     prompt = tipo_manager.format_kgen_result(
                         upsampled_prompt,
                         category_order,
@@ -490,6 +500,16 @@ async def generate_img2img(
                 if isinstance(upsampled_prompt, dict):
                     category_order = tipo_config_dict.get("category_order", [])
                     enabled_categories = tipo_config_dict.get("enabled_categories", {})
+
+                    # If no category order specified, use default
+                    if not category_order:
+                        category_order = ["special", "quality", "rating", "artist", "copyright", "characters", "meta", "general"]
+
+                    # If no enabled categories specified, enable all by default
+                    if not enabled_categories:
+                        enabled_categories = {cat: True for cat in category_order}
+                        enabled_categories["meta"] = False  # Meta disabled by default
+
                     prompt = tipo_manager.format_kgen_result(
                         upsampled_prompt,
                         category_order,
@@ -766,6 +786,16 @@ async def generate_inpaint(
                 if isinstance(upsampled_prompt, dict):
                     category_order = tipo_config_dict.get("category_order", [])
                     enabled_categories = tipo_config_dict.get("enabled_categories", {})
+
+                    # If no category order specified, use default
+                    if not category_order:
+                        category_order = ["special", "quality", "rating", "artist", "copyright", "characters", "meta", "general"]
+
+                    # If no enabled categories specified, enable all by default
+                    if not enabled_categories:
+                        enabled_categories = {cat: True for cat in category_order}
+                        enabled_categories["meta"] = False  # Meta disabled by default
+
                     prompt = tipo_manager.format_kgen_result(
                         upsampled_prompt,
                         category_order,

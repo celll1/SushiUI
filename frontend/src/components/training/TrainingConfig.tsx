@@ -32,7 +32,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
   // Advanced
   const [saveEvery, setSaveEvery] = useState(100);
+  const [saveEveryUnit, setSaveEveryUnit] = useState<"steps" | "epochs">("steps");
   const [sampleEvery, setSampleEvery] = useState(100);
+  const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState<string | null>(null);
+  const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,8 +107,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
       save_every: saveEvery,
+      save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
       sample_prompts: [],
+      resume_from_checkpoint: resumeFromCheckpoint || undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -366,6 +371,56 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <option value="lion">Lion</option>
               </select>
             </div>
+          </div>
+        </div>
+
+        {/* Advanced Settings */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Advanced Settings</h3>
+
+          {/* Save Checkpoint Every */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Save Checkpoint Every</label>
+              <input
+                type="number"
+                min="1"
+                value={saveEvery}
+                onChange={(e) => setSaveEvery(parseInt(e.target.value))}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Unit</label>
+              <select
+                value={saveEveryUnit}
+                onChange={(e) => setSaveEveryUnit(e.target.value as "steps" | "epochs")}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="steps">Steps</option>
+                <option value="epochs">Epochs</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Resume from Checkpoint */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint (Optional)</label>
+            <select
+              value={resumeFromCheckpoint || ""}
+              onChange={(e) => setResumeFromCheckpoint(e.target.value || null)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="">Latest (Auto-detect)</option>
+              {availableCheckpoints.map((ckpt) => (
+                <option key={ckpt.filename} value={ckpt.filename}>
+                  Step {ckpt.step} - {ckpt.filename}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Note: Checkpoints will be available after first training session
+            </p>
           </div>
         </div>
 

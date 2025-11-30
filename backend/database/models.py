@@ -4,6 +4,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import uuid
 
+# Helper function to get local time
+def get_local_now():
+    """Get current local time (not UTC)"""
+    return datetime.now()
+
 # Create separate declarative bases for each database
 GalleryBase = declarative_base()
 DatasetBase = declarative_base()
@@ -50,7 +55,7 @@ class GeneratedImage(GalleryBase):
     height = Column(Integer)
     generation_type = Column(String)  # txt2img, img2img, inpaint
     parameters = Column(JSON)  # Full generation parameters
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
     is_favorite = Column(Boolean, default=False)
 
     # New metadata fields
@@ -164,7 +169,7 @@ class Dataset(DatasetBase):
     total_tags = Column(Integer, default=0)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_scanned_at = Column(DateTime, nullable=True)
 
@@ -226,7 +231,7 @@ class DatasetItem(DatasetBase):
     total_tags = Column(Integer, default=0)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
@@ -274,7 +279,7 @@ class DatasetCaption(DatasetBase):
     confidence = Column(Float, nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
@@ -319,7 +324,7 @@ class TagDictionary(DatasetBase):
     replacement_tag = Column(String, nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -381,7 +386,7 @@ class TrainingRun(TrainingBase):
     error_message = Column(Text, nullable=True)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -433,7 +438,7 @@ class TrainingCheckpoint(TrainingBase):
     
     loss = Column(Float, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
     
     # Relationships
     run = relationship("TrainingRun", back_populates="checkpoints")
@@ -463,7 +468,7 @@ class TrainingSample(TrainingBase):
     prompt = Column(Text, nullable=False)
     image_path = Column(String, nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
     
     # Relationships
     run = relationship("TrainingRun", back_populates="samples")

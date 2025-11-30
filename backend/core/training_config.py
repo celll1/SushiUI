@@ -31,6 +31,10 @@ class TrainingConfigGenerator:
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
+        enable_bucketing: bool = False,
+        base_resolutions: Optional[list] = None,
+        bucket_strategy: str = "resize",
+        multi_resolution_mode: str = "max",
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -53,6 +57,10 @@ class TrainingConfigGenerator:
             sample_prompts: List of prompts for sample generation
             debug_latents: Enable debug mode to save latents
             debug_latents_every: Save debug latents every N steps
+            enable_bucketing: Enable aspect ratio bucketing
+            base_resolutions: List of base resolutions for bucketing (e.g., [512, 768, 1024])
+            bucket_strategy: Bucketing strategy ("resize", "crop", "random_crop")
+            multi_resolution_mode: Multi-resolution mode ("max" or "random")
 
         Returns:
             YAML configuration string
@@ -108,6 +116,10 @@ class TrainingConfigGenerator:
                             "dtype": "bf16",
                             "debug_latents": debug_latents,
                             "debug_latents_every": debug_latents_every,
+                            "enable_bucketing": enable_bucketing,
+                            "base_resolutions": base_resolutions or [1024],
+                            "bucket_strategy": bucket_strategy,
+                            "multi_resolution_mode": multi_resolution_mode,
                         },
                         "model": {
                             "name_or_path": base_model_path,

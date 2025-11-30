@@ -1126,6 +1126,10 @@ export interface TrainingRunCreateRequest {
   sample_seed?: number;
   debug_latents?: boolean;
   debug_latents_every?: number;
+  enable_bucketing?: boolean;
+  base_resolutions?: number[];
+  bucket_strategy?: string;
+  multi_resolution_mode?: string;
 }
 
 export interface TrainingRunListResponse {

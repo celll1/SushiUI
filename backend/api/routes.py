@@ -2608,6 +2608,12 @@ class TrainingRunCreateRequest(BaseModel):
     debug_latents: bool = False
     debug_latents_every: int = 50
 
+    # Bucketing options
+    enable_bucketing: bool = False
+    base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]
+    bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
+    multi_resolution_mode: str = "max"  # "max" or "random"
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -2709,6 +2715,10 @@ async def create_training_run(
                 sample_prompts=request.sample_prompts or [],
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

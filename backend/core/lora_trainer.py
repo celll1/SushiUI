@@ -854,10 +854,33 @@ class LoRATrainer:
                 pass
 
         print(f"[LoRATrainer] Checkpoint loaded (step {step})")
+
+        # Try to load optimizer state if it exists
+        optimizer_path = Path(checkpoint_path).with_suffix('.pt')
+        if optimizer_path.exists() and hasattr(self, 'optimizer') and self.optimizer is not None:
+            try:
+                print(f"[LoRATrainer] Loading optimizer state from {optimizer_path}")
+                optimizer_state = torch.load(optimizer_path, map_location=self.device)
+                self.optimizer.load_state_dict(optimizer_state['optimizer_state_dict'])
+                print(f"[LoRATrainer] Optimizer state loaded successfully")
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Failed to load optimizer state: {e}")
+                print(f"[LoRATrainer] Training will continue with fresh optimizer state")
+        else:
+            if not optimizer_path.exists():
+                print(f"[LoRATrainer] No optimizer state found at {optimizer_path}, using fresh optimizer state")
+
         return step
 
-    def save_checkpoint(self, step: int, save_path: Optional[str] = None):
-        """Save LoRA checkpoint as safetensors."""
+    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True):
+        """
+        Save LoRA checkpoint as safetensors and optimizer state as .pt.
+
+        Args:
+            step: Current training step
+            save_path: Path to save checkpoint (default: output_dir/lora_step_{step}.safetensors)
+            save_optimizer: Whether to save optimizer state (default: True)
+        """
         if save_path is None:
             save_path = self.output_dir / f"lora_step_{step}.safetensors"
         else:
@@ -887,8 +910,17 @@ class LoRATrainer:
 
         # Save as safetensors
         save_file(state_dict, str(save_path), metadata=metadata)
-
         print(f"[LoRATrainer] Checkpoint saved: {save_path}")
+
+        # Save optimizer state separately as .pt
+        if save_optimizer and hasattr(self, 'optimizer') and self.optimizer is not None:
+            optimizer_path = save_path.with_suffix('.pt')
+            optimizer_state = {
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'step': step,
+            }
+            torch.save(optimizer_state, optimizer_path)
+            print(f"[LoRATrainer] Optimizer state saved: {optimizer_path}")
 
     def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
         """
@@ -1412,178 +1444,195 @@ class LoRATrainer:
                 print(f"[LoRATrainer] No checkpoint found, starting from scratch")
 
         # Training loop
-        for epoch in range(start_epoch, num_epochs):
-            # Calculate starting batch index for this epoch (for resume)
-            start_batch_idx = 0
-            if epoch == start_epoch:
-                start_batch_idx = global_step % len(batches)
+        try:
+            for epoch in range(start_epoch, num_epochs):
+                # Calculate starting batch index for this epoch (for resume)
+                start_batch_idx = 0
+                if epoch == start_epoch:
+                    start_batch_idx = global_step % len(batches)
 
-            # Create progress bar with custom format
-            # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
-            # Disable dynamic_ncols to prevent long lines that exceed asyncio buffer
-            import sys
-            pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=80, leave=True,
-                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                       initial=start_batch_idx, total=len(batches),
-                       file=sys.stderr, mininterval=1.0, dynamic_ncols=False)
-            pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
+                # Create progress bar with custom format
+                # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
+                # Disable dynamic_ncols to prevent long lines that exceed asyncio buffer
+                import sys
+                pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=80, leave=True,
+                           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                           initial=start_batch_idx, total=len(batches),
+                           file=sys.stderr, mininterval=1.0, dynamic_ncols=False)
+                pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
-            for batch_idx, batch in enumerate(pbar):
-                try:
-                    # VRAM profiling for first batch only (to avoid spam)
-                    profile_vram = self.debug_vram and (global_step == 0)
+                for batch_idx, batch in enumerate(pbar):
+                    try:
+                        # VRAM profiling for first batch only (to avoid spam)
+                        profile_vram = self.debug_vram and (global_step == 0)
 
-                    if profile_vram:
-                        print_vram_usage("Start of first batch")
+                        if profile_vram:
+                            print_vram_usage("Start of first batch")
 
-                    # Process entire batch
-                    batch_latents = []
-                    batch_text_embeddings = []
-                    batch_pooled_embeddings = [] if self.is_sdxl else None
+                        # Process entire batch
+                        batch_latents = []
+                        batch_text_embeddings = []
+                        batch_pooled_embeddings = [] if self.is_sdxl else None
 
-                    # Get bucket dimensions (all items in batch have same resolution)
-                    first_item = batch[0]
-                    if enable_bucketing and "bucket_width" in first_item and "bucket_height" in first_item:
-                        target_width = first_item["bucket_width"]
-                        target_height = first_item["bucket_height"]
-                    else:
-                        target_width = None
-                        target_height = None
+                        # Get bucket dimensions (all items in batch have same resolution)
+                        first_item = batch[0]
+                        if enable_bucketing and "bucket_width" in first_item and "bucket_height" in first_item:
+                            target_width = first_item["bucket_width"]
+                            target_height = first_item["bucket_height"]
+                        else:
+                            target_width = None
+                            target_height = None
 
-                    # Load and encode all images in batch
-                    for item in batch:
-                        image_path = item["image_path"]
-                        if not os.path.exists(image_path):
-                            pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
-                            continue
-
-                        # Try to load from cache first
-                        latents = None
-                        if latent_cache is not None:
-                            if target_width is not None and target_height is not None:
-                                latents = latent_cache.load_latent(
-                                    image_path, target_width, target_height, device=self.device
-                                )
-
-                        # If not cached, encode normally
-                        if latents is None:
-                            try:
-                                image = Image.open(image_path)
-                                image.verify()  # Verify image integrity
-                                image = Image.open(image_path)  # Reopen after verify
-                            except Exception as img_err:
-                                pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                        # Load and encode all images in batch
+                        for item in batch:
+                            image_path = item["image_path"]
+                            if not os.path.exists(image_path):
+                                pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                                 continue
 
-                            # Encode image
-                            if target_width is not None and target_height is not None:
-                                latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                            # Try to load from cache first
+                            latents = None
+                            if latent_cache is not None:
+                                if target_width is not None and target_height is not None:
+                                    latents = latent_cache.load_latent(
+                                        image_path, target_width, target_height, device=self.device
+                                    )
+
+                            # If not cached, encode normally
+                            if latents is None:
+                                try:
+                                    image = Image.open(image_path)
+                                    image.verify()  # Verify image integrity
+                                    image = Image.open(image_path)  # Reopen after verify
+                                except Exception as img_err:
+                                    pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                                    continue
+
+                                # Encode image
+                                if target_width is not None and target_height is not None:
+                                    latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                                else:
+                                    latents = self.encode_image(image)
+
+                            batch_latents.append(latents)
+
+                            # Encode caption
+                            caption = item.get("caption", "")
+                            prompt_output = self.encode_prompt(caption)
+
+                            if self.is_sdxl:
+                                text_emb, pooled_emb = prompt_output
+                                batch_text_embeddings.append(text_emb)
+                                batch_pooled_embeddings.append(pooled_emb)
                             else:
-                                latents = self.encode_image(image)
+                                batch_text_embeddings.append(prompt_output)
 
-                        batch_latents.append(latents)
+                        # Skip if batch is empty (all items failed)
+                        if len(batch_latents) == 0:
+                            continue
 
-                        # Encode caption
-                        caption = item.get("caption", "")
-                        prompt_output = self.encode_prompt(caption)
+                        # Stack into batched tensors
+                        if profile_vram:
+                            print_vram_usage("After loading batch data (before concat)")
+
+                        batched_latents = torch.cat(batch_latents, dim=0)
+                        del batch_latents  # Free memory immediately after concat
+
+                        batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
+                        del batch_text_embeddings  # Free memory immediately after concat
 
                         if self.is_sdxl:
-                            text_emb, pooled_emb = prompt_output
-                            batch_text_embeddings.append(text_emb)
-                            batch_pooled_embeddings.append(pooled_emb)
-                        else:
-                            batch_text_embeddings.append(prompt_output)
+                            batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
+                            del batch_pooled_embeddings  # Free memory immediately after concat
 
-                    # Skip if batch is empty (all items failed)
-                    if len(batch_latents) == 0:
+                        if profile_vram:
+                            print_vram_usage("After concat (before train_step)")
+
+                        # Determine if we should save debug latents for this step
+                        debug_save_path = None
+                        if debug_dir is not None and global_step % debug_latents_every == 0:
+                            debug_save_path = debug_dir / f"step_{global_step:06d}"
+
+                        # Handle SD1.5 vs SDXL output
+                        if self.is_sdxl:
+                            loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings,
+                                                 debug_save_path=debug_save_path, profile_vram=profile_vram)
+                        else:
+                            loss = self.train_step(batched_latents, batched_text_embeddings,
+                                                 debug_save_path=debug_save_path, profile_vram=profile_vram)
+
+                        # Free batch tensors after training step to reduce VRAM usage
+                        del batched_latents, batched_text_embeddings
+                        if self.is_sdxl:
+                            del batched_pooled_embeddings
+
+                        if profile_vram:
+                            print_vram_usage("After train_step and cleanup")
+
+                        global_step += 1
+
+                        # Update progress bar with loss and learning rate
+                        current_lr = self.lr_scheduler.get_last_lr()[0]
+                        pbar.set_postfix({
+                            'loss': f'{loss:.4f}',
+                            'lr': f'{current_lr:.2e}',
+                            'step': global_step
+                        })
+
+                        # Log to tensorboard
+                        self.writer.add_scalar('train/loss', loss, global_step)
+                        self.writer.add_scalar('train/learning_rate', current_lr, global_step)
+                        self.writer.add_scalar('train/epoch', epoch + 1, global_step)
+
+                        # Progress callback
+                        if progress_callback:
+                            progress_callback(global_step, loss, current_lr)
+
+                        # Save checkpoint (step-based)
+                        if save_every_unit == "steps" and global_step % save_every == 0:
+                            pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
+                            self.save_checkpoint(global_step)
+
+                        # Sample generation
+                        # Generate samples at step 0 (initial) or every sample_every steps
+                        if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
+                            pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
+                            vae_on_cpu = latent_cache is not None
+                            self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
+
+                    except Exception as e:
+                        pbar.write(f"[LoRATrainer] ERROR processing batch: {e}")
+                        import traceback
+                        traceback.print_exc()
                         continue
 
-                    # Stack into batched tensors
-                    if profile_vram:
-                        print_vram_usage("After loading batch data (before concat)")
+                pbar.close()
 
-                    batched_latents = torch.cat(batch_latents, dim=0)
-                    del batch_latents  # Free memory immediately after concat
+                # Save checkpoint (epoch-based)
+                if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
+                    print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
+                    self.save_checkpoint(global_step)
 
-                    batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
-                    del batch_text_embeddings  # Free memory immediately after concat
+            print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 
-                    if self.is_sdxl:
-                        batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
-                        del batch_pooled_embeddings  # Free memory immediately after concat
+            # Save final checkpoint
+            self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors")
 
-                    if profile_vram:
-                        print_vram_usage("After concat (before train_step)")
+        except KeyboardInterrupt:
+            print(f"\n[LoRATrainer] Training interrupted by user at step {global_step}")
+            print(f"[LoRATrainer] Saving checkpoint at interruption point...")
+            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_interrupted.safetensors")
+            print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
+            raise  # Re-raise to propagate the interruption
 
-                    # Determine if we should save debug latents for this step
-                    debug_save_path = None
-                    if debug_dir is not None and global_step % debug_latents_every == 0:
-                        debug_save_path = debug_dir / f"step_{global_step:06d}"
+        except Exception as e:
+            print(f"\n[LoRATrainer] Training failed with error at step {global_step}: {e}")
+            print(f"[LoRATrainer] Saving checkpoint at failure point...")
+            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_failed.safetensors")
+            print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
+            raise  # Re-raise the exception
 
-                    # Handle SD1.5 vs SDXL output
-                    if self.is_sdxl:
-                        loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings,
-                                             debug_save_path=debug_save_path, profile_vram=profile_vram)
-                    else:
-                        loss = self.train_step(batched_latents, batched_text_embeddings,
-                                             debug_save_path=debug_save_path, profile_vram=profile_vram)
-
-                    # Free batch tensors after training step to reduce VRAM usage
-                    del batched_latents, batched_text_embeddings
-                    if self.is_sdxl:
-                        del batched_pooled_embeddings
-
-                    if profile_vram:
-                        print_vram_usage("After train_step and cleanup")
-
-                    global_step += 1
-
-                    # Update progress bar with loss and learning rate
-                    current_lr = self.lr_scheduler.get_last_lr()[0]
-                    pbar.set_postfix({
-                        'loss': f'{loss:.4f}',
-                        'lr': f'{current_lr:.2e}',
-                        'step': global_step
-                    })
-
-                    # Log to tensorboard
-                    self.writer.add_scalar('train/loss', loss, global_step)
-                    self.writer.add_scalar('train/learning_rate', current_lr, global_step)
-                    self.writer.add_scalar('train/epoch', epoch + 1, global_step)
-
-                    # Progress callback
-                    if progress_callback:
-                        progress_callback(global_step, loss, current_lr)
-
-                    # Save checkpoint (step-based)
-                    if save_every_unit == "steps" and global_step % save_every == 0:
-                        pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
-                        self.save_checkpoint(global_step)
-
-                    # Sample generation
-                    # Generate samples at step 0 (initial) or every sample_every steps
-                    if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
-                        pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
-                        vae_on_cpu = latent_cache is not None
-                        self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
-
-                except Exception as e:
-                    pbar.write(f"[LoRATrainer] ERROR processing batch: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-
-            pbar.close()
-
-            # Save checkpoint (epoch-based)
-            if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
-                print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
-                self.save_checkpoint(global_step)
-
-        print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
-
-        # Close tensorboard writer
-        self.writer.close()
-
-        # Save final checkpoint
-        self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors")
+        finally:
+            # Close tensorboard writer
+            if hasattr(self, 'writer') and self.writer is not None:
+                self.writer.close()

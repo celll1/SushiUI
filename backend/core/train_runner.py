@@ -178,6 +178,12 @@ def main():
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
 
+            # Get bucketing parameters from config
+            enable_bucketing = train_config.get('enable_bucketing', False)
+            base_resolutions = train_config.get('base_resolutions', [1024])
+            bucket_strategy = train_config.get('bucket_strategy', 'resize')
+            multi_resolution_mode = train_config.get('multi_resolution_mode', 'max')
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,
@@ -192,6 +198,11 @@ def main():
                 resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
+                # Bucketing parameters
+                enable_bucketing=enable_bucketing,
+                base_resolutions=base_resolutions,
+                bucket_strategy=bucket_strategy,
+                multi_resolution_mode=multi_resolution_mode,
             )
 
             print("[TrainRunner] Training completed successfully!")

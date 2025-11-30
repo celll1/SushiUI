@@ -42,16 +42,17 @@ register_error_handlers(app)
 async def startup_event():
     import asyncio
     from api.websocket import manager
-    from database import SessionLocal
+    from database import GallerySessionLocal
     from database.models import UserSettings
     from core.lora_manager import lora_manager
     from core.controlnet_manager import controlnet_manager
+    from core.pipeline import pipeline_manager
 
     asyncio.create_task(manager.start_sender())
 
     # Load user-configured directories for LoRA and ControlNet managers
     try:
-        db = SessionLocal()
+        db = GallerySessionLocal()
         settings_record = db.query(UserSettings).first()
         if settings_record:
             print("[Startup] Loading user-configured directories...")
@@ -62,6 +63,17 @@ async def startup_event():
         db.close()
     except Exception as e:
         print(f"[Startup] Error loading user directory settings: {e}")
+
+    # Load last used model in background (non-blocking)
+    async def load_model_background():
+        try:
+            print("[Startup] Starting background model loading...")
+            # Run in thread pool to avoid blocking event loop
+            await asyncio.to_thread(pipeline_manager._auto_load_last_model)
+        except Exception as e:
+            print(f"[Startup] Error loading model in background: {e}")
+
+    asyncio.create_task(load_model_background())
 
 # WebSocket endpoint BEFORE middleware (to bypass CORS)
 @app.websocket("/api/v1/ws/progress")

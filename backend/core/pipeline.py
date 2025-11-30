@@ -48,8 +48,11 @@ class DiffusionPipelineManager:
         # Cancellation flag
         self.cancel_requested = False
 
-        # Auto-load last used model on startup
-        self._auto_load_last_model()
+        # Model loading state
+        self.is_loading = False
+        self.load_error: Optional[str] = None
+
+        # Note: Auto-load is now triggered by startup event in main.py
 
     def load_model(
         self,

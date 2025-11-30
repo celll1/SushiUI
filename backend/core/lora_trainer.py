@@ -152,6 +152,7 @@ class LoRATrainer:
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
         self.training_dtype = get_torch_dtype(training_dtype)
+        # output_dtype is kept for API compatibility but not used (loss always calculated in fp32)
         self.output_dtype = get_torch_dtype(output_dtype)
         self.mixed_precision = mixed_precision
 
@@ -161,8 +162,8 @@ class LoRATrainer:
         print(f"[LoRATrainer] Precision settings:")
         print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
         print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
-        print(f"  Output dtype: {output_dtype} ({self.output_dtype})")
         print(f"  Mixed precision: {mixed_precision}")
+        print(f"  Loss calculation: Always FP32 for numerical stability")
 
         # Initialize tensorboard writer
         # Create subdirectory with timestamp for each training session (useful for resume)
@@ -551,8 +552,8 @@ class LoRATrainer:
         Returns:
             Loss value
         """
-        # Convert latents to output_dtype (e.g., fp32 for higher precision in loss calculation)
-        latents = latents.to(dtype=self.output_dtype)
+        # Keep latents in their original dtype to avoid memory duplication
+        # We'll convert to output_dtype only when needed for loss calculation
 
         # Sample noise
         noise = torch.randn_like(latents)

@@ -36,7 +36,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [totalSteps, setTotalSteps] = useState(1000);
   const [epochs, setEpochs] = useState(10);
   const [batchSize, setBatchSize] = useState(1);
-  const [learningRate, setLearningRate] = useState(0.0001);
+  const [learningRate, setLearningRate] = useState<string>("0.0001");
   const [lrScheduler, setLrScheduler] = useState("constant");
   const [optimizer, setOptimizer] = useState("adamw8bit");
 
@@ -230,6 +230,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       return;
     }
 
+    // Validate that at least one component is being trained
+    if (!trainUnet && !trainTextEncoder) {
+      setError("At least one component (U-Net or Text Encoder) must be trained");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -241,7 +247,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       total_steps: useEpochs ? undefined : totalSteps,
       epochs: useEpochs ? epochs : undefined,
       batch_size: batchSize,
-      learning_rate: learningRate,
+      learning_rate: parseFloat(learningRate),
       lr_scheduler: lrScheduler,
       optimizer: optimizer,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
@@ -570,12 +576,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             <div>
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
               <input
-                type="number"
+                type="text"
                 value={learningRate}
-                onChange={(e) => setLearningRate(parseFloat(e.target.value))}
-                step="any"
-                min="0.000001"
-                max="0.01"
+                onChange={(e) => setLearningRate(e.target.value)}
+                placeholder="e.g., 1e-4"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>

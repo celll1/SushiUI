@@ -54,6 +54,12 @@ next-env.d.ts
 *.sqlite
 *.sqlite3
 
+# 旧データベース（移行前）
+webui.db
+sd_webui.db
+webui.db.backup_*
+sd_webui.db.backup_*
+
 # ログ
 *.log
 logs/
@@ -77,16 +83,15 @@ model_hash_cache.json
 backend/.port_info
 frontend/.package_hash
 
-# 要件定義・仕様書
-sd-app-requirements.md
-DATASET_REQUIREMENTS.md
-DATASET_VIEWER_DESIGN.md
-TRAINING_REQUIREMENTS.md
+# ドキュメント（個別に除外）
+docs/DATASET_VIEWER_DESIGN.md
+docs/DEVELOPMENT.md
+docs/TRAINING_REQUIREMENTS.md
+docs/sd-app-requirements.md
+CLAUDE.md
 
 # Claude Code
 .claude/
-CLAUDE.md
-DEVELOPMENT.md
 
 # OS
 Thumbs.db

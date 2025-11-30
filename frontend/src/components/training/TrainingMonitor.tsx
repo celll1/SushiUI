@@ -1,20 +1,22 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Play, Square, BarChart3 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, startTensorBoard, stopTensorBoard, getTensorBoardStatus } from "@/utils/api";
+import { X, Play, Square, BarChart3, Trash2 } from "lucide-react";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, startTensorBoard, stopTensorBoard, getTensorBoardStatus } from "@/utils/api";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
   onClose: () => void;
   onStatusChange: (updatedRun: TrainingRun) => void;
+  onDelete?: () => void;
 }
 
-export default function TrainingMonitor({ run, onClose, onStatusChange }: TrainingMonitorProps) {
+export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete }: TrainingMonitorProps) {
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
   const [logs, setLogs] = useState<string[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [tensorboardUrl, setTensorboardUrl] = useState<string | null>(null);
   const [tensorboardRunning, setTensorboardRunning] = useState(false);
   const [tensorboardLoading, setTensorboardLoading] = useState(false);
@@ -22,11 +24,21 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
   // Poll training status
   useEffect(() => {
     // Poll when status is "starting" or "running"
-    if (currentRun.status !== "starting" && currentRun.status !== "running") return;
+    console.log(`[TrainingMonitor] Poll effect: status="${currentRun.status}", id=${currentRun.id}`);
+
+    if (currentRun.status !== "starting" && currentRun.status !== "running") {
+      console.log(`[TrainingMonitor] Not polling (status: ${currentRun.status})`);
+      return;
+    }
+
+    console.log(`[TrainingMonitor] Starting polling for run ${currentRun.id}`);
 
     const interval = setInterval(async () => {
       try {
+        console.log(`[TrainingMonitor] Polling status for run ${currentRun.id}...`);
         const status = await getTrainingStatus(currentRun.id);
+        console.log(`[TrainingMonitor] Received status:`, status);
+
         setCurrentRun((prev) => ({
           ...prev,
           progress: status.progress,
@@ -44,11 +56,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
           status: status.status,
         });
       } catch (err) {
-        console.error("Failed to fetch training status:", err);
+        console.error("[TrainingMonitor] Failed to fetch training status:", err);
       }
     }, 2000); // Poll every 2 seconds
 
-    return () => clearInterval(interval);
+    return () => {
+      console.log(`[TrainingMonitor] Stopping polling for run ${currentRun.id}`);
+      clearInterval(interval);
+    };
   }, [currentRun.status, currentRun.id]);
 
   // Check TensorBoard status on mount
@@ -95,15 +110,23 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
   };
 
   const handleStart = async () => {
+    console.log(`[TrainingMonitor] Starting training run ${currentRun.id}...`);
     setIsStarting(true);
     try {
+      console.log(`[TrainingMonitor] Calling API startTrainingRun(${currentRun.id})...`);
       const response = await startTrainingRun(currentRun.id);
+      console.log(`[TrainingMonitor] API response received:`, response);
+      console.log(`[TrainingMonitor] Response run status: ${response.run.status}`);
+      console.log(`[TrainingMonitor] Setting currentRun state...`);
       setCurrentRun(response.run);
+      console.log(`[TrainingMonitor] Calling onStatusChange...`);
       onStatusChange(response.run);
+      console.log(`[TrainingMonitor] handleStart completed successfully`);
     } catch (err: any) {
-      console.error("Failed to start training:", err);
+      console.error("[TrainingMonitor] Failed to start training:", err);
       alert(err.response?.data?.detail || "Failed to start training");
     } finally {
+      console.log(`[TrainingMonitor] Setting isStarting=false`);
       setIsStarting(false);
     }
   };
@@ -119,6 +142,26 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
       alert(err.response?.data?.detail || "Failed to stop training");
     } finally {
       setIsStopping(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirm(`Are you sure you want to delete training run "${currentRun.run_name}"?`)) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      await deleteTrainingRun(currentRun.id);
+      if (onDelete) {
+        onDelete();
+      }
+      onClose();
+    } catch (err: any) {
+      console.error("Failed to delete training run:", err);
+      alert(err.response?.data?.detail || "Failed to delete training run");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -186,18 +229,28 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
         {/* Controls */}
         <div className="flex space-x-3">
           {currentRun.status === "pending" || currentRun.status === "stopped" || currentRun.status === "failed" ? (
-            <button
-              onClick={handleStart}
-              disabled={isStarting}
-              className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-            >
-              <Play className="h-4 w-4" />
-              <span>
-                {isStarting ? "Starting..." :
-                 currentRun.status === "pending" ? "Start Training" : "Resume Training"}
-              </span>
-            </button>
-          ) : currentRun.status === "running" ? (
+            <>
+              <button
+                onClick={handleStart}
+                disabled={isStarting}
+                className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+              >
+                <Play className="h-4 w-4" />
+                <span>
+                  {isStarting ? "Starting..." :
+                   currentRun.status === "pending" ? "Start Training" : "Resume Training"}
+                </span>
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>{isDeleting ? "Deleting..." : "Delete"}</span>
+              </button>
+            </>
+          ) : currentRun.status === "running" || currentRun.status === "starting" ? (
             <button
               onClick={handleStop}
               disabled={isStopping}
@@ -205,6 +258,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
             >
               <Square className="h-4 w-4" />
               <span>{isStopping ? "Stopping..." : "Stop Training"}</span>
+            </button>
+          ) : currentRun.status === "completed" ? (
+            <button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>{isDeleting ? "Deleting..." : "Delete"}</span>
             </button>
           ) : null}
         </div>

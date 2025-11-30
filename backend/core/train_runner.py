@@ -120,6 +120,7 @@ def main():
         process_config = config['config']['process'][0]
         train_config = process_config['train']
         network_config = process_config.get('network', {})
+        model_config = process_config.get('model', {})
 
         # Determine training method
         network_type = network_config.get('type', 'lora')
@@ -132,6 +133,7 @@ def main():
             weight_dtype = train_config.get('weight_dtype', 'fp16')
             training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
             output_dtype = train_config.get('output_dtype', 'fp32')
+            vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
             mixed_precision = train_config.get('mixed_precision', True)
 
             # Initialize trainer
@@ -144,6 +146,7 @@ def main():
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,
                 output_dtype=output_dtype,
+                vae_dtype=vae_dtype,
                 mixed_precision=mixed_precision,
             )
 

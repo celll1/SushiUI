@@ -45,6 +45,7 @@ class TrainingConfigGenerator:
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
         output_dtype: str = "fp32",
+        vae_dtype: str = "fp16",
         mixed_precision: bool = True,
     ) -> str:
         """
@@ -150,6 +151,7 @@ class TrainingConfigGenerator:
                             "name_or_path": base_model_path,
                             "is_flux": False,
                             "quantize": False,
+                            "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
                             "sampler": "flowmatch",
@@ -258,6 +260,7 @@ class TrainingConfigGenerator:
                             "name_or_path": base_model_path,
                             "is_flux": False,
                             "quantize": False,
+                            "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
                             "sampler": "flowmatch",

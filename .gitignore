@@ -15,7 +15,7 @@ build/
 
 # 出力ファイル
 outputs/
-training/
+/training/
 models/
 lora/
 controlnet/

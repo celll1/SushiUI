@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Sidebar from "@/components/common/Sidebar";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import TrainingList from "@/components/training/TrainingList";
@@ -22,33 +22,55 @@ function TrainingPageContent() {
   const [showConfig, setShowConfig] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadRuns();
-  }, []);
-
-  // Poll running trainings to update list
-  useEffect(() => {
-    const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
-    if (!hasRunningTraining) return;
-
-    const interval = setInterval(() => {
-      loadRuns();
-    }, 3000); // Poll every 3 seconds
-
-    return () => clearInterval(interval);
-  }, [runs]);
-
-  const loadRuns = async () => {
-    setLoading(true);
+  const loadRuns = useCallback(async () => {
     try {
       const response = await listTrainingRuns();
+      console.log(`[TrainingPage] Loaded ${response.runs.length} runs:`, response.runs.map(r => `ID:${r.id} status:${r.status} progress:${r.progress}%`));
       setRuns(response.runs);
     } catch (err) {
-      console.error("Failed to load training runs:", err);
+      console.error("[TrainingPage] Failed to load training runs:", err);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadRuns();
+  }, [loadRuns]);
+
+  // Poll running trainings to update list
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
+    console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
+
+    // Clear existing interval
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+
+    if (!hasRunningTraining) {
+      console.log(`[TrainingPage] No running training, skipping poll`);
+      return;
+    }
+
+    console.log(`[TrainingPage] Starting list polling (every 3s)`);
+
+    pollingIntervalRef.current = setInterval(() => {
+      console.log(`[TrainingPage] Polling training runs list...`);
+      loadRuns();
+    }, 3000); // Poll every 3 seconds
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        console.log(`[TrainingPage] Stopping list polling`);
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [runs, loadRuns]);
 
   const handleCreateRun = () => {
     setSelectedRunId(null);
@@ -70,6 +92,11 @@ function TrainingPageContent() {
     setRuns((prevRuns) =>
       prevRuns.map((r) => (r.id === updatedRun.id ? updatedRun : r))
     );
+  };
+
+  const handleDelete = (deletedRunId: number) => {
+    setRuns((prevRuns) => prevRuns.filter((r) => r.id !== deletedRunId));
+    setSelectedRunId(null);
   };
 
   const selectedRun = runs.find(r => r.id === selectedRunId);
@@ -117,6 +144,7 @@ function TrainingPageContent() {
                 run={selectedRun}
                 onClose={() => setSelectedRunId(null)}
                 onStatusChange={handleStatusChange}
+                onDelete={() => handleDelete(selectedRun.id)}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400">

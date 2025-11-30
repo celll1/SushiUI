@@ -2830,7 +2830,7 @@ async def start_tensorboard(run_id: int, db: Session = Depends(get_training_db))
 
     # Get tensorboard log directory
     from pathlib import Path
-    log_dir = Path(settings.lora_output_dir) / f"run_{run.run_number}" / "tensorboard"
+    log_dir = Path(run.output_dir) / "tensorboard"
 
     if not log_dir.exists():
         raise HTTPException(status_code=404, detail="TensorBoard logs not found")

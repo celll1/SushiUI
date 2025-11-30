@@ -633,16 +633,20 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                       </button>
                       <button
                         onClick={async () => {
+                          console.log("[TrainingMonitor] Saving config for run ID:", currentRun.id);
+                          console.log("[TrainingMonitor] Edited config length:", editedConfig.length);
                           setIsSavingConfig(true);
                           try {
                             const response = await updateTrainingConfig(currentRun.id, editedConfig);
+                            console.log("[TrainingMonitor] Config update response:", response);
                             setCurrentRun(response.run);
                             onStatusChange(response.run);
                             alert("Configuration updated successfully! You can now start training.");
                             setShowConfigModal(false);
                           } catch (err: any) {
-                            console.error("Failed to update config:", err);
-                            alert(err.response?.data?.detail || "Failed to update configuration");
+                            console.error("[TrainingMonitor] Failed to update config:", err);
+                            console.error("[TrainingMonitor] Error response:", err.response);
+                            alert(err.response?.data?.detail || err.message || "Failed to update configuration");
                           } finally {
                             setIsSavingConfig(false);
                           }

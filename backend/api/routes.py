@@ -2986,8 +2986,11 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
 @router.patch("/training/runs/{run_id}/config")
 async def update_training_config(run_id: int, config_data: dict, db: Session = Depends(get_training_db)):
     """Update training configuration (only allowed when not running)"""
+    print(f"[Training] Updating config for run_id={run_id}")
+    print(f"[Training] config_data keys: {config_data.keys()}")
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
+        print(f"[Training] ERROR: Run ID {run_id} not found in database")
         raise HTTPException(status_code=404, detail="Training run not found")
 
     if run.status in ["running", "starting"]:

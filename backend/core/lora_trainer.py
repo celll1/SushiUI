@@ -1286,7 +1286,6 @@ class LoRATrainer:
                 cached_count = 0
 
                 # Create progress bar for latent cache generation
-                from tqdm import tqdm
                 cache_pbar = tqdm(
                     total=total_images,
                     desc="[LatentCache] Encoding images",

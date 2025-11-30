@@ -86,6 +86,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [weightDtype, setWeightDtype] = useState<string>("fp16");
   const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
   const [outputDtype, setOutputDtype] = useState<string>("fp32");
+  const [vaeDtype, setVaeDtype] = useState<string>("fp16");
   const [mixedPrecision, setMixedPrecision] = useState(true);
 
   const [loading, setLoading] = useState(false);
@@ -287,6 +288,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       weight_dtype: weightDtype,
       training_dtype: trainingDtype,
       output_dtype: outputDtype,
+      vae_dtype: vaeDtype,
       mixed_precision: mixedPrecision,
     };
 
@@ -790,19 +792,33 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </select>
             </div>
 
-            {/* Mixed Precision */}
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="mixed-precision"
-                checked={mixedPrecision}
-                onChange={(e) => setMixedPrecision(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
-                Mixed Precision (Autocast)
-              </label>
+            {/* VAE dtype */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">VAE dtype</label>
+              <select
+                value={vaeDtype}
+                onChange={(e) => setVaeDtype(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp16">FP16 (Default, SDXL VAE works fine)</option>
+                <option value="fp32">FP32 (Higher precision)</option>
+                <option value="bf16">BF16 (Balanced)</option>
+              </select>
             </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {/* Mixed Precision */}
+            <input
+              type="checkbox"
+              id="mixed-precision"
+              checked={mixedPrecision}
+              onChange={(e) => setMixedPrecision(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
+              Mixed Precision (Autocast)
+            </label>
           </div>
 
           <p className="text-xs text-gray-500">

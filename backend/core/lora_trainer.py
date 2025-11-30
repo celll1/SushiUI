@@ -123,6 +123,7 @@ class LoRATrainer:
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
         output_dtype: str = "fp32",
+        vae_dtype: str = "fp16",
         mixed_precision: bool = True,
     ):
         """
@@ -137,7 +138,8 @@ class LoRATrainer:
             device: Device to use (cuda/cpu)
             weight_dtype: Model weight dtype (fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2)
             training_dtype: Training/activation dtype (fp16, bf16, fp8_e4m3fn, fp8_e5m2)
-            output_dtype: Output latent dtype (fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
+            output_dtype: Output dtype for safetensors (fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
+            vae_dtype: VAE-specific dtype (fp16, fp32, bf16) - SDXL VAE works fine with fp16
             mixed_precision: Enable mixed precision training (autocast)
         """
         self.model_path = model_path
@@ -153,6 +155,7 @@ class LoRATrainer:
         self.weight_dtype = get_torch_dtype(weight_dtype)
         self.training_dtype = get_torch_dtype(training_dtype)
         self.output_dtype = get_torch_dtype(output_dtype)  # For safetensors saving
+        self.vae_dtype = get_torch_dtype(vae_dtype)  # VAE-specific dtype (SDXL VAE works with fp16)
         self.mixed_precision = mixed_precision
 
         # Legacy dtype for compatibility (defaults to weight_dtype)
@@ -162,6 +165,7 @@ class LoRATrainer:
         print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
         print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
         print(f"  Output dtype: {output_dtype} ({self.output_dtype}) - for safetensors saving")
+        print(f"  VAE dtype: {vae_dtype} ({self.vae_dtype})")
         print(f"  Mixed precision: {mixed_precision}")
         print(f"  Loss calculation: Always FP32 for numerical stability")
 
@@ -218,13 +222,16 @@ class LoRATrainer:
 
             # Clean up pipeline reference (we only need components)
             del temp_pipeline
+
+            # Convert VAE to vae_dtype (SDXL VAE works fine with fp16)
+            self.vae = self.vae.to(dtype=self.vae_dtype)
         else:
             print(f"[LoRATrainer] Loading from diffusers directory")
             # Load model components from diffusers directory (SushiUI style)
             self.vae = AutoencoderKL.from_pretrained(
                 model_path,
                 subfolder="vae",
-                torch_dtype=self.dtype
+                torch_dtype=self.vae_dtype  # Use vae_dtype for VAE (SDXL VAE works with fp16)
             )
 
             self.text_encoder = CLIPTextModel.from_pretrained(

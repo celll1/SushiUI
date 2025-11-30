@@ -63,6 +63,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [sampleScheduleType, setSampleScheduleType] = useState("uniform");
   const [sampleSeed, setSampleSeed] = useState(-1);
 
+  // Debug options
+  const [debugLatents, setDebugLatents] = useState(false);
+  const [debugLatentsEvery, setDebugLatentsEvery] = useState(50);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -240,6 +244,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       sample_schedule_type: sampleScheduleType,
       sample_seed: sampleSeed,
       resume_from_checkpoint: resumeFromCheckpoint || undefined,
+      debug_latents: debugLatents,
+      debug_latents_every: debugLatentsEvery,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -828,6 +834,43 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               Use -1 for random seed (different each time)
             </p>
           </div>
+        </div>
+
+        {/* Debug Options */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Debug Options</h3>
+
+          {/* Debug Latents Toggle */}
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="debug-latents"
+              checked={debugLatents}
+              onChange={(e) => setDebugLatents(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="debug-latents" className="text-sm text-gray-400">
+              Save debug latents during training
+            </label>
+          </div>
+
+          {/* Debug Latents Every (only shown if enabled) */}
+          {debugLatents && (
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Save Debug Latents Every (steps)</label>
+              <input
+                type="number"
+                min="1"
+                value={debugLatentsEvery}
+                onChange={(e) => setDebugLatentsEvery(parseInt(e.target.value))}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                placeholder="e.g., 50"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Saves noisy latents, predicted latents, and timestep info to debug/ folder for debugging training issues
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Buttons */}

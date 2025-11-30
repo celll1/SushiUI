@@ -174,6 +174,10 @@ def main():
                 'seed': process_config['sample'].get('seed', -1),
             }
 
+            # Get debug parameters from config
+            debug_latents = train_config.get('debug_latents', False)
+            debug_latents_every = train_config.get('debug_latents_every', 50)
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,
@@ -186,6 +190,8 @@ def main():
                 sample_config=sample_config if sample_prompts else None,
                 progress_callback=progress_callback,
                 resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
             )
 
             print("[TrainRunner] Training completed successfully!")

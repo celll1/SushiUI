@@ -2604,6 +2604,10 @@ class TrainingRunCreateRequest(BaseModel):
     sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
 
+    # Debug
+    debug_latents: bool = False
+    debug_latents_every: int = 50
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -2703,6 +2707,8 @@ async def create_training_run(
                 save_every=request.save_every,
                 sample_every=request.sample_every,
                 sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

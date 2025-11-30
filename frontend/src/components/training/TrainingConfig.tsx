@@ -664,7 +664,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
             {/* Text Encoder Learning Rates */}
             {trainTextEncoder && (
-              <div className="ml-6 space-y-2">
+              <div className="space-y-2">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">
                     Text Encoder LR <span className="text-xs text-gray-500">(base, empty = use base LR)</span>
@@ -678,34 +678,38 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   />
                 </div>
 
-                {/* SDXL-specific TE1/TE2 */}
+                {/* SDXL-specific TE1/TE2 in 2 columns */}
                 <div className="pl-3 space-y-2 border-l-2 border-gray-700">
                   <p className="text-xs text-gray-500">SDXL: Individual TEs (optional)</p>
 
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">
-                      TE1 LR <span className="text-xs text-gray-500">(CLIP-L)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={textEncoder1Lr}
-                      onChange={(e) => setTextEncoder1Lr(e.target.value)}
-                      placeholder={`Default: ${textEncoderLr || learningRate}`}
-                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* TE1 LR (CLIP-L) */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        TE1 LR <span className="text-xs text-gray-500">(CLIP-L)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={textEncoder1Lr}
+                        onChange={(e) => setTextEncoder1Lr(e.target.value)}
+                        placeholder={`Default: ${textEncoderLr || learningRate}`}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
 
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">
-                      TE2 LR <span className="text-xs text-gray-500">(CLIP-G)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={textEncoder2Lr}
-                      onChange={(e) => setTextEncoder2Lr(e.target.value)}
-                      placeholder={`Default: ${textEncoderLr || learningRate}`}
-                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                    />
+                    {/* TE2 LR (CLIP-G) */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        TE2 LR <span className="text-xs text-gray-500">(CLIP-G)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={textEncoder2Lr}
+                        onChange={(e) => setTextEncoder2Lr(e.target.value)}
+                        placeholder={`Default: ${textEncoderLr || learningRate}`}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

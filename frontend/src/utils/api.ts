@@ -1267,6 +1267,7 @@ export interface DebugLatentVisualization {
   latents_image?: string;  // base64
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64
+  predicted_latent_image?: string;  // base64
 }
 
 export const getDebugLatents = async (runId: number): Promise<DebugLatentsResponse> => {

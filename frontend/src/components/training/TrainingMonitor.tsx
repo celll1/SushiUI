@@ -402,44 +402,44 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
                         {/* Image Comparison with Slider */}
                         <div className="space-y-2">
-                          <div className="text-xs text-gray-400">Latent Comparison</div>
+                          <div className="text-xs text-gray-400">Latent Comparison (Goal: Minimize Difference)</div>
 
                           {/* Comparison Container */}
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
-                            {/* Base Layer: Latents (original) */}
+                            {/* Base Layer: Latents (original/target) */}
                             {debugVisualization.latents_image && (
                               <div className="absolute inset-0">
                                 <img
                                   src={`data:image/png;base64,${debugVisualization.latents_image}`}
-                                  alt="Latents"
+                                  alt="Latents (Target)"
                                   className="w-full h-full object-contain"
                                 />
-                                <div className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-                                  Latents
+                                <div className="absolute top-1 left-1 bg-green-700/80 text-white text-xs px-1.5 py-0.5 rounded">
+                                  Target
                                 </div>
                               </div>
                             )}
 
-                            {/* Top Layer: Noisy Latents (clipped by slider) */}
-                            {debugVisualization.noisy_latents_image && (
+                            {/* Top Layer: Predicted Latents (clipped by slider) */}
+                            {debugVisualization.predicted_latent_image && (
                               <div
                                 className="absolute inset-0"
                                 style={{ clipPath: `inset(0 ${100 - comparisonSlider}% 0 0)` }}
                               >
                                 <img
-                                  src={`data:image/png;base64,${debugVisualization.noisy_latents_image}`}
-                                  alt="Noisy Latents"
+                                  src={`data:image/png;base64,${debugVisualization.predicted_latent_image}`}
+                                  alt="Predicted Latent"
                                   className="w-full h-full object-contain"
                                 />
-                                <div className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-                                  Noisy
+                                <div className="absolute top-1 right-1 bg-blue-700/80 text-white text-xs px-1.5 py-0.5 rounded">
+                                  Predicted
                                 </div>
                               </div>
                             )}
 
                             {/* Slider Line */}
                             <div
-                              className="absolute top-0 bottom-0 w-0.5 bg-blue-500 pointer-events-none"
+                              className="absolute top-0 bottom-0 w-0.5 bg-yellow-500 pointer-events-none"
                               style={{ left: `${comparisonSlider}%` }}
                             />
                           </div>
@@ -454,23 +454,40 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             className="w-full"
                           />
                           <div className="flex justify-between text-xs text-gray-500">
-                            <span>Latents</span>
-                            <span>Noisy Latents</span>
+                            <span>Target (Original)</span>
+                            <span>Predicted (t=0)</span>
                           </div>
 
-                          {/* Predicted Noise */}
-                          {debugVisualization.predicted_noise_image && (
-                            <div className="mt-3">
-                              <div className="text-xs text-gray-400 mb-1">Predicted Noise</div>
-                              <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
-                                <img
-                                  src={`data:image/png;base64,${debugVisualization.predicted_noise_image}`}
-                                  alt="Predicted Noise"
-                                  className="w-full h-full object-contain"
-                                />
+                          {/* Additional Debug Images */}
+                          <div className="grid grid-cols-2 gap-2 mt-3">
+                            {/* Noisy Latents */}
+                            {debugVisualization.noisy_latents_image && (
+                              <div>
+                                <div className="text-xs text-gray-400 mb-1">Noisy Latents (t={debugVisualization.timestep})</div>
+                                <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
+                                  <img
+                                    src={`data:image/png;base64,${debugVisualization.noisy_latents_image}`}
+                                    alt="Noisy Latents"
+                                    className="w-full h-full object-contain"
+                                  />
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            )}
+
+                            {/* Predicted Noise */}
+                            {debugVisualization.predicted_noise_image && (
+                              <div>
+                                <div className="text-xs text-gray-400 mb-1">Predicted Noise</div>
+                                <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
+                                  <img
+                                    src={`data:image/png;base64,${debugVisualization.predicted_noise_image}`}
+                                    alt="Predicted Noise"
+                                    className="w-full h-full object-contain"
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}

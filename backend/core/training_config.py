@@ -35,6 +35,12 @@ class TrainingConfigGenerator:
         base_resolutions: Optional[list] = None,
         bucket_strategy: str = "resize",
         multi_resolution_mode: str = "max",
+        train_unet: bool = True,
+        train_text_encoder: bool = False,
+        unet_lr: Optional[float] = None,
+        text_encoder_lr: Optional[float] = None,
+        text_encoder_1_lr: Optional[float] = None,
+        text_encoder_2_lr: Optional[float] = None,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -61,6 +67,12 @@ class TrainingConfigGenerator:
             base_resolutions: List of base resolutions for bucketing (e.g., [512, 768, 1024])
             bucket_strategy: Bucketing strategy ("resize", "crop", "random_crop")
             multi_resolution_mode: Multi-resolution mode ("max" or "random")
+            train_unet: Whether to train U-Net
+            train_text_encoder: Whether to train text encoder
+            unet_lr: U-Net learning rate (defaults to learning_rate if None)
+            text_encoder_lr: Text encoder learning rate (defaults to learning_rate if None)
+            text_encoder_1_lr: Text encoder 1 learning rate for SDXL (defaults to text_encoder_lr if None)
+            text_encoder_2_lr: Text encoder 2 learning rate for SDXL (defaults to text_encoder_lr if None)
 
         Returns:
             YAML configuration string
@@ -105,12 +117,16 @@ class TrainingConfigGenerator:
                             "batch_size": batch_size,
                             **({"steps": total_steps} if total_steps else {"epochs": epochs}),
                             "gradient_accumulation_steps": 1,
-                            "train_unet": True,
-                            "train_text_encoder": False,
+                            "train_unet": train_unet,
+                            "train_text_encoder": train_text_encoder,
                             "gradient_checkpointing": True,
                             "noise_scheduler": "flowmatch",
                             "optimizer": optimizer,
                             "lr": learning_rate,
+                            "unet_lr": unet_lr if unet_lr is not None else learning_rate,
+                            "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
+                            "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
+                            "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "lr_scheduler": lr_scheduler,
                             "ema_config": {"use_ema": True, "ema_decay": 0.99},
                             "dtype": "bf16",

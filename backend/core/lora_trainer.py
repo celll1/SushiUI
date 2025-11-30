@@ -1591,7 +1591,7 @@ class LoRATrainer:
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
                             pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
-                            self.save_checkpoint(global_step)
+                            self.save_checkpoint(global_step, save_optimizer=False)
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
@@ -1611,24 +1611,24 @@ class LoRATrainer:
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
                     print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
-                    self.save_checkpoint(global_step)
+                    self.save_checkpoint(global_step, save_optimizer=False)
 
             print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 
-            # Save final checkpoint
-            self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors")
+            # Save final checkpoint (with optimizer state for potential resume)
+            self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors", save_optimizer=True)
 
         except KeyboardInterrupt:
             print(f"\n[LoRATrainer] Training interrupted by user at step {global_step}")
             print(f"[LoRATrainer] Saving checkpoint at interruption point...")
-            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_interrupted.safetensors")
+            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_interrupted.safetensors", save_optimizer=True)
             print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise to propagate the interruption
 
         except Exception as e:
             print(f"\n[LoRATrainer] Training failed with error at step {global_step}: {e}")
             print(f"[LoRATrainer] Saving checkpoint at failure point...")
-            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_failed.safetensors")
+            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_failed.safetensors", save_optimizer=True)
             print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise the exception
 

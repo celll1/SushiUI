@@ -422,11 +422,49 @@ class LoRATrainer:
 
                 return text_embeddings
 
-    def encode_image(self, image: Image.Image, target_size: int = 512) -> torch.Tensor:
-        """Encode image to latents."""
-        # Resize to target size
+    def encode_image(
+        self,
+        image: Image.Image,
+        target_size: int = 512,
+        target_width: int = None,
+        target_height: int = None
+    ) -> torch.Tensor:
+        """
+        Encode image to latents.
+
+        Args:
+            image: PIL Image
+            target_size: Square target size (deprecated, use target_width/height)
+            target_width: Target width (for bucketing)
+            target_height: Target height (for bucketing)
+
+        Returns:
+            Latent tensor
+        """
         image = image.convert("RGB")
-        image = image.resize((target_size, target_size), Image.LANCZOS)
+
+        # Determine target dimensions
+        if target_width is not None and target_height is not None:
+            # Bucketing mode: use specified dimensions
+            width, height = target_width, target_height
+        else:
+            # Legacy mode: square resize
+            width, height = target_size, target_size
+
+        # Resize with aspect ratio preservation + center crop
+        # This matches ai-toolkit's approach
+        img_width, img_height = image.size
+        scale = max(width / img_width, height / img_height)
+        new_width = int(img_width * scale)
+        new_height = int(img_height * scale)
+
+        # Resize with Lanczos resampling
+        image = image.resize((new_width, new_height), Image.LANCZOS)
+
+        # Center crop to target size
+        left = (new_width - width) // 2
+        top = (new_height - height) // 2
+        image = image.crop((left, top, left + width, top + height))
 
         # Convert to tensor and normalize to [-1, 1]
         image_array = np.array(image).astype(np.float32) / 255.0
@@ -903,12 +941,17 @@ class LoRATrainer:
         resume_from_checkpoint: Optional[str] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
+        # Bucketing parameters
+        enable_bucketing: bool = False,
+        base_resolutions: List[int] = None,
+        bucket_strategy: str = "resize",
+        multi_resolution_mode: str = "max",
     ):
         """
         Train LoRA on dataset.
 
         Args:
-            dataset_items: List of dataset items (image_path, caption)
+            dataset_items: List of dataset items (image_path, caption, width, height)
             num_epochs: Number of epochs
             batch_size: Batch size (currently only supports 1)
             save_every: Save checkpoint every N steps or epochs
@@ -918,12 +961,19 @@ class LoRATrainer:
             sample_config: Configuration for sample generation (width, height, steps, cfg_scale, etc.)
             progress_callback: Callback(step, loss, lr) for progress updates
             resume_from_checkpoint: Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
+            debug_latents: Enable debug latent saving
+            debug_latents_every: Save debug latents every N steps
+            enable_bucketing: Enable aspect ratio bucketing
+            base_resolutions: List of base resolutions for bucketing (e.g., [512, 768, 1024])
+            bucket_strategy: Strategy for oversized images ("resize", "crop", "random_crop")
+            multi_resolution_mode: How to assign images to resolutions ("max", "random")
         """
         print(f"[LoRATrainer] Starting training")
         print(f"[LoRATrainer] Dataset: {len(dataset_items)} items")
         print(f"[LoRATrainer] Epochs: {num_epochs}")
         print(f"[LoRATrainer] Batch size: {batch_size}")
         print(f"[LoRATrainer] Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+        print(f"[LoRATrainer] Bucketing: {enable_bucketing}")
 
         # Create debug directory if debug mode is enabled
         debug_dir = None
@@ -931,6 +981,46 @@ class LoRATrainer:
             debug_dir = self.output_dir / "debug"
             debug_dir.mkdir(exist_ok=True)
             print(f"[LoRATrainer] Debug latents will be saved to: {debug_dir}")
+
+        # Setup bucketing if enabled
+        bucket_manager = None
+        if enable_bucketing:
+            from core.bucketing import BucketManager
+
+            if base_resolutions is None:
+                base_resolutions = [1024]  # Default to SDXL base
+
+            bucket_manager = BucketManager(
+                base_resolutions=base_resolutions,
+                divisibility=8,
+                strategy=bucket_strategy,
+                multi_resolution_mode=multi_resolution_mode
+            )
+
+            print(f"[LoRATrainer] Bucketing enabled with resolutions: {base_resolutions}")
+            print(f"[LoRATrainer] Bucket strategy: {bucket_strategy}")
+            print(f"[LoRATrainer] Multi-resolution mode: {multi_resolution_mode}")
+
+            # Assign all images to buckets
+            print(f"[LoRATrainer] Assigning images to buckets...")
+            for item in dataset_items:
+                width = item.get("width", 1024)
+                height = item.get("height", 1024)
+                bucket_manager.assign_image_to_bucket(
+                    image_path=item["image_path"],
+                    width=width,
+                    height=height,
+                    caption=item.get("caption", "")
+                )
+
+            # Print bucket statistics
+            bucket_counts = bucket_manager.get_bucket_counts()
+            print(f"[LoRATrainer] Bucket distribution:")
+            for bucket_size, count in sorted(bucket_counts.items()):
+                print(f"  {bucket_size}: {count} images")
+
+            # Use bucketed items for training
+            dataset_items = bucket_manager.get_all_items()
 
         total_steps = len(dataset_items) * num_epochs
 
@@ -1014,7 +1104,15 @@ class LoRATrainer:
                         pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
                         continue
 
-                    latents = self.encode_image(image)
+                    # Encode image with bucketing support
+                    if enable_bucketing and "bucket_width" in item and "bucket_height" in item:
+                        latents = self.encode_image(
+                            image,
+                            target_width=item["bucket_width"],
+                            target_height=item["bucket_height"]
+                        )
+                    else:
+                        latents = self.encode_image(image)
 
                     # Encode caption
                     caption = item.get("caption", "")

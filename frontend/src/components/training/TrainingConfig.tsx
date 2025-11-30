@@ -924,58 +924,42 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               {/* Base Resolutions */}
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
-                <div className="space-y-2">
-                  {/* Common presets */}
-                  <div className="flex gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setBaseResolutions([512])}
-                      className={`px-3 py-1 rounded text-xs transition-colors ${
-                        JSON.stringify(baseResolutions) === JSON.stringify([512])
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                      }`}
-                    >
-                      512 only
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBaseResolutions([768])}
-                      className={`px-3 py-1 rounded text-xs transition-colors ${
-                        JSON.stringify(baseResolutions) === JSON.stringify([768])
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                      }`}
-                    >
-                      768 only
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBaseResolutions([1024])}
-                      className={`px-3 py-1 rounded text-xs transition-colors ${
-                        JSON.stringify(baseResolutions) === JSON.stringify([1024])
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                      }`}
-                    >
-                      1024 only (default)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBaseResolutions([512, 768, 1024])}
-                      className={`px-3 py-1 rounded text-xs transition-colors ${
-                        JSON.stringify(baseResolutions) === JSON.stringify([512, 768, 1024])
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                      }`}
-                    >
-                      Multi (512/768/1024)
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    Selected: {baseResolutions.join(", ")}
-                  </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    [256, 512, 768],
+                    [1024, 1280, 1536],
+                  ].map((resGroup, groupIdx) => (
+                    <div key={groupIdx} className="space-y-2">
+                      {resGroup.map(res => (
+                        <div key={res} className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id={`res-${res}`}
+                            checked={baseResolutions.includes(res)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setBaseResolutions([...baseResolutions, res].sort((a, b) => a - b));
+                              } else {
+                                // Prevent unchecking the last resolution
+                                if (baseResolutions.length > 1) {
+                                  setBaseResolutions(baseResolutions.filter(r => r !== res));
+                                }
+                              }
+                            }}
+                            disabled={baseResolutions.length === 1 && baseResolutions.includes(res)}
+                            className="w-4 h-4"
+                          />
+                          <label htmlFor={`res-${res}`} className="text-sm text-gray-300 cursor-pointer">
+                            {res}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
                 </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Selected: {baseResolutions.length > 0 ? baseResolutions.join(", ") : "None"}
+                </p>
               </div>
 
               {/* Multi-Resolution Mode (only show if multiple resolutions) */}

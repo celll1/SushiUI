@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
 from PIL import Image
 from tqdm import tqdm
-from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler
+from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline
 from transformers import CLIPTextModel, CLIPTokenizer
 from safetensors.torch import save_file
 import json
@@ -95,34 +95,23 @@ class LoRATrainer:
 
         if is_safetensors:
             print(f"[LoRATrainer] Loading from safetensors file")
-            # Load model components from single safetensors file
-            self.vae = AutoencoderKL.from_single_file(
+            # Load pipeline from single safetensors file, then extract components
+            # This is the same approach SushiUI uses in model_loader.py
+            temp_pipeline = StableDiffusionPipeline.from_single_file(
                 model_path,
-                torch_dtype=self.dtype
+                torch_dtype=self.dtype,
+                use_safetensors=True,
             )
 
-            self.text_encoder = CLIPTextModel.from_single_file(
-                model_path,
-                torch_dtype=self.dtype
-            )
+            # Extract components from pipeline
+            self.vae = temp_pipeline.vae
+            self.text_encoder = temp_pipeline.text_encoder
+            self.tokenizer = temp_pipeline.tokenizer
+            self.unet = temp_pipeline.unet
+            self.noise_scheduler = temp_pipeline.scheduler
 
-            self.tokenizer = CLIPTokenizer.from_pretrained(
-                "openai/clip-vit-large-patch14"  # Standard CLIP tokenizer
-            )
-
-            self.unet = UNet2DConditionModel.from_single_file(
-                model_path,
-                torch_dtype=self.dtype
-            )
-
-            # Load noise scheduler (use default DDPM config)
-            self.noise_scheduler = DDPMScheduler(
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                num_train_timesteps=1000,
-                clip_sample=False,
-            )
+            # Clean up pipeline reference (we only need components)
+            del temp_pipeline
         else:
             print(f"[LoRATrainer] Loading from diffusers directory")
             # Load model components from diffusers directory (SushiUI style)

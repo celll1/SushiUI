@@ -337,3 +337,38 @@ class BucketManager:
     def get_items_by_bucket(self) -> Dict[BucketResolution, List[Dict]]:
         """Get items grouped by bucket."""
         return self.buckets.copy()
+
+    def shuffle_buckets(self):
+        """Shuffle items within each bucket."""
+        import random
+        for bucket_items in self.buckets.values():
+            random.shuffle(bucket_items)
+
+    def build_batch_indices(self, batch_size: int) -> List[List[Dict]]:
+        """
+        Build batch indices for training.
+
+        Groups items from the same bucket into batches of batch_size.
+        This ensures all items in a batch have the same resolution.
+
+        Args:
+            batch_size: Number of items per batch
+
+        Returns:
+            List of batches, where each batch is a list of item dicts
+        """
+        batch_list = []
+
+        # Process each bucket separately
+        for bucket, items in self.buckets.items():
+            # Split items in this bucket into batches
+            for start_idx in range(0, len(items), batch_size):
+                end_idx = min(start_idx + batch_size, len(items))
+                batch = items[start_idx:end_idx]
+                batch_list.append(batch)
+
+        # Shuffle the batches (not the items within batches)
+        import random
+        random.shuffle(batch_list)
+
+        return batch_list

@@ -662,9 +662,12 @@ class LoRATrainer:
                 start_item_idx = global_step % len(dataset_items)
 
             # Create progress bar with custom format
+            # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
+            import sys
             pbar = tqdm(dataset_items[start_item_idx:], desc=f"Epoch {epoch + 1}", ncols=100, leave=True,
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] , {postfix}',
-                       initial=start_item_idx, total=len(dataset_items))
+                       initial=start_item_idx, total=len(dataset_items),
+                       file=sys.stderr, mininterval=1.0)
             pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
             for item in pbar:

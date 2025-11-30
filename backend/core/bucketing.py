@@ -263,18 +263,42 @@ class BucketManager:
                 # Randomly select from all available resolutions
                 import random
                 target_resolution = random.choice(self.base_resolutions)
+                bucket_list = self.bucket_lists[target_resolution]
             else:
-                # "max" mode: Use largest resolution that fits the image
-                image_resolution = get_resolution_from_area(width, height)
-                target_resolution = self.base_resolutions[0]
+                # "max" mode: Find best bucket across all resolutions
+                # Try each resolution and pick the bucket with minimum cropping
+                best_bucket = None
+                best_resolution = None
+                min_crop_ratio = float("inf")
+
                 for res in self.base_resolutions:
-                    if res <= image_resolution:
-                        target_resolution = res
+                    bucket_list = self.bucket_lists[res]
+                    candidate_bucket = get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
 
-            bucket_list = self.bucket_lists[target_resolution]
+                    # Calculate crop ratio (how much we need to crop relative to original)
+                    scale_w = candidate_bucket.width / width
+                    scale_h = candidate_bucket.height / height
+                    scale = max(scale_w, scale_h)  # Scale to fit
 
-        # Find best bucket
-        bucket = get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
+                    scaled_width = width * scale
+                    scaled_height = height * scale
+
+                    crop_width = scaled_width - candidate_bucket.width
+                    crop_height = scaled_height - candidate_bucket.height
+                    crop_ratio = (crop_width + crop_height) / (width + height)
+
+                    if crop_ratio < min_crop_ratio:
+                        min_crop_ratio = crop_ratio
+                        best_bucket = candidate_bucket
+                        best_resolution = res
+
+                bucket = best_bucket
+                target_resolution = best_resolution
+                bucket_list = None  # Already have the bucket
+
+        # Find best bucket if not already determined
+        if bucket_list is not None:
+            bucket = get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
 
         # Create image info
         image_info = {

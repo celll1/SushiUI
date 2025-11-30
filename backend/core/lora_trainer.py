@@ -311,6 +311,14 @@ class LoRATrainer:
         self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
         print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
 
+        # Enable gradient checkpointing BEFORE freezing weights
+        # This must be done before LoRA application to avoid breaking gradients
+        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            self.unet.enable_gradient_checkpointing()
+            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+        else:
+            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
+
         # Freeze all base weights
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
@@ -341,14 +349,6 @@ class LoRATrainer:
         self._apply_lora()
         if self.debug_vram:
             print_vram_usage("After applying LoRA layers")
-
-        # Enable gradient checkpointing to reduce VRAM usage during training
-        # This trades computation for memory by recomputing activations during backward pass
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
-        else:
-            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
 
         self.optimizer = None
         self.lr_scheduler = None
@@ -1106,6 +1106,7 @@ class LoRATrainer:
         self,
         dataset_items: List[Dict[str, Any]],
         num_epochs: int = 1,
+        target_steps: Optional[int] = None,
         batch_size: int = 1,
         save_every: int = 100,
         save_every_unit: str = "steps",
@@ -1131,7 +1132,8 @@ class LoRATrainer:
 
         Args:
             dataset_items: List of dataset items (image_path, caption, width, height)
-            num_epochs: Number of epochs
+            num_epochs: Number of epochs (if None, will be calculated from target_steps)
+            target_steps: Target total steps (overrides num_epochs if provided)
             batch_size: Batch size (currently only supports 1)
             save_every: Save checkpoint every N steps or epochs
             save_every_unit: Unit for save_every ("steps" or "epochs")
@@ -1216,7 +1218,30 @@ class LoRATrainer:
                 batches.append(dataset_items[start_idx:end_idx])
             print(f"[LoRATrainer] Created {len(batches)} batches (no bucketing, batch_size={batch_size})")
 
-        total_steps = len(batches) * num_epochs
+        # Calculate epochs and total steps based on actual batch count
+        steps_per_epoch = len(batches)
+
+        if target_steps is not None:
+            # Calculate epochs needed to reach target steps
+            num_epochs = max(1, int(target_steps / steps_per_epoch))
+            # Round up if we're close to the next epoch
+            if (target_steps % steps_per_epoch) > (steps_per_epoch * 0.5):
+                num_epochs += 1
+            total_steps = steps_per_epoch * num_epochs
+            print(f"[LoRATrainer] Target steps: {target_steps}, Calculated epochs: {num_epochs} (actual steps: {total_steps})")
+        elif num_epochs is None:
+            # Fallback: default to 1 epoch
+            num_epochs = 1
+            total_steps = steps_per_epoch
+            print(f"[LoRATrainer] No target_steps or num_epochs provided, defaulting to 1 epoch ({total_steps} steps)")
+        else:
+            # num_epochs was explicitly provided
+            total_steps = steps_per_epoch * num_epochs
+
+        print(f"[LoRATrainer] Training plan:")
+        print(f"  Steps per epoch: {steps_per_epoch}")
+        print(f"  Total epochs: {num_epochs}")
+        print(f"  Total steps: {total_steps}")
 
         # Generate latent cache if enabled
         latent_cache = None

@@ -19,6 +19,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [isDeleting, setIsDeleting] = useState(false);
   const [samples, setSamples] = useState<TrainingSampleStep[]>([]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
 
   // Debug latents
   const [viewMode, setViewMode] = useState<"samples" | "debug">("samples");
@@ -340,10 +341,54 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                     No samples generated yet
                   </div>
                 ) : (
-                  samples.map((stepData) => (
-                    <div key={stepData.step} className="space-y-2">
-                      <div className="text-xs text-gray-400 font-medium">Step {stepData.step}</div>
-                      {stepData.images.map((img) => (
+                  <div className="space-y-3">
+                    {/* Step Selector */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1.5">Training Step</label>
+                      <input
+                        type="range"
+                        min="0"
+                        max={Math.max(0, samples.length - 1)}
+                        value={selectedStepIndex}
+                        onChange={(e) => setSelectedStepIndex(Number(e.target.value))}
+                        className="w-full mb-1"
+                      />
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300 font-medium">
+                          Step {samples[selectedStepIndex]?.step || 0}
+                        </span>
+                        <span className="text-gray-500">
+                          {selectedStepIndex + 1} / {samples.length}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Generation Settings */}
+                    {samples[selectedStepIndex]?.images[0]?.params && (
+                      <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
+                        <div className="font-semibold text-gray-300 mb-1">Generation Settings</div>
+                        <div>
+                          <span className="text-gray-400">Steps:</span>{" "}
+                          {samples[selectedStepIndex].images[0].params.steps || 20}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">CFG Scale:</span>{" "}
+                          {samples[selectedStepIndex].images[0].params.cfg_scale || 7.0}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">Sampler:</span>{" "}
+                          {samples[selectedStepIndex].images[0].params.sampler || "N/A"}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">Size:</span>{" "}
+                          {samples[selectedStepIndex].images[0].params.width || 1024} × {samples[selectedStepIndex].images[0].params.height || 1024}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Sample Images */}
+                    <div className="space-y-2">
+                      {samples[selectedStepIndex]?.images.map((img) => (
                         <div
                           key={img.path}
                           className="relative cursor-pointer group"
@@ -351,7 +396,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         >
                           <img
                             src={img.path}
-                            alt={`Step ${stepData.step} Sample ${img.sample_index}`}
+                            alt={`Step ${samples[selectedStepIndex].step} Sample ${img.sample_index}`}
                             className="w-full rounded border border-gray-700 hover:border-blue-500 transition-colors"
                           />
                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded">
@@ -360,7 +405,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         </div>
                       ))}
                     </div>
-                  ))
+                  </div>
                 )}
               </>
             ) : (

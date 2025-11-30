@@ -2467,11 +2467,49 @@ async def serve_image(path: str):
     """Serve image file from filesystem"""
     from fastapi.responses import FileResponse
     import os
-    
+
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     return FileResponse(path)
+
+@router.get("/datasets/{dataset_id}/random-caption")
+async def get_random_caption(
+    dataset_id: int,
+    caption_types: Optional[str] = None,  # Comma-separated caption types to filter
+    db: Session = Depends(get_datasets_db)
+):
+    """Get a random caption from the dataset, optionally filtered by caption type"""
+    import random
+
+    # Check dataset exists
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Build query for captions
+    query = db.query(DatasetCaption).join(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+
+    # Filter by caption types if provided
+    if caption_types:
+        types_list = [t.strip() for t in caption_types.split(",")]
+        query = query.filter(DatasetCaption.caption_type.in_(types_list))
+
+    # Get all matching captions
+    captions = query.all()
+
+    if not captions:
+        raise HTTPException(status_code=404, detail="No captions found in dataset")
+
+    # Select random caption
+    random_caption = random.choice(captions)
+
+    return {
+        "caption": random_caption.content,
+        "caption_type": random_caption.caption_type,
+        "caption_subtype": random_caption.caption_subtype,
+        "item_id": random_caption.item_id,
+    }
 
 # ============================================================
 # Training API Endpoints
@@ -2479,8 +2517,14 @@ async def serve_image(path: str):
 
 from database.models import TrainingRun, TrainingCheckpoint, TrainingSample
 
-class TrainingRunCreateRequest(BaseModel):
+class DatasetConfigItem(BaseModel):
     dataset_id: int
+    caption_types: List[str] = []  # Empty = use all caption types
+    filters: Dict[str, Any] = {}  # {"tag_include": ["1girl"], "tag_exclude": ["photo"], "caption_contains": "smile"}
+
+class TrainingRunCreateRequest(BaseModel):
+    dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
+    dataset_configs: Optional[List[DatasetConfigItem]] = None  # Multiple datasets with filters
     run_name: Optional[str] = None  # Optional - will use UUID if not provided
     training_method: str  # 'lora' or 'full_finetune'
     base_model_path: str
@@ -2522,7 +2566,7 @@ async def create_training_run(
 ):
     """Create a new training run"""
     print(f"[Training] Creating training run: {request.run_name}")
-    print(f"[Training] Request data: dataset_id={request.dataset_id}, method={request.training_method}")
+    print(f"[Training] Request data: dataset_configs={request.dataset_configs}, method={request.training_method}")
     print(f"[Training] Steps={request.total_steps}, Epochs={request.epochs}")
     try:
         # Validate that either steps or epochs is provided
@@ -2531,10 +2575,30 @@ async def create_training_run(
         if request.total_steps is not None and request.epochs is not None:
             raise HTTPException(status_code=400, detail="Cannot specify both total_steps and epochs")
 
-        # Check if dataset exists (in datasets.db)
-        dataset = datasets_db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
-        if not dataset:
-            raise HTTPException(status_code=404, detail="Dataset not found")
+        # Handle dataset_configs (new format) or fallback to dataset_id (legacy)
+        if request.dataset_configs:
+            dataset_configs = [config.dict() for config in request.dataset_configs]
+            # Validate all datasets exist
+            for config in dataset_configs:
+                dataset = datasets_db.query(Dataset).filter(Dataset.id == config["dataset_id"]).first()
+                if not dataset:
+                    raise HTTPException(status_code=404, detail=f"Dataset ID {config['dataset_id']} not found")
+            # Use first dataset as primary (for backward compatibility)
+            primary_dataset_id = dataset_configs[0]["dataset_id"]
+            primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first()
+        elif request.dataset_id:
+            # Legacy single dataset mode
+            dataset_configs = [{
+                "dataset_id": request.dataset_id,
+                "caption_types": [],
+                "filters": {}
+            }]
+            primary_dataset_id = request.dataset_id
+            primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
+            if not primary_dataset:
+                raise HTTPException(status_code=404, detail="Dataset not found")
+        else:
+            raise HTTPException(status_code=400, detail="Either dataset_id or dataset_configs must be provided")
 
         # Generate run_id and auto-generate run_name if not provided
         import uuid
@@ -2570,7 +2634,7 @@ async def create_training_run(
         if request.training_method == "lora":
             config_yaml = config_generator.generate_lora_config(
                 run_name=run_name,
-                dataset_path=dataset.path,
+                dataset_path=primary_dataset.path,
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
                 total_steps=request.total_steps,
@@ -2588,7 +2652,7 @@ async def create_training_run(
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
                 run_name=run_name,
-                dataset_path=dataset.path,
+                dataset_path=primary_dataset.path,
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
                 total_steps=request.total_steps,
@@ -2610,13 +2674,19 @@ async def create_training_run(
         # Calculate total_steps for database if epochs provided
         calculated_total_steps = request.total_steps
         if request.epochs is not None:
-            # Estimate steps based on dataset size and batch size
-            dataset_size = datasets_db.query(DatasetItem).filter(DatasetItem.dataset_id == request.dataset_id).count()
-            if dataset_size == 0:
-                raise HTTPException(status_code=400, detail="Dataset has no items")
-            calculated_total_steps = (dataset_size // request.batch_size) * request.epochs
+            # Count items across all configured datasets (with filters applied)
+            total_dataset_size = 0
+            for config in dataset_configs:
+                query = datasets_db.query(DatasetItem).filter(DatasetItem.dataset_id == config["dataset_id"])
+                # TODO: Apply filters here when filter logic is implemented
+                dataset_size = query.count()
+                total_dataset_size += dataset_size
+
+            if total_dataset_size == 0:
+                raise HTTPException(status_code=400, detail="No items in configured datasets")
+            calculated_total_steps = (total_dataset_size // request.batch_size) * request.epochs
             if calculated_total_steps == 0:
-                calculated_total_steps = dataset_size * request.epochs  # Fallback if batch_size > dataset_size
+                calculated_total_steps = total_dataset_size * request.epochs  # Fallback if batch_size > dataset_size
 
         if calculated_total_steps is None or calculated_total_steps <= 0:
             raise HTTPException(status_code=400, detail=f"Invalid total_steps calculation: {calculated_total_steps}")
@@ -2625,7 +2695,8 @@ async def create_training_run(
 
         # Create training run with specified run_id and run_name
         training_run = TrainingRun(
-            dataset_id=request.dataset_id,
+            dataset_id=primary_dataset_id,  # Keep for backward compatibility
+            dataset_configs=dataset_configs,  # New: multiple datasets
             run_id=run_id,
             run_name=run_name,
             training_method=request.training_method,

@@ -2,18 +2,29 @@
 
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels } from "@/utils/api";
+import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
   onRunCreated: (run: TrainingRun) => void;
 }
 
+interface DatasetConfig {
+  dataset_id: number;
+  caption_types: string[];
+  filters: Record<string, any>;
+}
+
 export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfigProps) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [runName, setRunName] = useState("");
-  const [datasetId, setDatasetId] = useState<number | null>(null);
+
+  // Multiple datasets support
+  const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
+    { dataset_id: 0, caption_types: [], filters: {} }
+  ]);
+
   const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
 
@@ -62,7 +73,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       const response = await listDatasets();
       setDatasets(response.datasets);
       if (response.datasets.length > 0) {
-        setDatasetId(response.datasets[0].id);
+        // Initialize first dataset config with first available dataset
+        setDatasetConfigs([{ dataset_id: response.datasets[0].id, caption_types: [], filters: {} }]);
       }
     } catch (err) {
       console.error("Failed to load datasets:", err);
@@ -84,16 +96,67 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     }
   };
 
+  // Helper function: Get random caption from selected datasets
+  const handleRandomPrompt = async (promptIndex: number) => {
+    const selectedDatasets = datasetConfigs.filter(c => c.dataset_id !== 0);
+    if (selectedDatasets.length === 0) {
+      setError("Please select at least one dataset first");
+      return;
+    }
+
+    try {
+      // Pick a random dataset from selected ones
+      const randomDataset = selectedDatasets[Math.floor(Math.random() * selectedDatasets.length)];
+      const response = await getRandomCaption(randomDataset.dataset_id, randomDataset.caption_types);
+
+      // Set the positive prompt
+      const updated = [...samplePrompts];
+      updated[promptIndex].positive = response.caption;
+      setSamplePrompts(updated);
+    } catch (err) {
+      console.error("Failed to get random caption:", err);
+      setError("Failed to get random caption from dataset");
+    }
+  };
+
+  // Helper function: Import params from txt2img panel
+  const handleImportFromGeneration = () => {
+    // Try to read from localStorage where generation panels store their params
+    try {
+      const txt2imgParams = localStorage.getItem("txt2img_params");
+      if (txt2imgParams) {
+        const params = JSON.parse(txt2imgParams);
+        // Update sample generation parameters
+        if (params.prompt) {
+          const updated = [...samplePrompts];
+          updated[0].positive = params.prompt;
+          updated[0].negative = params.negative_prompt || "";
+          setSamplePrompts(updated);
+        }
+        if (params.width) setSampleWidth(params.width);
+        if (params.height) setSampleHeight(params.height);
+        if (params.steps) setSampleSteps(params.steps);
+        if (params.cfg_scale) setSampleCfgScale(params.cfg_scale);
+        if (params.sampler) setSampleSampler(params.sampler);
+        if (params.schedule_type) setSampleScheduleType(params.schedule_type);
+        if (params.seed) setSampleSeed(params.seed);
+      }
+    } catch (err) {
+      console.error("Failed to import from generation panel:", err);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     console.log("[TrainingConfig] Form submitted");
     console.log("[TrainingConfig] Run name:", runName);
-    console.log("[TrainingConfig] Dataset ID:", datasetId);
+    console.log("[TrainingConfig] Dataset configs:", datasetConfigs);
     console.log("[TrainingConfig] Base model path:", baseModelPath);
 
-    if (!datasetId) {
-      setError("Please select a dataset");
+    // Validate at least one dataset is selected
+    if (datasetConfigs.length === 0 || datasetConfigs.every(c => c.dataset_id === 0)) {
+      setError("Please select at least one dataset");
       return;
     }
 
@@ -106,7 +169,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     setError(null);
 
     const requestData = {
-      dataset_id: datasetId,
+      dataset_configs: datasetConfigs.filter(c => c.dataset_id !== 0),
       run_name: runName.trim() || undefined,  // Send undefined if empty (backend will auto-generate)
       training_method: trainingMethod,
       base_model_path: baseModelPath.trim(),
@@ -182,24 +245,71 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           />
         </div>
 
-        {/* Dataset */}
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            Dataset <span className="text-red-400">*</span>
-          </label>
-          <select
-            value={datasetId || ""}
-            onChange={(e) => setDatasetId(parseInt(e.target.value))}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-            required
-          >
-            <option value="">Select dataset...</option>
-            {datasets.map((ds) => (
-              <option key={ds.id} value={ds.id}>
-                {ds.name} ({ds.total_items} items)
-              </option>
-            ))}
-          </select>
+        {/* Datasets */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <div className="flex justify-between items-center">
+            <label className="block text-sm font-medium">
+              Datasets <span className="text-red-400">*</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setDatasetConfigs([...datasetConfigs, { dataset_id: datasets[0]?.id || 0, caption_types: [], filters: {} }])}
+              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-xs transition-colors"
+              disabled={datasets.length === 0}
+            >
+              + Add Dataset
+            </button>
+          </div>
+
+          {datasetConfigs.map((config, index) => (
+            <div key={index} className="border border-gray-600 rounded p-3 space-y-2">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs text-gray-400">Dataset {index + 1}</span>
+                {datasetConfigs.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setDatasetConfigs(datasetConfigs.filter((_, i) => i !== index))}
+                    className="text-red-400 hover:text-red-300 text-xs"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+
+              <select
+                value={config.dataset_id}
+                onChange={(e) => {
+                  const updated = [...datasetConfigs];
+                  updated[index].dataset_id = parseInt(e.target.value);
+                  setDatasetConfigs(updated);
+                }}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value={0}>Select dataset...</option>
+                {datasets.map((ds) => (
+                  <option key={ds.id} value={ds.id}>
+                    {ds.name} ({ds.total_items} items)
+                  </option>
+                ))}
+              </select>
+
+              {/* Caption Types - TODO: Implement caption type selector */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Caption Types (leave empty for all)</label>
+                <input
+                  type="text"
+                  placeholder="e.g., caption, instruction"
+                  value={config.caption_types.join(", ")}
+                  onChange={(e) => {
+                    const updated = [...datasetConfigs];
+                    updated[index].caption_types = e.target.value.split(",").map(t => t.trim()).filter(t => t !== "");
+                    setDatasetConfigs(updated);
+                  }}
+                  className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* Training Method */}
@@ -473,20 +583,41 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
           {/* Sample Prompts */}
           <div>
-            <label className="block text-sm text-gray-400 mb-2">Sample Prompts</label>
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-sm text-gray-400">Sample Prompts</label>
+              <button
+                type="button"
+                onClick={handleImportFromGeneration}
+                className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs transition-colors"
+                title="Import prompt and settings from Txt2Img panel"
+              >
+                Import from Txt2Img
+              </button>
+            </div>
+
             {samplePrompts.map((prompt, index) => (
               <div key={index} className="mb-3 p-3 bg-gray-800 rounded border border-gray-700">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs text-gray-400">Sample {index + 1}</span>
-                  {samplePrompts.length > 1 && (
+                  <div className="flex space-x-2">
                     <button
                       type="button"
-                      onClick={() => setSamplePrompts(samplePrompts.filter((_, i) => i !== index))}
-                      className="text-red-400 hover:text-red-300 text-xs"
+                      onClick={() => handleRandomPrompt(index)}
+                      className="px-2 py-0.5 bg-purple-600 hover:bg-purple-500 rounded text-xs transition-colors"
+                      title="Get random prompt from selected datasets"
                     >
-                      Remove
+                      Random
                     </button>
-                  )}
+                    {samplePrompts.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setSamplePrompts(samplePrompts.filter((_, i) => i !== index))}
+                        className="text-red-400 hover:text-red-300 text-xs"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <div>

@@ -556,12 +556,16 @@ class LoRATrainer:
         for epoch in range(num_epochs):
             print(f"\n[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
-            for item in tqdm(dataset_items, desc=f"Epoch {epoch + 1}"):
+            # Create progress bar with custom format
+            pbar = tqdm(dataset_items, desc=f"Epoch {epoch + 1}", ncols=100,
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
+
+            for item in pbar:
                 try:
                     # Load and encode image
                     image_path = item["image_path"]
                     if not os.path.exists(image_path):
-                        print(f"[LoRATrainer] WARNING: Image not found: {image_path}")
+                        pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                         continue
 
                     image = Image.open(image_path)
@@ -581,13 +585,21 @@ class LoRATrainer:
 
                     global_step += 1
 
-                    # Progress callback
+                    # Update progress bar with loss and learning rate
                     current_lr = self.lr_scheduler.get_last_lr()[0]
+                    pbar.set_postfix({
+                        'loss': f'{loss:.4f}',
+                        'lr': f'{current_lr:.2e}',
+                        'step': global_step
+                    })
+
+                    # Progress callback
                     if progress_callback:
                         progress_callback(global_step, loss, current_lr)
 
                     # Save checkpoint
                     if global_step % save_every == 0:
+                        pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
                         self.save_checkpoint(global_step)
 
                     # TODO: Sample generation
@@ -595,10 +607,12 @@ class LoRATrainer:
                     #     self.generate_sample(...)
 
                 except Exception as e:
-                    print(f"[LoRATrainer] ERROR processing {item.get('image_path', 'unknown')}: {e}")
+                    pbar.write(f"[LoRATrainer] ERROR processing {item.get('image_path', 'unknown')}: {e}")
                     import traceback
                     traceback.print_exc()
                     continue
+
+            pbar.close()
 
         print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 

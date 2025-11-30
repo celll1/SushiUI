@@ -2907,3 +2907,97 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
     checkpoints.sort(key=lambda x: x["step"], reverse=True)
 
     return {"checkpoints": checkpoints}
+
+@router.get("/training/runs/{run_id}/metrics")
+async def get_training_metrics(
+    run_id: int,
+    since_step: Optional[int] = None,
+    max_points: int = 1000,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Get training metrics (loss, learning_rate) from TensorBoard event files.
+
+    Args:
+        run_id: Training run ID
+        since_step: Only return data after this step (for incremental updates)
+        max_points: Maximum number of data points to return (for decimation)
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    import glob
+
+    output_dir = Path(run.output_dir)
+    tensorboard_dir = output_dir / "tensorboard"
+
+    if not tensorboard_dir.exists():
+        return {"loss": [], "learning_rate": []}
+
+    try:
+        from tensorboard.backend.event_processing import event_accumulator
+
+        # Find all event files in all subdirectories (timestamp-based)
+        event_files = []
+        for subdir in tensorboard_dir.iterdir():
+            if subdir.is_dir():
+                event_files.extend(glob.glob(str(subdir / "events.out.tfevents.*")))
+
+        if not event_files:
+            return {"loss": [], "learning_rate": []}
+
+        # Use the most recent event file or merge all
+        all_loss = []
+        all_lr = []
+
+        for event_file in event_files:
+            ea = event_accumulator.EventAccumulator(event_file)
+            ea.Reload()
+
+            # Get scalar tags
+            if 'train/loss' in ea.Tags()['scalars']:
+                loss_events = ea.Scalars('train/loss')
+                all_loss.extend([
+                    {"step": int(e.step), "value": float(e.value), "wall_time": float(e.wall_time)}
+                    for e in loss_events
+                ])
+
+            if 'train/learning_rate' in ea.Tags()['scalars']:
+                lr_events = ea.Scalars('train/learning_rate')
+                all_lr.extend([
+                    {"step": int(e.step), "value": float(e.value), "wall_time": float(e.wall_time)}
+                    for e in lr_events
+                ])
+
+        # Sort by step
+        all_loss.sort(key=lambda x: x["step"])
+        all_lr.sort(key=lambda x: x["step"])
+
+        # Filter by since_step if provided
+        if since_step is not None:
+            all_loss = [d for d in all_loss if d["step"] > since_step]
+            all_lr = [d for d in all_lr if d["step"] > since_step]
+
+        # Decimate data if too many points (simple nth-point sampling)
+        def decimate(data, max_points):
+            if len(data) <= max_points:
+                return data
+            step_size = len(data) // max_points
+            return [data[i] for i in range(0, len(data), step_size)][:max_points]
+
+        all_loss = decimate(all_loss, max_points)
+        all_lr = decimate(all_lr, max_points)
+
+        return {
+            "loss": all_loss,
+            "learning_rate": all_lr
+        }
+
+    except ImportError:
+        raise HTTPException(status_code=500, detail="TensorBoard library not available")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to read metrics: {str(e)}")

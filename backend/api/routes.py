@@ -2613,6 +2613,7 @@ class TrainingRunCreateRequest(BaseModel):
     base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]
     bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
     multi_resolution_mode: str = "max"  # "max" or "random"
+    cache_latents_to_disk: bool = True  # Cache VAE latents and text embeddings to disk
 
     # Component-specific training
     train_unet: bool = True
@@ -2733,6 +2734,7 @@ async def create_training_run(
                 text_encoder_lr=request.text_encoder_lr,
                 text_encoder_1_lr=request.text_encoder_1_lr,
                 text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

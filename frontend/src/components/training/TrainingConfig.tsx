@@ -72,6 +72,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [baseResolutions, setBaseResolutions] = useState<number[]>([1024]);
   const [bucketStrategy, setBucketStrategy] = useState<"resize" | "crop" | "random_crop">("resize");
   const [multiResolutionMode, setMultiResolutionMode] = useState<"max" | "random">("max");
+  const [cacheLatentsToDisk, setCacheLatentsToDisk] = useState(true);
 
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
@@ -270,6 +271,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       base_resolutions: enableBucketing ? baseResolutions : undefined,
       bucket_strategy: enableBucketing ? bucketStrategy : undefined,
       multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
+      cache_latents_to_disk: cacheLatentsToDisk,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
       unet_lr: unetLr ? parseFloat(unetLr) : null,
@@ -1114,6 +1116,23 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </div>
             </>
           )}
+
+          {/* Cache Latents (always shown, works with or without bucketing) */}
+          <div className="flex items-center space-x-3 pt-2 border-t border-gray-700">
+            <input
+              type="checkbox"
+              id="cache-latents"
+              checked={cacheLatentsToDisk}
+              onChange={(e) => setCacheLatentsToDisk(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="cache-latents" className="text-sm text-gray-400">
+              Cache latents to disk (reduces VRAM usage)
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">
+            Pre-encode images and text to disk cache. Significantly reduces VRAM during training (VAE/Text Encoders stay on CPU).
+          </p>
         </div>
 
         {/* Buttons */}

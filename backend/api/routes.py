@@ -3150,22 +3150,38 @@ async def visualize_debug_latent(
         if latent_tensor.dim() == 4:
             latent_tensor = latent_tensor[0]  # Remove batch dimension
 
-        # Take mean across channels to get single-channel image
-        # Shape: [C, H, W] -> [H, W]
-        latent_image = latent_tensor.mean(dim=0).numpy()
+        # latent_tensor shape: [C, H, W]
+        # For SDXL latents: C=4, we'll map first 3 channels to RGB
+        latent_np = latent_tensor.numpy()  # [C, H, W]
 
-        # Normalize to 0-255 range
-        latent_min = latent_image.min()
-        latent_max = latent_image.max()
-        if latent_max - latent_min > 1e-6:
-            latent_image = (latent_image - latent_min) / (latent_max - latent_min) * 255
+        # Take first 3 channels (or repeat if less than 3)
+        if latent_np.shape[0] >= 3:
+            # Use first 3 channels as R, G, B
+            rgb_channels = latent_np[:3]  # [3, H, W]
+        elif latent_np.shape[0] == 1:
+            # Single channel, repeat 3 times
+            rgb_channels = np.repeat(latent_np, 3, axis=0)  # [3, H, W]
         else:
-            latent_image = np.zeros_like(latent_image)
+            # Pad with zeros to 3 channels
+            rgb_channels = np.zeros((3,) + latent_np.shape[1:])
+            rgb_channels[:latent_np.shape[0]] = latent_np
 
-        latent_image = latent_image.astype(np.uint8)
+        # Normalize each channel independently to 0-255
+        normalized = np.zeros_like(rgb_channels)
+        for i in range(3):
+            channel = rgb_channels[i]
+            ch_min = channel.min()
+            ch_max = channel.max()
+            if ch_max - ch_min > 1e-6:
+                normalized[i] = (channel - ch_min) / (ch_max - ch_min) * 255
+            else:
+                normalized[i] = np.zeros_like(channel)
 
-        # Convert to RGB (grayscale -> RGB)
-        pil_image = Image.fromarray(latent_image, mode='L').convert('RGB')
+        # Convert to [H, W, 3] and uint8
+        rgb_image = normalized.transpose(1, 2, 0).astype(np.uint8)  # [H, W, 3]
+
+        # Convert to PIL Image
+        pil_image = Image.fromarray(rgb_image, mode='RGB')
 
         return pil_image
 
@@ -3194,6 +3210,10 @@ async def visualize_debug_latent(
     if "predicted_noise" in data:
         img = latent_to_image(data["predicted_noise"])
         result["predicted_noise_image"] = image_to_base64(img)
+
+    if "predicted_latent" in data:
+        img = latent_to_image(data["predicted_latent"])
+        result["predicted_latent_image"] = image_to_base64(img)
 
     return result
 

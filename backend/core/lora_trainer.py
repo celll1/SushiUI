@@ -527,11 +527,19 @@ class LoRATrainer:
             # Save as .pt files with detailed info
             timestep_value = timesteps[0].item()  # Batch size is 1
 
+            # Calculate predicted_latent (denoised latent at t=0)
+            # Formula: predicted_latent = (noisy_latents - sqrt(1 - alpha_bar) * predicted_noise) / sqrt(alpha_bar)
+            # For simplicity, use: predicted_latent = noisy_latents - predicted_noise
+            # This is an approximation; exact formula requires scheduler parameters
+            with torch.no_grad():
+                predicted_latent = noisy_latents - model_pred
+
             torch.save({
                 'latents': latents.detach().cpu(),
                 'noisy_latents': noisy_latents.detach().cpu(),
                 'predicted_noise': model_pred.detach().cpu(),
                 'actual_noise': noise.detach().cpu(),
+                'predicted_latent': predicted_latent.detach().cpu(),
                 'timestep': timestep_value,
                 'loss': loss.item(),
             }, debug_save_path / f"latents_t{timestep_value:04d}.pt")

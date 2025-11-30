@@ -1147,3 +1147,28 @@ export const getTensorBoardStatus = async (runId: number): Promise<TensorBoardSt
   const response = await api.get(`/training/runs/${runId}/tensorboard/status`);
   return response.data;
 };
+
+// Training Metrics API
+export interface MetricPoint {
+  step: number;
+  value: number;
+  wall_time: number;
+}
+
+export interface TrainingMetrics {
+  loss: MetricPoint[];
+  learning_rate: MetricPoint[];
+}
+
+export const getTrainingMetrics = async (
+  runId: number,
+  sinceStep?: number,
+  maxPoints: number = 1000
+): Promise<TrainingMetrics> => {
+  const params: any = { max_points: maxPoints };
+  if (sinceStep !== undefined) {
+    params.since_step = sinceStep;
+  }
+  const response = await api.get(`/training/runs/${runId}/metrics`, { params });
+  return response.data;
+};

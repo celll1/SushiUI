@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { X, Play, Square, BarChart3, Trash2 } from "lucide-react";
 import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, startTensorBoard, stopTensorBoard, getTensorBoardStatus } from "@/utils/api";
+import LossChart from "./LossChart";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
@@ -319,8 +320,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             )}
           </div>
 
+          {/* Loss Chart - show directly without TensorBoard server */}
+          {(currentRun.status === "running" || currentRun.status === "completed") && (
+            <div className="mt-4">
+              <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+            </div>
+          )}
+
           {tensorboardRunning && tensorboardUrl ? (
-            <div className="bg-gray-900 rounded overflow-hidden" style={{ height: "600px" }}>
+            <div className="mt-4 bg-gray-900 rounded overflow-hidden" style={{ height: "600px" }}>
               <iframe
                 src={tensorboardUrl}
                 className="w-full h-full border-0"
@@ -328,15 +336,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               />
             </div>
           ) : (
-            <div className="bg-gray-900 rounded p-8 text-center text-gray-500 text-sm">
-              {currentRun.status === "running" || currentRun.status === "completed" ? (
-                <div>
-                  <p className="mb-2">Click "Start TensorBoard" to view training metrics</p>
-                  <p className="text-xs">Loss, learning rate, and other metrics will be displayed here</p>
-                </div>
-              ) : (
-                <p>TensorBoard will be available when training starts</p>
-              )}
+            <div className="mt-4 bg-gray-900 rounded p-8 text-center text-gray-500 text-sm">
+              <p className="mb-2">Click "Start TensorBoard" to view all metrics</p>
+              <p className="text-xs">Full TensorBoard interface with all training metrics and visualizations</p>
             </div>
           )}
         </div>

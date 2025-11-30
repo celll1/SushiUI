@@ -35,8 +35,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [useEpochs, setUseEpochs] = useState(false);
   const [totalSteps, setTotalSteps] = useState(1000);
   const [epochs, setEpochs] = useState(10);
-  const [batchSize, setBatchSize] = useState(1);
-  const [learningRate, setLearningRate] = useState<string>("0.0001");
+  const [batchSize, setBatchSize] = useState(4);
+  const [learningRate, setLearningRate] = useState<string>("1e-5");
   const [lrScheduler, setLrScheduler] = useState("constant");
   const [optimizer, setOptimizer] = useState("adamw8bit");
 
@@ -75,9 +75,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
-  const [trainTextEncoder, setTrainTextEncoder] = useState(false);
-  const [unetLr, setUnetLr] = useState<string>("");
-  const [textEncoderLr, setTextEncoderLr] = useState<string>("");
+  const [trainTextEncoder, setTrainTextEncoder] = useState(true);
+  const [unetLr, setUnetLr] = useState<string>("1e-5");
+  const [textEncoderLr, setTextEncoderLr] = useState<string>("1e-6");
   const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
   const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
 

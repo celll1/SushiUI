@@ -37,6 +37,18 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState<string | null>(null);
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
 
+  // Sample generation
+  const [samplePrompts, setSamplePrompts] = useState<Array<{positive: string, negative: string}>>([
+    { positive: "", negative: "" }
+  ]);
+  const [sampleWidth, setSampleWidth] = useState(1024);
+  const [sampleHeight, setSampleHeight] = useState(1024);
+  const [sampleSteps, setSampleSteps] = useState(28);
+  const [sampleCfgScale, setSampleCfgScale] = useState(7.0);
+  const [sampleSampler, setSampleSampler] = useState("euler");
+  const [sampleScheduleType, setSampleScheduleType] = useState("sgm_uniform");
+  const [sampleSeed, setSampleSeed] = useState(-1);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,7 +121,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
-      sample_prompts: [],
+      sample_prompts: samplePrompts.filter(p => p.positive.trim() !== ""),
+      sample_width: sampleWidth,
+      sample_height: sampleHeight,
+      sample_steps: sampleSteps,
+      sample_cfg_scale: sampleCfgScale,
+      sample_sampler: sampleSampler,
+      sample_schedule_type: sampleScheduleType,
+      sample_seed: sampleSeed,
       resume_from_checkpoint: resumeFromCheckpoint || undefined,
     };
 
@@ -428,6 +447,181 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             </select>
             <p className="text-xs text-gray-500 mt-1">
               Note: Checkpoints will be available after first training session
+            </p>
+          </div>
+        </div>
+
+        {/* Sample Generation */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Sample Generation (Optional)</h3>
+
+          {/* Sample Every */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">Generate Sample Every (steps)</label>
+            <input
+              type="number"
+              min="0"
+              value={sampleEvery}
+              onChange={(e) => setSampleEvery(parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              placeholder="e.g., 100 (0 to disable)"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Set to 0 to disable sample generation during training
+            </p>
+          </div>
+
+          {/* Sample Prompts */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">Sample Prompts</label>
+            {samplePrompts.map((prompt, index) => (
+              <div key={index} className="mb-3 p-3 bg-gray-800 rounded border border-gray-700">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs text-gray-400">Sample {index + 1}</span>
+                  {samplePrompts.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setSamplePrompts(samplePrompts.filter((_, i) => i !== index))}
+                      className="text-red-400 hover:text-red-300 text-xs"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Positive Prompt</label>
+                    <textarea
+                      value={prompt.positive}
+                      onChange={(e) => {
+                        const updated = [...samplePrompts];
+                        updated[index].positive = e.target.value;
+                        setSamplePrompts(updated);
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      rows={2}
+                      placeholder="Enter positive prompt..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Negative Prompt</label>
+                    <textarea
+                      value={prompt.negative}
+                      onChange={(e) => {
+                        const updated = [...samplePrompts];
+                        updated[index].negative = e.target.value;
+                        setSamplePrompts(updated);
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      rows={2}
+                      placeholder="Enter negative prompt..."
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setSamplePrompts([...samplePrompts, { positive: "", negative: "" }])}
+              className="w-full px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-sm transition-colors"
+            >
+              + Add Sample Prompt
+            </button>
+          </div>
+
+          {/* Sample Parameters */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Width</label>
+              <input
+                type="number"
+                min="512"
+                max="2048"
+                step="64"
+                value={sampleWidth}
+                onChange={(e) => setSampleWidth(parseInt(e.target.value))}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Height</label>
+              <input
+                type="number"
+                min="512"
+                max="2048"
+                step="64"
+                value={sampleHeight}
+                onChange={(e) => setSampleHeight(parseInt(e.target.value))}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Steps</label>
+              <input
+                type="number"
+                min="1"
+                max="150"
+                value={sampleSteps}
+                onChange={(e) => setSampleSteps(parseInt(e.target.value))}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">CFG Scale</label>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                step="0.5"
+                value={sampleCfgScale}
+                onChange={(e) => setSampleCfgScale(parseFloat(e.target.value))}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Sampler</label>
+              <select
+                value={sampleSampler}
+                onChange={(e) => setSampleSampler(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="euler">Euler</option>
+                <option value="euler_a">Euler A</option>
+                <option value="dpmpp_2m">DPM++ 2M</option>
+                <option value="dpmpp_2m_sde">DPM++ 2M SDE</option>
+                <option value="dpmpp_3m_sde">DPM++ 3M SDE</option>
+                <option value="heun">Heun</option>
+                <option value="lms">LMS</option>
+                <option value="ddim">DDIM</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Schedule Type</label>
+              <select
+                value={sampleScheduleType}
+                onChange={(e) => setSampleScheduleType(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="sgm_uniform">SGM Uniform</option>
+                <option value="karras">Karras</option>
+                <option value="exponential">Exponential</option>
+                <option value="simple">Simple</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Sample Seed */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">Seed</label>
+            <input
+              type="number"
+              value={sampleSeed}
+              onChange={(e) => setSampleSeed(parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              placeholder="-1 for random"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Use -1 for random seed (different each time)
             </p>
           </div>
         </div>

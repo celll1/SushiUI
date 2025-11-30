@@ -534,7 +534,9 @@ class LoRATrainer:
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=pooled_embeddings.dtype, device=self.device)
 
-            # For training, batch size is 1, so no need to duplicate
+            # Repeat time_ids for each item in batch
+            add_time_ids = add_time_ids.repeat(batch_size, 1)
+
             added_cond_kwargs = {
                 "text_embeds": pooled_embeddings,
                 "time_ids": add_time_ids
@@ -562,8 +564,8 @@ class LoRATrainer:
         if debug_save_path is not None:
             debug_save_path.mkdir(parents=True, exist_ok=True)
 
-            # Save as .pt files with detailed info
-            timestep_value = timesteps[0].item()  # Batch size is 1
+            # Save as .pt files with detailed info (save first item in batch)
+            timestep_value = timesteps[0].item()
 
             # Calculate predicted_latent (denoised latent at t=0)
             # Formula: predicted_latent = (noisy_latents - sqrt(1 - alpha_bar) * predicted_noise) / sqrt(alpha_bar)
@@ -573,13 +575,14 @@ class LoRATrainer:
                 predicted_latent = noisy_latents - model_pred
 
             torch.save({
-                'latents': latents.detach().cpu(),
-                'noisy_latents': noisy_latents.detach().cpu(),
-                'predicted_noise': model_pred.detach().cpu(),
-                'actual_noise': noise.detach().cpu(),
-                'predicted_latent': predicted_latent.detach().cpu(),
+                'latents': latents[0:1].detach().cpu(),  # Save only first item in batch
+                'noisy_latents': noisy_latents[0:1].detach().cpu(),
+                'predicted_noise': model_pred[0:1].detach().cpu(),
+                'actual_noise': noise[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent[0:1].detach().cpu(),
                 'timestep': timestep_value,
                 'loss': loss.item(),
+                'batch_size': batch_size,
             }, debug_save_path / f"latents_t{timestep_value:04d}.pt")
 
             print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value})")

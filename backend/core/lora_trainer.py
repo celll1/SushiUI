@@ -633,6 +633,30 @@ class LoRATrainer:
         # Set pipeline to eval mode
         self.unet.eval()
 
+        # Create temporary pipeline for inference
+        if self.is_sdxl:
+            from diffusers import StableDiffusionXLPipeline
+            temp_pipeline = StableDiffusionXLPipeline(
+                vae=self.vae,
+                text_encoder=self.text_encoder,
+                text_encoder_2=self.text_encoder_2,
+                tokenizer=self.tokenizer,
+                tokenizer_2=self.tokenizer_2,
+                unet=self.unet,
+                scheduler=self.noise_scheduler,
+            )
+        else:
+            from diffusers import StableDiffusionPipeline
+            temp_pipeline = StableDiffusionPipeline(
+                vae=self.vae,
+                text_encoder=self.text_encoder,
+                tokenizer=self.tokenizer,
+                unet=self.unet,
+                scheduler=self.noise_scheduler,
+            )
+
+        temp_pipeline = temp_pipeline.to(self.device)
+
         try:
             for i, prompt_pair in enumerate(sample_prompts):
                 positive_prompt = prompt_pair.get("positive", "")
@@ -648,26 +672,15 @@ class LoRATrainer:
 
                 # Generate image
                 with torch.no_grad():
-                    if self.is_sdxl:
-                        image = self.pipeline(
-                            prompt=positive_prompt,
-                            negative_prompt=negative_prompt,
-                            width=width,
-                            height=height,
-                            num_inference_steps=num_steps,
-                            guidance_scale=cfg_scale,
-                            generator=generator,
-                        ).images[0]
-                    else:
-                        image = self.pipeline(
-                            prompt=positive_prompt,
-                            negative_prompt=negative_prompt,
-                            width=width,
-                            height=height,
-                            num_inference_steps=num_steps,
-                            guidance_scale=cfg_scale,
-                            generator=generator,
-                        ).images[0]
+                    image = temp_pipeline(
+                        prompt=positive_prompt,
+                        negative_prompt=negative_prompt,
+                        width=width,
+                        height=height,
+                        num_inference_steps=num_steps,
+                        guidance_scale=cfg_scale,
+                        generator=generator,
+                    ).images[0]
 
                 # Save image
                 sample_filename = f"step_{step:06d}_sample_{i}.png"
@@ -685,6 +698,10 @@ class LoRATrainer:
             print(f"[LoRATrainer] ERROR generating sample: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # Clean up temporary pipeline
+            del temp_pipeline
+            torch.cuda.empty_cache()
 
         # Set back to train mode
         self.unet.train()

@@ -279,6 +279,13 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
+    console.log("[TrainingConfig] Learning rates:", {
+      base_lr: requestData.learning_rate,
+      unet_lr: requestData.unet_lr,
+      text_encoder_lr: requestData.text_encoder_lr,
+      text_encoder_1_lr: requestData.text_encoder_1_lr,
+      text_encoder_2_lr: requestData.text_encoder_2_lr,
+    });
 
     try {
       const newRun = await createTrainingRun(requestData);

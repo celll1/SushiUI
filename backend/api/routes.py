@@ -2640,7 +2640,7 @@ async def create_training_run(
     """Create a new training run"""
     print(f"[Training] Creating training run: {request.run_name}")
     print(f"[Training] Request data: dataset_configs={request.dataset_configs}, method={request.training_method}")
-    print(f"[Training] Steps={request.total_steps}, Epochs={request.epochs}")
+    print(f"[Training] Steps={request.total_steps}, Epochs={request.epochs}, LR={request.learning_rate}")
     try:
         # Validate that either steps or epochs is provided
         if request.total_steps is None and request.epochs is None:

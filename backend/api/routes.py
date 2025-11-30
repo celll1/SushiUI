@@ -178,7 +178,7 @@ async def generate_txt2img(
     use_torch_compile: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
     lora_configs = []
@@ -452,7 +452,7 @@ async def generate_img2img(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_gallery_db)
 ):
     """Generate image from image"""
     lora_configs = []
@@ -724,7 +724,7 @@ async def generate_inpaint(
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_gallery_db)
 ):
     """Generate inpainted image"""
     lora_configs = []
@@ -985,7 +985,7 @@ async def get_images(
     width_max: Optional[int] = None,
     height_min: Optional[int] = None,
     height_max: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_gallery_db)
 ):
     """Get list of generated images with filtering"""
     query = db.query(GeneratedImage)
@@ -1036,7 +1036,7 @@ async def get_images(
     }
 
 @router.get("/images/{image_id}")
-async def get_image(image_id: int, db: Session = Depends(get_db)):
+async def get_image(image_id: int, db: Session = Depends(get_gallery_db)):
     """Get single image details"""
     image = db.query(GeneratedImage).filter(GeneratedImage.id == image_id).first()
     if not image:
@@ -1044,7 +1044,7 @@ async def get_image(image_id: int, db: Session = Depends(get_db)):
     return image.to_dict()
 
 @router.delete("/images/{image_id}")
-async def delete_image(image_id: int, db: Session = Depends(get_db)):
+async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
     """Delete an image"""
     image = db.query(GeneratedImage).filter(GeneratedImage.id == image_id).first()
     if not image:
@@ -1065,7 +1065,7 @@ async def delete_image(image_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 @router.get("/models")
-async def get_models(db: Session = Depends(get_db)):
+async def get_models(db: Session = Depends(get_gallery_db)):
     """Get list of available models from default and user-configured directories"""
     models = []
 
@@ -1279,7 +1279,7 @@ async def get_controlnet_info(controlnet_path: str):
         }
 
 @router.get("/settings/directories")
-async def get_directory_settings(db: Session = Depends(get_db)):
+async def get_directory_settings(db: Session = Depends(get_gallery_db)):
     """Get user-configured model directories"""
     try:
         # Get or create settings record (we'll only have one record for singleton settings)
@@ -1304,7 +1304,7 @@ async def save_directory_settings(
     model_dirs: List[str] = [],
     lora_dirs: List[str] = [],
     controlnet_dirs: List[str] = [],
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_gallery_db)
 ):
     """Save user-configured model directories"""
     try:
@@ -2195,7 +2195,7 @@ class DatasetCreateRequest(BaseModel):
     read_exif: bool = False
 
 @router.get("/datasets")
-async def list_datasets(db: Session = Depends(get_db)):
+async def list_datasets(db: Session = Depends(get_datasets_db)):
     """List all datasets"""
     try:
         datasets = db.query(Dataset).order_by(Dataset.created_at.desc()).all()
@@ -2204,7 +2204,7 @@ async def list_datasets(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/datasets", status_code=201)
-async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(get_db)):
+async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(get_datasets_db)):
     """Create a new dataset"""
     try:
         existing = db.query(Dataset).filter(Dataset.name == request.name).first()
@@ -2233,7 +2233,7 @@ async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(ge
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/datasets/{dataset_id}")
-async def get_dataset(dataset_id: int, db: Session = Depends(get_db)):
+async def get_dataset(dataset_id: int, db: Session = Depends(get_datasets_db)):
     """Get dataset by ID"""
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
@@ -2241,7 +2241,7 @@ async def get_dataset(dataset_id: int, db: Session = Depends(get_db)):
     return dataset.to_dict()
 
 @router.delete("/datasets/{dataset_id}", status_code=204)
-async def delete_dataset(dataset_id: int, db: Session = Depends(get_db)):
+async def delete_dataset(dataset_id: int, db: Session = Depends(get_datasets_db)):
     """Delete dataset"""
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
@@ -2256,7 +2256,7 @@ async def search_tag_dictionary(
     category: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_datasets_db)
 ):
     """Search tag dictionary"""
     query = db.query(TagDictionary)
@@ -2272,7 +2272,7 @@ async def search_tag_dictionary(
     return {"tags": [t.to_dict() for t in tags], "total": total, "page": page, "page_size": page_size}
 
 @router.get("/tag-dictionary/stats")
-async def get_tag_dictionary_stats(db: Session = Depends(get_db)):
+async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     """Get tag dictionary statistics"""
     from sqlalchemy import func
     total_tags = db.query(func.count(TagDictionary.id)).scalar()
@@ -2281,7 +2281,7 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_db)):
 @router.post("/datasets/{dataset_id}/scan")
 async def scan_dataset(
     dataset_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_datasets_db)
 ):
     """Scan dataset directory and register images/captions"""
     import os
@@ -2420,7 +2420,7 @@ async def list_dataset_items(
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_datasets_db)
 ):
     """List dataset items with pagination and search"""
     query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
@@ -2443,7 +2443,7 @@ async def list_dataset_items(
 async def get_dataset_item(
     dataset_id: int,
     item_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_datasets_db)
 ):
     """Get detailed dataset item with captions"""
     item = db.query(DatasetItem).filter(
@@ -2504,7 +2504,11 @@ class TrainingRunCreateRequest(BaseModel):
     sample_prompts: List[str] = []
 
 @router.post("/training/runs", status_code=201)
-async def create_training_run(request: TrainingRunCreateRequest, db: Session = Depends(get_db)):
+async def create_training_run(
+    request: TrainingRunCreateRequest,
+    training_db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db)
+):
     """Create a new training run"""
     print(f"[Training] Creating training run: {request.run_name}")
     print(f"[Training] Request data: dataset_id={request.dataset_id}, method={request.training_method}")
@@ -2516,8 +2520,8 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         if request.total_steps is not None and request.epochs is not None:
             raise HTTPException(status_code=400, detail="Cannot specify both total_steps and epochs")
 
-        # Check if dataset exists
-        dataset = db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
+        # Check if dataset exists (in datasets.db)
+        dataset = datasets_db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -2527,7 +2531,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         run_name = request.run_name if request.run_name else run_id
 
         # Check if run name is unique
-        existing = db.query(TrainingRun).filter(TrainingRun.run_name == run_name).first()
+        existing = training_db.query(TrainingRun).filter(TrainingRun.run_name == run_name).first()
         if existing:
             raise HTTPException(status_code=400, detail=f"Training run '{run_name}' already exists")
 
@@ -2588,7 +2592,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         calculated_total_steps = request.total_steps
         if request.epochs is not None:
             # Estimate steps based on dataset size and batch size
-            dataset_size = db.query(DatasetItem).filter(DatasetItem.dataset_id == request.dataset_id).count()
+            dataset_size = datasets_db.query(DatasetItem).filter(DatasetItem.dataset_id == request.dataset_id).count()
             if dataset_size == 0:
                 raise HTTPException(status_code=400, detail="Dataset has no items")
             calculated_total_steps = (dataset_size // request.batch_size) * request.epochs
@@ -2613,9 +2617,9 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
             status="pending"
         )
 
-        db.add(training_run)
-        db.commit()
-        db.refresh(training_run)
+        training_db.add(training_run)
+        training_db.commit()
+        training_db.refresh(training_run)
 
         return training_run.to_dict()
 
@@ -2625,11 +2629,11 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         print(f"[Training] ERROR: {type(e).__name__}: {str(e)}")
         import traceback
         traceback.print_exc()
-        db.rollback()
+        training_db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/training/runs")
-async def list_training_runs(db: Session = Depends(get_db)):
+async def list_training_runs(db: Session = Depends(get_training_db)):
     """List all training runs"""
     try:
         runs = db.query(TrainingRun).order_by(TrainingRun.created_at.desc()).all()
@@ -2638,7 +2642,7 @@ async def list_training_runs(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/training/runs/{run_id}")
-async def get_training_run(run_id: int, db: Session = Depends(get_db)):
+async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Get training run details"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
@@ -2646,7 +2650,7 @@ async def get_training_run(run_id: int, db: Session = Depends(get_db)):
     return run.to_dict()
 
 @router.delete("/training/runs/{run_id}")
-async def delete_training_run(run_id: int, db: Session = Depends(get_db)):
+async def delete_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Delete a training run"""
     try:
         run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -2668,7 +2672,7 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/training/runs/{run_id}/start")
-async def start_training_run(run_id: int, db: Session = Depends(get_db)):
+async def start_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Start a training run"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
@@ -2761,7 +2765,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to start training: {str(e)}")
 
 @router.post("/training/runs/{run_id}/stop")
-async def stop_training_run(run_id: int, db: Session = Depends(get_db)):
+async def stop_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Stop a training run"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
@@ -2789,7 +2793,7 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
 
 @router.get("/training/runs/{run_id}/status")
-async def get_training_status(run_id: int, db: Session = Depends(get_db)):
+async def get_training_status(run_id: int, db: Session = Depends(get_training_db)):
     """Get current training status"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
@@ -2810,7 +2814,7 @@ async def get_training_status(run_id: int, db: Session = Depends(get_db)):
     }
 
 @router.post("/training/runs/{run_id}/tensorboard/start")
-async def start_tensorboard(run_id: int, db: Session = Depends(get_db)):
+async def start_tensorboard(run_id: int, db: Session = Depends(get_training_db)):
     """Start TensorBoard server for a training run"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:

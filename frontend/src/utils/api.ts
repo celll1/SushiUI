@@ -1124,6 +1124,8 @@ export interface TrainingRunCreateRequest {
   sample_sampler?: string;
   sample_schedule_type?: string;
   sample_seed?: number;
+  debug_latents?: boolean;
+  debug_latents_every?: number;
 }
 
 export interface TrainingRunListResponse {

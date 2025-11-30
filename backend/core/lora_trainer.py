@@ -443,49 +443,16 @@ class LoRATrainer:
 
         return latents
 
-    def unet_forward_with_lora(self, sample, timestep, encoder_hidden_states, added_cond_kwargs=None):
-        """Forward pass through UNet with LoRA injected."""
-        # Store original forward methods
-        original_forwards = {}
-
-        # Inject LoRA into forward pass
-        for name, module in self.unet.named_modules():
-            if name in self.lora_layers and isinstance(module, torch.nn.Linear):
-                lora = self.lora_layers[name]
-
-                # Save original forward
-                original_forwards[name] = module.forward
-
-                # Create new forward that includes LoRA
-                def make_forward_with_lora(original_module, lora_layer):
-                    def forward_with_lora(x):
-                        return original_module._original_forward(x) + lora_layer(x)
-                    return forward_with_lora
-
-                # Temporarily replace forward
-                module._original_forward = module.forward
-                module.forward = make_forward_with_lora(module, lora)
-
-        # Forward pass (with SDXL support)
-        if self.is_sdxl and added_cond_kwargs is not None:
-            output = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=added_cond_kwargs)
-        else:
-            output = self.unet(sample, timestep, encoder_hidden_states)
-
-        # Restore original forwards
-        for name, module in self.unet.named_modules():
-            if name in original_forwards:
-                module.forward = original_forwards[name]
-                if hasattr(module, '_original_forward'):
-                    delattr(module, '_original_forward')
-
-        return output
+    # Note: unet_forward_with_lora() removed - no longer needed
+    # LoRA layers are already integrated into self.unet via _apply_lora()
+    # Just call self.unet() directly
 
     def train_step(
         self,
         latents: torch.Tensor,
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
+        debug_save_path: Optional[Path] = None,
     ) -> float:
         """
         Perform single training step.
@@ -494,6 +461,7 @@ class LoRATrainer:
             latents: Image latents [B, C, H, W]
             text_embeddings: Text prompt embeddings [B, 77, 768]
             pooled_embeddings: Pooled text embeddings (SDXL only)
+            debug_save_path: If provided, save latents for debugging
 
         Returns:
             Loss value
@@ -534,16 +502,41 @@ class LoRATrainer:
                 "time_ids": add_time_ids
             }
 
-        # Predict noise using UNet with LoRA
-        model_pred = self.unet_forward_with_lora(
-            noisy_latents,
-            timesteps,
-            text_embeddings,
-            added_cond_kwargs=added_cond_kwargs
-        ).sample
+        # Predict noise using UNet (LoRA is already integrated)
+        if self.is_sdxl and added_cond_kwargs is not None:
+            model_pred = self.unet(
+                noisy_latents,
+                timesteps,
+                text_embeddings,
+                added_cond_kwargs=added_cond_kwargs
+            ).sample
+        else:
+            model_pred = self.unet(
+                noisy_latents,
+                timesteps,
+                text_embeddings
+            ).sample
 
         # Calculate loss (MSE between predicted and actual noise)
         loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+
+        # Debug: Save latents if requested
+        if debug_save_path is not None:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+
+            # Save as .pt files with detailed info
+            timestep_value = timesteps[0].item()  # Batch size is 1
+
+            torch.save({
+                'latents': latents.detach().cpu(),
+                'noisy_latents': noisy_latents.detach().cpu(),
+                'predicted_noise': model_pred.detach().cpu(),
+                'actual_noise': noise.detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss.item(),
+            }, debug_save_path / f"latents_t{timestep_value:04d}.pt")
+
+            print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value})")
 
         # Backward pass
         self.optimizer.zero_grad()
@@ -900,6 +893,8 @@ class LoRATrainer:
         sample_config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
         resume_from_checkpoint: Optional[str] = None,
+        debug_latents: bool = False,
+        debug_latents_every: int = 50,
     ):
         """
         Train LoRA on dataset.
@@ -920,6 +915,14 @@ class LoRATrainer:
         print(f"[LoRATrainer] Dataset: {len(dataset_items)} items")
         print(f"[LoRATrainer] Epochs: {num_epochs}")
         print(f"[LoRATrainer] Batch size: {batch_size}")
+        print(f"[LoRATrainer] Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+
+        # Create debug directory if debug mode is enabled
+        debug_dir = None
+        if debug_latents:
+            debug_dir = self.output_dir / "debug"
+            debug_dir.mkdir(exist_ok=True)
+            print(f"[LoRATrainer] Debug latents will be saved to: {debug_dir}")
 
         total_steps = len(dataset_items) * num_epochs
 
@@ -1002,13 +1005,18 @@ class LoRATrainer:
                     caption = item.get("caption", "")
                     prompt_output = self.encode_prompt(caption)
 
+                    # Determine if we should save debug latents for this step
+                    debug_save_path = None
+                    if debug_dir is not None and global_step % debug_latents_every == 0:
+                        debug_save_path = debug_dir / f"step_{global_step:06d}"
+
                     # Handle SD1.5 vs SDXL output
                     if self.is_sdxl:
                         text_embeddings, pooled_embeddings = prompt_output
-                        loss = self.train_step(latents, text_embeddings, pooled_embeddings)
+                        loss = self.train_step(latents, text_embeddings, pooled_embeddings, debug_save_path=debug_save_path)
                     else:
                         text_embeddings = prompt_output
-                        loss = self.train_step(latents, text_embeddings)
+                        loss = self.train_step(latents, text_embeddings, debug_save_path=debug_save_path)
 
                     global_step += 1
 

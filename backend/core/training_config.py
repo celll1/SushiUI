@@ -29,6 +29,8 @@ class TrainingConfigGenerator:
         save_every: int = 100,
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
+        debug_latents: bool = False,
+        debug_latents_every: int = 50,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -49,6 +51,8 @@ class TrainingConfigGenerator:
             save_every: Save checkpoint every N steps/epochs
             sample_every: Generate sample every N steps/epochs
             sample_prompts: List of prompts for sample generation
+            debug_latents: Enable debug mode to save latents
+            debug_latents_every: Save debug latents every N steps
 
         Returns:
             YAML configuration string
@@ -102,6 +106,8 @@ class TrainingConfigGenerator:
                             "lr_scheduler": lr_scheduler,
                             "ema_config": {"use_ema": True, "ema_decay": 0.99},
                             "dtype": "bf16",
+                            "debug_latents": debug_latents,
+                            "debug_latents_every": debug_latents_every,
                         },
                         "model": {
                             "name_or_path": base_model_path,

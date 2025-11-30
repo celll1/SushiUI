@@ -3136,3 +3136,77 @@ async def get_training_metrics(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to read metrics: {str(e)}")
+
+
+@router.get("/training/runs/{run_id}/samples")
+async def get_training_samples(
+    run_id: int,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Get list of sample images generated during training.
+
+    Returns:
+        List of sample image info with step number and file path
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    import re
+
+    output_dir = Path(run.output_dir)
+    samples_dir = output_dir / "samples"
+
+    if not samples_dir.exists():
+        return {"samples": []}
+
+    # Find all sample images: step_{step:06d}_sample_{i}.png
+    sample_files = list(samples_dir.glob("step_*_sample_*.png"))
+
+    # Parse step numbers and organize
+    samples_by_step = {}
+    pattern = re.compile(r"step_(\d+)_sample_(\d+)\.png")
+
+    # Get absolute path of training directory (project root / training)
+    import os
+    project_root = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    training_base = (project_root / "training").resolve()
+
+    for file in sample_files:
+        match = pattern.match(file.name)
+        if match:
+            step = int(match.group(1))
+            sample_idx = int(match.group(2))
+
+            if step not in samples_by_step:
+                samples_by_step[step] = []
+
+            # Convert absolute path to relative path from training directory
+            # e.g., /path/to/training/20251130_220607_28dee11d/samples/step_000100_sample_0.png
+            # -> 20251130_220607_28dee11d/samples/step_000100_sample_0.png
+            file_abs = file.resolve()
+            try:
+                relative_path = file_abs.relative_to(training_base)
+                path_url = f"/training/{relative_path.as_posix()}"
+            except ValueError:
+                # Fallback: if not under training directory, construct path from output_dir
+                # This should not happen but handle gracefully
+                relative_to_output = file.relative_to(output_dir)
+                path_url = f"/training/{output_dir.name}/{relative_to_output.as_posix()}"
+
+            samples_by_step[step].append({
+                "sample_index": sample_idx,
+                "path": path_url
+            })
+
+    # Sort by step and return
+    samples = []
+    for step in sorted(samples_by_step.keys()):
+        samples.append({
+            "step": step,
+            "images": sorted(samples_by_step[step], key=lambda x: x["sample_index"])
+        })
+
+    return {"samples": samples}

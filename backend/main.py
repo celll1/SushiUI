@@ -129,6 +129,14 @@ if os.path.exists(settings.thumbnails_dir):
 else:
     print(f"[Static] WARNING: thumbnails_dir does not exist: {settings.thumbnails_dir}")
 
+# Mount training directory
+training_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "training")
+if os.path.exists(training_dir):
+    print(f"[Static] Mounting /training -> {training_dir}")
+    app.mount("/training", StaticFiles(directory=training_dir), name="training")
+else:
+    print(f"[Static] WARNING: training directory does not exist: {training_dir}")
+
 @app.get("/")
 async def root():
     return {"message": "Stable Diffusion WebUI API", "version": "0.1.0"}

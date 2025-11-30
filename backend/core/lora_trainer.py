@@ -23,13 +23,20 @@ import numpy as np
 
 
 class LoRALinearLayer(torch.nn.Module):
-    """Simple LoRA linear layer implementation."""
+    """LoRA-enhanced linear layer that wraps the original linear layer."""
 
-    def __init__(self, in_features: int, out_features: int, rank: int = 4, alpha: float = 1.0):
+    def __init__(self, original_module: torch.nn.Linear, rank: int = 4, alpha: float = 1.0):
         super().__init__()
+        self.original_module = original_module
         self.rank = rank
         self.alpha = alpha
         self.scaling = alpha / rank
+
+        in_features = original_module.in_features
+        out_features = original_module.out_features
+
+        # Freeze original layer (we only train LoRA)
+        self.original_module.requires_grad_(False)
 
         # LoRA matrices
         self.lora_down = torch.nn.Linear(in_features, rank, bias=False)
@@ -39,20 +46,42 @@ class LoRALinearLayer(torch.nn.Module):
         torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=np.sqrt(5))
         torch.nn.init.zeros_(self.lora_up.weight)
 
+        # Move to same device/dtype as original
+        self.lora_down.to(original_module.weight.device, dtype=original_module.weight.dtype)
+        self.lora_up.to(original_module.weight.device, dtype=original_module.weight.dtype)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.lora_up(self.lora_down(x)) * self.scaling
+        # Original layer output + LoRA adjustment
+        result = self.original_module(x)
+        lora_result = self.lora_up(self.lora_down(x)) * self.scaling
+        return result + lora_result
+
+    # Delegate attributes to original module
+    @property
+    def weight(self):
+        return self.original_module.weight
+
+    @property
+    def bias(self):
+        return self.original_module.bias
+
+    @property
+    def in_features(self):
+        return self.original_module.in_features
+
+    @property
+    def out_features(self):
+        return self.original_module.out_features
 
 
 def inject_lora_into_linear(module: torch.nn.Linear, rank: int = 4, alpha: float = 1.0):
-    """Inject LoRA into a linear layer."""
-    lora = LoRALinearLayer(
-        module.in_features,
-        module.out_features,
+    """Inject LoRA into a linear layer by wrapping it."""
+    lora_module = LoRALinearLayer(
+        original_module=module,
         rank=rank,
         alpha=alpha
     )
-    lora.to(module.weight.device, dtype=module.weight.dtype)
-    return lora
+    return lora_module
 
 
 class LoRATrainer:
@@ -233,30 +262,63 @@ class LoRATrainer:
         lora_count = 0
 
         # Recursively find and inject LoRA into target modules
+        # We need to replace modules in the parent, so we track parent-child relationships
+        def replace_module(parent_module, child_name, new_module):
+            """Replace a child module in the parent module."""
+            setattr(parent_module, child_name, new_module)
+
+        # Collect modules to replace (can't modify dict while iterating)
+        modules_to_replace = []
         for name, module in self.unet.named_modules():
             # Check if this is a target module
             if any(target in name for target in target_modules):
                 if isinstance(module, torch.nn.Linear):
-                    # Create LoRA layer
-                    lora = inject_lora_into_linear(module, self.lora_rank, self.lora_alpha)
-                    self.lora_layers[name] = lora
-                    lora_count += 1
+                    modules_to_replace.append((name, module))
 
-        print(f"[LoRATrainer] Injected {lora_count} LoRA layers")
+        # Replace modules
+        for full_name, original_module in modules_to_replace:
+            # Parse the full name to get parent and child name
+            # e.g., "down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q"
+            name_parts = full_name.split(".")
 
-        # Count trainable parameters
-        trainable_params = sum(p.numel() for lora in self.lora_layers.values() for p in lora.parameters())
+            # Navigate to parent module
+            parent = self.unet
+            for part in name_parts[:-1]:
+                parent = getattr(parent, part)
+
+            child_name = name_parts[-1]
+
+            # Create LoRA layer
+            lora_module = inject_lora_into_linear(original_module, self.lora_rank, self.lora_alpha)
+
+            # Replace in parent
+            setattr(parent, child_name, lora_module)
+
+            # Store reference
+            self.lora_layers[full_name] = lora_module
+            lora_count += 1
+
+        print(f"[LoRATrainer] Injected {lora_count} LoRA layers into U-Net")
+
+        # Count trainable parameters (LoRA only)
+        trainable_params = 0
+        for lora in self.lora_layers.values():
+            trainable_params += sum(p.numel() for p in lora.lora_down.parameters())
+            trainable_params += sum(p.numel() for p in lora.lora_up.parameters())
+
         total_params = sum(p.numel() for p in self.unet.parameters())
-        print(f"[LoRATrainer] Trainable params: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
+        print(f"[LoRATrainer] Trainable LoRA params: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
 
     def setup_optimizer(self, optimizer_type: str = "adamw8bit", lr_scheduler_type: str = "constant", total_steps: int = 1000):
         """Setup optimizer and learning rate scheduler."""
         print(f"[LoRATrainer] Setting up optimizer: {optimizer_type}")
 
-        # Get trainable parameters (LoRA weights only)
+        # Get trainable parameters (LoRA weights only, not original layer weights)
         trainable_params = []
         for lora in self.lora_layers.values():
-            trainable_params.extend(lora.parameters())
+            # Only add LoRA-specific parameters (lora_down and lora_up)
+            trainable_params.extend(lora.lora_down.parameters())
+            trainable_params.extend(lora.lora_up.parameters())
 
         if optimizer_type == "adamw8bit":
             try:
@@ -606,7 +668,7 @@ class LoRATrainer:
 
     def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any]):
         """
-        Generate sample images during training.
+        Generate sample images during training using custom sampling loop.
 
         Args:
             step: Current training step
@@ -627,13 +689,23 @@ class LoRATrainer:
         num_steps = config.get("steps", 28)
         cfg_scale = config.get("cfg_scale", 7.0)
         sampler = config.get("sampler", "euler")
-        schedule_type = config.get("schedule_type", "sgm_uniform")
+        # Note: schedule_type is not used with copy.deepcopy(self.noise_scheduler)
+        # The scheduler's timestep distribution is determined by the scheduler class itself
         seed = config.get("seed", -1)
 
-        # Set pipeline to eval mode
+        # Set components to eval mode
         self.unet.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.eval()
 
-        # Create temporary pipeline for inference
+        # Create a separate scheduler instance for sample generation
+        # IMPORTANT: Don't reuse self.noise_scheduler because it will be modified
+        import copy
+        temp_scheduler = copy.deepcopy(self.noise_scheduler)
+
+        # Create temporary pipeline for prompt encoding and component access
         if self.is_sdxl:
             from diffusers import StableDiffusionXLPipeline
             temp_pipeline = StableDiffusionXLPipeline(
@@ -643,7 +715,7 @@ class LoRATrainer:
                 tokenizer=self.tokenizer,
                 tokenizer_2=self.tokenizer_2,
                 unet=self.unet,
-                scheduler=self.noise_scheduler,
+                scheduler=temp_scheduler,
             )
         else:
             from diffusers import StableDiffusionPipeline
@@ -652,10 +724,31 @@ class LoRATrainer:
                 text_encoder=self.text_encoder,
                 tokenizer=self.tokenizer,
                 unet=self.unet,
-                scheduler=self.noise_scheduler,
+                scheduler=temp_scheduler,
             )
 
-        temp_pipeline = temp_pipeline.to(self.device)
+        # VRAM optimization: Use sequential component loading
+        print(f"[LoRATrainer] Applying VRAM optimization (sequential component loading)")
+
+        # Import VRAM optimization functions and custom sampling loop
+        from core.vram_optimization import (
+            move_text_encoders_to_gpu,
+            move_text_encoders_to_cpu,
+            move_unet_to_gpu,
+            move_unet_to_cpu,
+            move_vae_to_gpu,
+            move_vae_to_cpu,
+            log_device_status,
+        )
+        from core.custom_sampling import custom_sampling_loop
+
+        # Start with components on CPU for VRAM optimization
+        move_text_encoders_to_cpu(temp_pipeline)
+        move_unet_to_cpu(temp_pipeline)
+        move_vae_to_cpu(temp_pipeline)
+        torch.cuda.empty_cache()
+
+        log_device_status("Sample generation - Initial state (all on CPU)", temp_pipeline)
 
         try:
             for i, prompt_pair in enumerate(sample_prompts):
@@ -668,19 +761,96 @@ class LoRATrainer:
                 else:
                     gen_seed = seed + i
 
+                # Create generator (device will be checked in custom_sampling_loop)
                 generator = torch.Generator(device=self.device).manual_seed(gen_seed)
 
-                # Generate image
+                print(f"[LoRATrainer] Encoding prompts for sample {i}...")
+
+                # Move text encoders to GPU for prompt encoding
+                move_text_encoders_to_gpu(temp_pipeline)
+
+                # Encode prompts using pipeline's encode_prompt method
+                prompt_embeds_tuple = temp_pipeline.encode_prompt(
+                    prompt=positive_prompt,
+                    device=self.device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False
+                )
+                prompt_embeds = prompt_embeds_tuple[0]
+                pooled_prompt_embeds = prompt_embeds_tuple[2] if len(prompt_embeds_tuple) > 2 and self.is_sdxl else None
+
+                # Encode negative prompt
+                if negative_prompt:
+                    neg_embeds_tuple = temp_pipeline.encode_prompt(
+                        prompt=negative_prompt,
+                        device=self.device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=False
+                    )
+                    negative_prompt_embeds = neg_embeds_tuple[0]
+                    negative_pooled_prompt_embeds = neg_embeds_tuple[2] if len(neg_embeds_tuple) > 2 and self.is_sdxl else None
+                else:
+                    negative_prompt_embeds = None
+                    negative_pooled_prompt_embeds = None
+
+                # Move text encoders back to CPU to free VRAM
+                move_text_encoders_to_cpu(temp_pipeline)
+
+                # Move UNet and VAE to GPU for inference
+                move_unet_to_gpu(temp_pipeline, quantization=None, use_torch_compile=False)
+                move_vae_to_gpu(temp_pipeline)
+
+                log_device_status(f"Sample {i} - Ready for inference", temp_pipeline)
+
+                print(f"[LoRATrainer] Generating sample {i} using custom_sampling_loop...")
+
+                # Generate image using custom sampling loop (same as SushiUI)
                 with torch.no_grad():
-                    image = temp_pipeline(
-                        prompt=positive_prompt,
-                        negative_prompt=negative_prompt,
-                        width=width,
-                        height=height,
+                    image = custom_sampling_loop(
+                        pipeline=temp_pipeline,
+                        prompt_embeds=prompt_embeds,
+                        negative_prompt_embeds=negative_prompt_embeds,
+                        pooled_prompt_embeds=pooled_prompt_embeds,
+                        negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
                         num_inference_steps=num_steps,
                         guidance_scale=cfg_scale,
+                        guidance_rescale=0.0,
+                        width=width,
+                        height=height,
                         generator=generator,
-                    ).images[0]
+                        ancestral_generator=None,
+                        latents=None,
+                        prompt_embeds_callback=None,
+                        progress_callback=None,
+                        step_callback=None,
+                        developer_mode=False,
+                        controlnet_images=None,
+                        controlnet_conditioning_scale=None,
+                        control_guidance_start=None,
+                        control_guidance_end=None,
+                        cfg_schedule_type="constant",
+                        cfg_schedule_min=1.0,
+                        cfg_schedule_max=None,
+                        cfg_schedule_power=2.0,
+                        cfg_rescale_snr_alpha=0.0,
+                        dynamic_threshold_percentile=0.0,
+                        dynamic_threshold_mimic_scale=1.0,
+                        nag_enable=False,
+                        nag_scale=5.0,
+                        nag_tau=3.5,
+                        nag_alpha=0.25,
+                        nag_sigma_end=0.0,
+                        nag_negative_prompt_embeds=None,
+                        nag_negative_pooled_prompt_embeds=None,
+                        attention_type="normal",
+                    )
+
+                # Move components back to CPU after generation
+                move_unet_to_cpu(temp_pipeline)
+                move_vae_to_cpu(temp_pipeline)
+                torch.cuda.empty_cache()
+
+                log_device_status(f"Sample {i} - After generation (moved to CPU)", temp_pipeline)
 
                 # Save image
                 sample_filename = f"step_{step:06d}_sample_{i}.png"
@@ -702,6 +872,18 @@ class LoRATrainer:
             # Clean up temporary pipeline
             del temp_pipeline
             torch.cuda.empty_cache()
+
+            # IMPORTANT: Restore all components to GPU for training
+            # (sample generation may have moved them to CPU)
+            print(f"[LoRATrainer] Restoring components to GPU for training")
+            self.vae.to(self.device)
+            self.text_encoder.to(self.device)
+            self.unet.to(self.device)
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.to(self.device)
+            torch.cuda.empty_cache()
+
+            print(f"[LoRATrainer] Components restored to {self.device} for training")
 
         # Set back to train mode
         self.unet.train()

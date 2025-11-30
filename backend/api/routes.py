@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional, Dict
 from pydantic import BaseModel
 from datetime import datetime
@@ -2503,6 +2504,9 @@ class TrainingRunCreateRequest(BaseModel):
 @router.post("/training/runs", status_code=201)
 async def create_training_run(request: TrainingRunCreateRequest, db: Session = Depends(get_db)):
     """Create a new training run"""
+    print(f"[Training] Creating training run: {request.run_name}")
+    print(f"[Training] Request data: dataset_id={request.dataset_id}, method={request.training_method}")
+    print(f"[Training] Steps={request.total_steps}, Epochs={request.epochs}")
     try:
         # Validate that either steps or epochs is provided
         if request.total_steps is None and request.epochs is None:
@@ -2576,15 +2580,29 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         if request.epochs is not None:
             # Estimate steps based on dataset size and batch size
             dataset_size = db.query(DatasetItem).filter(DatasetItem.dataset_id == request.dataset_id).count()
+            if dataset_size == 0:
+                raise HTTPException(status_code=400, detail="Dataset has no items")
             calculated_total_steps = (dataset_size // request.batch_size) * request.epochs
+            if calculated_total_steps == 0:
+                calculated_total_steps = dataset_size * request.epochs  # Fallback if batch_size > dataset_size
+
+        if calculated_total_steps is None or calculated_total_steps <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid total_steps calculation: {calculated_total_steps}")
+
+        print(f"[Training] Calculated total_steps: {calculated_total_steps}")
+
+        # Get next run number
+        max_run_number = db.query(func.max(TrainingRun.run_number)).scalar()
+        next_run_number = (max_run_number or 0) + 1
 
         training_run = TrainingRun(
             dataset_id=request.dataset_id,
+            run_number=next_run_number,
             run_name=request.run_name,
             training_method=request.training_method,
             base_model_path=request.base_model_path,
             config_yaml=config_yaml,
-            total_steps=calculated_total_steps or 0,
+            total_steps=calculated_total_steps,
             output_dir=output_dir,
             status="pending"
         )
@@ -2594,8 +2612,13 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         db.refresh(training_run)
 
         return training_run.to_dict()
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[Training] ERROR: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2663,6 +2686,14 @@ async def start_training_run(run_id: int, db: Session = Depends(get_db)):
         # Define progress callback to update database
         def progress_callback(step: int, loss: float, lr: float):
             try:
+                # Negative step indicates failure
+                if step < 0:
+                    print(f"[Training {run_id}] Process failed, updating status")
+                    run.status = "failed"
+                    run.error_message = "Training process exited with error"
+                    db.commit()
+                    return
+
                 run.current_step = step
                 run.loss = loss
                 run.learning_rate = lr

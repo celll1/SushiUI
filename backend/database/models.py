@@ -332,7 +332,8 @@ class TrainingRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+    run_number = Column(Integer, nullable=False, index=True)  # Sequential run number
+
     # Run identification
     run_name = Column(String, unique=True, index=True, nullable=False)
     training_method = Column(String, nullable=False, index=True)  # 'lora', 'full_finetune'
@@ -374,6 +375,7 @@ class TrainingRun(Base):
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
+            "run_number": self.run_number,
             "run_name": self.run_name,
             "training_method": self.training_method,
             "base_model_path": self.base_model_path,

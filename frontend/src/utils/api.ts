@@ -1031,6 +1031,7 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
 export interface TrainingRun {
   id: number;
   dataset_id: number;
+  run_number: number;
   run_name: string;
   training_method: "lora" | "full_finetune";
   base_model_path: string;

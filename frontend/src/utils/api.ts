@@ -1024,6 +1024,26 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export interface CaptionSubtype {
+  subtype: string;
+  count: number;
+}
+
+export interface CaptionTypeInfo {
+  caption_type: string;
+  total_count: number;
+  subtypes: CaptionSubtype[];
+}
+
+export interface CaptionTypesResponse {
+  caption_types: CaptionTypeInfo[];
+}
+
+export const getDatasetCaptionTypes = async (datasetId: number): Promise<CaptionTypesResponse> => {
+  const response = await api.get(`/datasets/${datasetId}/caption-types`);
+  return response.data;
+};
+
 export interface RandomCaptionResponse {
   caption: string;
   caption_type: string;

@@ -2473,6 +2473,61 @@ async def serve_image(path: str):
 
     return FileResponse(path)
 
+@router.get("/datasets/{dataset_id}/caption-types")
+async def get_dataset_caption_types(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """Get available caption types in the dataset with counts and subtypes"""
+    # Check dataset exists
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Query caption types with counts
+    # Group by caption_type and caption_subtype
+    from sqlalchemy import func
+
+    results = db.query(
+        DatasetCaption.caption_type,
+        DatasetCaption.caption_subtype,
+        func.count(DatasetCaption.id).label('count')
+    ).join(DatasetItem).filter(
+        DatasetItem.dataset_id == dataset_id
+    ).group_by(
+        DatasetCaption.caption_type,
+        DatasetCaption.caption_subtype
+    ).all()
+
+    # Organize results by caption_type
+    caption_types_dict = {}
+    for caption_type, caption_subtype, count in results:
+        if caption_type not in caption_types_dict:
+            caption_types_dict[caption_type] = {
+                "caption_type": caption_type,
+                "total_count": 0,
+                "subtypes": []
+            }
+
+        caption_types_dict[caption_type]["total_count"] += count
+
+        if caption_subtype:
+            caption_types_dict[caption_type]["subtypes"].append({
+                "subtype": caption_subtype,
+                "count": count
+            })
+
+    # Convert to list and sort by count
+    caption_types_list = sorted(
+        caption_types_dict.values(),
+        key=lambda x: x["total_count"],
+        reverse=True
+    )
+
+    return {
+        "caption_types": caption_types_list
+    }
+
 @router.get("/datasets/{dataset_id}/random-caption")
 async def get_random_caption(
     dataset_id: int,

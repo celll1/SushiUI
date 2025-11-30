@@ -156,6 +156,7 @@ class LoRATrainer:
         vae_dtype: str = "fp16",
         mixed_precision: bool = True,
         debug_vram: bool = False,
+        use_flash_attention: bool = False,
     ):
         """
         Initialize LoRA trainer.
@@ -173,6 +174,7 @@ class LoRATrainer:
             vae_dtype: VAE-specific dtype (fp16, fp32, bf16) - SDXL VAE works fine with fp16
             mixed_precision: Enable mixed precision training (autocast)
             debug_vram: Enable detailed VRAM profiling (default: False)
+            use_flash_attention: Enable Flash Attention for training (faster, lower memory)
         """
         self.model_path = model_path
         self.output_dir = Path(output_dir)
@@ -190,6 +192,7 @@ class LoRATrainer:
         self.vae_dtype = get_torch_dtype(vae_dtype)  # VAE-specific dtype (SDXL VAE works with fp16)
         self.mixed_precision = mixed_precision
         self.debug_vram = debug_vram
+        self.use_flash_attention = use_flash_attention
 
         # Legacy dtype for compatibility (defaults to weight_dtype)
         self.dtype = self.weight_dtype
@@ -318,6 +321,21 @@ class LoRATrainer:
             print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
         else:
             print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
+
+        # Enable Flash Attention if requested
+        if self.use_flash_attention:
+            try:
+                from core.attention_processors import FlashAttnProcessor
+                print(f"[LoRATrainer] Setting Flash Attention processors...")
+                processor = FlashAttnProcessor()
+                new_processors = {name: processor for name in self.unet.attn_processors.keys()}
+                self.unet.set_attn_processor(new_processors)
+                num_processors = len(new_processors)
+                print(f"[LoRATrainer] ✓ Flash Attention enabled for {num_processors} attention layers")
+            except ImportError:
+                print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Failed to enable Flash Attention: {e}")
 
         # Freeze all base weights
         self.vae.requires_grad_(False)

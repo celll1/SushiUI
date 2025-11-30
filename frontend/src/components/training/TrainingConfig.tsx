@@ -88,6 +88,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [outputDtype, setOutputDtype] = useState<string>("fp32");
   const [vaeDtype, setVaeDtype] = useState<string>("fp16");
   const [mixedPrecision, setMixedPrecision] = useState(true);
+  const [useFlashAttention, setUseFlashAttention] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -290,6 +291,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       output_dtype: outputDtype,
       vae_dtype: vaeDtype,
       mixed_precision: mixedPrecision,
+      use_flash_attention: useFlashAttention,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -807,22 +809,38 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
+          <div className="space-y-2">
             {/* Mixed Precision */}
-            <input
-              type="checkbox"
-              id="mixed-precision"
-              checked={mixedPrecision}
-              onChange={(e) => setMixedPrecision(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
-              Mixed Precision (Autocast)
-            </label>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="mixed-precision"
+                checked={mixedPrecision}
+                onChange={(e) => setMixedPrecision(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
+                Mixed Precision (Autocast)
+              </label>
+            </div>
+
+            {/* Flash Attention */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="use-flash-attention"
+                checked={useFlashAttention}
+                onChange={(e) => setUseFlashAttention(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="use-flash-attention" className="text-xs text-gray-300 cursor-pointer">
+                Flash Attention (faster training, lower memory)
+              </label>
+            </div>
           </div>
 
           <p className="text-xs text-gray-500">
-            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy.
+            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage.
           </p>
         </div>
 

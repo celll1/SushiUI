@@ -3049,6 +3049,154 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
 
     return {"checkpoints": checkpoints}
 
+@router.get("/training/runs/{run_id}/debug-latents")
+async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db)):
+    """Get list of debug latent saves for a training run"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    import glob
+
+    output_dir = Path(run.output_dir)
+    debug_dir = output_dir / "debug"
+
+    if not debug_dir.exists():
+        return {"debug_latents": []}
+
+    # Find all step directories
+    step_dirs = sorted([d for d in debug_dir.iterdir() if d.is_dir() and d.name.startswith("step_")])
+
+    debug_latents = []
+    for step_dir in step_dirs:
+        # Extract step number from directory name (step_XXXXXX)
+        step_str = step_dir.name.replace("step_", "")
+        try:
+            step = int(step_str)
+
+            # Find all latent .pt files in this step directory
+            latent_files = sorted(step_dir.glob("latents_t*.pt"))
+
+            for latent_file in latent_files:
+                # Extract timestep from filename (latents_tXXXX.pt)
+                timestep_str = latent_file.stem.replace("latents_t", "")
+                try:
+                    timestep = int(timestep_str)
+                    debug_latents.append({
+                        "step": step,
+                        "timestep": timestep,
+                        "filename": latent_file.name,
+                        "path": str(latent_file)
+                    })
+                except ValueError:
+                    continue
+        except ValueError:
+            continue
+
+    # Sort by step and timestep
+    debug_latents.sort(key=lambda x: (x["step"], x["timestep"]))
+
+    return {"debug_latents": debug_latents}
+
+@router.get("/training/runs/{run_id}/debug-latents/{step}/visualize")
+async def visualize_debug_latent(
+    run_id: int,
+    step: int,
+    timestep: Optional[int] = None,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Visualize debug latents as images (without VAE decoding).
+    Returns base64-encoded images for latents, noisy_latents, and predicted_noise.
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    import torch
+    import numpy as np
+    from PIL import Image
+    import io
+    import base64
+
+    output_dir = Path(run.output_dir)
+    debug_dir = output_dir / "debug" / f"step_{step:06d}"
+
+    if not debug_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Debug directory for step {step} not found")
+
+    # Find the latent file (use timestep if provided, otherwise use first one)
+    if timestep is not None:
+        latent_file = debug_dir / f"latents_t{timestep:04d}.pt"
+        if not latent_file.exists():
+            raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
+    else:
+        latent_files = sorted(debug_dir.glob("latents_t*.pt"))
+        if not latent_files:
+            raise HTTPException(status_code=404, detail="No latent files found")
+        latent_file = latent_files[0]
+
+    # Load the latent data
+    try:
+        data = torch.load(latent_file, map_location='cpu')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load latent file: {str(e)}")
+
+    def latent_to_image(latent_tensor):
+        """Convert latent tensor to PIL Image (without VAE decoding)"""
+        # latent_tensor shape: [1, C, H, W] or [C, H, W]
+        if latent_tensor.dim() == 4:
+            latent_tensor = latent_tensor[0]  # Remove batch dimension
+
+        # Take mean across channels to get single-channel image
+        # Shape: [C, H, W] -> [H, W]
+        latent_image = latent_tensor.mean(dim=0).numpy()
+
+        # Normalize to 0-255 range
+        latent_min = latent_image.min()
+        latent_max = latent_image.max()
+        if latent_max - latent_min > 1e-6:
+            latent_image = (latent_image - latent_min) / (latent_max - latent_min) * 255
+        else:
+            latent_image = np.zeros_like(latent_image)
+
+        latent_image = latent_image.astype(np.uint8)
+
+        # Convert to RGB (grayscale -> RGB)
+        pil_image = Image.fromarray(latent_image, mode='L').convert('RGB')
+
+        return pil_image
+
+    def image_to_base64(pil_image):
+        """Convert PIL Image to base64 string"""
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='PNG')
+        buffer.seek(0)
+        return base64.b64encode(buffer.read()).decode('utf-8')
+
+    # Convert each latent type to image
+    result = {
+        "step": step,
+        "timestep": data.get("timestep", 0),
+        "loss": data.get("loss", 0.0),
+    }
+
+    if "latents" in data:
+        img = latent_to_image(data["latents"])
+        result["latents_image"] = image_to_base64(img)
+
+    if "noisy_latents" in data:
+        img = latent_to_image(data["noisy_latents"])
+        result["noisy_latents_image"] = image_to_base64(img)
+
+    if "predicted_noise" in data:
+        img = latent_to_image(data["predicted_noise"])
+        result["predicted_noise_image"] = image_to_base64(img)
+
+    return result
+
 @router.get("/training/runs/{run_id}/metrics")
 async def get_training_metrics(
     run_id: int,

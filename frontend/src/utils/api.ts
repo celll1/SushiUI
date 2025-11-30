@@ -1248,3 +1248,38 @@ export const getTrainingSamples = async (runId: number): Promise<TrainingSamples
   const response = await api.get(`/training/runs/${runId}/samples`);
   return response.data;
 };
+
+export interface DebugLatent {
+  step: number;
+  timestep: number;
+  filename: string;
+  path: string;
+}
+
+export interface DebugLatentsResponse {
+  debug_latents: DebugLatent[];
+}
+
+export interface DebugLatentVisualization {
+  step: number;
+  timestep: number;
+  loss: number;
+  latents_image?: string;  // base64
+  noisy_latents_image?: string;  // base64
+  predicted_noise_image?: string;  // base64
+}
+
+export const getDebugLatents = async (runId: number): Promise<DebugLatentsResponse> => {
+  const response = await api.get(`/training/runs/${runId}/debug-latents`);
+  return response.data;
+};
+
+export const visualizeDebugLatent = async (
+  runId: number,
+  step: number,
+  timestep?: number
+): Promise<DebugLatentVisualization> => {
+  const params = timestep !== undefined ? { timestep } : {};
+  const response = await api.get(`/training/runs/${runId}/debug-latents/${step}/visualize`, { params });
+  return response.data;
+};

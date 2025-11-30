@@ -186,6 +186,12 @@ def main():
             bucket_strategy = train_config.get('bucket_strategy', 'resize')
             multi_resolution_mode = train_config.get('multi_resolution_mode', 'max')
 
+            # Get latent caching parameters
+            # Check datasets config first, then fall back to train config
+            cache_latents_to_disk = True  # Default
+            if 'datasets' in process_config and len(process_config['datasets']) > 0:
+                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,
@@ -205,6 +211,9 @@ def main():
                 base_resolutions=base_resolutions,
                 bucket_strategy=bucket_strategy,
                 multi_resolution_mode=multi_resolution_mode,
+                # Latent caching
+                cache_latents_to_disk=cache_latents_to_disk,
+                dataset_id=dataset.id,  # Use dataset.id from line 104
             )
 
             print("[TrainRunner] Training completed successfully!")

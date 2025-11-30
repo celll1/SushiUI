@@ -41,6 +41,7 @@ class TrainingConfigGenerator:
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        cache_latents_to_disk: bool = True,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -73,6 +74,7 @@ class TrainingConfigGenerator:
             text_encoder_lr: Text encoder learning rate (defaults to learning_rate if None)
             text_encoder_1_lr: Text encoder 1 learning rate for SDXL (defaults to text_encoder_lr if None)
             text_encoder_2_lr: Text encoder 2 learning rate for SDXL (defaults to text_encoder_lr if None)
+            cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
 
         Returns:
             YAML configuration string
@@ -109,7 +111,7 @@ class TrainingConfigGenerator:
                                 "caption_ext": "txt",
                                 "caption_dropout_rate": 0.05,
                                 "shuffle_tokens": False,
-                                "cache_latents_to_disk": True,
+                                "cache_latents_to_disk": cache_latents_to_disk,
                                 "resolution": [512, 768, 1024],
                             }
                         ],
@@ -227,7 +229,7 @@ class TrainingConfigGenerator:
                                 "caption_ext": "txt",
                                 "caption_dropout_rate": 0.05,
                                 "shuffle_tokens": False,
-                                "cache_latents_to_disk": True,
+                                "cache_latents_to_disk": cache_latents_to_disk,
                                 "resolution": [512, 768, 1024],
                             }
                         ],

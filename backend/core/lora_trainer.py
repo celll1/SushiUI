@@ -708,7 +708,7 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Checkpoint saved: {save_path}")
 
-    def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any]):
+    def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
         """
         Generate sample images during training using custom sampling loop.
 
@@ -917,15 +917,23 @@ class LoRATrainer:
 
             # IMPORTANT: Restore all components to GPU for training
             # (sample generation may have moved them to CPU)
-            print(f"[LoRATrainer] Restoring components to GPU for training")
-            self.vae.to(self.device)
+            print(f"[LoRATrainer] Restoring components for training")
+
+            # VAE: Keep on CPU if latent caching is enabled, otherwise move to GPU
+            if vae_on_cpu:
+                print(f"[LoRATrainer] Keeping VAE on CPU (latent caching enabled)")
+                self.vae.to('cpu')
+            else:
+                self.vae.to(self.device)
+
+            # Text encoders and U-Net always go to GPU
             self.text_encoder.to(self.device)
             self.unet.to(self.device)
             if self.text_encoder_2 is not None:
                 self.text_encoder_2.to(self.device)
             torch.cuda.empty_cache()
 
-            print(f"[LoRATrainer] Components restored to {self.device} for training")
+            print(f"[LoRATrainer] Components restored for training")
 
         # Set back to train mode
         self.unet.train()
@@ -949,6 +957,10 @@ class LoRATrainer:
         base_resolutions: List[int] = None,
         bucket_strategy: str = "resize",
         multi_resolution_mode: str = "max",
+        # Latent caching
+        cache_latents_to_disk: bool = True,
+        cache_text_embeds_to_disk: bool = False,  # Reserved for future use, not exposed in UI
+        dataset_id: Optional[int] = None,
     ):
         """
         Train LoRA on dataset.
@@ -1042,6 +1054,95 @@ class LoRATrainer:
 
         total_steps = len(batches) * num_epochs
 
+        # Generate latent cache if enabled
+        latent_cache = None
+        if cache_latents_to_disk and dataset_id is not None:
+            from core.latent_cache import LatentCache
+
+            latent_cache = LatentCache(dataset_id=dataset_id)
+
+            # Check if cache is valid
+            model_type = "sdxl" if self.is_sdxl else "sd15"
+            if not latent_cache.is_valid(self.model_path, model_type):
+                print(f"[LoRATrainer] Generating latent cache (dataset_id={dataset_id})...")
+                print(f"[LoRATrainer] This will take some time but significantly reduces VRAM during training.")
+
+                # Clear old cache
+                latent_cache.clear()
+
+                # Move VAE to GPU for encoding
+                print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
+                self.vae.to(self.device)
+
+                # Generate cache for all images in all batches
+                total_images = sum(len(batch) for batch in batches)
+                cached_count = 0
+
+                for batch_idx, batch in enumerate(batches):
+                    for item in batch:
+                        # Get bucket dimensions if available
+                        if "bucket_width" in item and "bucket_height" in item:
+                            target_width = item["bucket_width"]
+                            target_height = item["bucket_height"]
+                        else:
+                            target_width = item.get("width", 1024)
+                            target_height = item.get("height", 1024)
+
+                        # Check if already cached
+                        cached_latent = latent_cache.load_latent(
+                            item["image_path"], target_width, target_height, device=self.device
+                        )
+
+                        if cached_latent is None:
+                            # Load image
+                            image_path = item["image_path"]
+                            if not os.path.exists(image_path):
+                                print(f"[LatentCache] WARNING: Image not found: {image_path}")
+                                continue
+
+                            try:
+                                from PIL import Image
+                                image = Image.open(image_path)
+                                image.verify()  # Verify image integrity
+                                image = Image.open(image_path)  # Reopen after verify
+
+                                # Encode and cache
+                                latents = self.encode_image(
+                                    image, target_width=target_width, target_height=target_height
+                                )
+                                latent_cache.save_latent(
+                                    image_path, target_width, target_height, latents
+                                )
+                                cached_count += 1
+                            except Exception as e:
+                                print(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+                                continue
+
+                        # Progress update every 10 images
+                        if cached_count % 10 == 0:
+                            progress_pct = (cached_count / total_images) * 100
+                            print(f"[LatentCache] Cached {cached_count}/{total_images} images ({progress_pct:.1f}%)")
+
+                print(f"[LatentCache] Cache generation complete: {cached_count} images cached")
+
+                # Save cache metadata
+                latent_cache.save_cache_info(
+                    model_path=self.model_path,
+                    model_type=model_type,
+                    item_count=total_images
+                )
+
+                # Move VAE back to CPU to free VRAM
+                print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
+                self.vae.to('cpu')
+                torch.cuda.empty_cache()
+            else:
+                print(f"[LoRATrainer] Using existing latent cache (dataset_id={dataset_id})")
+                print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
+                # Move VAE to CPU
+                self.vae.to('cpu')
+                torch.cuda.empty_cache()
+
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)
 
@@ -1129,19 +1230,30 @@ class LoRATrainer:
                             pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                             continue
 
-                        try:
-                            image = Image.open(image_path)
-                            image.verify()  # Verify image integrity
-                            image = Image.open(image_path)  # Reopen after verify
-                        except Exception as img_err:
-                            pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
-                            continue
+                        # Try to load from cache first
+                        latents = None
+                        if latent_cache is not None:
+                            if target_width is not None and target_height is not None:
+                                latents = latent_cache.load_latent(
+                                    image_path, target_width, target_height, device=self.device
+                                )
 
-                        # Encode image
-                        if target_width is not None and target_height is not None:
-                            latents = self.encode_image(image, target_width=target_width, target_height=target_height)
-                        else:
-                            latents = self.encode_image(image)
+                        # If not cached, encode normally
+                        if latents is None:
+                            try:
+                                image = Image.open(image_path)
+                                image.verify()  # Verify image integrity
+                                image = Image.open(image_path)  # Reopen after verify
+                            except Exception as img_err:
+                                pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                                continue
+
+                            # Encode image
+                            if target_width is not None and target_height is not None:
+                                latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                            else:
+                                latents = self.encode_image(image)
+
                         batch_latents.append(latents)
 
                         # Encode caption
@@ -1203,7 +1315,8 @@ class LoRATrainer:
                     # Sample generation
                     if sample_prompts and sample_config and global_step % sample_every == 0:
                         pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
-                        self.generate_sample(global_step, sample_prompts, sample_config)
+                        vae_on_cpu = latent_cache is not None
+                        self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
 
                 except Exception as e:
                     pbar.write(f"[LoRATrainer] ERROR processing batch: {e}")

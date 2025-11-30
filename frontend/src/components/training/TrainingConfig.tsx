@@ -67,6 +67,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [debugLatents, setDebugLatents] = useState(false);
   const [debugLatentsEvery, setDebugLatentsEvery] = useState(50);
 
+  // Bucketing options
+  const [enableBucketing, setEnableBucketing] = useState(false);
+  const [baseResolutions, setBaseResolutions] = useState<number[]>([1024]);
+  const [bucketStrategy, setBucketStrategy] = useState<"resize" | "crop" | "random_crop">("resize");
+  const [multiResolutionMode, setMultiResolutionMode] = useState<"max" | "random">("max");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -246,6 +252,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       resume_from_checkpoint: resumeFromCheckpoint || undefined,
       debug_latents: debugLatents,
       debug_latents_every: debugLatentsEvery,
+      enable_bucketing: enableBucketing,
+      base_resolutions: enableBucketing ? baseResolutions : undefined,
+      bucket_strategy: enableBucketing ? bucketStrategy : undefined,
+      multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -870,6 +880,125 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 Saves noisy latents, predicted latents, and timestep info to debug/ folder for debugging training issues
               </p>
             </div>
+          )}
+        </div>
+
+        {/* Bucketing Options */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Aspect Ratio Bucketing</h3>
+
+          {/* Enable Bucketing Toggle */}
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="enable-bucketing"
+              checked={enableBucketing}
+              onChange={(e) => setEnableBucketing(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="enable-bucketing" className="text-sm text-gray-400">
+              Enable aspect ratio bucketing
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">
+            Allows training on images with different aspect ratios by bucketing them into similar sizes
+          </p>
+
+          {/* Bucketing Settings (only shown if enabled) */}
+          {enableBucketing && (
+            <>
+              {/* Base Resolutions */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
+                <div className="space-y-2">
+                  {/* Common presets */}
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setBaseResolutions([512])}
+                      className={`px-3 py-1 rounded text-xs transition-colors ${
+                        JSON.stringify(baseResolutions) === JSON.stringify([512])
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                      }`}
+                    >
+                      512 only
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBaseResolutions([768])}
+                      className={`px-3 py-1 rounded text-xs transition-colors ${
+                        JSON.stringify(baseResolutions) === JSON.stringify([768])
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                      }`}
+                    >
+                      768 only
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBaseResolutions([1024])}
+                      className={`px-3 py-1 rounded text-xs transition-colors ${
+                        JSON.stringify(baseResolutions) === JSON.stringify([1024])
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                      }`}
+                    >
+                      1024 only (default)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBaseResolutions([512, 768, 1024])}
+                      className={`px-3 py-1 rounded text-xs transition-colors ${
+                        JSON.stringify(baseResolutions) === JSON.stringify([512, 768, 1024])
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                      }`}
+                    >
+                      Multi (512/768/1024)
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Selected: {baseResolutions.join(", ")}
+                  </p>
+                </div>
+              </div>
+
+              {/* Multi-Resolution Mode (only show if multiple resolutions) */}
+              {baseResolutions.length > 1 && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1.5">Multi-Resolution Mode</label>
+                  <select
+                    value={multiResolutionMode}
+                    onChange={(e) => setMultiResolutionMode(e.target.value as "max" | "random")}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="max">Max (use largest resolution that fits)</option>
+                    <option value="random">Random (randomly select resolution)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    How to assign images to resolutions when multiple are specified
+                  </p>
+                </div>
+              )}
+
+              {/* Bucket Strategy */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">Bucket Strategy</label>
+                <select
+                  value={bucketStrategy}
+                  onChange={(e) => setBucketStrategy(e.target.value as "resize" | "crop" | "random_crop")}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="resize">Resize (Lanczos)</option>
+                  <option value="crop">Center Crop</option>
+                  <option value="random_crop">Random Crop</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  How to handle images that don't fit bucket exactly
+                </p>
+              </div>
+            </>
           )}
         </div>
 

@@ -610,8 +610,10 @@ class LoRATrainer:
         num_epochs: int = 1,
         batch_size: int = 1,
         save_every: int = 100,
+        save_every_unit: str = "steps",
         sample_every: int = 100,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
+        resume_from_checkpoint: Optional[str] = None,
     ):
         """
         Train LoRA on dataset.
@@ -620,9 +622,11 @@ class LoRATrainer:
             dataset_items: List of dataset items (image_path, caption)
             num_epochs: Number of epochs
             batch_size: Batch size (currently only supports 1)
-            save_every: Save checkpoint every N steps
+            save_every: Save checkpoint every N steps or epochs
+            save_every_unit: Unit for save_every ("steps" or "epochs")
             sample_every: Generate sample every N steps
             progress_callback: Callback(step, loss, lr) for progress updates
+            resume_from_checkpoint: Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
         """
         print(f"[LoRATrainer] Starting training")
         print(f"[LoRATrainer] Dataset: {len(dataset_items)} items")
@@ -638,24 +642,46 @@ class LoRATrainer:
         global_step = 0
         start_epoch = 0
 
-        checkpoint_result = self.find_latest_checkpoint()
-        if checkpoint_result is not None:
-            checkpoint_path, checkpoint_step = checkpoint_result
-            print(f"[LoRATrainer] Resuming from checkpoint: {checkpoint_path}")
-            loaded_step = self.load_checkpoint(checkpoint_path)
-            global_step = loaded_step
+        if resume_from_checkpoint:
+            # User specified a checkpoint to resume from
+            checkpoint_path = self.output_dir / resume_from_checkpoint
+            if checkpoint_path.exists():
+                print(f"[LoRATrainer] Resuming from specified checkpoint: {checkpoint_path}")
+                loaded_step = self.load_checkpoint(str(checkpoint_path))
+                global_step = loaded_step
 
-            # Calculate which epoch to start from
-            start_epoch = global_step // len(dataset_items)
-            items_in_epoch = global_step % len(dataset_items)
+                # Calculate which epoch to start from
+                start_epoch = global_step // len(dataset_items)
+                items_in_epoch = global_step % len(dataset_items)
 
-            print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
+                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
 
-            # Fast-forward lr_scheduler to match the checkpoint
-            for _ in range(global_step):
-                self.lr_scheduler.step()
+                # Fast-forward lr_scheduler to match the checkpoint
+                for _ in range(global_step):
+                    self.lr_scheduler.step()
+            else:
+                print(f"[LoRATrainer] WARNING: Checkpoint not found: {checkpoint_path}")
+                print(f"[LoRATrainer] Starting from scratch")
         else:
-            print(f"[LoRATrainer] No checkpoint found, starting from scratch")
+            # Auto-detect latest checkpoint
+            checkpoint_result = self.find_latest_checkpoint()
+            if checkpoint_result is not None:
+                checkpoint_path, checkpoint_step = checkpoint_result
+                print(f"[LoRATrainer] Resuming from latest checkpoint: {checkpoint_path}")
+                loaded_step = self.load_checkpoint(checkpoint_path)
+                global_step = loaded_step
+
+                # Calculate which epoch to start from
+                start_epoch = global_step // len(dataset_items)
+                items_in_epoch = global_step % len(dataset_items)
+
+                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
+
+                # Fast-forward lr_scheduler to match the checkpoint
+                for _ in range(global_step):
+                    self.lr_scheduler.step()
+            else:
+                print(f"[LoRATrainer] No checkpoint found, starting from scratch")
 
         # Training loop
         for epoch in range(start_epoch, num_epochs):
@@ -715,8 +741,8 @@ class LoRATrainer:
                     if progress_callback:
                         progress_callback(global_step, loss, current_lr)
 
-                    # Save checkpoint
-                    if global_step % save_every == 0:
+                    # Save checkpoint (step-based)
+                    if save_every_unit == "steps" and global_step % save_every == 0:
                         pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
                         self.save_checkpoint(global_step)
 
@@ -731,6 +757,11 @@ class LoRATrainer:
                     continue
 
             pbar.close()
+
+            # Save checkpoint (epoch-based)
+            if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
+                print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
+                self.save_checkpoint(global_step)
 
         print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 

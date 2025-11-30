@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Plus, Folder, RefreshCw, FolderPlus } from "lucide-react";
+import { Plus, Folder, RefreshCw, FolderPlus, Trash2 } from "lucide-react";
 import CreateDatasetModal from "./CreateDatasetModal";
-import { listDatasets, Dataset } from "@/utils/api";
+import { listDatasets, Dataset, deleteDataset } from "@/utils/api";
 
 interface DatasetListProps {
   selectedDatasetId: number | null;
@@ -43,6 +43,23 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
     setShowCreateModal(false);
     setInitialFolderPath(null);
     onSelectDataset(newDataset.id);
+  };
+
+  const handleDeleteDataset = async (datasetId: number, datasetName: string) => {
+    if (!confirm(`Are you sure you want to delete dataset "${datasetName}"?\n\nThis will remove all dataset items and captions from the database.`)) {
+      return;
+    }
+
+    try {
+      await deleteDataset(datasetId);
+      setDatasets(datasets.filter(d => d.id !== datasetId));
+      if (selectedDatasetId === datasetId) {
+        onSelectDataset(datasets.length > 1 ? datasets[0].id : 0);
+      }
+    } catch (err) {
+      console.error("Failed to delete dataset:", err);
+      setError("Failed to delete dataset");
+    }
   };
 
   return (
@@ -89,26 +106,40 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
         {!loading && datasets.length > 0 && (
           <div className="space-y-1.5">
             {datasets.map((dataset) => (
-              <button
+              <div
                 key={dataset.id}
-                onClick={() => onSelectDataset(dataset.id)}
-                className={`w-full text-left p-2 rounded transition-colors ${
+                className={`relative group rounded transition-colors ${
                   selectedDatasetId === dataset.id
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-100"
+                    ? "bg-blue-600"
+                    : "bg-gray-700 hover:bg-gray-600"
                 }`}
               >
-                <div className="flex items-center space-x-1.5 mb-0.5">
-                  <Folder className="h-3.5 w-3.5 flex-shrink-0" />
-                  <span className="text-xs font-medium truncate">{dataset.name}</span>
-                </div>
-                <div className="text-[10px] text-gray-300 space-y-0.5 ml-5">
-                  <p className="truncate">{dataset.path}</p>
-                  <p>
-                    {dataset.total_items} items • {dataset.total_captions} captions
-                  </p>
-                </div>
-              </button>
+                <button
+                  onClick={() => onSelectDataset(dataset.id)}
+                  className="w-full text-left p-2 text-gray-100"
+                >
+                  <div className="flex items-center space-x-1.5 mb-0.5">
+                    <Folder className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="text-xs font-medium truncate pr-8">{dataset.name}</span>
+                  </div>
+                  <div className="text-[10px] text-gray-300 space-y-0.5 ml-5">
+                    <p className="truncate">{dataset.path}</p>
+                    <p>
+                      {dataset.total_items} items • {dataset.total_captions} captions
+                    </p>
+                  </div>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteDataset(dataset.id, dataset.name);
+                  }}
+                  className="absolute top-2 right-2 p-1 rounded bg-red-600/80 hover:bg-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Delete dataset"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
             ))}
           </div>
         )}

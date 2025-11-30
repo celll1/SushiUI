@@ -1003,9 +1003,14 @@ class LoRATrainer:
 
             # Assign all images to buckets
             print(f"[LoRATrainer] Assigning images to buckets...")
-            for item in dataset_items:
+            for idx, item in enumerate(dataset_items):
                 width = item.get("width", 1024)
                 height = item.get("height", 1024)
+
+                # Debug: Log first 3 images to verify width/height are correct
+                if idx < 3:
+                    print(f"[LoRATrainer] Image {idx}: {width}x{height} - {item['image_path']}")
+
                 bucket_manager.assign_image_to_bucket(
                     image_path=item["image_path"],
                     width=width,

@@ -1188,6 +1188,11 @@ export const stopTrainingRun = async (id: number): Promise<{ message: string; ru
   return response.data;
 };
 
+export const updateTrainingConfig = async (id: number, configYaml: string): Promise<{ message: string; run: TrainingRun }> => {
+  const response = await api.patch(`/training/runs/${id}/config`, { config_yaml: configYaml });
+  return response.data;
+};
+
 export const getTrainingStatus = async (id: number): Promise<TrainingStatus> => {
   const response = await api.get(`/training/runs/${id}/status`);
   return response.data;

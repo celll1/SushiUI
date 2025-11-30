@@ -2525,10 +2525,18 @@ async def create_training_run(
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        # Generate run_id and use it as run_name if not provided
+        # Generate run_id and auto-generate run_name if not provided
         import uuid
+        from datetime import datetime
         run_id = str(uuid.uuid4())
-        run_name = request.run_name if request.run_name else run_id
+
+        if request.run_name:
+            run_name = request.run_name
+        else:
+            # Auto-generate: YYYYMMDD_HHMMSS_<first 8 chars of UUID>
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            uuid_short = run_id.split('-')[0]  # First segment of UUID (8 chars)
+            run_name = f"{timestamp}_{uuid_short}"
 
         # Check if run name is unique
         existing = training_db.query(TrainingRun).filter(TrainingRun.run_name == run_name).first()

@@ -610,6 +610,104 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </select>
             </div>
           </div>
+
+          {/* Component-Specific Settings */}
+          <div className="pt-3 mt-3 border-t border-gray-700">
+            <h4 className="text-xs font-medium text-gray-400 mb-2">Component-Specific Learning Rates</h4>
+
+            {/* Train U-Net */}
+            <div className="flex items-center space-x-3 mb-2">
+              <input
+                type="checkbox"
+                id="train-unet"
+                checked={trainUnet}
+                onChange={(e) => setTrainUnet(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
+                Train U-Net
+              </label>
+            </div>
+
+            {/* U-Net Learning Rate */}
+            {trainUnet && (
+              <div className="mb-3 ml-6">
+                <label className="block text-xs text-gray-400 mb-1">
+                  U-Net LR <span className="text-xs text-gray-500">(empty = use base LR)</span>
+                </label>
+                <input
+                  type="text"
+                  value={unetLr}
+                  onChange={(e) => setUnetLr(e.target.value)}
+                  placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            )}
+
+            {/* Train Text Encoder */}
+            <div className="flex items-center space-x-3 mb-2">
+              <input
+                type="checkbox"
+                id="train-text-encoder"
+                checked={trainTextEncoder}
+                onChange={(e) => setTrainTextEncoder(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
+                Train Text Encoder
+              </label>
+            </div>
+
+            {/* Text Encoder Learning Rates */}
+            {trainTextEncoder && (
+              <div className="ml-6 space-y-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Text Encoder LR <span className="text-xs text-gray-500">(base, empty = use base LR)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={textEncoderLr}
+                    onChange={(e) => setTextEncoderLr(e.target.value)}
+                    placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {/* SDXL-specific TE1/TE2 */}
+                <div className="pl-3 space-y-2 border-l-2 border-gray-700">
+                  <p className="text-xs text-gray-500">SDXL: Individual TEs (optional)</p>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      TE1 LR <span className="text-xs text-gray-500">(CLIP-L)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={textEncoder1Lr}
+                      onChange={(e) => setTextEncoder1Lr(e.target.value)}
+                      placeholder={`Default: ${textEncoderLr || learningRate}`}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      TE2 LR <span className="text-xs text-gray-500">(CLIP-G)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={textEncoder2Lr}
+                      onChange={(e) => setTextEncoder2Lr(e.target.value)}
+                      placeholder={`Default: ${textEncoderLr || learningRate}`}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Advanced Settings */}
@@ -899,104 +997,6 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </p>
             </div>
           )}
-
-          {/* Component-Specific Training */}
-          <div className="pt-3 mt-3 border-t border-gray-700">
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Component-Specific Settings</h4>
-
-            {/* Train U-Net Toggle */}
-            <div className="flex items-center space-x-3 mb-3">
-              <input
-                type="checkbox"
-                id="train-unet"
-                checked={trainUnet}
-                onChange={(e) => setTrainUnet(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="train-unet" className="text-sm text-gray-300 cursor-pointer">
-                Train U-Net
-              </label>
-            </div>
-
-            {/* U-Net Learning Rate */}
-            {trainUnet && (
-              <div className="mb-3 ml-6">
-                <label className="block text-sm text-gray-400 mb-1.5">
-                  U-Net Learning Rate <span className="text-xs text-gray-500">(leave empty to use base LR)</span>
-                </label>
-                <input
-                  type="text"
-                  value={unetLr}
-                  onChange={(e) => setUnetLr(e.target.value)}
-                  placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            )}
-
-            {/* Train Text Encoder Toggle */}
-            <div className="flex items-center space-x-3 mb-3">
-              <input
-                type="checkbox"
-                id="train-text-encoder"
-                checked={trainTextEncoder}
-                onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="train-text-encoder" className="text-sm text-gray-300 cursor-pointer">
-                Train Text Encoder
-              </label>
-            </div>
-
-            {/* Text Encoder Learning Rates */}
-            {trainTextEncoder && (
-              <div className="ml-6 space-y-3">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    Text Encoder Learning Rate <span className="text-xs text-gray-500">(base, leave empty to use base LR)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={textEncoderLr}
-                    onChange={(e) => setTextEncoderLr(e.target.value)}
-                    placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                {/* SDXL-specific TE1/TE2 */}
-                <div className="pl-4 space-y-3 border-l-2 border-gray-600">
-                  <p className="text-xs text-gray-400">SDXL: Individual Text Encoder LRs (optional)</p>
-
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      Text Encoder 1 LR <span className="text-xs text-gray-500">(CLIP-L, leave empty to use TE base LR)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={textEncoder1Lr}
-                      onChange={(e) => setTextEncoder1Lr(e.target.value)}
-                      placeholder={`Default: ${textEncoderLr || learningRate} (e.g., 1e-5)`}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      Text Encoder 2 LR <span className="text-xs text-gray-500">(CLIP-G, leave empty to use TE base LR)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={textEncoder2Lr}
-                      onChange={(e) => setTextEncoder2Lr(e.target.value)}
-                      placeholder={`Default: ${textEncoderLr || learningRate} (e.g., 5e-6)`}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Bucketing Options */}

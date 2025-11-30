@@ -152,8 +152,7 @@ class LoRATrainer:
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
         self.training_dtype = get_torch_dtype(training_dtype)
-        # output_dtype is kept for API compatibility but not used (loss always calculated in fp32)
-        self.output_dtype = get_torch_dtype(output_dtype)
+        self.output_dtype = get_torch_dtype(output_dtype)  # For safetensors saving
         self.mixed_precision = mixed_precision
 
         # Legacy dtype for compatibility (defaults to weight_dtype)
@@ -162,6 +161,7 @@ class LoRATrainer:
         print(f"[LoRATrainer] Precision settings:")
         print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
         print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
+        print(f"  Output dtype: {output_dtype} ({self.output_dtype}) - for safetensors saving")
         print(f"  Mixed precision: {mixed_precision}")
         print(f"  Loss calculation: Always FP32 for numerical stability")
 
@@ -755,14 +755,16 @@ class LoRATrainer:
             save_path = Path(save_path)
 
         print(f"[LoRATrainer] Saving checkpoint to {save_path}")
+        print(f"[LoRATrainer] Converting weights to {self.output_dtype} for saving")
 
-        # Collect all LoRA weights
+        # Collect all LoRA weights and convert to output_dtype
         state_dict = {}
         for name, lora in self.lora_layers.items():
             # Save with proper naming convention
             key_prefix = f"lora_unet_{name.replace('.', '_')}"
-            state_dict[f"{key_prefix}.lora_down.weight"] = lora.lora_down.weight.detach().cpu()
-            state_dict[f"{key_prefix}.lora_up.weight"] = lora.lora_up.weight.detach().cpu()
+            # Convert to output_dtype for saving (e.g., fp16 to reduce file size)
+            state_dict[f"{key_prefix}.lora_down.weight"] = lora.lora_down.weight.detach().cpu().to(dtype=self.output_dtype)
+            state_dict[f"{key_prefix}.lora_up.weight"] = lora.lora_up.weight.detach().cpu().to(dtype=self.output_dtype)
 
         # Add metadata
         metadata = {
@@ -771,6 +773,7 @@ class LoRATrainer:
             "ss_network_alpha": str(self.lora_alpha),
             "ss_base_model": self.model_path,
             "ss_training_step": str(step),
+            "ss_output_dtype": str(self.output_dtype),  # Record output dtype in metadata
         }
 
         # Save as safetensors

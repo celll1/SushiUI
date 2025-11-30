@@ -154,7 +154,7 @@ def main():
 
             # Progress callback (update DB only, no print to avoid cluttering tqdm output)
             def progress_callback(step: int, loss: float, lr: float):
-                update_training_progress(db, run_id, step, loss, lr, run.total_steps)
+                update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
 
             # Start training
             trainer.train(
@@ -171,7 +171,7 @@ def main():
             # Update run status
             run.status = "completed"
             run.completed_at = datetime.utcnow()
-            db.commit()
+            training_db.commit()
 
         else:
             print(f"[TrainRunner] ERROR: Unsupported network type: {network_type}")

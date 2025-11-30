@@ -128,6 +128,12 @@ def main():
             print("[TrainRunner] Training method: LoRA")
             from core.lora_trainer import LoRATrainer
 
+            # Get dtype settings from config
+            weight_dtype = train_config.get('weight_dtype', 'fp16')
+            training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
+            output_dtype = train_config.get('output_dtype', 'fp32')
+            mixed_precision = train_config.get('mixed_precision', True)
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -135,6 +141,10 @@ def main():
                 lora_rank=network_config.get('linear', 16),
                 lora_alpha=network_config.get('linear_alpha', 16),
                 learning_rate=train_config.get('lr', 1e-4),
+                weight_dtype=weight_dtype,
+                training_dtype=training_dtype,
+                output_dtype=output_dtype,
+                mixed_precision=mixed_precision,
             )
 
             # Setup optimizer

@@ -22,6 +22,31 @@ from datetime import datetime
 import numpy as np
 
 
+def get_torch_dtype(dtype_str: str) -> torch.dtype:
+    """
+    Convert dtype string to torch.dtype.
+
+    Args:
+        dtype_str: String like "fp16", "fp32", "bf16", "fp8_e4m3fn", "fp8_e5m2"
+
+    Returns:
+        torch.dtype
+    """
+    dtype_map = {
+        "fp32": torch.float32,
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+        "fp8_e4m3fn": torch.float8_e4m3fn,
+        "fp8_e5m2": torch.float8_e5m2,
+    }
+
+    if dtype_str not in dtype_map:
+        print(f"[LoRATrainer] WARNING: Unknown dtype '{dtype_str}', defaulting to fp16")
+        return torch.float16
+
+    return dtype_map[dtype_str]
+
+
 class LoRALinearLayer(torch.nn.Module):
     """LoRA-enhanced linear layer that wraps the original linear layer."""
 
@@ -95,6 +120,10 @@ class LoRATrainer:
         lora_alpha: int = 16,
         learning_rate: float = 1e-4,
         device: str = "cuda",
+        weight_dtype: str = "fp16",
+        training_dtype: str = "fp16",
+        output_dtype: str = "fp32",
+        mixed_precision: bool = True,
     ):
         """
         Initialize LoRA trainer.
@@ -106,6 +135,10 @@ class LoRATrainer:
             lora_alpha: LoRA alpha (scaling factor)
             learning_rate: Learning rate
             device: Device to use (cuda/cpu)
+            weight_dtype: Model weight dtype (fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2)
+            training_dtype: Training/activation dtype (fp16, bf16, fp8_e4m3fn, fp8_e5m2)
+            output_dtype: Output latent dtype (fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
+            mixed_precision: Enable mixed precision training (autocast)
         """
         self.model_path = model_path
         self.output_dir = Path(output_dir)
@@ -115,7 +148,21 @@ class LoRATrainer:
         self.lora_alpha = lora_alpha
         self.learning_rate = learning_rate
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+
+        # Convert dtype strings to torch.dtype
+        self.weight_dtype = get_torch_dtype(weight_dtype)
+        self.training_dtype = get_torch_dtype(training_dtype)
+        self.output_dtype = get_torch_dtype(output_dtype)
+        self.mixed_precision = mixed_precision
+
+        # Legacy dtype for compatibility (defaults to weight_dtype)
+        self.dtype = self.weight_dtype
+
+        print(f"[LoRATrainer] Precision settings:")
+        print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
+        print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
+        print(f"  Output dtype: {output_dtype} ({self.output_dtype})")
+        print(f"  Mixed precision: {mixed_precision}")
 
         # Initialize tensorboard writer
         # Create subdirectory with timestamp for each training session (useful for resume)
@@ -504,6 +551,9 @@ class LoRATrainer:
         Returns:
             Loss value
         """
+        # Convert latents to output_dtype (e.g., fp32 for higher precision in loss calculation)
+        latents = latents.to(dtype=self.output_dtype)
+
         # Sample noise
         noise = torch.randn_like(latents)
 
@@ -543,21 +593,40 @@ class LoRATrainer:
             }
 
         # Predict noise using UNet (LoRA is already integrated)
-        if self.is_sdxl and added_cond_kwargs is not None:
-            model_pred = self.unet(
-                noisy_latents,
-                timesteps,
-                text_embeddings,
-                added_cond_kwargs=added_cond_kwargs
-            ).sample
+        # Use autocast if mixed precision is enabled
+        if self.mixed_precision:
+            # Autocast to training_dtype for forward pass (reduces memory and speeds up)
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                if self.is_sdxl and added_cond_kwargs is not None:
+                    model_pred = self.unet(
+                        noisy_latents,
+                        timesteps,
+                        text_embeddings,
+                        added_cond_kwargs=added_cond_kwargs
+                    ).sample
+                else:
+                    model_pred = self.unet(
+                        noisy_latents,
+                        timesteps,
+                        text_embeddings
+                    ).sample
         else:
-            model_pred = self.unet(
-                noisy_latents,
-                timesteps,
-                text_embeddings
-            ).sample
+            # No mixed precision: use weight_dtype throughout
+            if self.is_sdxl and added_cond_kwargs is not None:
+                model_pred = self.unet(
+                    noisy_latents,
+                    timesteps,
+                    text_embeddings,
+                    added_cond_kwargs=added_cond_kwargs
+                ).sample
+            else:
+                model_pred = self.unet(
+                    noisy_latents,
+                    timesteps,
+                    text_embeddings
+                ).sample
 
-        # Calculate loss (MSE between predicted and actual noise)
+        # Calculate loss (always in fp32 for numerical stability)
         loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
         # Debug: Save latents if requested

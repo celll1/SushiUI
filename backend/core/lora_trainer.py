@@ -337,6 +337,14 @@ class LoRATrainer:
         self._apply_lora()
         print_vram_usage("After applying LoRA layers")
 
+        # Enable gradient checkpointing to reduce VRAM usage during training
+        # This trades computation for memory by recomputing activations during backward pass
+        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            self.unet.enable_gradient_checkpointing()
+            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+        else:
+            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
+
         self.optimizer = None
         self.lr_scheduler = None
 

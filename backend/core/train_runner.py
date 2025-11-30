@@ -164,8 +164,10 @@ def main():
             if num_epochs:
                 print(f"[TrainRunner] Training for {num_epochs} epochs")
             elif total_steps_config:
-                num_epochs = max(1, total_steps_config // len(dataset_items))
-                print(f"[TrainRunner] Training for {total_steps_config} steps (~{num_epochs} epochs)")
+                # Pass total_steps_config to trainer; it will calculate epochs based on actual batch count
+                # (batch count depends on bucketing, which is only known after dataset processing)
+                num_epochs = None  # Will be calculated by trainer
+                print(f"[TrainRunner] Training for {total_steps_config} steps (epochs will be calculated by trainer)")
             else:
                 num_epochs = 1
 
@@ -211,6 +213,7 @@ def main():
             trainer.train(
                 dataset_items=dataset_items,
                 num_epochs=num_epochs,
+                target_steps=total_steps_config,  # Pass target steps for dynamic epoch calculation
                 batch_size=train_config.get('batch_size', 1),
                 save_every=process_config['save'].get('save_every', 100),
                 save_every_unit=process_config['save'].get('save_every_unit', 'steps'),

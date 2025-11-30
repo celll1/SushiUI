@@ -1,7 +1,8 @@
 "use client";
 
-import { TrainingRun } from "@/utils/api";
-import { Play, Square, Clock, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { TrainingRun, deleteTrainingRun } from "@/utils/api";
+import { Play, Square, Clock, CheckCircle, XCircle, Loader2, Trash2 } from "lucide-react";
 
 interface TrainingListProps {
   runs: TrainingRun[];
@@ -12,6 +13,8 @@ interface TrainingListProps {
 }
 
 export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefresh, loading }: TrainingListProps) {
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "running":
@@ -26,6 +29,25 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
         return <Square className="h-4 w-4 text-yellow-500" />;
       default:
         return <Clock className="h-4 w-4 text-gray-400" />;
+    }
+  };
+
+  const handleDelete = async (e: React.MouseEvent, runId: number, runName: string) => {
+    e.stopPropagation(); // Prevent selecting the run when clicking delete
+
+    if (!confirm(`Are you sure you want to delete training run "${runName}"?`)) {
+      return;
+    }
+
+    setDeletingId(runId);
+    try {
+      await deleteTrainingRun(runId);
+      onRefresh(); // Refresh the list
+    } catch (err: any) {
+      console.error("Failed to delete training run:", err);
+      alert(err.response?.data?.detail || "Failed to delete training run");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -50,37 +72,61 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
     <div className="p-2">
       <div className="space-y-1.5">
         {runs.map((run) => (
-          <button
+          <div
             key={run.id}
-            onClick={() => onSelectRun(run.id)}
-            className={`w-full text-left p-2.5 rounded transition-colors ${
+            className={`relative group rounded transition-colors ${
               selectedRunId === run.id
                 ? "bg-blue-600 text-white"
                 : "bg-gray-800 hover:bg-gray-700"
             }`}
           >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium truncate">{run.run_name}</span>
-              {getStatusIcon(run.status)}
-            </div>
-
-            <div className="text-xs text-gray-400 space-y-0.5">
-              <div className="flex items-center justify-between">
-                <span>{run.training_method === "lora" ? "LoRA" : "Full"}</span>
-                <span>{run.current_step} / {run.total_steps}</span>
+            <button
+              onClick={() => onSelectRun(run.id)}
+              className="w-full text-left p-2.5 pr-10"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-medium truncate">{run.run_name}</span>
+                {getStatusIcon(run.status)}
               </div>
 
-              {/* Progress bar */}
-              {run.status === "running" && (
-                <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                  <div
-                    className="h-full bg-blue-500 transition-all"
-                    style={{ width: `${run.progress}%` }}
-                  />
+              <div className="text-xs text-gray-400 space-y-0.5">
+                <div className="flex items-center justify-between">
+                  <span>{run.training_method === "lora" ? "LoRA" : "Full"}</span>
+                  <span>{run.current_step} / {run.total_steps}</span>
                 </div>
-              )}
-            </div>
-          </button>
+
+                {/* Progress bar */}
+                {run.status === "running" && (
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div
+                      className="h-full bg-blue-500 transition-all"
+                      style={{ width: `${run.progress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            </button>
+
+            {/* Delete button - only show when not running */}
+            {run.status !== "running" && run.status !== "starting" && (
+              <button
+                onClick={(e) => handleDelete(e, run.id, run.run_name)}
+                disabled={deletingId === run.id}
+                className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded transition-colors opacity-0 group-hover:opacity-100 ${
+                  selectedRunId === run.id
+                    ? "hover:bg-blue-700"
+                    : "hover:bg-gray-600"
+                } disabled:opacity-50`}
+                title="Delete training run"
+              >
+                {deletingId === run.id ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                )}
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </div>

@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, 
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+import uuid
 
 Base = declarative_base()
 
@@ -332,7 +333,7 @@ class TrainingRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
-    run_number = Column(Integer, nullable=False, index=True)  # Sequential run number
+    run_id = Column(String, unique=True, nullable=False, index=True, default=lambda: str(uuid.uuid4()))  # Unique ID (UUID)
 
     # Run identification
     run_name = Column(String, unique=True, index=True, nullable=False)
@@ -375,7 +376,7 @@ class TrainingRun(Base):
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
-            "run_number": self.run_number,
+            "run_id": self.run_id,
             "run_name": self.run_name,
             "training_method": self.training_method,
             "base_model_path": self.base_model_path,

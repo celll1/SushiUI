@@ -1031,12 +1031,12 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
 export interface TrainingRun {
   id: number;
   dataset_id: number;
-  run_number: number;
+  run_id: string;  // UUID
   run_name: string;
   training_method: "lora" | "full_finetune";
   base_model_path: string;
   config_yaml?: string;
-  status: "pending" | "running" | "paused" | "completed" | "failed";
+  status: "pending" | "running" | "paused" | "completed" | "failed" | "starting";
   progress: number;
   current_step: number;
   total_steps: number;
@@ -1105,8 +1105,15 @@ export const deleteTrainingRun = async (id: number): Promise<void> => {
 };
 
 export const startTrainingRun = async (id: number): Promise<{ message: string; run: TrainingRun }> => {
-  const response = await api.post(`/training/runs/${id}/start`);
-  return response.data;
+  console.log(`[API] startTrainingRun(${id}): Making POST request to /training/runs/${id}/start`);
+  try {
+    const response = await api.post(`/training/runs/${id}/start`);
+    console.log(`[API] startTrainingRun(${id}): Response received:`, response.data);
+    return response.data;
+  } catch (error) {
+    console.error(`[API] startTrainingRun(${id}): Error:`, error);
+    throw error;
+  }
 };
 
 export const stopTrainingRun = async (id: number): Promise<{ message: string; run: TrainingRun }> => {

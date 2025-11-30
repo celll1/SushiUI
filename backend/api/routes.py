@@ -2595,13 +2595,9 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
 
         print(f"[Training] Calculated total_steps: {calculated_total_steps}")
 
-        # Get next run number
-        max_run_number = db.query(func.max(TrainingRun.run_number)).scalar()
-        next_run_number = (max_run_number or 0) + 1
-
+        # Create training run with auto-generated UUID
         training_run = TrainingRun(
             dataset_id=request.dataset_id,
-            run_number=next_run_number,
             run_name=request.run_name,
             training_method=request.training_method,
             base_model_path=request.base_model_path,

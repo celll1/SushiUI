@@ -2500,8 +2500,10 @@ class TrainingRunCreateRequest(BaseModel):
 
     # Advanced
     save_every: int = 100
+    save_every_unit: str = "steps"  # "steps" or "epochs"
     sample_every: int = 100
     sample_prompts: List[str] = []
+    resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -2867,3 +2869,41 @@ async def get_tensorboard_status(run_id: int):
         "url": url,
         "port": port
     }
+
+@router.get("/training/runs/{run_id}/checkpoints")
+async def get_training_checkpoints(run_id: int, db: Session = Depends(get_training_db)):
+    """Get list of available checkpoints for a training run"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    import glob
+
+    output_dir = Path(run.output_dir)
+    if not output_dir.exists():
+        return {"checkpoints": []}
+
+    # Find all checkpoint files (lora_step_*.safetensors)
+    checkpoint_files = glob.glob(str(output_dir / "lora_step_*.safetensors"))
+
+    checkpoints = []
+    for ckpt_path in sorted(checkpoint_files):
+        ckpt_file = Path(ckpt_path)
+        # Extract step number from filename
+        filename = ckpt_file.name  # e.g., "lora_step_100.safetensors"
+        step_str = filename.replace("lora_step_", "").replace(".safetensors", "")
+        try:
+            step = int(step_str)
+            checkpoints.append({
+                "step": step,
+                "filename": filename,
+                "path": str(ckpt_file)
+            })
+        except ValueError:
+            continue
+
+    # Sort by step number (descending)
+    checkpoints.sort(key=lambda x: x["step"], reverse=True)
+
+    return {"checkpoints": checkpoints}

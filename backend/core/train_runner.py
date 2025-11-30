@@ -162,8 +162,10 @@ def main():
                 num_epochs=num_epochs,
                 batch_size=train_config.get('batch_size', 1),
                 save_every=process_config['save'].get('save_every', 100),
+                save_every_unit=process_config['save'].get('save_every_unit', 'steps'),
                 sample_every=process_config['sample'].get('sample_every', 100),
                 progress_callback=progress_callback,
+                resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
             )
 
             print("[TrainRunner] Training completed successfully!")

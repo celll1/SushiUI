@@ -1227,3 +1227,22 @@ export const getTrainingMetrics = async (
   const response = await api.get(`/training/runs/${runId}/metrics`, { params });
   return response.data;
 };
+
+export interface TrainingSampleImage {
+  sample_index: number;
+  path: string;
+}
+
+export interface TrainingSampleStep {
+  step: number;
+  images: TrainingSampleImage[];
+}
+
+export interface TrainingSamplesResponse {
+  samples: TrainingSampleStep[];
+}
+
+export const getTrainingSamples = async (runId: number): Promise<TrainingSamplesResponse> => {
+  const response = await api.get(`/training/runs/${runId}/samples`);
+  return response.data;
+};

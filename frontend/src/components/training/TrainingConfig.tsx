@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo } from "@/utils/api";
+import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo, getSamplers, getScheduleTypes } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -60,15 +60,21 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [sampleSteps, setSampleSteps] = useState(28);
   const [sampleCfgScale, setSampleCfgScale] = useState(7.0);
   const [sampleSampler, setSampleSampler] = useState("euler");
-  const [sampleScheduleType, setSampleScheduleType] = useState("sgm_uniform");
+  const [sampleScheduleType, setSampleScheduleType] = useState("uniform");
   const [sampleSeed, setSampleSeed] = useState(-1);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // State for samplers and schedule types from API
+  const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
+  const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
+
   useEffect(() => {
     loadDatasets();
     loadModels();
+    loadSamplers();
+    loadScheduleTypes();
   }, []);
 
   const loadDatasets = async () => {
@@ -99,6 +105,26 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       }
     } catch (err) {
       console.error("Failed to load models:", err);
+    }
+  };
+
+  // Helper function: Load samplers from API
+  const loadSamplers = async () => {
+    try {
+      const data = await getSamplers();
+      setSamplers(data.samplers);
+    } catch (error) {
+      console.error("Failed to load samplers:", error);
+    }
+  };
+
+  // Helper function: Load schedule types from API
+  const loadScheduleTypes = async () => {
+    try {
+      const data = await getScheduleTypes();
+      setScheduleTypes(data.schedule_types);
+    } catch (error) {
+      console.error("Failed to load schedule types:", error);
     }
   };
 
@@ -765,14 +791,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setSampleSampler(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="euler">Euler</option>
-                <option value="euler_a">Euler A</option>
-                <option value="dpmpp_2m">DPM++ 2M</option>
-                <option value="dpmpp_2m_sde">DPM++ 2M SDE</option>
-                <option value="dpmpp_3m_sde">DPM++ 3M SDE</option>
-                <option value="heun">Heun</option>
-                <option value="lms">LMS</option>
-                <option value="ddim">DDIM</option>
+                {samplers.map((sampler) => (
+                  <option key={sampler.id} value={sampler.id}>
+                    {sampler.name}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -782,10 +805,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setSampleScheduleType(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="sgm_uniform">SGM Uniform</option>
-                <option value="karras">Karras</option>
-                <option value="exponential">Exponential</option>
-                <option value="simple">Simple</option>
+                {scheduleTypes.map((scheduleType) => (
+                  <option key={scheduleType.id} value={scheduleType.id}>
+                    {scheduleType.name}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

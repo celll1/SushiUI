@@ -55,6 +55,10 @@ const nextConfig = {
         source: '/thumbnails/:path*',
         destination: `${backendUrl}/thumbnails/:path*`,
       },
+      {
+        source: '/training/:path*',
+        destination: `${backendUrl}/training/:path*`,
+      },
     ]
   },
   // Increase timeout for proxied requests (experimental)

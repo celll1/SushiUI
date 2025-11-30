@@ -1332,8 +1332,13 @@ async def startup_event():
     create_db_and_tables()
 
     # タグ辞書のロード（初回のみ）
-    with SessionLocal() as db:
-        load_tag_dictionary_from_json(db, force_reload=False)
+    from database import get_datasets_db
+    datasets_db_gen = get_datasets_db()
+    datasets_db = next(datasets_db_gen)
+    try:
+        load_tag_dictionary_from_json(datasets_db, force_reload=False)
+    finally:
+        datasets_db.close()
 ```
 
 ##### 2.5.4.9 実装の優先度
@@ -2112,7 +2117,12 @@ async def create_training_job(job: TrainingJobRequest, db: Session):
 
 ### 4.3 データベース
 
-**初期実装**: SQLite（既存のwebui.dbに追加）
+**初期実装**: SQLite（`datasets.db` を使用、データベース分離済み）
+
+**現在のデータベース構成**:
+- `gallery.db` - 生成画像
+- `datasets.db` - データセット、画像、タグ
+- `training.db` - トレーニング実行履歴
 
 **将来的な拡張**:
 - PostgreSQL（大規模データセット向け）

@@ -1267,6 +1267,16 @@ class LoRATrainer:
                 total_images = sum(len(batch) for batch in batches)
                 cached_count = 0
 
+                # Create progress bar for latent cache generation
+                from tqdm import tqdm
+                cache_pbar = tqdm(
+                    total=total_images,
+                    desc="[LatentCache] Encoding images",
+                    unit="img",
+                    ncols=100,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+                )
+
                 for batch_idx, batch in enumerate(batches):
                     for item in batch:
                         # Get bucket dimensions if available
@@ -1286,7 +1296,8 @@ class LoRATrainer:
                             # Load image
                             image_path = item["image_path"]
                             if not os.path.exists(image_path):
-                                print(f"[LatentCache] WARNING: Image not found: {image_path}")
+                                cache_pbar.write(f"[LatentCache] WARNING: Image not found: {image_path}")
+                                cache_pbar.update(1)
                                 continue
 
                             try:
@@ -1304,14 +1315,11 @@ class LoRATrainer:
                                 )
                                 cached_count += 1
                             except Exception as e:
-                                print(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
-                                continue
+                                cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
 
-                        # Progress update every 10 images
-                        if cached_count % 10 == 0:
-                            progress_pct = (cached_count / total_images) * 100
-                            print(f"[LatentCache] Cached {cached_count}/{total_images} images ({progress_pct:.1f}%)")
+                        cache_pbar.update(1)
 
+                cache_pbar.close()
                 print(f"[LatentCache] Cache generation complete: {cached_count} images cached")
 
                 # Save cache metadata

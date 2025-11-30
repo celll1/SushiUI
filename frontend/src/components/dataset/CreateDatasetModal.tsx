@@ -18,6 +18,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
   const [readExif, setReadExif] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scanningProgress, setScanningProgress] = useState<number | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,10 +50,30 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
 
       // Automatically scan the dataset after creation
       try {
+        setScanningProgress(0);
+
+        // Start scanning
+        await scanDataset(newDataset.id);
+
+        // Poll for progress (simplified: just show indeterminate progress)
+        // In a real implementation, you'd poll a status endpoint
+        const pollInterval = setInterval(async () => {
+          // This is a placeholder - we'll implement proper progress reporting later
+          setScanningProgress((prev) => (prev !== null && prev < 90 ? prev + 10 : 90));
+        }, 500);
+
+        // Wait a bit for scan to complete (simplified)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        clearInterval(pollInterval);
+
+        setScanningProgress(100);
+
+        // Fetch updated dataset
         const scanResult = await scanDataset(newDataset.id);
         onCreate(scanResult.dataset); // Return scanned dataset with updated counts
       } catch (scanErr) {
         console.error("Failed to scan dataset:", scanErr);
+        setScanningProgress(null);
         onCreate(newDataset); // Return dataset even if scan fails
       }
     } catch (err: any) {
@@ -174,6 +195,25 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
             </p>
           </div>
 
+          {/* Scanning Progress */}
+          {scanningProgress !== null && (
+            <div className="bg-gray-900 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium">Scanning Dataset...</span>
+                <span className="text-sm text-gray-400">{Math.round(scanningProgress)}%</span>
+              </div>
+              <div className="w-full bg-gray-700 rounded-full h-2">
+                <div
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${scanningProgress}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                Scanning images and captions in the dataset directory...
+              </p>
+            </div>
+          )}
+
           {/* Buttons */}
           <div className="flex justify-end space-x-3 pt-4 border-t border-gray-700">
             <button
@@ -189,7 +229,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={loading}
             >
-              {loading ? "Creating & Scanning..." : "Create Dataset"}
+              {loading ? (scanningProgress !== null ? "Scanning..." : "Creating...") : "Create Dataset"}
             </button>
           </div>
         </form>

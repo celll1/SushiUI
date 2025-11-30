@@ -149,9 +149,8 @@ def main():
             else:
                 num_epochs = 1
 
-            # Progress callback
+            # Progress callback (update DB only, no print to avoid cluttering tqdm output)
             def progress_callback(step: int, loss: float, lr: float):
-                print(f"[TrainRunner] Step {step}: loss={loss:.6f}, lr={lr:.2e}")
                 update_training_progress(db, run_id, step, loss, lr, run.total_steps)
 
             # Start training

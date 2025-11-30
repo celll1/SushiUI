@@ -44,6 +44,8 @@ def get_dataset_items(db: Session, dataset_id: int) -> list:
         dataset_items.append({
             "image_path": item.image_path,
             "caption": caption,
+            "width": item.width,
+            "height": item.height,
         })
 
     return dataset_items

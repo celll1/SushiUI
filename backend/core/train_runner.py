@@ -162,15 +162,16 @@ def main():
             print("[TrainRunner] Status updated to 'running'")
 
             # Prepare sample configuration
-            sample_prompts = process_config['sample'].get('sample_prompts', [])
+            # Note: YAML uses 'prompts', 'width', etc. (not 'sample_prompts', 'sample_width')
+            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
             sample_config = {
-                'width': process_config['sample'].get('sample_width', 1024),
-                'height': process_config['sample'].get('sample_height', 1024),
-                'steps': process_config['sample'].get('sample_steps', 28),
-                'cfg_scale': process_config['sample'].get('sample_cfg_scale', 7.0),
-                'sampler': process_config['sample'].get('sample_sampler', 'euler'),
-                'schedule_type': process_config['sample'].get('sample_schedule_type', 'sgm_uniform'),
-                'seed': process_config['sample'].get('sample_seed', -1),
+                'width': process_config['sample'].get('width', 1024),
+                'height': process_config['sample'].get('height', 1024),
+                'steps': process_config['sample'].get('sample_steps', 20),
+                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
+                'sampler': process_config['sample'].get('sampler', 'euler'),
+                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
+                'seed': process_config['sample'].get('seed', -1),
             }
 
             # Start training

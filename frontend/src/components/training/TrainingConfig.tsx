@@ -76,10 +76,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
   const [trainTextEncoder, setTrainTextEncoder] = useState(false);
-  const [unetLr, setUnetLr] = useState<number | null>(null);
-  const [textEncoderLr, setTextEncoderLr] = useState<number | null>(null);
-  const [textEncoder1Lr, setTextEncoder1Lr] = useState<number | null>(null);
-  const [textEncoder2Lr, setTextEncoder2Lr] = useState<number | null>(null);
+  const [unetLr, setUnetLr] = useState<string>("");
+  const [textEncoderLr, setTextEncoderLr] = useState<string>("");
+  const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
+  const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -266,10 +266,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
-      unet_lr: unetLr,
-      text_encoder_lr: textEncoderLr,
-      text_encoder_1_lr: textEncoder1Lr,
-      text_encoder_2_lr: textEncoder2Lr,
+      unet_lr: unetLr ? parseFloat(unetLr) : null,
+      text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
+      text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
+      text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1025,11 +1025,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 U-Net Learning Rate <span className="text-xs text-gray-500">(leave empty to use base LR)</span>
               </label>
               <input
-                type="number"
-                step="0.00001"
-                value={unetLr || ""}
-                onChange={(e) => setUnetLr(e.target.value ? parseFloat(e.target.value) : null)}
-                placeholder={`Default: ${learningRate}`}
+                type="text"
+                value={unetLr}
+                onChange={(e) => setUnetLr(e.target.value)}
+                placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1057,11 +1056,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   Text Encoder Learning Rate <span className="text-xs text-gray-500">(base, leave empty to use base LR)</span>
                 </label>
                 <input
-                  type="number"
-                  step="0.00001"
-                  value={textEncoderLr || ""}
-                  onChange={(e) => setTextEncoderLr(e.target.value ? parseFloat(e.target.value) : null)}
-                  placeholder={`Default: ${learningRate}`}
+                  type="text"
+                  value={textEncoderLr}
+                  onChange={(e) => setTextEncoderLr(e.target.value)}
+                  placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1075,11 +1073,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                     Text Encoder 1 LR <span className="text-xs text-gray-500">(CLIP-L, leave empty to use TE base LR)</span>
                   </label>
                   <input
-                    type="number"
-                    step="0.00001"
-                    value={textEncoder1Lr || ""}
-                    onChange={(e) => setTextEncoder1Lr(e.target.value ? parseFloat(e.target.value) : null)}
-                    placeholder={`Default: ${textEncoderLr || learningRate}`}
+                    type="text"
+                    value={textEncoder1Lr}
+                    onChange={(e) => setTextEncoder1Lr(e.target.value)}
+                    placeholder={`Default: ${textEncoderLr || learningRate} (e.g., 1e-5)`}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
                 </div>
@@ -1089,11 +1086,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                     Text Encoder 2 LR <span className="text-xs text-gray-500">(CLIP-G, leave empty to use TE base LR)</span>
                   </label>
                   <input
-                    type="number"
-                    step="0.00001"
-                    value={textEncoder2Lr || ""}
-                    onChange={(e) => setTextEncoder2Lr(e.target.value ? parseFloat(e.target.value) : null)}
-                    placeholder={`Default: ${textEncoderLr || learningRate}`}
+                    type="text"
+                    value={textEncoder2Lr}
+                    onChange={(e) => setTextEncoder2Lr(e.target.value)}
+                    placeholder={`Default: ${textEncoderLr || learningRate} (e.g., 5e-6)`}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
                 </div>

@@ -1130,6 +1130,12 @@ export interface TrainingRunCreateRequest {
   base_resolutions?: number[];
   bucket_strategy?: string;
   multi_resolution_mode?: string;
+  train_unet?: boolean;
+  train_text_encoder?: boolean;
+  unet_lr?: number | null;
+  text_encoder_lr?: number | null;
+  text_encoder_1_lr?: number | null;
+  text_encoder_2_lr?: number | null;
 }
 
 export interface TrainingRunListResponse {

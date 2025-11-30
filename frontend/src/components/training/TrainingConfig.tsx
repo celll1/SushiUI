@@ -73,6 +73,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [bucketStrategy, setBucketStrategy] = useState<"resize" | "crop" | "random_crop">("resize");
   const [multiResolutionMode, setMultiResolutionMode] = useState<"max" | "random">("max");
 
+  // Component-specific training
+  const [trainUnet, setTrainUnet] = useState(true);
+  const [trainTextEncoder, setTrainTextEncoder] = useState(false);
+  const [unetLr, setUnetLr] = useState<number | null>(null);
+  const [textEncoderLr, setTextEncoderLr] = useState<number | null>(null);
+  const [textEncoder1Lr, setTextEncoder1Lr] = useState<number | null>(null);
+  const [textEncoder2Lr, setTextEncoder2Lr] = useState<number | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -256,6 +264,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       base_resolutions: enableBucketing ? baseResolutions : undefined,
       bucket_strategy: enableBucketing ? bucketStrategy : undefined,
       multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
+      train_unet: trainUnet,
+      train_text_encoder: trainTextEncoder,
+      unet_lr: unetLr,
+      text_encoder_lr: textEncoderLr,
+      text_encoder_1_lr: textEncoder1Lr,
+      text_encoder_2_lr: textEncoder2Lr,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -997,6 +1011,108 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <p className="text-xs text-gray-500 mt-1">
                   How to handle images that don't fit bucket exactly
                 </p>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Component-Specific Training */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Component-Specific Training</h3>
+
+          {/* Train U-Net Toggle */}
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="train-unet"
+              checked={trainUnet}
+              onChange={(e) => setTrainUnet(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="train-unet" className="text-sm text-gray-300 cursor-pointer">
+              Train U-Net
+            </label>
+          </div>
+
+          {/* U-Net Learning Rate */}
+          {trainUnet && (
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">
+                U-Net Learning Rate <span className="text-xs text-gray-500">(leave empty to use base LR)</span>
+              </label>
+              <input
+                type="number"
+                step="0.00001"
+                value={unetLr || ""}
+                onChange={(e) => setUnetLr(e.target.value ? parseFloat(e.target.value) : null)}
+                placeholder={`Default: ${learningRate}`}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          )}
+
+          {/* Train Text Encoder Toggle */}
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="train-text-encoder"
+              checked={trainTextEncoder}
+              onChange={(e) => setTrainTextEncoder(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="train-text-encoder" className="text-sm text-gray-300 cursor-pointer">
+              Train Text Encoder
+            </label>
+          </div>
+
+          {/* Text Encoder Learning Rates */}
+          {trainTextEncoder && (
+            <>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">
+                  Text Encoder Learning Rate <span className="text-xs text-gray-500">(base, leave empty to use base LR)</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.00001"
+                  value={textEncoderLr || ""}
+                  onChange={(e) => setTextEncoderLr(e.target.value ? parseFloat(e.target.value) : null)}
+                  placeholder={`Default: ${learningRate}`}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* SDXL-specific TE1/TE2 */}
+              <div className="pl-4 space-y-3 border-l-2 border-gray-600">
+                <p className="text-xs text-gray-400">SDXL: Individual Text Encoder LRs (optional)</p>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1.5">
+                    Text Encoder 1 LR <span className="text-xs text-gray-500">(CLIP-L, leave empty to use TE base LR)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={textEncoder1Lr || ""}
+                    onChange={(e) => setTextEncoder1Lr(e.target.value ? parseFloat(e.target.value) : null)}
+                    placeholder={`Default: ${textEncoderLr || learningRate}`}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1.5">
+                    Text Encoder 2 LR <span className="text-xs text-gray-500">(CLIP-G, leave empty to use TE base LR)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={textEncoder2Lr || ""}
+                    onChange={(e) => setTextEncoder2Lr(e.target.value ? parseFloat(e.target.value) : null)}
+                    placeholder={`Default: ${textEncoderLr || learningRate}`}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
               </div>
             </>
           )}

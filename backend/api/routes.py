@@ -2614,6 +2614,14 @@ class TrainingRunCreateRequest(BaseModel):
     bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
     multi_resolution_mode: str = "max"  # "max" or "random"
 
+    # Component-specific training
+    train_unet: bool = True
+    train_text_encoder: bool = False
+    unet_lr: Optional[float] = None  # Defaults to learning_rate if None
+    text_encoder_lr: Optional[float] = None  # Defaults to learning_rate if None
+    text_encoder_1_lr: Optional[float] = None  # SDXL TE1 LR (defaults to text_encoder_lr if None)
+    text_encoder_2_lr: Optional[float] = None  # SDXL TE2 LR (defaults to text_encoder_lr if None)
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -2719,6 +2727,12 @@ async def create_training_run(
                 base_resolutions=request.base_resolutions,
                 bucket_strategy=request.bucket_strategy,
                 multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

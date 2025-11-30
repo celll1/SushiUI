@@ -1,8 +1,7 @@
 """
-Restore database from existing files.
+Restore gallery database from existing files.
 This script recreates database entries from:
 - Generated images in outputs/ directory (with PNG metadata)
-- Dataset directories
 """
 
 import os
@@ -17,8 +16,8 @@ from datetime import datetime
 backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
-from database import engine, Base, SessionLocal
-from database.models import GeneratedImage, Dataset, DatasetItem, DatasetCaption
+from database import GallerySessionLocal, gallery_engine
+from database.models import GeneratedImage, GalleryBase
 
 def restore_generated_images(db, outputs_dir):
     """Restore generated images from outputs/ directory."""
@@ -34,12 +33,19 @@ def restore_generated_images(db, outputs_dir):
 
     for img_path in image_files:
         try:
+            # Extract parameters from metadata
+            filename = img_path.name
+
+            # Check if already exists (skip duplicates)
+            existing = db.query(GeneratedImage).filter(GeneratedImage.filename == filename).first()
+            if existing:
+                skipped += 1
+                continue
+
             # Read PNG metadata
             with Image.open(img_path) as img:
                 metadata = img.info or {}
 
-            # Extract parameters from metadata
-            filename = img_path.name
             prompt = metadata.get("prompt", "")
             negative_prompt = metadata.get("negative_prompt", "")
             model_name = metadata.get("model", "unknown")
@@ -90,6 +96,7 @@ def restore_generated_images(db, outputs_dir):
 
         except Exception as e:
             print(f"[Restore] Error processing {img_path.name}: {e}")
+            db.rollback()  # Rollback on error and continue
             skipped += 1
 
     db.commit()
@@ -97,84 +104,15 @@ def restore_generated_images(db, outputs_dir):
 
     return restored
 
-def restore_datasets(db, dataset_paths):
-    """Restore datasets from directory paths."""
-    print("\n[Restore] Restoring datasets...")
-
-    restored = 0
-
-    for dataset_path in dataset_paths:
-        path = Path(dataset_path)
-        if not path.exists():
-            print(f"[Restore] Dataset not found: {dataset_path}")
-            continue
-
-        # Create dataset entry
-        dataset_name = path.name
-
-        # Check if already exists
-        existing = db.query(Dataset).filter(Dataset.name == dataset_name).first()
-        if existing:
-            print(f"[Restore] Dataset '{dataset_name}' already exists, skipping")
-            continue
-
-        dataset = Dataset(
-            name=dataset_name,
-            path=str(path),
-            created_at=datetime.utcnow()
-        )
-        db.add(dataset)
-        db.commit()
-        db.refresh(dataset)
-
-        # Scan for images in dataset
-        image_files = []
-        for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-            image_files.extend(path.glob(f"*{ext}"))
-
-        print(f"[Restore] Found {len(image_files)} images in {dataset_name}")
-
-        # Add dataset items
-        for img_path in image_files:
-            item = DatasetItem(
-                dataset_id=dataset.id,
-                image_path=str(img_path),
-                created_at=datetime.utcnow()
-            )
-            db.add(item)
-            db.commit()
-            db.refresh(item)
-
-            # Try to find caption file
-            caption_path = img_path.with_suffix('.txt')
-            if caption_path.exists():
-                with open(caption_path, 'r', encoding='utf-8') as f:
-                    caption_text = f.read().strip()
-
-                caption = DatasetCaption(
-                    item_id=item.id,
-                    caption_type="tags",
-                    content=caption_text,
-                    created_at=datetime.utcnow()
-                )
-                db.add(caption)
-
-        db.commit()
-        restored += 1
-        print(f"[Restore] Restored dataset: {dataset_name}")
-
-    print(f"[Restore] Restored {restored} datasets")
-    return restored
-
 def main():
-    print("[Restore] Starting database restoration...")
+    print("[Restore] Starting gallery database restoration...")
 
     # Create all tables
-    print("[Restore] Creating database schema...")
-    Base.metadata.create_all(bind=engine)
+    print("[Restore] Creating gallery database schema...")
+    GalleryBase.metadata.create_all(bind=gallery_engine)
 
     # Create session
-    db = SessionLocal()
+    db = GallerySessionLocal()
 
     try:
         # Get project root
@@ -187,15 +125,7 @@ def main():
         else:
             print(f"[Restore] Outputs directory not found: {outputs_dir}")
 
-        # Restore datasets
-        dataset_paths = [
-            "/m/dataset_control/cref",
-            "/m/dataset_control/cref-d",
-            "/m/dataset_control/test",
-        ]
-        restore_datasets(db, dataset_paths)
-
-        print("\n[Restore] Database restoration complete!")
+        print("\n[Restore] Gallery database restoration complete!")
 
     except Exception as e:
         print(f"[Restore] Error: {e}")

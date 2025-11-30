@@ -58,17 +58,23 @@ class TrainingProcess:
         if self.is_running:
             raise RuntimeError("Training process is already running")
 
-        # Construct ai-toolkit command
-        # ai-toolkit command: python run.py config_file.yaml
+        # Construct SushiUI training command
+        # Run as script directly instead of module
+        backend_dir = Path(__file__).parent.parent
+        train_runner_path = backend_dir / "core" / "train_runner.py"
+
         cmd = [
             self.venv_python,
-            "-m", "run",  # ai-toolkit entry point
+            str(train_runner_path),
             self.config_path,
+            str(self.run_id),
         ]
 
         # Set environment variables
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"  # Disable buffering for real-time logs
+        # Add backend directory to PYTHONPATH so imports work
+        env["PYTHONPATH"] = str(backend_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
         # Start subprocess
         self.process = subprocess.Popen(
@@ -78,7 +84,7 @@ class TrainingProcess:
             text=True,
             bufsize=1,
             env=env,
-            cwd=str(Path(__file__).parent.parent.parent),  # Project root
+            cwd=str(backend_dir),  # Run from backend directory
         )
 
         self.is_running = True
@@ -140,13 +146,24 @@ class TrainingProcess:
                     )
 
             # Wait for process to complete
-            self.process.wait()
+            returncode = self.process.wait()
+
+            # Check if process failed
+            if returncode != 0:
+                print(f"[Training] Process exited with code {returncode}")
+                # Mark as failed in database via callback
+                if progress_callback:
+                    # Signal failure (negative step indicates error)
+                    progress_callback(-1, 0.0, 0.0)
 
         except Exception as e:
             print(f"[Training] Error monitoring logs: {e}")
+            import traceback
+            traceback.print_exc()
 
         finally:
             self.is_running = False
+            print(f"[Training] Process monitoring ended. Final returncode: {self.process.returncode if self.process else 'N/A'}")
 
     def stop(self) -> None:
         """Stop training process."""

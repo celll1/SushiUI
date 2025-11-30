@@ -13,7 +13,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_db
-from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary
+from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
@@ -21,6 +21,8 @@ from core.controlnet_manager import controlnet_manager
 from core.controlnet_preprocessor import controlnet_preprocessor
 from core.tipo_manager import tipo_manager
 from core.tagger_manager import tagger_manager
+from core.training_config import TrainingConfigGenerator
+from core.training_process import training_process_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -2467,3 +2469,271 @@ async def serve_image(path: str):
         raise HTTPException(status_code=404, detail="Image not found")
     
     return FileResponse(path)
+
+# ============================================================
+# Training API Endpoints
+# ============================================================
+
+from database.models import TrainingRun, TrainingCheckpoint, TrainingSample
+
+class TrainingRunCreateRequest(BaseModel):
+    dataset_id: int
+    run_name: str
+    training_method: str  # 'lora' or 'full_finetune'
+    base_model_path: str
+
+    # Training parameters
+    total_steps: Optional[int] = None  # Mutually exclusive with epochs
+    epochs: Optional[int] = None  # Mutually exclusive with total_steps
+    batch_size: int = 1
+    learning_rate: float = 1e-4
+    lr_scheduler: str = "constant"
+    optimizer: str = "adamw8bit"
+
+    # LoRA specific
+    lora_rank: Optional[int] = 16
+    lora_alpha: Optional[int] = 16
+    network_type: Optional[str] = "lora"
+
+    # Advanced
+    save_every: int = 100
+    sample_every: int = 100
+    sample_prompts: List[str] = []
+
+@router.post("/training/runs", status_code=201)
+async def create_training_run(request: TrainingRunCreateRequest, db: Session = Depends(get_db)):
+    """Create a new training run"""
+    try:
+        # Validate that either steps or epochs is provided
+        if request.total_steps is None and request.epochs is None:
+            raise HTTPException(status_code=400, detail="Either total_steps or epochs must be provided")
+        if request.total_steps is not None and request.epochs is not None:
+            raise HTTPException(status_code=400, detail="Cannot specify both total_steps and epochs")
+
+        # Check if dataset exists
+        dataset = db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+
+        # Check if run name is unique
+        existing = db.query(TrainingRun).filter(TrainingRun.run_name == request.run_name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Training run '{request.run_name}' already exists")
+
+        # Check if base model exists
+        if not os.path.exists(request.base_model_path):
+            raise HTTPException(status_code=400, detail=f"Base model not found: {request.base_model_path}")
+
+        # Create output directory
+        output_dir = os.path.join("outputs", "training", request.run_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Generate YAML config
+        config_generator = TrainingConfigGenerator()
+
+        if request.training_method == "lora":
+            config_yaml = config_generator.generate_lora_config(
+                run_name=request.run_name,
+                dataset_path=dataset.path,
+                base_model_path=request.base_model_path,
+                output_dir=output_dir,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                lora_rank=request.lora_rank or 16,
+                lora_alpha=request.lora_alpha or 16,
+                save_every=request.save_every,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+            )
+        else:  # full_finetune
+            config_yaml = config_generator.generate_full_finetune_config(
+                run_name=request.run_name,
+                dataset_path=dataset.path,
+                base_model_path=request.base_model_path,
+                output_dir=output_dir,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                save_every=request.save_every,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+            )
+
+        # Save config file
+        config_path = os.path.join(output_dir, f"{request.run_name}_config.yaml")
+        config_generator.save_config(config_yaml, config_path)
+
+        # Create training run
+        # Calculate total_steps for database if epochs provided
+        calculated_total_steps = request.total_steps
+        if request.epochs is not None:
+            # Estimate steps based on dataset size and batch size
+            dataset_size = db.query(DatasetItem).filter(DatasetItem.dataset_id == request.dataset_id).count()
+            calculated_total_steps = (dataset_size // request.batch_size) * request.epochs
+
+        training_run = TrainingRun(
+            dataset_id=request.dataset_id,
+            run_name=request.run_name,
+            training_method=request.training_method,
+            base_model_path=request.base_model_path,
+            config_yaml=config_yaml,
+            total_steps=calculated_total_steps or 0,
+            output_dir=output_dir,
+            status="pending"
+        )
+
+        db.add(training_run)
+        db.commit()
+        db.refresh(training_run)
+
+        return training_run.to_dict()
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/training/runs")
+async def list_training_runs(db: Session = Depends(get_db)):
+    """List all training runs"""
+    try:
+        runs = db.query(TrainingRun).order_by(TrainingRun.created_at.desc()).all()
+        return {"runs": [run.to_dict() for run in runs], "total": len(runs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/training/runs/{run_id}")
+async def get_training_run(run_id: int, db: Session = Depends(get_db)):
+    """Get training run details"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    return run.to_dict()
+
+@router.delete("/training/runs/{run_id}")
+async def delete_training_run(run_id: int, db: Session = Depends(get_db)):
+    """Delete a training run"""
+    try:
+        run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Training run not found")
+        
+        # Don't delete if running
+        if run.status == "running":
+            raise HTTPException(status_code=400, detail="Cannot delete running training run")
+        
+        db.delete(run)
+        db.commit()
+        return {"message": "Training run deleted successfully"}
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/training/runs/{run_id}/start")
+async def start_training_run(run_id: int, db: Session = Depends(get_db)):
+    """Start a training run"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status == "running":
+        raise HTTPException(status_code=400, detail="Training run is already running")
+
+    try:
+        # Get config path
+        config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
+
+        if not os.path.exists(config_path):
+            raise HTTPException(status_code=500, detail="Config file not found")
+
+        # Create training process
+        process = training_process_manager.create_process(
+            run_id=run.id,
+            config_path=config_path,
+            output_dir=run.output_dir
+        )
+
+        # Define progress callback to update database
+        def progress_callback(step: int, loss: float, lr: float):
+            try:
+                run.current_step = step
+                run.loss = loss
+                run.learning_rate = lr
+                run.progress = (step / run.total_steps) * 100
+                db.commit()
+            except Exception as e:
+                print(f"[Training] Error updating progress: {e}")
+
+        # Define log callback
+        def log_callback(log_line: str):
+            print(f"[Training {run_id}] {log_line}")
+
+        # Start training process
+        await process.start(progress_callback=progress_callback, log_callback=log_callback)
+
+        # Update run status
+        run.status = "running"
+        run.started_at = datetime.utcnow()
+        db.commit()
+
+        return {"message": "Training started", "run": run.to_dict()}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to start training: {str(e)}")
+
+@router.post("/training/runs/{run_id}/stop")
+async def stop_training_run(run_id: int, db: Session = Depends(get_db)):
+    """Stop a training run"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status != "running":
+        raise HTTPException(status_code=400, detail="Training run is not running")
+
+    try:
+        # Get training process
+        process = training_process_manager.get_process(run_id)
+
+        if process:
+            process.stop()
+            training_process_manager.remove_process(run_id)
+
+        # Update run status
+        run.status = "stopped"
+        db.commit()
+
+        return {"message": "Training stopped", "run": run.to_dict()}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
+
+@router.get("/training/runs/{run_id}/status")
+async def get_training_status(run_id: int, db: Session = Depends(get_db)):
+    """Get current training status"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    # Get process status if available
+    process = training_process_manager.get_process(run_id)
+    process_status = process.get_status() if process else None
+
+    return {
+        "status": run.status,
+        "progress": run.progress,
+        "current_step": run.current_step,
+        "total_steps": run.total_steps,
+        "loss": run.loss,
+        "learning_rate": run.learning_rate,
+        "process_status": process_status
+    }

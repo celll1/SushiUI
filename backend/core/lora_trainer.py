@@ -90,35 +90,70 @@ class LoRATrainer:
         print(f"[LoRATrainer] Initializing on {self.device}")
         print(f"[LoRATrainer] Loading model from {model_path}")
 
-        # Load model components separately (SushiUI style)
-        self.vae = AutoencoderKL.from_pretrained(
-            model_path,
-            subfolder="vae",
-            torch_dtype=self.dtype
-        )
+        # Detect if model is safetensors file or diffusers directory
+        is_safetensors = model_path.endswith('.safetensors')
 
-        self.text_encoder = CLIPTextModel.from_pretrained(
-            model_path,
-            subfolder="text_encoder",
-            torch_dtype=self.dtype
-        )
+        if is_safetensors:
+            print(f"[LoRATrainer] Loading from safetensors file")
+            # Load model components from single safetensors file
+            self.vae = AutoencoderKL.from_single_file(
+                model_path,
+                torch_dtype=self.dtype
+            )
 
-        self.tokenizer = CLIPTokenizer.from_pretrained(
-            model_path,
-            subfolder="tokenizer"
-        )
+            self.text_encoder = CLIPTextModel.from_single_file(
+                model_path,
+                torch_dtype=self.dtype
+            )
 
-        self.unet = UNet2DConditionModel.from_pretrained(
-            model_path,
-            subfolder="unet",
-            torch_dtype=self.dtype
-        )
+            self.tokenizer = CLIPTokenizer.from_pretrained(
+                "openai/clip-vit-large-patch14"  # Standard CLIP tokenizer
+            )
 
-        # Load noise scheduler
-        self.noise_scheduler = DDPMScheduler.from_pretrained(
-            model_path,
-            subfolder="scheduler"
-        )
+            self.unet = UNet2DConditionModel.from_single_file(
+                model_path,
+                torch_dtype=self.dtype
+            )
+
+            # Load noise scheduler (use default DDPM config)
+            self.noise_scheduler = DDPMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                clip_sample=False,
+            )
+        else:
+            print(f"[LoRATrainer] Loading from diffusers directory")
+            # Load model components from diffusers directory (SushiUI style)
+            self.vae = AutoencoderKL.from_pretrained(
+                model_path,
+                subfolder="vae",
+                torch_dtype=self.dtype
+            )
+
+            self.text_encoder = CLIPTextModel.from_pretrained(
+                model_path,
+                subfolder="text_encoder",
+                torch_dtype=self.dtype
+            )
+
+            self.tokenizer = CLIPTokenizer.from_pretrained(
+                model_path,
+                subfolder="tokenizer"
+            )
+
+            self.unet = UNet2DConditionModel.from_pretrained(
+                model_path,
+                subfolder="unet",
+                torch_dtype=self.dtype
+            )
+
+            # Load noise scheduler
+            self.noise_scheduler = DDPMScheduler.from_pretrained(
+                model_path,
+                subfolder="scheduler"
+            )
 
         # Freeze all base weights
         self.vae.requires_grad_(False)

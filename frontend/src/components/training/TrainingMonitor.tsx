@@ -18,7 +18,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
 
   // Poll training status
   useEffect(() => {
-    if (currentRun.status !== "running") return;
+    // Poll when status is "starting" or "running"
+    if (currentRun.status !== "starting" && currentRun.status !== "running") return;
 
     const interval = setInterval(async () => {
       try {

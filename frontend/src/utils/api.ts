@@ -1023,3 +1023,97 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   const response = await api.get(`/datasets/${datasetId}/items/${itemId}`);
   return response.data;
 };
+
+// ============================================================
+// Training API
+// ============================================================
+
+export interface TrainingRun {
+  id: number;
+  dataset_id: number;
+  run_name: string;
+  training_method: "lora" | "full_finetune";
+  base_model_path: string;
+  config_yaml?: string;
+  status: "pending" | "running" | "paused" | "completed" | "failed";
+  progress: number;
+  current_step: number;
+  total_steps: number;
+  loss?: number;
+  learning_rate?: number;
+  output_dir: string;
+  checkpoint_paths: string[];
+  log_file?: string;
+  error_message?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  updated_at: string;
+}
+
+export interface TrainingRunCreateRequest {
+  dataset_id: number;
+  run_name: string;
+  training_method: "lora" | "full_finetune";
+  base_model_path: string;
+  total_steps?: number;  // Mutually exclusive with epochs
+  epochs?: number;  // Mutually exclusive with total_steps
+  batch_size?: number;
+  learning_rate?: number;
+  lr_scheduler?: string;
+  optimizer?: string;
+  lora_rank?: number;
+  lora_alpha?: number;
+  network_type?: string;
+  save_every?: number;
+  sample_every?: number;
+  sample_prompts?: string[];
+}
+
+export interface TrainingRunListResponse {
+  runs: TrainingRun[];
+  total: number;
+}
+
+export interface TrainingStatus {
+  status: string;
+  progress: number;
+  current_step: number;
+  total_steps: number;
+  loss?: number;
+  learning_rate?: number;
+}
+
+export const createTrainingRun = async (data: TrainingRunCreateRequest): Promise<TrainingRun> => {
+  const response = await api.post("/training/runs", data);
+  return response.data;
+};
+
+export const listTrainingRuns = async (): Promise<TrainingRunListResponse> => {
+  const response = await api.get("/training/runs");
+  return response.data;
+};
+
+export const getTrainingRun = async (id: number): Promise<TrainingRun> => {
+  const response = await api.get(`/training/runs/${id}`);
+  return response.data;
+};
+
+export const deleteTrainingRun = async (id: number): Promise<void> => {
+  await api.delete(`/training/runs/${id}`);
+};
+
+export const startTrainingRun = async (id: number): Promise<{ message: string; run: TrainingRun }> => {
+  const response = await api.post(`/training/runs/${id}/start`);
+  return response.data;
+};
+
+export const stopTrainingRun = async (id: number): Promise<{ message: string; run: TrainingRun }> => {
+  const response = await api.post(`/training/runs/${id}/stop`);
+  return response.data;
+};
+
+export const getTrainingStatus = async (id: number): Promise<TrainingStatus> => {
+  const response = await api.get(`/training/runs/${id}/status`);
+  return response.data;
+};

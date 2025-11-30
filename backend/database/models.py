@@ -156,6 +156,7 @@ class Dataset(Base):
 
     # Relationships
     items = relationship("DatasetItem", back_populates="dataset", cascade="all, delete-orphan")
+    training_runs = relationship("TrainingRun", back_populates="dataset", cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
@@ -322,4 +323,135 @@ class TagDictionary(Base):
             "replacement_tag": self.replacement_tag,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TrainingRun(Base):
+    """Training run for model fine-tuning or LoRA training"""
+    __tablename__ = "training_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Run identification
+    run_name = Column(String, unique=True, index=True, nullable=False)
+    training_method = Column(String, nullable=False, index=True)  # 'lora', 'full_finetune'
+    base_model_path = Column(String, nullable=False)
+    
+    # Configuration
+    config_yaml = Column(Text)  # Full ai-toolkit YAML config
+    
+    # Status
+    status = Column(String, default="pending", index=True)  # 'pending', 'running', 'paused', 'completed', 'failed'
+    progress = Column(Float, default=0.0)  # 0.0 - 1.0
+    current_step = Column(Integer, default=0)
+    total_steps = Column(Integer, nullable=False)
+    
+    # Performance metrics
+    loss = Column(Float, nullable=True)
+    learning_rate = Column(Float, nullable=True)
+    
+    # Output
+    output_dir = Column(String, nullable=False)
+    checkpoint_paths = Column(JSON, default=list)  # List of checkpoint file paths
+    
+    # Logs
+    log_file = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    dataset = relationship("Dataset", back_populates="training_runs")
+    checkpoints = relationship("TrainingCheckpoint", back_populates="run", cascade="all, delete-orphan")
+    samples = relationship("TrainingSample", back_populates="run", cascade="all, delete-orphan")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "run_name": self.run_name,
+            "training_method": self.training_method,
+            "base_model_path": self.base_model_path,
+            "config_yaml": self.config_yaml,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "loss": self.loss,
+            "learning_rate": self.learning_rate,
+            "output_dir": self.output_dir,
+            "checkpoint_paths": self.checkpoint_paths,
+            "log_file": self.log_file,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TrainingCheckpoint(Base):
+    """Training checkpoint saved during training"""
+    __tablename__ = "training_checkpoints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    checkpoint_name = Column(String, nullable=False)
+    step = Column(Integer, nullable=False)
+    epoch = Column(Integer, nullable=True)
+    
+    file_path = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=True)  # bytes
+    
+    loss = Column(Float, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    run = relationship("TrainingRun", back_populates="checkpoints")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "checkpoint_name": self.checkpoint_name,
+            "step": self.step,
+            "epoch": self.epoch,
+            "file_path": self.file_path,
+            "file_size": self.file_size,
+            "loss": self.loss,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TrainingSample(Base):
+    """Sample image generated during training"""
+    __tablename__ = "training_samples"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    step = Column(Integer, nullable=False)
+    prompt = Column(Text, nullable=False)
+    image_path = Column(String, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    run = relationship("TrainingRun", back_populates="samples")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "step": self.step,
+            "prompt": self.prompt,
+            "image_path": self.image_path,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

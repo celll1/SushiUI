@@ -112,10 +112,11 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   }
 
   // Calculate chart dimensions and scaling
-  const width = 600;
+  const width = 100; // Use percentage width for responsiveness
   const height = 300;
   const padding = { top: 20, right: 20, bottom: 40, left: 60 };
-  const chartWidth = width - padding.left - padding.right;
+  const actualWidth = 550; // Actual pixel width for calculations
+  const chartWidth = actualWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
   const maxStep = Math.max(...lossData.map((d) => d.step));
@@ -224,10 +225,12 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       </div>
 
       <svg
-        width={width}
+        width="100%"
         height={height}
+        viewBox={`0 0 ${actualWidth} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
         className="text-gray-400"
-        style={{ fontFamily: "monospace", fontSize: "10px" }}
+        style={{ fontFamily: "monospace", fontSize: "10px", maxWidth: "100%" }}
       >
         {/* Y-axis */}
         <line
@@ -243,7 +246,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         <line
           x1={padding.left}
           y1={height - padding.bottom}
-          x2={width - padding.right}
+          x2={actualWidth - padding.right}
           y2={height - padding.bottom}
           stroke="currentColor"
           strokeWidth="1"
@@ -275,7 +278,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               <line
                 x1={padding.left}
                 y1={y}
-                x2={width - padding.right}
+                x2={actualWidth - padding.right}
                 y2={y}
                 stroke="currentColor"
                 strokeWidth="0.5"
@@ -322,7 +325,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
         {/* Axis labels */}
         <text
-          x={width / 2}
+          x={actualWidth / 2}
           y={height - 5}
           textAnchor="middle"
           fill="currentColor"

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { RefreshCw } from "lucide-react";
 import { getTrainingMetrics } from "@/utils/api";
 
 interface MetricPoint {
@@ -8,6 +9,25 @@ interface MetricPoint {
   value: number;
   wall_time: number;
 }
+
+// Calculate smoothed data using exponential moving average
+const calculateSmoothing = (data: MetricPoint[], smoothingFactor: number): MetricPoint[] => {
+  if (data.length === 0 || smoothingFactor === 0) return data;
+
+  const smoothed: MetricPoint[] = [];
+  let lastSmoothed = data[0].value;
+
+  for (const point of data) {
+    lastSmoothed = lastSmoothed * smoothingFactor + point.value * (1 - smoothingFactor);
+    smoothed.push({
+      step: point.step,
+      value: lastSmoothed,
+      wall_time: point.wall_time
+    });
+  }
+
+  return smoothed;
+};
 
 interface LossChartProps {
   runId: number;
@@ -20,12 +40,22 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [error, setError] = useState<string | null>(null);
   const [lastStep, setLastStep] = useState<number>(-1);
 
-  const fetchMetrics = useCallback(async () => {
+  // UI controls
+  const [smoothingFactor, setSmoothingFactor] = useState(0.9);
+  const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
+  const [showSmooth, setShowSmooth] = useState(true);
+
+  // Calculate smooth loss on client side
+  const smoothLossData = useMemo(() => {
+    return calculateSmoothing(lossData, smoothingFactor);
+  }, [lossData, smoothingFactor]);
+
+  const fetchMetrics = useCallback(async (isIncremental: boolean = false) => {
     try {
       setLoading(true);
       setError(null);
 
-      const sinceStep = lastStep >= 0 ? lastStep : undefined;
+      const sinceStep = isIncremental && lastStep >= 0 ? lastStep : undefined;
       const data = await getTrainingMetrics(runId, sinceStep);
 
       // Merge new data with existing data
@@ -48,15 +78,18 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     }
   }, [runId, lastStep]);
 
+  // Initial fetch
   useEffect(() => {
-    fetchMetrics();
+    fetchMetrics(false);
+  }, [runId]);
 
-    // Auto-refresh if training is running
-    if (isRunning) {
-      const interval = setInterval(fetchMetrics, 10000); // 10 seconds
+  // Auto-refresh based on polling interval
+  useEffect(() => {
+    if (pollingInterval > 0) {
+      const interval = setInterval(() => fetchMetrics(true), pollingInterval * 1000);
       return () => clearInterval(interval);
     }
-  }, [fetchMetrics, isRunning]);
+  }, [pollingInterval, fetchMetrics]);
 
   if (error) {
     return (
@@ -96,8 +129,16 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   const scaleY = (loss: number) =>
     padding.top + chartHeight - ((loss - minLoss) / (maxLoss - minLoss || 1)) * chartHeight;
 
-  // Generate path for line chart
-  const linePath = lossData
+  // Generate paths for line charts
+  const rawLinePath = lossData
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  const smoothLinePath = smoothLossData
     .map((d, i) => {
       const x = scaleX(d.step);
       const y = scaleY(d.value);
@@ -119,11 +160,67 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded p-4">
+      {/* Header with controls */}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-gray-300">Training Loss</h3>
-        {isRunning && (
-          <span className="text-xs text-gray-500">Auto-updating every 10s</span>
-        )}
+
+        <div className="flex items-center gap-3">
+          {/* Polling interval selector */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400">Auto-refresh:</label>
+            <select
+              value={pollingInterval}
+              onChange={(e) => setPollingInterval(Number(e.target.value))}
+              className="text-xs px-2 py-1 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+            >
+              <option value="0">Off</option>
+              <option value="5">5s</option>
+              <option value="10">10s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+            </select>
+          </div>
+
+          {/* Manual refresh button */}
+          <button
+            onClick={() => fetchMetrics(true)}
+            disabled={loading}
+            className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Refresh data"
+          >
+            <RefreshCw className={`h-4 w-4 text-gray-300 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Smoothing slider */}
+      <div className="flex items-center gap-3 mb-3">
+        <label className="text-xs text-gray-400 whitespace-nowrap w-20">
+          Smoothing:
+        </label>
+        <input
+          type="range"
+          min="0"
+          max="0.99"
+          step="0.01"
+          value={smoothingFactor}
+          onChange={(e) => setSmoothingFactor(parseFloat(e.target.value))}
+          className="flex-1 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+        />
+        <span className="text-xs text-gray-400 w-12 text-right">
+          {(smoothingFactor * 100).toFixed(0)}%
+        </span>
+
+        {/* Toggle smooth line */}
+        <label className="flex items-center gap-2 cursor-pointer ml-2">
+          <input
+            type="checkbox"
+            checked={showSmooth}
+            onChange={(e) => setShowSmooth(e.target.checked)}
+            className="rounded text-blue-500 focus:ring-blue-500"
+          />
+          <span className="text-xs text-gray-400">Show smooth</span>
+        </label>
       </div>
 
       <svg
@@ -244,29 +341,43 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           Loss
         </text>
 
-        {/* Loss line */}
+        {/* Smooth loss line (behind, if enabled) */}
+        {showSmooth && smoothingFactor > 0 && (
+          <path
+            d={smoothLinePath}
+            fill="none"
+            stroke="#60a5fa"
+            strokeWidth="2.5"
+            strokeLinejoin="round"
+            opacity="0.7"
+          />
+        )}
+
+        {/* Raw loss line */}
         <path
-          d={linePath}
+          d={rawLinePath}
           fill="none"
           stroke="#3b82f6"
-          strokeWidth="2"
+          strokeWidth="1.5"
           strokeLinejoin="round"
+          opacity={showSmooth && smoothingFactor > 0 ? 0.3 : 1.0}
         />
-
-        {/* Data points */}
-        {lossData.map((d, i) => (
-          <circle
-            key={i}
-            cx={scaleX(d.step)}
-            cy={scaleY(d.value)}
-            r="2"
-            fill="#3b82f6"
-          />
-        ))}
       </svg>
 
-      <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
-        <span>{lossData.length} data points</span>
+      {/* Legend and stats */}
+      <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-0.5 bg-blue-500"></div>
+            <span>Raw ({lossData.length} points)</span>
+          </div>
+          {showSmooth && smoothingFactor > 0 && (
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-0.5 bg-blue-400"></div>
+              <span>Smooth (EMA {(smoothingFactor * 100).toFixed(0)}%)</span>
+            </div>
+          )}
+        </div>
         <span>
           Latest: {lossData[lossData.length - 1]?.value.toFixed(4)} (Step{" "}
           {lossData[lossData.length - 1]?.step})

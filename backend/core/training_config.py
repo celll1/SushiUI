@@ -47,6 +47,7 @@ class TrainingConfigGenerator:
         output_dtype: str = "fp32",
         vae_dtype: str = "fp16",
         mixed_precision: bool = True,
+        use_flash_attention: bool = False,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -80,6 +81,7 @@ class TrainingConfigGenerator:
             text_encoder_1_lr: Text encoder 1 learning rate for SDXL (defaults to text_encoder_lr if None)
             text_encoder_2_lr: Text encoder 2 learning rate for SDXL (defaults to text_encoder_lr if None)
             cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
+            use_flash_attention: Enable Flash Attention for training (faster, lower memory)
 
         Returns:
             YAML configuration string
@@ -146,6 +148,7 @@ class TrainingConfigGenerator:
                             "base_resolutions": base_resolutions or [1024],
                             "bucket_strategy": bucket_strategy,
                             "multi_resolution_mode": multi_resolution_mode,
+                            "use_flash_attention": use_flash_attention,
                         },
                         "model": {
                             "name_or_path": base_model_path,

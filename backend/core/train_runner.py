@@ -136,6 +136,7 @@ def main():
             vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
+            use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
 
             # Initialize trainer
             trainer = LoRATrainer(
@@ -150,6 +151,7 @@ def main():
                 vae_dtype=vae_dtype,
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
+                use_flash_attention=use_flash_attention,
             )
 
             # Setup optimizer

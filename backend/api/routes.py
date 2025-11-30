@@ -2629,6 +2629,7 @@ class TrainingRunCreateRequest(BaseModel):
     output_dtype: str = "fp32"  # fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2 (output latent dtype)
     vae_dtype: str = "fp16"  # VAE-specific dtype (SDXL VAE works fine with fp16)
     mixed_precision: bool = True  # Enable mixed precision training (autocast)
+    use_flash_attention: bool = False  # Enable Flash Attention for training (faster, lower memory)
 
     # Sample generation parameters
     sample_width: int = 1024
@@ -2747,6 +2748,7 @@ async def create_training_run(
                 output_dtype=request.output_dtype,
                 vae_dtype=request.vae_dtype,
                 mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

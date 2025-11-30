@@ -156,6 +156,11 @@ def main():
             def progress_callback(step: int, loss: float, lr: float):
                 update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
 
+            # Update status to running
+            run.status = "running"
+            training_db.commit()
+            print("[TrainRunner] Status updated to 'running'")
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,

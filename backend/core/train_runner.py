@@ -161,6 +161,18 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
+            # Prepare sample configuration
+            sample_prompts = process_config['sample'].get('sample_prompts', [])
+            sample_config = {
+                'width': process_config['sample'].get('sample_width', 1024),
+                'height': process_config['sample'].get('sample_height', 1024),
+                'steps': process_config['sample'].get('sample_steps', 28),
+                'cfg_scale': process_config['sample'].get('sample_cfg_scale', 7.0),
+                'sampler': process_config['sample'].get('sample_sampler', 'euler'),
+                'schedule_type': process_config['sample'].get('sample_schedule_type', 'sgm_uniform'),
+                'seed': process_config['sample'].get('sample_seed', -1),
+            }
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,
@@ -169,6 +181,8 @@ def main():
                 save_every=process_config['save'].get('save_every', 100),
                 save_every_unit=process_config['save'].get('save_every_unit', 'steps'),
                 sample_every=process_config['sample'].get('sample_every', 100),
+                sample_prompts=sample_prompts if sample_prompts else None,
+                sample_config=sample_config if sample_prompts else None,
                 progress_callback=progress_callback,
                 resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
             )

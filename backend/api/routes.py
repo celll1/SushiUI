@@ -2502,8 +2502,17 @@ class TrainingRunCreateRequest(BaseModel):
     save_every: int = 100
     save_every_unit: str = "steps"  # "steps" or "epochs"
     sample_every: int = 100
-    sample_prompts: List[str] = []
+    sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
+
+    # Sample generation parameters
+    sample_width: int = 1024
+    sample_height: int = 1024
+    sample_steps: int = 28
+    sample_cfg_scale: float = 7.0
+    sample_sampler: str = "euler"
+    sample_schedule_type: str = "sgm_uniform"
+    sample_seed: int = -1  # -1 for random
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(

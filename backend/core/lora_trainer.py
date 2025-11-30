@@ -604,6 +604,91 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Checkpoint saved: {save_path}")
 
+    def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any]):
+        """
+        Generate sample images during training.
+
+        Args:
+            step: Current training step
+            sample_prompts: List of prompt dicts with 'positive' and 'negative' keys
+            config: Generation configuration (width, height, steps, cfg_scale, sampler, etc.)
+        """
+        if not sample_prompts:
+            return
+
+        samples_dir = self.output_dir / "samples"
+        samples_dir.mkdir(exist_ok=True)
+
+        print(f"[LoRATrainer] Generating {len(sample_prompts)} samples at step {step}...")
+
+        # Extract config parameters
+        width = config.get("width", 1024)
+        height = config.get("height", 1024)
+        num_steps = config.get("steps", 28)
+        cfg_scale = config.get("cfg_scale", 7.0)
+        sampler = config.get("sampler", "euler")
+        schedule_type = config.get("schedule_type", "sgm_uniform")
+        seed = config.get("seed", -1)
+
+        # Set pipeline to eval mode
+        self.unet.eval()
+
+        try:
+            for i, prompt_pair in enumerate(sample_prompts):
+                positive_prompt = prompt_pair.get("positive", "")
+                negative_prompt = prompt_pair.get("negative", "")
+
+                # Generate seed
+                if seed == -1:
+                    gen_seed = torch.randint(0, 2**32 - 1, (1,)).item()
+                else:
+                    gen_seed = seed + i
+
+                generator = torch.Generator(device=self.device).manual_seed(gen_seed)
+
+                # Generate image
+                with torch.no_grad():
+                    if self.is_sdxl:
+                        image = self.pipeline(
+                            prompt=positive_prompt,
+                            negative_prompt=negative_prompt,
+                            width=width,
+                            height=height,
+                            num_inference_steps=num_steps,
+                            guidance_scale=cfg_scale,
+                            generator=generator,
+                        ).images[0]
+                    else:
+                        image = self.pipeline(
+                            prompt=positive_prompt,
+                            negative_prompt=negative_prompt,
+                            width=width,
+                            height=height,
+                            num_inference_steps=num_steps,
+                            guidance_scale=cfg_scale,
+                            generator=generator,
+                        ).images[0]
+
+                # Save image
+                sample_filename = f"step_{step:06d}_sample_{i}.png"
+                sample_path = samples_dir / sample_filename
+                image.save(sample_path)
+
+                # Log to TensorBoard
+                import torchvision
+                image_tensor = torchvision.transforms.ToTensor()(image)
+                self.writer.add_image(f"samples/sample_{i}", image_tensor, global_step=step)
+
+                print(f"[LoRATrainer] Sample {i} saved: {sample_path}")
+
+        except Exception as e:
+            print(f"[LoRATrainer] ERROR generating sample: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Set back to train mode
+        self.unet.train()
+
     def train(
         self,
         dataset_items: List[Dict[str, Any]],
@@ -612,6 +697,8 @@ class LoRATrainer:
         save_every: int = 100,
         save_every_unit: str = "steps",
         sample_every: int = 100,
+        sample_prompts: List[str] = None,
+        sample_config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
         resume_from_checkpoint: Optional[str] = None,
     ):
@@ -625,6 +712,8 @@ class LoRATrainer:
             save_every: Save checkpoint every N steps or epochs
             save_every_unit: Unit for save_every ("steps" or "epochs")
             sample_every: Generate sample every N steps
+            sample_prompts: List of prompts for sample generation
+            sample_config: Configuration for sample generation (width, height, steps, cfg_scale, etc.)
             progress_callback: Callback(step, loss, lr) for progress updates
             resume_from_checkpoint: Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
         """
@@ -746,9 +835,10 @@ class LoRATrainer:
                         pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
                         self.save_checkpoint(global_step)
 
-                    # TODO: Sample generation
-                    # if global_step % sample_every == 0:
-                    #     self.generate_sample(...)
+                    # Sample generation
+                    if sample_prompts and sample_config and global_step % sample_every == 0:
+                        pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
+                        self.generate_sample(global_step, sample_prompts, sample_config)
 
                 except Exception as e:
                     pbar.write(f"[LoRATrainer] ERROR processing {item.get('image_path', 'unknown')}: {e}")

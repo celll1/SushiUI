@@ -66,6 +66,13 @@ class LoRAManager:
         self.lora_dir = Path(lora_dir)
         self.additional_dirs: List[Path] = []  # User-configured additional directories
         self.loaded_loras: List[LoRAConfig] = []
+
+        # Add training directory to search paths (for trained LoRAs)
+        training_dir = Path(settings.root_dir) / "training"
+        if training_dir.exists():
+            self.additional_dirs.append(training_dir)
+            print(f"[LoRAManager] Added training directory to search paths: {training_dir}")
+
         print(f"[LoRAManager] LoRA directory: {self.lora_dir}")
 
     def set_additional_dirs(self, dirs: List[str]):
@@ -331,9 +338,10 @@ class LoRAManager:
 
     def get_lora_info(self, lora_name: str) -> Optional[Dict[str, Any]]:
         """Get information about a specific LoRA file"""
-        lora_path = self.lora_dir / lora_name
+        # Use _resolve_lora_path to check both lora/ and training/ directories
+        lora_path = self._resolve_lora_path(lora_name)
 
-        if not lora_path.exists():
+        if lora_path is None:
             return None
 
         # Get layer information
@@ -352,9 +360,10 @@ class LoRAManager:
         Extract U-Net block structure from LoRA file
         Returns blocks in format: BASE, IN00-IN11, MID, OUT00-OUT11
         """
-        lora_path = self.lora_dir / lora_name
+        # Use _resolve_lora_path to check both lora/ and training/ directories
+        lora_path = self._resolve_lora_path(lora_name)
 
-        if not lora_path.exists():
+        if lora_path is None:
             return []
 
         try:

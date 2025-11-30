@@ -89,8 +89,11 @@ class LoRATrainer:
         self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
 
         # Initialize tensorboard writer
-        tensorboard_dir = self.output_dir / "tensorboard"
-        tensorboard_dir.mkdir(exist_ok=True)
+        # Create subdirectory with timestamp for each training session (useful for resume)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tensorboard_dir = self.output_dir / "tensorboard" / timestamp
+        tensorboard_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(tensorboard_dir))
 
         print(f"[LoRATrainer] Initializing on {self.device}")

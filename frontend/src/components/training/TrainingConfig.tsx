@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption } from "@/utils/api";
+import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -24,6 +24,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
     { dataset_id: 0, caption_types: [], filters: {} }
   ]);
+
+  // Available caption types for each dataset
+  const [datasetCaptionTypes, setDatasetCaptionTypes] = useState<Record<number, CaptionTypeInfo[]>>({});
 
   const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
@@ -73,8 +76,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       const response = await listDatasets();
       setDatasets(response.datasets);
       if (response.datasets.length > 0) {
+        const firstDatasetId = response.datasets[0].id;
         // Initialize first dataset config with first available dataset
-        setDatasetConfigs([{ dataset_id: response.datasets[0].id, caption_types: [], filters: {} }]);
+        setDatasetConfigs([{ dataset_id: firstDatasetId, caption_types: [], filters: {} }]);
+        // Load caption types for the first dataset
+        loadCaptionTypes(firstDatasetId);
       }
     } catch (err) {
       console.error("Failed to load datasets:", err);
@@ -93,6 +99,21 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       }
     } catch (err) {
       console.error("Failed to load models:", err);
+    }
+  };
+
+  // Helper function: Load caption types for a dataset
+  const loadCaptionTypes = async (datasetId: number) => {
+    if (datasetId === 0) return;
+
+    try {
+      const response = await getDatasetCaptionTypes(datasetId);
+      setDatasetCaptionTypes(prev => ({
+        ...prev,
+        [datasetId]: response.caption_types
+      }));
+    } catch (err) {
+      console.error("Failed to load caption types:", err);
     }
   };
 
@@ -279,9 +300,13 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               <select
                 value={config.dataset_id}
                 onChange={(e) => {
+                  const newDatasetId = parseInt(e.target.value);
                   const updated = [...datasetConfigs];
-                  updated[index].dataset_id = parseInt(e.target.value);
+                  updated[index].dataset_id = newDatasetId;
+                  updated[index].caption_types = []; // Reset caption types when dataset changes
                   setDatasetConfigs(updated);
+                  // Load caption types for the new dataset
+                  loadCaptionTypes(newDatasetId);
                 }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
@@ -293,21 +318,45 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 ))}
               </select>
 
-              {/* Caption Types - TODO: Implement caption type selector */}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Caption Types (leave empty for all)</label>
-                <input
-                  type="text"
-                  placeholder="e.g., caption, instruction"
-                  value={config.caption_types.join(", ")}
-                  onChange={(e) => {
-                    const updated = [...datasetConfigs];
-                    updated[index].caption_types = e.target.value.split(",").map(t => t.trim()).filter(t => t !== "");
-                    setDatasetConfigs(updated);
-                  }}
-                  className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
-                />
-              </div>
+              {/* Caption Types */}
+              {config.dataset_id !== 0 && datasetCaptionTypes[config.dataset_id] && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">
+                    Caption Types (select which to use for training)
+                  </label>
+                  <div className="bg-gray-900 border border-gray-700 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
+                    {datasetCaptionTypes[config.dataset_id].length === 0 ? (
+                      <p className="text-xs text-gray-500">No captions found in this dataset</p>
+                    ) : (
+                      datasetCaptionTypes[config.dataset_id].map((captionType) => (
+                        <label key={captionType.caption_type} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-800 p-1 rounded">
+                          <input
+                            type="checkbox"
+                            checked={config.caption_types.includes(captionType.caption_type)}
+                            onChange={(e) => {
+                              const updated = [...datasetConfigs];
+                              if (e.target.checked) {
+                                updated[index].caption_types = [...updated[index].caption_types, captionType.caption_type];
+                              } else {
+                                updated[index].caption_types = updated[index].caption_types.filter(t => t !== captionType.caption_type);
+                              }
+                              setDatasetConfigs(updated);
+                            }}
+                            className="rounded"
+                          />
+                          <span className="text-xs flex-1">
+                            {captionType.caption_type}
+                            <span className="text-gray-500 ml-1">({captionType.total_count} items)</span>
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Leave unchecked to use all caption types
+                  </p>
+                </div>
+              )}
             </div>
           ))}
         </div>

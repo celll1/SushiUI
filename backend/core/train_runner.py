@@ -15,7 +15,7 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import get_db
+from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 
@@ -84,27 +84,30 @@ def main():
     config = load_config(config_path)
     print(f"[TrainRunner] Loaded config: {config['job']}")
 
-    # Get database session
-    db_gen = get_db()
-    db = next(db_gen)
+    # Get database sessions (separate DBs for training and datasets)
+    training_db_gen = get_training_db()
+    training_db = next(training_db_gen)
+
+    datasets_db_gen = get_datasets_db()
+    datasets_db = next(datasets_db_gen)
 
     try:
-        # Get training run info
-        run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        # Get training run info (from training.db)
+        run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
         if not run:
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
             sys.exit(1)
 
-        # Get dataset
-        dataset = db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
+        # Get dataset (from datasets.db)
+        dataset = datasets_db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
         if not dataset:
             print(f"[TrainRunner] ERROR: Dataset {run.dataset_id} not found")
             sys.exit(1)
 
         print(f"[TrainRunner] Dataset: {dataset.name} ({dataset.path})")
 
-        # Get dataset items
-        dataset_items = get_dataset_items(db, dataset.id)
+        # Get dataset items (from datasets.db)
+        dataset_items = get_dataset_items(datasets_db, dataset.id)
         print(f"[TrainRunner] Dataset items: {len(dataset_items)}")
 
         if len(dataset_items) == 0:
@@ -179,17 +182,18 @@ def main():
         import traceback
         traceback.print_exc()
 
-        # Update run status to failed
-        run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        # Update run status to failed (in training.db)
+        run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
         if run:
             run.status = "failed"
             run.error_message = str(e)
-            db.commit()
+            training_db.commit()
 
         sys.exit(1)
 
     finally:
-        db.close()
+        training_db.close()
+        datasets_db.close()
 
 
 if __name__ == "__main__":

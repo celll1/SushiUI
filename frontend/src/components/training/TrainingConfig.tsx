@@ -615,23 +615,40 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           <div className="pt-3 mt-3 border-t border-gray-700">
             <h4 className="text-xs font-medium text-gray-400 mb-2">Component-Specific Learning Rates</h4>
 
-            {/* Train U-Net */}
-            <div className="flex items-center space-x-3 mb-2">
-              <input
-                type="checkbox"
-                id="train-unet"
-                checked={trainUnet}
-                onChange={(e) => setTrainUnet(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
-                Train U-Net
-              </label>
+            {/* Train toggles in 2 columns */}
+            <div className="grid grid-cols-2 gap-3 mb-2">
+              {/* Train U-Net */}
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="train-unet"
+                  checked={trainUnet}
+                  onChange={(e) => setTrainUnet(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
+                  Train U-Net
+                </label>
+              </div>
+
+              {/* Train Text Encoder */}
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="train-text-encoder"
+                  checked={trainTextEncoder}
+                  onChange={(e) => setTrainTextEncoder(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
+                  Train Text Encoder
+                </label>
+              </div>
             </div>
 
             {/* U-Net Learning Rate */}
             {trainUnet && (
-              <div className="mb-3 ml-6">
+              <div className="mb-3">
                 <label className="block text-xs text-gray-400 mb-1">
                   U-Net LR <span className="text-xs text-gray-500">(empty = use base LR)</span>
                 </label>
@@ -644,20 +661,6 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 />
               </div>
             )}
-
-            {/* Train Text Encoder */}
-            <div className="flex items-center space-x-3 mb-2">
-              <input
-                type="checkbox"
-                id="train-text-encoder"
-                checked={trainTextEncoder}
-                onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
-                Train Text Encoder
-              </label>
-            </div>
 
             {/* Text Encoder Learning Rates */}
             {trainTextEncoder && (

@@ -76,15 +76,13 @@ class TrainingProcess:
         # Add backend directory to PYTHONPATH so imports work
         env["PYTHONPATH"] = str(backend_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
-        # Start subprocess
-        self.process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+        # Start asyncio subprocess (non-blocking)
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
             env=env,
-            cwd=str(backend_dir),  # Run from backend directory
+            cwd=str(backend_dir),
         )
 
         self.is_running = True
@@ -113,11 +111,13 @@ class TrainingProcess:
         lr_pattern = re.compile(r"lr:\s*([\d.e-]+)")
 
         try:
-            for line in iter(self.process.stdout.readline, ""):
-                if not line:
+            # Use async iteration for non-blocking I/O
+            while True:
+                line_bytes = await self.process.stdout.readline()
+                if not line_bytes:
                     break
 
-                line = line.strip()
+                line = line_bytes.decode('utf-8').strip()
 
                 # Send log to callback
                 if log_callback:
@@ -145,8 +145,8 @@ class TrainingProcess:
                         self.current_lr or 0.0,
                     )
 
-            # Wait for process to complete
-            returncode = self.process.wait()
+            # Wait for process to complete (async)
+            returncode = await self.process.wait()
 
             # Check if process failed
             if returncode != 0:
@@ -165,14 +165,15 @@ class TrainingProcess:
             self.is_running = False
             print(f"[Training] Process monitoring ended. Final returncode: {self.process.returncode if self.process else 'N/A'}")
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop training process."""
         if self.process and self.is_running:
             self.process.terminate()
             try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self.process.wait(), timeout=10)
+            except asyncio.TimeoutError:
                 self.process.kill()
+                await self.process.wait()
             self.is_running = False
 
     def get_status(self) -> Dict[str, Any]:
@@ -224,12 +225,12 @@ class TrainingProcessManager:
         """Get training process by run ID."""
         return self.processes.get(run_id)
 
-    def remove_process(self, run_id: int) -> None:
+    async def remove_process(self, run_id: int) -> None:
         """Remove training process from registry."""
         if run_id in self.processes:
             process = self.processes[run_id]
             if process.is_running:
-                process.stop()
+                await process.stop()
             del self.processes[run_id]
 
 

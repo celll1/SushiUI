@@ -2647,15 +2647,17 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_db)):
         run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="Training run not found")
-        
-        # Don't delete if running
-        if run.status == "running":
-            raise HTTPException(status_code=400, detail="Cannot delete running training run")
-        
+
+        # Don't delete if running or starting
+        if run.status in ["running", "starting"]:
+            raise HTTPException(status_code=400, detail=f"Cannot delete {run.status} training run. Please stop it first.")
+
         db.delete(run)
         db.commit()
         return {"message": "Training run deleted successfully"}
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -2671,50 +2673,82 @@ async def start_training_run(run_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Training run is already running")
 
     try:
+        print(f"[API] Starting training run {run_id}")
+
         # Get config path
         config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
+        print(f"[API] Config path: {config_path}")
 
         if not os.path.exists(config_path):
             raise HTTPException(status_code=500, detail="Config file not found")
 
+        # Update status to "starting" immediately
+        print(f"[API] Updating status to 'starting'")
+        run.status = "starting"
+        run.started_at = datetime.utcnow()
+        db.commit()
+        print(f"[API] Status updated and committed")
+
         # Create training process
+        print(f"[API] Creating training process")
         process = training_process_manager.create_process(
             run_id=run.id,
             config_path=config_path,
             output_dir=run.output_dir
         )
+        print(f"[API] Training process created")
 
-        # Define progress callback to update database
-        def progress_callback(step: int, loss: float, lr: float):
+        # Define progress callback to update database (runs in separate thread)
+        def progress_callback_sync(step: int, loss: float, lr: float):
+            # Create a new database session for background task
+            from database import SessionLocal
+            db_session = SessionLocal()
             try:
+                # Query fresh run object
+                current_run = db_session.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+                if not current_run:
+                    print(f"[Training {run_id}] Run not found in database")
+                    return
+
                 # Negative step indicates failure
                 if step < 0:
                     print(f"[Training {run_id}] Process failed, updating status")
-                    run.status = "failed"
-                    run.error_message = "Training process exited with error"
-                    db.commit()
+                    current_run.status = "failed"
+                    current_run.error_message = "Training process exited with error"
+                    db_session.commit()
                     return
 
-                run.current_step = step
-                run.loss = loss
-                run.learning_rate = lr
-                run.progress = (step / run.total_steps) * 100
-                db.commit()
+                # Update status to "running" on first progress update
+                if current_run.status == "starting":
+                    current_run.status = "running"
+                    print(f"[Training {run_id}] Status updated: starting -> running")
+
+                current_run.current_step = step
+                current_run.loss = loss
+                current_run.learning_rate = lr
+                current_run.progress = (step / current_run.total_steps) * 100
+                db_session.commit()
             except Exception as e:
-                print(f"[Training] Error updating progress: {e}")
+                print(f"[Training {run_id}] Error updating progress: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                db_session.close()
+
+        # Wrap callback to run in thread pool (non-blocking)
+        def progress_callback(step: int, loss: float, lr: float):
+            executor.submit(progress_callback_sync, step, loss, lr)
 
         # Define log callback
         def log_callback(log_line: str):
             print(f"[Training {run_id}] {log_line}")
 
-        # Start training process
+        # Start training process (non-blocking)
+        print(f"[API] Starting training process...")
         await process.start(progress_callback=progress_callback, log_callback=log_callback)
+        print(f"[API] Training process started")
 
-        # Update run status
-        run.status = "running"
-        run.started_at = datetime.utcnow()
-        db.commit()
-
+        print(f"[API] Returning response")
         return {"message": "Training started", "run": run.to_dict()}
 
     except Exception as e:
@@ -2736,8 +2770,8 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_db)):
         process = training_process_manager.get_process(run_id)
 
         if process:
-            process.stop()
-            training_process_manager.remove_process(run_id)
+            await process.stop()
+            await training_process_manager.remove_process(run_id)
 
         # Update run status
         run.status = "stopped"

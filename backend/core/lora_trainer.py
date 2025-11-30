@@ -1024,10 +1024,20 @@ class LoRATrainer:
             for bucket_size, count in sorted(bucket_counts.items()):
                 print(f"  {bucket_size}: {count} images")
 
-            # Use bucketed items for training
-            dataset_items = bucket_manager.get_all_items()
+            # Shuffle buckets and build batches
+            bucket_manager.shuffle_buckets()
+            batches = bucket_manager.build_batch_indices(batch_size)
+            print(f"[LoRATrainer] Created {len(batches)} batches from {len(dataset_items)} images (batch_size={batch_size})")
 
-        total_steps = len(dataset_items) * num_epochs
+        else:
+            # No bucketing: create simple batches from dataset_items
+            batches = []
+            for start_idx in range(0, len(dataset_items), batch_size):
+                end_idx = min(start_idx + batch_size, len(dataset_items))
+                batches.append(dataset_items[start_idx:end_idx])
+            print(f"[LoRATrainer] Created {len(batches)} batches (no bucketing, batch_size={batch_size})")
+
+        total_steps = len(batches) * num_epochs
 
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)
@@ -1045,10 +1055,10 @@ class LoRATrainer:
                 global_step = loaded_step
 
                 # Calculate which epoch to start from
-                start_epoch = global_step // len(dataset_items)
-                items_in_epoch = global_step % len(dataset_items)
+                start_epoch = global_step // len(batches)
+                batches_in_epoch = global_step % len(batches)
 
-                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
+                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
 
                 # Fast-forward lr_scheduler to match the checkpoint
                 for _ in range(global_step):
@@ -1066,10 +1076,10 @@ class LoRATrainer:
                 global_step = loaded_step
 
                 # Calculate which epoch to start from
-                start_epoch = global_step // len(dataset_items)
-                items_in_epoch = global_step % len(dataset_items)
+                start_epoch = global_step // len(batches)
+                batches_in_epoch = global_step % len(batches)
 
-                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
+                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
 
                 # Fast-forward lr_scheduler to match the checkpoint
                 for _ in range(global_step):
@@ -1079,49 +1089,78 @@ class LoRATrainer:
 
         # Training loop
         for epoch in range(start_epoch, num_epochs):
-            # Calculate starting item index for this epoch (for resume)
-            start_item_idx = 0
+            # Calculate starting batch index for this epoch (for resume)
+            start_batch_idx = 0
             if epoch == start_epoch:
-                start_item_idx = global_step % len(dataset_items)
+                start_batch_idx = global_step % len(batches)
 
             # Create progress bar with custom format
             # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
             import sys
-            pbar = tqdm(dataset_items[start_item_idx:], desc=f"Epoch {epoch + 1}", ncols=100, leave=True,
+            pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=100, leave=True,
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] , {postfix}',
-                       initial=start_item_idx, total=len(dataset_items),
+                       initial=start_batch_idx, total=len(batches),
                        file=sys.stderr, mininterval=1.0)
             pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
-            for item in pbar:
+            for batch in pbar:
                 try:
-                    # Load and encode image
-                    image_path = item["image_path"]
-                    if not os.path.exists(image_path):
-                        pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
-                        continue
+                    # Process entire batch
+                    batch_latents = []
+                    batch_text_embeddings = []
+                    batch_pooled_embeddings = [] if self.is_sdxl else None
 
-                    try:
-                        image = Image.open(image_path)
-                        image.verify()  # Verify image integrity
-                        image = Image.open(image_path)  # Reopen after verify
-                    except Exception as img_err:
-                        pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
-                        continue
-
-                    # Encode image with bucketing support
-                    if enable_bucketing and "bucket_width" in item and "bucket_height" in item:
-                        latents = self.encode_image(
-                            image,
-                            target_width=item["bucket_width"],
-                            target_height=item["bucket_height"]
-                        )
+                    # Get bucket dimensions (all items in batch have same resolution)
+                    first_item = batch[0]
+                    if enable_bucketing and "bucket_width" in first_item and "bucket_height" in first_item:
+                        target_width = first_item["bucket_width"]
+                        target_height = first_item["bucket_height"]
                     else:
-                        latents = self.encode_image(image)
+                        target_width = None
+                        target_height = None
 
-                    # Encode caption
-                    caption = item.get("caption", "")
-                    prompt_output = self.encode_prompt(caption)
+                    # Load and encode all images in batch
+                    for item in batch:
+                        image_path = item["image_path"]
+                        if not os.path.exists(image_path):
+                            pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
+                            continue
+
+                        try:
+                            image = Image.open(image_path)
+                            image.verify()  # Verify image integrity
+                            image = Image.open(image_path)  # Reopen after verify
+                        except Exception as img_err:
+                            pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                            continue
+
+                        # Encode image
+                        if target_width is not None and target_height is not None:
+                            latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                        else:
+                            latents = self.encode_image(image)
+                        batch_latents.append(latents)
+
+                        # Encode caption
+                        caption = item.get("caption", "")
+                        prompt_output = self.encode_prompt(caption)
+
+                        if self.is_sdxl:
+                            text_emb, pooled_emb = prompt_output
+                            batch_text_embeddings.append(text_emb)
+                            batch_pooled_embeddings.append(pooled_emb)
+                        else:
+                            batch_text_embeddings.append(prompt_output)
+
+                    # Skip if batch is empty (all items failed)
+                    if len(batch_latents) == 0:
+                        continue
+
+                    # Stack into batched tensors
+                    batched_latents = torch.cat(batch_latents, dim=0)
+                    batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
+                    if self.is_sdxl:
+                        batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
 
                     # Determine if we should save debug latents for this step
                     debug_save_path = None
@@ -1130,11 +1169,9 @@ class LoRATrainer:
 
                     # Handle SD1.5 vs SDXL output
                     if self.is_sdxl:
-                        text_embeddings, pooled_embeddings = prompt_output
-                        loss = self.train_step(latents, text_embeddings, pooled_embeddings, debug_save_path=debug_save_path)
+                        loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings, debug_save_path=debug_save_path)
                     else:
-                        text_embeddings = prompt_output
-                        loss = self.train_step(latents, text_embeddings, debug_save_path=debug_save_path)
+                        loss = self.train_step(batched_latents, batched_text_embeddings, debug_save_path=debug_save_path)
 
                     global_step += 1
 
@@ -1166,7 +1203,7 @@ class LoRATrainer:
                         self.generate_sample(global_step, sample_prompts, sample_config)
 
                 except Exception as e:
-                    pbar.write(f"[LoRATrainer] ERROR processing {item.get('image_path', 'unknown')}: {e}")
+                    pbar.write(f"[LoRATrainer] ERROR processing batch: {e}")
                     import traceback
                     traceback.print_exc()
                     continue

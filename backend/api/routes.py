@@ -5,6 +5,7 @@ from sqlalchemy import func
 from typing import List, Optional, Dict
 from pydantic import BaseModel
 from datetime import datetime
+from pathlib import Path
 import os
 import sys
 import subprocess
@@ -2529,9 +2530,11 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         if not os.path.exists(request.base_model_path):
             raise HTTPException(status_code=400, detail=f"Base model not found: {request.base_model_path}")
 
-        # Create output directory
-        output_dir = os.path.join("outputs", "training", request.run_name)
-        os.makedirs(output_dir, exist_ok=True)
+        # Create output directory (use absolute path from project root)
+        project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
+        output_dir = project_root / "training" / request.run_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir_str = str(output_dir)
 
         # Generate YAML config
         config_generator = TrainingConfigGenerator()
@@ -2541,7 +2544,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
                 run_name=request.run_name,
                 dataset_path=dataset.path,
                 base_model_path=request.base_model_path,
-                output_dir=output_dir,
+                output_dir=output_dir_str,
                 total_steps=request.total_steps,
                 epochs=request.epochs,
                 batch_size=request.batch_size,
@@ -2559,7 +2562,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
                 run_name=request.run_name,
                 dataset_path=dataset.path,
                 base_model_path=request.base_model_path,
-                output_dir=output_dir,
+                output_dir=output_dir_str,
                 total_steps=request.total_steps,
                 epochs=request.epochs,
                 batch_size=request.batch_size,
@@ -2572,7 +2575,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
             )
 
         # Save config file
-        config_path = os.path.join(output_dir, f"{request.run_name}_config.yaml")
+        config_path = os.path.join(output_dir_str, f"{request.run_name}_config.yaml")
         config_generator.save_config(config_yaml, config_path)
 
         # Create training run
@@ -2604,7 +2607,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
             base_model_path=request.base_model_path,
             config_yaml=config_yaml,
             total_steps=calculated_total_steps,
-            output_dir=output_dir,
+            output_dir=output_dir_str,
             status="pending"
         )
 

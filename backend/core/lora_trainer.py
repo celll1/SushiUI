@@ -662,6 +662,7 @@ class LoRATrainer:
                 'batch_size': batch_size,
             }, debug_save_path / f"latents_t{timestep_value:04d}.pt")
 
+            del predicted_latent  # Free memory after debug save
             print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value})")
 
         # Backward pass
@@ -678,7 +679,15 @@ class LoRATrainer:
         self.optimizer.step()
         self.lr_scheduler.step()
 
-        return loss.detach().item()
+        # Get loss value before cleanup
+        loss_value = loss.detach().item()
+
+        # Free intermediate tensors explicitly to reduce VRAM usage
+        del noise, noisy_latents, model_pred, loss
+        if self.is_sdxl and added_cond_kwargs is not None:
+            del added_cond_kwargs
+
+        return loss_value
 
     def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
         """
@@ -1353,9 +1362,14 @@ class LoRATrainer:
 
                     # Stack into batched tensors
                     batched_latents = torch.cat(batch_latents, dim=0)
+                    del batch_latents  # Free memory immediately after concat
+
                     batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
+                    del batch_text_embeddings  # Free memory immediately after concat
+
                     if self.is_sdxl:
                         batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
+                        del batch_pooled_embeddings  # Free memory immediately after concat
 
                     # Determine if we should save debug latents for this step
                     debug_save_path = None
@@ -1367,6 +1381,11 @@ class LoRATrainer:
                         loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings, debug_save_path=debug_save_path)
                     else:
                         loss = self.train_step(batched_latents, batched_text_embeddings, debug_save_path=debug_save_path)
+
+                    # Free batch tensors after training step to reduce VRAM usage
+                    del batched_latents, batched_text_embeddings
+                    if self.is_sdxl:
+                        del batched_pooled_embeddings
 
                     global_step += 1
 

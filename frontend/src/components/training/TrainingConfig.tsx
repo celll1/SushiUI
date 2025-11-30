@@ -153,7 +153,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             type="text"
             value={runName}
             onChange={(e) => setRunName(e.target.value)}
-            placeholder="Leave empty for auto-generated UUID"
+            placeholder="Leave empty for auto-generated name (e.g., 20251130_174523_a1b2c3d4)"
             className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
           />
         </div>

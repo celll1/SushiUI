@@ -1054,7 +1054,7 @@ export interface TrainingRun {
 
 export interface TrainingRunCreateRequest {
   dataset_id: number;
-  run_name: string;
+  run_name?: string;  // Optional - will use UUID if not provided
   training_method: "lora" | "full_finetune";
   base_model_path: string;
   total_steps?: number;  // Mutually exclusive with epochs

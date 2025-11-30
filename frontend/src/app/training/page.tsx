@@ -26,6 +26,18 @@ function TrainingPageContent() {
     loadRuns();
   }, []);
 
+  // Poll running trainings to update list
+  useEffect(() => {
+    const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
+    if (!hasRunningTraining) return;
+
+    const interval = setInterval(() => {
+      loadRuns();
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [runs]);
+
   const loadRuns = async () => {
     setLoading(true);
     try {
@@ -101,6 +113,7 @@ function TrainingPageContent() {
               />
             ) : selectedRun ? (
               <TrainingMonitor
+                key={selectedRun.id}
                 run={selectedRun}
                 onClose={() => setSelectedRunId(null)}
                 onStatusChange={handleStatusChange}

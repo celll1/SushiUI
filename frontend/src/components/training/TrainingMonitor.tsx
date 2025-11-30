@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Play, Square } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun } from "@/utils/api";
+import { X, Play, Square, BarChart3 } from "lucide-react";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, startTensorBoard, stopTensorBoard, getTensorBoardStatus } from "@/utils/api";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
@@ -15,6 +15,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
   const [logs, setLogs] = useState<string[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [tensorboardUrl, setTensorboardUrl] = useState<string | null>(null);
+  const [tensorboardRunning, setTensorboardRunning] = useState(false);
+  const [tensorboardLoading, setTensorboardLoading] = useState(false);
 
   // Poll training status
   useEffect(() => {
@@ -47,6 +50,49 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
 
     return () => clearInterval(interval);
   }, [currentRun.status, currentRun.id]);
+
+  // Check TensorBoard status on mount
+  useEffect(() => {
+    checkTensorBoardStatus();
+  }, [currentRun.id]);
+
+  const checkTensorBoardStatus = async () => {
+    try {
+      const status = await getTensorBoardStatus(currentRun.id);
+      setTensorboardRunning(status.is_running);
+      setTensorboardUrl(status.url || null);
+    } catch (err) {
+      console.error("Failed to check TensorBoard status:", err);
+    }
+  };
+
+  const handleStartTensorBoard = async () => {
+    setTensorboardLoading(true);
+    try {
+      const response = await startTensorBoard(currentRun.id);
+      setTensorboardRunning(true);
+      setTensorboardUrl(response.url);
+    } catch (err: any) {
+      console.error("Failed to start TensorBoard:", err);
+      alert(err.response?.data?.detail || "Failed to start TensorBoard");
+    } finally {
+      setTensorboardLoading(false);
+    }
+  };
+
+  const handleStopTensorBoard = async () => {
+    setTensorboardLoading(true);
+    try {
+      await stopTensorBoard(currentRun.id);
+      setTensorboardRunning(false);
+      setTensorboardUrl(null);
+    } catch (err: any) {
+      console.error("Failed to stop TensorBoard:", err);
+      alert(err.response?.data?.detail || "Failed to stop TensorBoard");
+    } finally {
+      setTensorboardLoading(false);
+    }
+  };
 
   const handleStart = async () => {
     setIsStarting(true);
@@ -139,14 +185,17 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
 
         {/* Controls */}
         <div className="flex space-x-3">
-          {currentRun.status === "pending" || currentRun.status === "stopped" ? (
+          {currentRun.status === "pending" || currentRun.status === "stopped" || currentRun.status === "failed" ? (
             <button
               onClick={handleStart}
               disabled={isStarting}
               className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
             >
               <Play className="h-4 w-4" />
-              <span>{isStarting ? "Starting..." : "Start Training"}</span>
+              <span>
+                {isStarting ? "Starting..." :
+                 currentRun.status === "pending" ? "Start Training" : "Resume Training"}
+              </span>
             </button>
           ) : currentRun.status === "running" ? (
             <button
@@ -180,6 +229,54 @@ export default function TrainingMonitor({ run, onClose, onStatusChange }: Traini
               <span className="font-mono text-xs break-all">{currentRun.output_dir}</span>
             </div>
           </div>
+        </div>
+
+        {/* TensorBoard */}
+        <div className="bg-gray-800 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-sm flex items-center space-x-2">
+              <BarChart3 className="h-4 w-4" />
+              <span>TensorBoard</span>
+            </h3>
+            {!tensorboardRunning ? (
+              <button
+                onClick={handleStartTensorBoard}
+                disabled={tensorboardLoading}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {tensorboardLoading ? "Starting..." : "Start TensorBoard"}
+              </button>
+            ) : (
+              <button
+                onClick={handleStopTensorBoard}
+                disabled={tensorboardLoading}
+                className="px-3 py-1 bg-red-600 hover:bg-red-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {tensorboardLoading ? "Stopping..." : "Stop TensorBoard"}
+              </button>
+            )}
+          </div>
+
+          {tensorboardRunning && tensorboardUrl ? (
+            <div className="bg-gray-900 rounded overflow-hidden" style={{ height: "600px" }}>
+              <iframe
+                src={tensorboardUrl}
+                className="w-full h-full border-0"
+                title="TensorBoard"
+              />
+            </div>
+          ) : (
+            <div className="bg-gray-900 rounded p-8 text-center text-gray-500 text-sm">
+              {currentRun.status === "running" || currentRun.status === "completed" ? (
+                <div>
+                  <p className="mb-2">Click "Start TensorBoard" to view training metrics</p>
+                  <p className="text-xs">Loss, learning rate, and other metrics will be displayed here</p>
+                </div>
+              ) : (
+                <p>TensorBoard will be available when training starts</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Logs (placeholder) */}

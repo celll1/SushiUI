@@ -75,7 +75,7 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
                 <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
                   <div
                     className="h-full bg-blue-500 transition-all"
-                    style={{ width: `${run.progress * 100}%` }}
+                    style={{ width: `${run.progress}%` }}
                   />
                 </div>
               )}

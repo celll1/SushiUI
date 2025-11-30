@@ -1118,3 +1118,25 @@ export const getTrainingStatus = async (id: number): Promise<TrainingStatus> => 
   const response = await api.get(`/training/runs/${id}/status`);
   return response.data;
 };
+
+// TensorBoard API
+export interface TensorBoardStatus {
+  is_running: boolean;
+  url?: string;
+  port?: number;
+}
+
+export const startTensorBoard = async (runId: number): Promise<{ status: string; port: number; url: string }> => {
+  const response = await api.post(`/training/runs/${runId}/tensorboard/start`);
+  return response.data;
+};
+
+export const stopTensorBoard = async (runId: number): Promise<{ status: string }> => {
+  const response = await api.delete(`/training/runs/${runId}/tensorboard/stop`);
+  return response.data;
+};
+
+export const getTensorBoardStatus = async (runId: number): Promise<TensorBoardStatus> => {
+  const response = await api.get(`/training/runs/${runId}/tensorboard/status`);
+  return response.data;
+};

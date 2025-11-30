@@ -24,6 +24,7 @@ from core.tipo_manager import tipo_manager
 from core.tagger_manager import tagger_manager
 from core.training_config import TrainingConfigGenerator
 from core.training_process import training_process_manager
+from core.tensorboard_manager import tensorboard_manager
 from core.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
@@ -2767,4 +2768,51 @@ async def get_training_status(run_id: int, db: Session = Depends(get_db)):
         "loss": run.loss,
         "learning_rate": run.learning_rate,
         "process_status": process_status
+    }
+
+@router.post("/training/runs/{run_id}/tensorboard/start")
+async def start_tensorboard(run_id: int, db: Session = Depends(get_db)):
+    """Start TensorBoard server for a training run"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    # Get tensorboard log directory
+    from pathlib import Path
+    log_dir = Path(settings.lora_output_dir) / f"run_{run.run_number}" / "tensorboard"
+
+    if not log_dir.exists():
+        raise HTTPException(status_code=404, detail="TensorBoard logs not found")
+
+    try:
+        port = tensorboard_manager.start(run_id, str(log_dir))
+        url = tensorboard_manager.get_url(run_id)
+        return {
+            "status": "started",
+            "port": port,
+            "url": url
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start TensorBoard: {str(e)}")
+
+@router.delete("/training/runs/{run_id}/tensorboard/stop")
+async def stop_tensorboard(run_id: int):
+    """Stop TensorBoard server for a training run"""
+    try:
+        tensorboard_manager.stop(run_id)
+        return {"status": "stopped"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop TensorBoard: {str(e)}")
+
+@router.get("/training/runs/{run_id}/tensorboard/status")
+async def get_tensorboard_status(run_id: int):
+    """Get TensorBoard server status"""
+    is_running = tensorboard_manager.is_running(run_id)
+    url = tensorboard_manager.get_url(run_id) if is_running else None
+    port = tensorboard_manager.get_port(run_id) if is_running else None
+
+    return {
+        "is_running": is_running,
+        "url": url,
+        "port": port
     }

@@ -16,6 +16,7 @@ from tqdm import tqdm
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 from safetensors.torch import save_file
+from torch.utils.tensorboard import SummaryWriter
 import json
 from datetime import datetime
 import numpy as np
@@ -87,7 +88,13 @@ class LoRATrainer:
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
 
+        # Initialize tensorboard writer
+        tensorboard_dir = self.output_dir / "tensorboard"
+        tensorboard_dir.mkdir(exist_ok=True)
+        self.writer = SummaryWriter(log_dir=str(tensorboard_dir))
+
         print(f"[LoRATrainer] Initializing on {self.device}")
+        print(f"[LoRATrainer] Tensorboard logs: {tensorboard_dir}")
         print(f"[LoRATrainer] Loading model from {model_path}")
 
         # Detect if model is safetensors file or diffusers directory
@@ -489,6 +496,80 @@ class LoRATrainer:
 
         return loss.detach().item()
 
+    def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
+        """
+        Find the latest checkpoint in output directory.
+
+        Returns:
+            Tuple of (checkpoint_path, step) or None if no checkpoint found
+        """
+        checkpoint_files = list(self.output_dir.glob("lora_step_*.safetensors"))
+
+        if not checkpoint_files:
+            return None
+
+        # Extract step numbers and find latest
+        checkpoints_with_steps = []
+        for ckpt_path in checkpoint_files:
+            try:
+                # Extract step number from filename: lora_step_1000.safetensors -> 1000
+                step_str = ckpt_path.stem.split("_")[-1]
+                step = int(step_str)
+                checkpoints_with_steps.append((str(ckpt_path), step))
+            except (ValueError, IndexError):
+                continue
+
+        if not checkpoints_with_steps:
+            return None
+
+        # Sort by step and return latest
+        checkpoints_with_steps.sort(key=lambda x: x[1], reverse=True)
+        latest_ckpt, latest_step = checkpoints_with_steps[0]
+
+        print(f"[LoRATrainer] Found latest checkpoint: {latest_ckpt} (step {latest_step})")
+        return latest_ckpt, latest_step
+
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """
+        Load LoRA checkpoint from safetensors file.
+
+        Args:
+            checkpoint_path: Path to checkpoint file
+
+        Returns:
+            Step number from checkpoint
+        """
+        from safetensors.torch import load_file
+
+        print(f"[LoRATrainer] Loading checkpoint from {checkpoint_path}")
+
+        state_dict = load_file(checkpoint_path)
+
+        # Load weights into LoRA layers
+        for name, lora in self.lora_layers.items():
+            key_prefix = f"lora_unet_{name.replace('.', '_')}"
+            down_key = f"{key_prefix}.lora_down.weight"
+            up_key = f"{key_prefix}.lora_up.weight"
+
+            if down_key in state_dict and up_key in state_dict:
+                lora.lora_down.weight.data = state_dict[down_key].to(self.device)
+                lora.lora_up.weight.data = state_dict[up_key].to(self.device)
+
+        # Extract step from metadata or filename
+        step = 0
+        if hasattr(state_dict, 'metadata') and 'ss_training_step' in state_dict.metadata():
+            step = int(state_dict.metadata()['ss_training_step'])
+        else:
+            # Fallback: extract from filename
+            try:
+                step_str = Path(checkpoint_path).stem.split("_")[-1]
+                step = int(step_str)
+            except (ValueError, IndexError):
+                pass
+
+        print(f"[LoRATrainer] Checkpoint loaded (step {step})")
+        return step
+
     def save_checkpoint(self, step: int, save_path: Optional[str] = None):
         """Save LoRA checkpoint as safetensors."""
         if save_path is None:
@@ -550,15 +631,41 @@ class LoRATrainer:
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)
 
-        # Training loop
+        # Try to resume from checkpoint
         global_step = 0
+        start_epoch = 0
 
-        for epoch in range(num_epochs):
-            print(f"\n[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
+        checkpoint_result = self.find_latest_checkpoint()
+        if checkpoint_result is not None:
+            checkpoint_path, checkpoint_step = checkpoint_result
+            print(f"[LoRATrainer] Resuming from checkpoint: {checkpoint_path}")
+            loaded_step = self.load_checkpoint(checkpoint_path)
+            global_step = loaded_step
+
+            # Calculate which epoch to start from
+            start_epoch = global_step // len(dataset_items)
+            items_in_epoch = global_step % len(dataset_items)
+
+            print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, item {items_in_epoch}")
+
+            # Fast-forward lr_scheduler to match the checkpoint
+            for _ in range(global_step):
+                self.lr_scheduler.step()
+        else:
+            print(f"[LoRATrainer] No checkpoint found, starting from scratch")
+
+        # Training loop
+        for epoch in range(start_epoch, num_epochs):
+            # Calculate starting item index for this epoch (for resume)
+            start_item_idx = 0
+            if epoch == start_epoch:
+                start_item_idx = global_step % len(dataset_items)
 
             # Create progress bar with custom format
-            pbar = tqdm(dataset_items, desc=f"Epoch {epoch + 1}", ncols=100,
-                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
+            pbar = tqdm(dataset_items[start_item_idx:], desc=f"Epoch {epoch + 1}", ncols=100, leave=True,
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] , {postfix}',
+                       initial=start_item_idx, total=len(dataset_items))
+            pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
             for item in pbar:
                 try:
@@ -593,6 +700,11 @@ class LoRATrainer:
                         'step': global_step
                     })
 
+                    # Log to tensorboard
+                    self.writer.add_scalar('train/loss', loss, global_step)
+                    self.writer.add_scalar('train/learning_rate', current_lr, global_step)
+                    self.writer.add_scalar('train/epoch', epoch + 1, global_step)
+
                     # Progress callback
                     if progress_callback:
                         progress_callback(global_step, loss, current_lr)
@@ -615,6 +727,9 @@ class LoRATrainer:
             pbar.close()
 
         print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
+
+        # Close tensorboard writer
+        self.writer.close()
 
         # Save final checkpoint
         self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors")

@@ -40,3 +40,8 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 aiofiles>=23.2.1
+
+# Training
+tensorboard>=2.15.0  # TensorBoard logging for training metrics
+tqdm>=4.66.0  # Progress bars for training loops
+bitsandbytes>=0.41.0  # 8-bit optimizers (AdamW8bit)

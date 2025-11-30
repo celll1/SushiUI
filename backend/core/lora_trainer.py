@@ -155,6 +155,7 @@ class LoRATrainer:
         output_dtype: str = "fp32",
         vae_dtype: str = "fp16",
         mixed_precision: bool = True,
+        debug_vram: bool = False,
     ):
         """
         Initialize LoRA trainer.
@@ -171,6 +172,7 @@ class LoRATrainer:
             output_dtype: Output dtype for safetensors (fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
             vae_dtype: VAE-specific dtype (fp16, fp32, bf16) - SDXL VAE works fine with fp16
             mixed_precision: Enable mixed precision training (autocast)
+            debug_vram: Enable detailed VRAM profiling (default: False)
         """
         self.model_path = model_path
         self.output_dir = Path(output_dir)
@@ -187,6 +189,7 @@ class LoRATrainer:
         self.output_dtype = get_torch_dtype(output_dtype)  # For safetensors saving
         self.vae_dtype = get_torch_dtype(vae_dtype)  # VAE-specific dtype (SDXL VAE works with fp16)
         self.mixed_precision = mixed_precision
+        self.debug_vram = debug_vram
 
         # Legacy dtype for compatibility (defaults to weight_dtype)
         self.dtype = self.weight_dtype
@@ -322,7 +325,8 @@ class LoRATrainer:
         if self.text_encoder_2 is not None:
             self.text_encoder_2.to(self.device)
 
-        print_vram_usage("After loading models to GPU")
+        if self.debug_vram:
+            print_vram_usage("After loading models to GPU")
 
         # Set to eval mode (except UNet which will have LoRA)
         self.vae.eval()
@@ -335,7 +339,8 @@ class LoRATrainer:
 
         # Apply LoRA to UNet
         self._apply_lora()
-        print_vram_usage("After applying LoRA layers")
+        if self.debug_vram:
+            print_vram_usage("After applying LoRA layers")
 
         # Enable gradient checkpointing to reduce VRAM usage during training
         # This trades computation for memory by recomputing activations during backward pass
@@ -1295,18 +1300,21 @@ class LoRATrainer:
                 print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
-                print_vram_usage("After moving VAE to CPU")
+                if self.debug_vram:
+                    print_vram_usage("After moving VAE to CPU")
             else:
                 print(f"[LoRATrainer] Using existing latent cache (dataset_id={dataset_id})")
                 print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
                 # Move VAE to CPU
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
-                print_vram_usage("After moving VAE to CPU")
+                if self.debug_vram:
+                    print_vram_usage("After moving VAE to CPU")
 
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)
-            print_vram_usage("After optimizer setup")
+            if self.debug_vram:
+                print_vram_usage("After optimizer setup")
 
         # Try to resume from checkpoint
         global_step = 0
@@ -1372,7 +1380,7 @@ class LoRATrainer:
             for batch_idx, batch in enumerate(pbar):
                 try:
                     # VRAM profiling for first batch only (to avoid spam)
-                    profile_vram = (global_step == 0)
+                    profile_vram = self.debug_vram and (global_step == 0)
 
                     if profile_vram:
                         print_vram_usage("Start of first batch")

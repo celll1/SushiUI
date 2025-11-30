@@ -4,6 +4,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import logging
+from PIL import Image
+
+# Remove PIL image size limit for large images
+# Reference: https://kakashibata.hatenablog.jp/entry/2022/03/27/232553
+Image.MAX_IMAGE_PIXELS = None
+print("[PIL] MAX_IMAGE_PIXELS limit removed (can handle large images)")
 
 from api import router, websocket_endpoint
 from api.logs import router as logs_router

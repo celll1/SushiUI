@@ -1006,7 +1006,14 @@ class LoRATrainer:
                         pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                         continue
 
-                    image = Image.open(image_path)
+                    try:
+                        image = Image.open(image_path)
+                        image.verify()  # Verify image integrity
+                        image = Image.open(image_path)  # Reopen after verify
+                    except Exception as img_err:
+                        pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                        continue
+
                     latents = self.encode_image(image)
 
                     # Encode caption

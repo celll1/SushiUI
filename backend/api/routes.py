@@ -14,7 +14,7 @@ import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from database import get_db
+from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
 from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager

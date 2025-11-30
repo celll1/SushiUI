@@ -77,11 +77,6 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     console.log("[TrainingConfig] Dataset ID:", datasetId);
     console.log("[TrainingConfig] Base model path:", baseModelPath);
 
-    if (!runName.trim()) {
-      setError("Run name is required");
-      return;
-    }
-
     if (!datasetId) {
       setError("Please select a dataset");
       return;
@@ -97,7 +92,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
     const requestData = {
       dataset_id: datasetId,
-      run_name: runName.trim(),
+      run_name: runName.trim() || undefined,  // Send undefined if empty (backend will auto-generate)
       training_method: trainingMethod,
       base_model_path: baseModelPath.trim(),
       total_steps: useEpochs ? undefined : totalSteps,
@@ -152,15 +147,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         {/* Run Name */}
         <div>
           <label className="block text-sm font-medium mb-2">
-            Run Name <span className="text-red-400">*</span>
+            Run Name <span className="text-gray-500 text-xs font-normal">(optional, auto-generated if empty)</span>
           </label>
           <input
             type="text"
             value={runName}
             onChange={(e) => setRunName(e.target.value)}
-            placeholder="e.g., character_lora_v1"
+            placeholder="Leave empty for auto-generated UUID"
             className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-            required
           />
         </div>
 

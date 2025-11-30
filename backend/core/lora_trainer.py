@@ -144,6 +144,10 @@ class LoRATrainer:
                 subfolder="scheduler"
             )
 
+        # Detect model type (SD1.5 vs SDXL)
+        self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
+        print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
+
         # Freeze all base weights
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
@@ -240,8 +244,14 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
-    def encode_prompt(self, prompt: str) -> torch.Tensor:
-        """Encode text prompt to embeddings."""
+    def encode_prompt(self, prompt: str):
+        """
+        Encode text prompt to embeddings.
+
+        Returns:
+            For SD1.5: text_embeddings tensor
+            For SDXL: tuple of (text_embeddings, pooled_embeddings)
+        """
         text_inputs = self.tokenizer(
             prompt,
             padding="max_length",
@@ -251,11 +261,19 @@ class LoRATrainer:
         )
 
         with torch.no_grad():
-            text_embeddings = self.text_encoder(
-                text_inputs.input_ids.to(self.device)
-            )[0]
+            encoder_output = self.text_encoder(
+                text_inputs.input_ids.to(self.device),
+                output_hidden_states=self.is_sdxl  # Need hidden states for SDXL pooling
+            )
 
-        return text_embeddings
+            text_embeddings = encoder_output[0]
+
+            if self.is_sdxl:
+                # SDXL requires pooled embeddings
+                pooled_embeddings = encoder_output.pooler_output
+                return text_embeddings, pooled_embeddings
+            else:
+                return text_embeddings
 
     def encode_image(self, image: Image.Image, target_size: int = 512) -> torch.Tensor:
         """Encode image to latents."""
@@ -278,7 +296,7 @@ class LoRATrainer:
 
         return latents
 
-    def unet_forward_with_lora(self, sample, timestep, encoder_hidden_states):
+    def unet_forward_with_lora(self, sample, timestep, encoder_hidden_states, added_cond_kwargs=None):
         """Forward pass through UNet with LoRA injected."""
         # Store original forward methods
         original_forwards = {}
@@ -301,8 +319,11 @@ class LoRATrainer:
                 module._original_forward = module.forward
                 module.forward = make_forward_with_lora(module, lora)
 
-        # Forward pass
-        output = self.unet(sample, timestep, encoder_hidden_states)
+        # Forward pass (with SDXL support)
+        if self.is_sdxl and added_cond_kwargs is not None:
+            output = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=added_cond_kwargs)
+        else:
+            output = self.unet(sample, timestep, encoder_hidden_states)
 
         # Restore original forwards
         for name, module in self.unet.named_modules():
@@ -317,6 +338,7 @@ class LoRATrainer:
         self,
         latents: torch.Tensor,
         text_embeddings: torch.Tensor,
+        pooled_embeddings: torch.Tensor = None,
     ) -> float:
         """
         Perform single training step.
@@ -324,6 +346,7 @@ class LoRATrainer:
         Args:
             latents: Image latents [B, C, H, W]
             text_embeddings: Text prompt embeddings [B, 77, 768]
+            pooled_embeddings: Pooled text embeddings (SDXL only)
 
         Returns:
             Loss value
@@ -343,11 +366,17 @@ class LoRATrainer:
         # Add noise to latents according to noise scheduler
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
+        # Prepare added_cond_kwargs for SDXL
+        added_cond_kwargs = None
+        if self.is_sdxl and pooled_embeddings is not None:
+            added_cond_kwargs = {"text_embeds": pooled_embeddings}
+
         # Predict noise using UNet with LoRA
         model_pred = self.unet_forward_with_lora(
             noisy_latents,
             timesteps,
-            text_embeddings
+            text_embeddings,
+            added_cond_kwargs=added_cond_kwargs
         ).sample
 
         # Calculate loss (MSE between predicted and actual noise)
@@ -449,10 +478,15 @@ class LoRATrainer:
 
                     # Encode caption
                     caption = item.get("caption", "")
-                    text_embeddings = self.encode_prompt(caption)
+                    prompt_output = self.encode_prompt(caption)
 
-                    # Training step
-                    loss = self.train_step(latents, text_embeddings)
+                    # Handle SD1.5 vs SDXL output
+                    if self.is_sdxl:
+                        text_embeddings, pooled_embeddings = prompt_output
+                        loss = self.train_step(latents, text_embeddings, pooled_embeddings)
+                    else:
+                        text_embeddings = prompt_output
+                        loss = self.train_step(latents, text_embeddings)
 
                     global_step += 1
 

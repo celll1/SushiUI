@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
 
 interface TrainingMonitorProps {
@@ -20,6 +20,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [samples, setSamples] = useState<TrainingSampleStep[]>([]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
+
+  // Configuration viewing and editing
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [editedConfig, setEditedConfig] = useState<string>("");
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // Debug latents
   const [viewMode, setViewMode] = useState<"samples" | "debug">("samples");
@@ -277,7 +282,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
           {/* Configuration Info */}
           <div className="bg-gray-800 rounded-lg p-3 space-y-2 text-sm">
-            <h3 className="font-semibold mb-2">Configuration</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold">Configuration</h3>
+              <button
+                onClick={() => {
+                  setEditedConfig(currentRun.config_yaml || "");
+                  setShowConfigModal(true);
+                }}
+                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              >
+                View Full Config
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <span className="text-gray-400">Method:</span>{" "}
@@ -562,6 +578,85 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             >
               <X className="h-5 w-5" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Config Modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Training Configuration</h3>
+              <button
+                onClick={() => setShowConfigModal(false)}
+                className="p-1.5 hover:bg-gray-700 rounded transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-3">
+                {/* Read-only view for running training */}
+                {(currentRun.status === "running" || currentRun.status === "starting") ? (
+                  <div>
+                    <div className="text-sm text-gray-400 mb-2">
+                      Configuration is read-only while training is running.
+                    </div>
+                    <pre className="bg-gray-800 p-4 rounded text-xs font-mono overflow-x-auto">
+                      {currentRun.config_yaml || "No configuration available"}
+                    </pre>
+                  </div>
+                ) : (
+                  // Editable view for stopped/failed training
+                  <div>
+                    <div className="text-sm text-gray-400 mb-2">
+                      {currentRun.status === "pending"
+                        ? "Edit configuration before starting training:"
+                        : "Edit configuration and resume training:"}
+                    </div>
+                    <textarea
+                      value={editedConfig}
+                      onChange={(e) => setEditedConfig(e.target.value)}
+                      className="w-full h-96 bg-gray-800 p-4 rounded text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="YAML configuration..."
+                    />
+                    <div className="mt-3 flex justify-end space-x-3">
+                      <button
+                        onClick={() => setShowConfigModal(false)}
+                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={async () => {
+                          setIsSavingConfig(true);
+                          try {
+                            const response = await updateTrainingConfig(currentRun.id, editedConfig);
+                            setCurrentRun(response.run);
+                            onStatusChange(response.run);
+                            alert("Configuration updated successfully! You can now start training.");
+                            setShowConfigModal(false);
+                          } catch (err: any) {
+                            console.error("Failed to update config:", err);
+                            alert(err.response?.data?.detail || "Failed to update configuration");
+                          } finally {
+                            setIsSavingConfig(false);
+                          }
+                        }}
+                        disabled={isSavingConfig}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isSavingConfig ? "Saving..." : "Save Configuration"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

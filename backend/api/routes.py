@@ -2981,6 +2981,42 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
 
+@router.patch("/training/runs/{run_id}/config")
+async def update_training_config(run_id: int, config_data: dict, db: Session = Depends(get_training_db)):
+    """Update training configuration (only allowed when not running)"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail="Cannot update config while training is running")
+
+    try:
+        config_yaml = config_data.get("config_yaml")
+        if not config_yaml:
+            raise HTTPException(status_code=400, detail="config_yaml is required")
+
+        # Update config_yaml
+        run.config_yaml = config_yaml
+
+        # Also update the YAML file on disk if it exists
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(run.output_dir) / "config.yaml"
+        if config_path.parent.exists():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.write(config_yaml)
+
+        db.commit()
+
+        return {"message": "Configuration updated successfully", "run": run.to_dict()}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
 @router.get("/training/runs/{run_id}/status")
 async def get_training_status(run_id: int, db: Session = Depends(get_training_db)):
     """Get current training status"""

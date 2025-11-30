@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     lora_dir: str = os.path.realpath(os.path.join(_root_dir, "lora"))
     controlnet_dir: str = os.path.realpath(os.path.join(_root_dir, "controlnet"))
 
-    # Database
-    database_url: str = f"sqlite:///{os.path.realpath(os.path.join(_root_dir, 'sd_webui.db'))}"
+    # Database (deprecated - now using separate databases in database/__init__.py)
+    # database_url: str = f"sqlite:///{os.path.realpath(os.path.join(_root_dir, 'sd_webui.db'))}"
 
     # Generation defaults
     default_steps: int = 20

@@ -21,6 +21,8 @@ DatasetsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=data
 TrainingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=training_engine)
 
 # Legacy compatibility (default to gallery)
+# DEPRECATED: Use specific session factories (GallerySessionLocal, DatasetsSessionLocal, TrainingSessionLocal)
+# These aliases are kept for backward compatibility only
 engine = gallery_engine
 SessionLocal = GallerySessionLocal
 Base = GalleryBase

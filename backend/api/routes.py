@@ -2710,8 +2710,8 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # Define progress callback to update database (runs in separate thread)
         def progress_callback_sync(step: int, loss: float, lr: float):
             # Create a new database session for background task
-            from database import SessionLocal
-            db_session = SessionLocal()
+            from database import TrainingSessionLocal
+            db_session = TrainingSessionLocal()
             try:
                 # Query fresh run object
                 current_run = db_session.query(TrainingRun).filter(TrainingRun.id == run_id).first()

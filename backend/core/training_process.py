@@ -77,12 +77,14 @@ class TrainingProcess:
         env["PYTHONPATH"] = str(backend_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
         # Start asyncio subprocess (non-blocking)
+        # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
             cwd=str(backend_dir),
+            limit=1024 * 1024,  # 1MB buffer to handle long progress bars
         )
 
         self.is_running = True

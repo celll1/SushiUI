@@ -1420,11 +1420,12 @@ class LoRATrainer:
 
             # Create progress bar with custom format
             # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
+            # Disable dynamic_ncols to prevent long lines that exceed asyncio buffer
             import sys
-            pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=100, leave=True,
-                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] , {postfix}',
+            pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=80, leave=True,
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
                        initial=start_batch_idx, total=len(batches),
-                       file=sys.stderr, mininterval=1.0)
+                       file=sys.stderr, mininterval=1.0, dynamic_ncols=False)
             pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
             for batch_idx, batch in enumerate(pbar):

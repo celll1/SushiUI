@@ -2481,7 +2481,7 @@ from database.models import TrainingRun, TrainingCheckpoint, TrainingSample
 
 class TrainingRunCreateRequest(BaseModel):
     dataset_id: int
-    run_name: str
+    run_name: Optional[str] = None  # Optional - will use UUID if not provided
     training_method: str  # 'lora' or 'full_finetune'
     base_model_path: str
 
@@ -2521,10 +2521,15 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
+        # Generate run_id and use it as run_name if not provided
+        import uuid
+        run_id = str(uuid.uuid4())
+        run_name = request.run_name if request.run_name else run_id
+
         # Check if run name is unique
-        existing = db.query(TrainingRun).filter(TrainingRun.run_name == request.run_name).first()
+        existing = db.query(TrainingRun).filter(TrainingRun.run_name == run_name).first()
         if existing:
-            raise HTTPException(status_code=400, detail=f"Training run '{request.run_name}' already exists")
+            raise HTTPException(status_code=400, detail=f"Training run '{run_name}' already exists")
 
         # Check if base model exists
         if not os.path.exists(request.base_model_path):
@@ -2532,7 +2537,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
 
         # Create output directory (use absolute path from project root)
         project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
-        output_dir = project_root / "training" / request.run_name
+        output_dir = project_root / "training" / run_name
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
 
@@ -2541,7 +2546,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
 
         if request.training_method == "lora":
             config_yaml = config_generator.generate_lora_config(
-                run_name=request.run_name,
+                run_name=run_name,
                 dataset_path=dataset.path,
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
@@ -2559,7 +2564,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
-                run_name=request.run_name,
+                run_name=run_name,
                 dataset_path=dataset.path,
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
@@ -2575,7 +2580,7 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
             )
 
         # Save config file
-        config_path = os.path.join(output_dir_str, f"{request.run_name}_config.yaml")
+        config_path = os.path.join(output_dir_str, f"{run_name}_config.yaml")
         config_generator.save_config(config_yaml, config_path)
 
         # Create training run
@@ -2595,10 +2600,11 @@ async def create_training_run(request: TrainingRunCreateRequest, db: Session = D
 
         print(f"[Training] Calculated total_steps: {calculated_total_steps}")
 
-        # Create training run with auto-generated UUID
+        # Create training run with specified run_id and run_name
         training_run = TrainingRun(
             dataset_id=request.dataset_id,
-            run_name=request.run_name,
+            run_id=run_id,
+            run_name=run_name,
             training_method=request.training_method,
             base_model_path=request.base_model_path,
             config_yaml=config_yaml,

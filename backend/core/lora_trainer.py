@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
 from PIL import Image
 from tqdm import tqdm
-from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline
-from transformers import CLIPTextModel, CLIPTokenizer
+from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
+from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 from safetensors.torch import save_file
 import json
 from datetime import datetime
@@ -96,12 +96,23 @@ class LoRATrainer:
         if is_safetensors:
             print(f"[LoRATrainer] Loading from safetensors file")
             # Load pipeline from single safetensors file, then extract components
-            # This is the same approach SushiUI uses in model_loader.py
-            temp_pipeline = StableDiffusionPipeline.from_single_file(
-                model_path,
-                torch_dtype=self.dtype,
-                use_safetensors=True,
-            )
+            # Try SDXL first, fall back to SD1.5
+            try:
+                print(f"[LoRATrainer] Trying SDXL pipeline...")
+                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
+                    model_path,
+                    torch_dtype=self.dtype,
+                    use_safetensors=True,
+                )
+                is_sdxl_model = True
+            except Exception as e:
+                print(f"[LoRATrainer] Not SDXL, trying SD1.5 pipeline...")
+                temp_pipeline = StableDiffusionPipeline.from_single_file(
+                    model_path,
+                    torch_dtype=self.dtype,
+                    use_safetensors=True,
+                )
+                is_sdxl_model = False
 
             # Extract components from pipeline
             self.vae = temp_pipeline.vae
@@ -109,6 +120,14 @@ class LoRATrainer:
             self.tokenizer = temp_pipeline.tokenizer
             self.unet = temp_pipeline.unet
             self.noise_scheduler = temp_pipeline.scheduler
+
+            # SDXL-specific components
+            if is_sdxl_model:
+                self.text_encoder_2 = temp_pipeline.text_encoder_2
+                self.tokenizer_2 = temp_pipeline.tokenizer_2
+            else:
+                self.text_encoder_2 = None
+                self.tokenizer_2 = None
 
             # Clean up pipeline reference (we only need components)
             del temp_pipeline
@@ -144,6 +163,23 @@ class LoRATrainer:
                 subfolder="scheduler"
             )
 
+            # Try to load SDXL-specific components (text_encoder_2, tokenizer_2)
+            try:
+                self.text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                    model_path,
+                    subfolder="text_encoder_2",
+                    torch_dtype=self.dtype
+                )
+                self.tokenizer_2 = CLIPTokenizer.from_pretrained(
+                    model_path,
+                    subfolder="tokenizer_2"
+                )
+                print(f"[LoRATrainer] Loaded SDXL text_encoder_2 and tokenizer_2")
+            except Exception:
+                # SD1.5 models don't have these
+                self.text_encoder_2 = None
+                self.tokenizer_2 = None
+
         # Detect model type (SD1.5 vs SDXL)
         self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
         print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
@@ -152,15 +188,21 @@ class LoRATrainer:
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
         self.unet.requires_grad_(False)
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.requires_grad_(False)
 
         # Move to device
         self.vae.to(self.device)
         self.text_encoder.to(self.device)
         self.unet.to(self.device)
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.to(self.device)
 
         # Set to eval mode (except UNet which will have LoRA)
         self.vae.eval()
         self.text_encoder.eval()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.eval()
 
         # LoRA layers storage
         self.lora_layers = {}
@@ -252,27 +294,60 @@ class LoRATrainer:
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
         """
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        with torch.no_grad():
-            encoder_output = self.text_encoder(
-                text_inputs.input_ids.to(self.device),
-                output_hidden_states=self.is_sdxl  # Need hidden states for SDXL pooling
+        if self.is_sdxl:
+            # SDXL: Use two text encoders
+            # First text encoder (CLIP ViT-L)
+            text_inputs_1 = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
             )
 
-            text_embeddings = encoder_output[0]
+            # Second text encoder (OpenCLIP ViT-bigG)
+            text_inputs_2 = self.tokenizer_2(
+                prompt,
+                padding="max_length",
+                max_length=self.tokenizer_2.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
 
-            if self.is_sdxl:
-                # SDXL requires pooled embeddings
-                pooled_embeddings = encoder_output.pooler_output
+            with torch.no_grad():
+                # Encode with first text encoder
+                text_embeddings_1 = self.text_encoder(
+                    text_inputs_1.input_ids.to(self.device),
+                    output_hidden_states=False,
+                )[0]
+
+                # Encode with second text encoder (get penultimate hidden state and pooled output)
+                encoder_output_2 = self.text_encoder_2(
+                    text_inputs_2.input_ids.to(self.device),
+                    output_hidden_states=True,
+                )
+                text_embeddings_2 = encoder_output_2.hidden_states[-2]  # Penultimate layer
+                pooled_embeddings = encoder_output_2[0]  # Pooled output
+
+                # Concatenate embeddings from both encoders
+                text_embeddings = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
+
                 return text_embeddings, pooled_embeddings
-            else:
+        else:
+            # SD1.5: Single text encoder
+            text_inputs = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            with torch.no_grad():
+                text_embeddings = self.text_encoder(
+                    text_inputs.input_ids.to(self.device),
+                )[0]
+
                 return text_embeddings
 
     def encode_image(self, image: Image.Image, target_size: int = 512) -> torch.Tensor:
@@ -369,7 +444,23 @@ class LoRATrainer:
         # Prepare added_cond_kwargs for SDXL
         added_cond_kwargs = None
         if self.is_sdxl and pooled_embeddings is not None:
-            added_cond_kwargs = {"text_embeds": pooled_embeddings}
+            # Calculate image size from latents (latents are downscaled by VAE factor of 8)
+            latent_height, latent_width = latents.shape[2], latents.shape[3]
+            image_height, image_width = latent_height * 8, latent_width * 8
+
+            # Prepare time_ids: [original_size, crops_coords_top_left, target_size]
+            original_size = (image_height, image_width)
+            crops_coords_top_left = (0, 0)
+            target_size = (image_height, image_width)
+
+            add_time_ids = list(original_size + crops_coords_top_left + target_size)
+            add_time_ids = torch.tensor([add_time_ids], dtype=pooled_embeddings.dtype, device=self.device)
+
+            # For training, batch size is 1, so no need to duplicate
+            added_cond_kwargs = {
+                "text_embeds": pooled_embeddings,
+                "time_ids": add_time_ids
+            }
 
         # Predict noise using UNet with LoRA
         model_pred = self.unet_forward_with_lora(

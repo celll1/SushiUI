@@ -4,9 +4,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import uuid
 
-Base = declarative_base()
+# Create separate declarative bases for each database
+GalleryBase = declarative_base()
+DatasetBase = declarative_base()
+TrainingBase = declarative_base()
 
-class UserSettings(Base):
+# ============================================================
+# Gallery Models (gallery.db)
+# ============================================================
+
+class UserSettings(GalleryBase):
     """User settings for application configuration"""
     __tablename__ = "user_settings"
 
@@ -26,7 +33,7 @@ class UserSettings(Base):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
-class GeneratedImage(Base):
+class GeneratedImage(GalleryBase):
     __tablename__ = "generated_images"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -120,7 +127,13 @@ class GeneratedImage(Base):
 # Dataset Management Models
 # ============================================================
 
-class Dataset(Base):
+
+
+# ============================================================
+# Dataset Models (datasets.db)
+# ============================================================
+
+class Dataset(DatasetBase):
     """Dataset for training/fine-tuning models"""
     __tablename__ = "datasets"
 
@@ -155,9 +168,9 @@ class Dataset(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_scanned_at = Column(DateTime, nullable=True)
 
-    # Relationships
+    # Relationships (within datasets.db only)
     items = relationship("DatasetItem", back_populates="dataset", cascade="all, delete-orphan")
-    training_runs = relationship("TrainingRun", back_populates="dataset", cascade="all, delete-orphan")
+    # Note: TrainingRun is in a separate database (training.db)
 
     def to_dict(self):
         return {
@@ -182,7 +195,7 @@ class Dataset(Base):
         }
 
 
-class DatasetItem(Base):
+class DatasetItem(DatasetBase):
     """Individual item (image or image group) in a dataset"""
     __tablename__ = "dataset_items"
 
@@ -242,7 +255,7 @@ class DatasetItem(Base):
         }
 
 
-class DatasetCaption(Base):
+class DatasetCaption(DatasetBase):
     """Caption associated with a dataset item"""
     __tablename__ = "dataset_captions"
 
@@ -283,7 +296,7 @@ class DatasetCaption(Base):
         }
 
 
-class TagDictionary(Base):
+class TagDictionary(DatasetBase):
     """Global tag dictionary (Danbooru tags + custom tags)"""
     __tablename__ = "tag_dictionary"
 
@@ -327,12 +340,18 @@ class TagDictionary(Base):
         }
 
 
-class TrainingRun(Base):
+
+
+# ============================================================
+# Training Models (training.db)
+# ============================================================
+
+class TrainingRun(TrainingBase):
     """Training run for model fine-tuning or LoRA training"""
     __tablename__ = "training_runs"
 
     id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_id = Column(Integer, nullable=False, index=True)  # No ForeignKey - different database
     run_id = Column(String, unique=True, nullable=False, index=True, default=lambda: str(uuid.uuid4()))  # Unique ID (UUID)
 
     # Run identification
@@ -367,8 +386,8 @@ class TrainingRun(Base):
     completed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
-    dataset = relationship("Dataset", back_populates="training_runs")
+    # Relationships (within training.db only)
+    # Note: dataset_id references datasets.db, but no ForeignKey constraint
     checkpoints = relationship("TrainingCheckpoint", back_populates="run", cascade="all, delete-orphan")
     samples = relationship("TrainingSample", back_populates="run", cascade="all, delete-orphan")
     
@@ -398,7 +417,7 @@ class TrainingRun(Base):
         }
 
 
-class TrainingCheckpoint(Base):
+class TrainingCheckpoint(TrainingBase):
     """Training checkpoint saved during training"""
     __tablename__ = "training_checkpoints"
 
@@ -433,7 +452,7 @@ class TrainingCheckpoint(Base):
         }
 
 
-class TrainingSample(Base):
+class TrainingSample(TrainingBase):
     """Sample image generated during training"""
     __tablename__ = "training_samples"
 

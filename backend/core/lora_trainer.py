@@ -1561,7 +1561,8 @@ class LoRATrainer:
                         self.save_checkpoint(global_step)
 
                     # Sample generation
-                    if sample_prompts and sample_config and global_step % sample_every == 0:
+                    # Generate samples at step 0 (initial) or every sample_every steps
+                    if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
                         pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
                         vae_on_cpu = latent_cache is not None
                         self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)

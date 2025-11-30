@@ -356,7 +356,8 @@ class TrainingRun(TrainingBase):
     __tablename__ = "training_runs"
 
     id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, nullable=False, index=True)  # No ForeignKey - different database
+    dataset_id = Column(Integer, nullable=True, index=True)  # Deprecated - use dataset_configs instead
+    dataset_configs = Column(JSON, nullable=True)  # List of {dataset_id, caption_types, filters}
     run_id = Column(String, unique=True, nullable=False, index=True, default=lambda: str(uuid.uuid4()))  # Unique ID (UUID)
 
     # Run identification
@@ -400,6 +401,7 @@ class TrainingRun(TrainingBase):
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
+            "dataset_configs": self.dataset_configs,
             "run_id": self.run_id,
             "run_name": self.run_name,
             "training_method": self.training_method,

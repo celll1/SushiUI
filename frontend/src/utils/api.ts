@@ -1024,6 +1024,25 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export interface RandomCaptionResponse {
+  caption: string;
+  caption_type: string;
+  caption_subtype?: string;
+  item_id: number;
+}
+
+export const getRandomCaption = async (
+  datasetId: number,
+  captionTypes?: string[]
+): Promise<RandomCaptionResponse> => {
+  const params: any = {};
+  if (captionTypes && captionTypes.length > 0) {
+    params.caption_types = captionTypes.join(",");
+  }
+  const response = await api.get(`/datasets/${datasetId}/random-caption`, { params });
+  return response.data;
+};
+
 // ============================================================
 // Training API
 // ============================================================
@@ -1052,8 +1071,15 @@ export interface TrainingRun {
   updated_at: string;
 }
 
-export interface TrainingRunCreateRequest {
+export interface DatasetConfigItem {
   dataset_id: number;
+  caption_types: string[];  // Empty = use all caption types
+  filters: Record<string, any>;  // Filter configuration
+}
+
+export interface TrainingRunCreateRequest {
+  dataset_id?: number;  // Deprecated - use dataset_configs instead
+  dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
   run_name?: string;  // Optional - will use UUID if not provided
   training_method: "lora" | "full_finetune";
   base_model_path: string;
@@ -1067,8 +1093,17 @@ export interface TrainingRunCreateRequest {
   lora_alpha?: number;
   network_type?: string;
   save_every?: number;
+  save_every_unit?: string;
   sample_every?: number;
-  sample_prompts?: string[];
+  sample_prompts?: Array<{positive: string, negative: string}>;
+  resume_from_checkpoint?: string | null;
+  sample_width?: number;
+  sample_height?: number;
+  sample_steps?: number;
+  sample_cfg_scale?: number;
+  sample_sampler?: string;
+  sample_schedule_type?: string;
+  sample_seed?: number;
 }
 
 export interface TrainingRunListResponse {

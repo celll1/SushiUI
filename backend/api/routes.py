@@ -2623,6 +2623,12 @@ class TrainingRunCreateRequest(BaseModel):
     text_encoder_1_lr: Optional[float] = None  # SDXL TE1 LR (defaults to text_encoder_lr if None)
     text_encoder_2_lr: Optional[float] = None  # SDXL TE2 LR (defaults to text_encoder_lr if None)
 
+    # Precision and dtype settings (VRAM optimization)
+    weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2
+    training_dtype: str = "fp16"  # fp16, bf16, fp8_e4m3fn, fp8_e5m2 (activation dtype during training)
+    output_dtype: str = "fp32"  # fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2 (output latent dtype)
+    mixed_precision: bool = True  # Enable mixed precision training (autocast)
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -2735,6 +2741,10 @@ async def create_training_run(
                 text_encoder_1_lr=request.text_encoder_1_lr,
                 text_encoder_2_lr=request.text_encoder_2_lr,
                 cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                mixed_precision=request.mixed_precision,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

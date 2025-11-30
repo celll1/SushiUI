@@ -42,6 +42,10 @@ class TrainingConfigGenerator:
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
         cache_latents_to_disk: bool = True,
+        weight_dtype: str = "fp16",
+        training_dtype: str = "fp16",
+        output_dtype: str = "fp32",
+        mixed_precision: bool = True,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -131,7 +135,10 @@ class TrainingConfigGenerator:
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "lr_scheduler": lr_scheduler,
                             "ema_config": {"use_ema": True, "ema_decay": 0.99},
-                            "dtype": "bf16",
+                            "dtype": training_dtype,  # Training/activation dtype
+                            "weight_dtype": weight_dtype,  # Model weight dtype
+                            "output_dtype": output_dtype,  # Output latent dtype
+                            "mixed_precision": mixed_precision,  # Enable autocast for mixed precision
                             "debug_latents": debug_latents,
                             "debug_latents_every": debug_latents_every,
                             "enable_bucketing": enable_bucketing,

@@ -82,6 +82,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
   const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
 
+  // Precision and dtype settings (VRAM optimization)
+  const [weightDtype, setWeightDtype] = useState<string>("fp16");
+  const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
+  const [outputDtype, setOutputDtype] = useState<string>("fp32");
+  const [mixedPrecision, setMixedPrecision] = useState(true);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -278,6 +284,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
       text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
       text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
+      weight_dtype: weightDtype,
+      training_dtype: trainingDtype,
+      output_dtype: outputDtype,
+      mixed_precision: mixedPrecision,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -724,6 +734,80 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </div>
             )}
           </div>
+        </div>
+
+        {/* Precision Settings (VRAM Optimization) */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Precision Settings (VRAM Optimization)</h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            {/* Weight dtype */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Weight dtype</label>
+              <select
+                value={weightDtype}
+                onChange={(e) => setWeightDtype(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp16">FP16 (Default)</option>
+                <option value="fp32">FP32 (Higher precision)</option>
+                <option value="bf16">BF16 (Balanced)</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (~50% VRAM)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (~50% VRAM)</option>
+              </select>
+            </div>
+
+            {/* Training/Activation dtype */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Training dtype</label>
+              <select
+                value={trainingDtype}
+                onChange={(e) => setTrainingDtype(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp16">FP16 (Default)</option>
+                <option value="bf16">BF16</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
+                <option value="fp8_e5m2">FP8 E5M2</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {/* Output dtype */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Output dtype</label>
+              <select
+                value={outputDtype}
+                onChange={(e) => setOutputDtype(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp32">FP32 (Default, highest precision)</option>
+                <option value="fp16">FP16</option>
+                <option value="bf16">BF16</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
+                <option value="fp8_e5m2">FP8 E5M2</option>
+              </select>
+            </div>
+
+            {/* Mixed Precision */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="mixed-precision"
+                checked={mixedPrecision}
+                onChange={(e) => setMixedPrecision(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
+                Mixed Precision (Autocast)
+              </label>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-500">
+            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy.
+          </p>
         </div>
 
         {/* Advanced Settings */}

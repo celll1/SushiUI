@@ -579,6 +579,7 @@ class LoRATrainer:
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
         debug_save_path: Optional[Path] = None,
+        profile_vram: bool = False,
     ) -> float:
         """
         Perform single training step.
@@ -588,6 +589,7 @@ class LoRATrainer:
             text_embeddings: Text prompt embeddings [B, 77, 768]
             pooled_embeddings: Pooled text embeddings (SDXL only)
             debug_save_path: If provided, save latents for debugging
+            profile_vram: If True, print VRAM usage at each step
 
         Returns:
             Loss value
@@ -595,8 +597,14 @@ class LoRATrainer:
         # Keep latents in their original dtype to avoid memory duplication
         # We'll convert to output_dtype only when needed for loss calculation
 
+        if profile_vram:
+            print_vram_usage("[train_step] Start")
+
         # Sample noise
         noise = torch.randn_like(latents)
+
+        if profile_vram:
+            print_vram_usage("[train_step] After noise generation")
 
         # Sample random timestep
         batch_size = latents.shape[0]
@@ -633,6 +641,9 @@ class LoRATrainer:
                 "time_ids": add_time_ids
             }
 
+        if profile_vram:
+            print_vram_usage("[train_step] Before UNet forward")
+
         # Predict noise using UNet (LoRA is already integrated)
         # Use autocast if mixed precision is enabled
         if self.mixed_precision:
@@ -667,8 +678,14 @@ class LoRATrainer:
                     text_embeddings
                 ).sample
 
+        if profile_vram:
+            print_vram_usage("[train_step] After UNet forward")
+
         # Calculate loss (always in fp32 for numerical stability)
         loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+
+        if profile_vram:
+            print_vram_usage("[train_step] After loss calculation")
 
         # Debug: Save latents if requested
         if debug_save_path is not None:
@@ -699,8 +716,14 @@ class LoRATrainer:
             print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value})")
 
         # Backward pass
+        if profile_vram:
+            print_vram_usage("[train_step] Before backward")
+
         self.optimizer.zero_grad()
         loss.backward()
+
+        if profile_vram:
+            print_vram_usage("[train_step] After backward")
 
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(
@@ -708,9 +731,15 @@ class LoRATrainer:
             max_norm=1.0
         )
 
+        if profile_vram:
+            print_vram_usage("[train_step] After gradient clipping")
+
         # Optimizer step
         self.optimizer.step()
         self.lr_scheduler.step()
+
+        if profile_vram:
+            print_vram_usage("[train_step] After optimizer step")
 
         # Get loss value before cleanup
         loss_value = loss.detach().item()
@@ -1426,9 +1455,11 @@ class LoRATrainer:
 
                     # Handle SD1.5 vs SDXL output
                     if self.is_sdxl:
-                        loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings, debug_save_path=debug_save_path)
+                        loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings,
+                                             debug_save_path=debug_save_path, profile_vram=profile_vram)
                     else:
-                        loss = self.train_step(batched_latents, batched_text_embeddings, debug_save_path=debug_save_path)
+                        loss = self.train_step(batched_latents, batched_text_embeddings,
+                                             debug_save_path=debug_save_path, profile_vram=profile_vram)
 
                     # Free batch tensors after training step to reduce VRAM usage
                     del batched_latents, batched_text_embeddings

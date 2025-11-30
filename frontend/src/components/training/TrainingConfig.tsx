@@ -379,28 +379,36 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           <h3 className="text-sm font-medium text-gray-300 mb-3">Advanced Settings</h3>
 
           {/* Save Checkpoint Every */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Save Checkpoint Every</label>
-              <input
-                type="number"
-                min="1"
-                value={saveEvery}
-                onChange={(e) => setSaveEvery(parseInt(e.target.value))}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              />
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">Save Checkpoint Every</label>
+            <div className="flex items-center space-x-4 mb-2">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="radio"
+                  checked={saveEveryUnit === "steps"}
+                  onChange={() => setSaveEveryUnit("steps")}
+                  className="text-blue-500 focus:ring-blue-500"
+                />
+                <span className="text-sm">Steps</span>
+              </label>
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="radio"
+                  checked={saveEveryUnit === "epochs"}
+                  onChange={() => setSaveEveryUnit("epochs")}
+                  className="text-blue-500 focus:ring-blue-500"
+                />
+                <span className="text-sm">Epochs</span>
+              </label>
             </div>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Unit</label>
-              <select
-                value={saveEveryUnit}
-                onChange={(e) => setSaveEveryUnit(e.target.value as "steps" | "epochs")}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              >
-                <option value="steps">Steps</option>
-                <option value="epochs">Epochs</option>
-              </select>
-            </div>
+            <input
+              type="number"
+              min="1"
+              value={saveEvery}
+              onChange={(e) => setSaveEvery(parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
+            />
           </div>
 
           {/* Resume from Checkpoint */}

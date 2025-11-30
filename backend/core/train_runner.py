@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import get_db
-from database.models import TrainingRun, Dataset, DatasetItem
+from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 
 
@@ -33,11 +33,16 @@ def get_dataset_items(db: Session, dataset_id: int) -> list:
 
     dataset_items = []
     for item in items:
-        # Get main caption (tags field)
-        caption = item.tags or ""
+        # Get primary caption from dataset_captions table
+        primary_caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == "tags"
+        ).first()
+
+        caption = primary_caption.content if primary_caption else ""
 
         dataset_items.append({
-            "image_path": item.file_path,
+            "image_path": item.image_path,
             "caption": caption,
         })
 

@@ -20,6 +20,36 @@ from torch.utils.tensorboard import SummaryWriter
 import json
 from datetime import datetime
 import numpy as np
+import gc
+
+
+def print_vram_usage(label: str = ""):
+    """
+    Print detailed VRAM usage statistics.
+
+    Args:
+        label: Optional label to identify the checkpoint
+    """
+    if not torch.cuda.is_available():
+        return
+
+    allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+    reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+    max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+
+    print(f"[VRAM] {label if label else 'Current'}")
+    print(f"  Allocated: {allocated:.2f} GB")
+    print(f"  Reserved:  {reserved:.2f} GB")
+    print(f"  Peak:      {max_allocated:.2f} GB")
+
+    # Optionally show memory summary (detailed breakdown)
+    # Uncomment for more details:
+    # print(torch.cuda.memory_summary(device=None, abbreviated=True))
+
+
+def get_tensor_memory_mb(tensor: torch.Tensor) -> float:
+    """Get memory usage of a tensor in MB."""
+    return tensor.element_size() * tensor.nelement() / 1024**2
 
 
 def get_torch_dtype(dtype_str: str) -> torch.dtype:
@@ -292,6 +322,8 @@ class LoRATrainer:
         if self.text_encoder_2 is not None:
             self.text_encoder_2.to(self.device)
 
+        print_vram_usage("After loading models to GPU")
+
         # Set to eval mode (except UNet which will have LoRA)
         self.vae.eval()
         self.text_encoder.eval()
@@ -303,6 +335,7 @@ class LoRATrainer:
 
         # Apply LoRA to UNet
         self._apply_lora()
+        print_vram_usage("After applying LoRA layers")
 
         self.optimizer = None
         self.lr_scheduler = None
@@ -1225,15 +1258,18 @@ class LoRATrainer:
                 print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
+                print_vram_usage("After moving VAE to CPU")
             else:
                 print(f"[LoRATrainer] Using existing latent cache (dataset_id={dataset_id})")
                 print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
                 # Move VAE to CPU
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
+                print_vram_usage("After moving VAE to CPU")
 
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)
+            print_vram_usage("After optimizer setup")
 
         # Try to resume from checkpoint
         global_step = 0
@@ -1296,8 +1332,14 @@ class LoRATrainer:
                        file=sys.stderr, mininterval=1.0)
             pbar.write(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
 
-            for batch in pbar:
+            for batch_idx, batch in enumerate(pbar):
                 try:
+                    # VRAM profiling for first batch only (to avoid spam)
+                    profile_vram = (global_step == 0)
+
+                    if profile_vram:
+                        print_vram_usage("Start of first batch")
+
                     # Process entire batch
                     batch_latents = []
                     batch_text_embeddings = []
@@ -1361,6 +1403,9 @@ class LoRATrainer:
                         continue
 
                     # Stack into batched tensors
+                    if profile_vram:
+                        print_vram_usage("After loading batch data (before concat)")
+
                     batched_latents = torch.cat(batch_latents, dim=0)
                     del batch_latents  # Free memory immediately after concat
 
@@ -1370,6 +1415,9 @@ class LoRATrainer:
                     if self.is_sdxl:
                         batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
                         del batch_pooled_embeddings  # Free memory immediately after concat
+
+                    if profile_vram:
+                        print_vram_usage("After concat (before train_step)")
 
                     # Determine if we should save debug latents for this step
                     debug_save_path = None
@@ -1386,6 +1434,9 @@ class LoRATrainer:
                     del batched_latents, batched_text_embeddings
                     if self.is_sdxl:
                         del batched_pooled_embeddings
+
+                    if profile_vram:
+                        print_vram_usage("After train_step and cleanup")
 
                     global_step += 1
 

@@ -862,14 +862,66 @@ class LoRATrainer:
         state_dict = load_file(checkpoint_path)
 
         # Load weights into LoRA layers
+        loaded_count = 0
         for name, lora in self.lora_layers.items():
-            key_prefix = f"lora_unet_{name.replace('.', '_')}"
+            # Parse prefix and module name (same logic as save_checkpoint)
+            if "." in name:
+                prefix, module_name = name.split(".", 1)
+            else:
+                # Fallback for legacy keys without prefix
+                prefix = "unet"
+                module_name = name
+
+            # Generate key prefix based on module type (same as save_checkpoint)
+            if prefix == "unet":
+                # Convert diffusers format to SD format for U-Net
+                converted_name = self._convert_to_sd_format(module_name)
+                key_prefix = f"lora_unet_{converted_name}"
+            elif prefix == "te1":
+                # Text Encoder 1 keys
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_te1_{converted_name}"
+            elif prefix == "te2":
+                # Text Encoder 2 keys
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_te2_{converted_name}"
+            else:
+                # Unknown prefix, use as-is
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_{prefix}_{converted_name}"
+
             down_key = f"{key_prefix}.lora_down.weight"
             up_key = f"{key_prefix}.lora_up.weight"
 
+            # Try to load with the generated key
             if down_key in state_dict and up_key in state_dict:
                 lora.lora_down.weight.data = state_dict[down_key].to(self.device)
                 lora.lora_up.weight.data = state_dict[up_key].to(self.device)
+                loaded_count += 1
+            else:
+                # Fallback: Try alternative key format (for backward compatibility)
+                # If checkpoint is in diffusers format but we're using SD format (or vice versa)
+                alternative_key_prefix = None
+
+                if prefix == "unet":
+                    # Try diffusers format (without SD conversion)
+                    alternative_converted = module_name.replace(".", "_")
+                    alternative_key_prefix = f"lora_unet_{alternative_converted}"
+
+                if alternative_key_prefix:
+                    alt_down_key = f"{alternative_key_prefix}.lora_down.weight"
+                    alt_up_key = f"{alternative_key_prefix}.lora_up.weight"
+
+                    if alt_down_key in state_dict and alt_up_key in state_dict:
+                        lora.lora_down.weight.data = state_dict[alt_down_key].to(self.device)
+                        lora.lora_up.weight.data = state_dict[alt_up_key].to(self.device)
+                        loaded_count += 1
+                    else:
+                        print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key} (also tried {alt_down_key})")
+                else:
+                    print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key}")
+
+        print(f"[LoRATrainer] Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
 
         # Extract step from metadata or filename
         step = 0

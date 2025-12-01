@@ -184,10 +184,17 @@ class LoRAManager:
                         active_adapters = pipeline.get_active_adapters()
                         print(f"[LoRAManager] Active adapters after set_adapters: {active_adapters}")
 
-                    # Debug: Check UNet's LoRA scale
-                    if hasattr(pipeline.unet, 'get_scale_dict'):
-                        scale_dict = pipeline.unet.get_scale_dict()
-                        print(f"[LoRAManager] UNet LoRA scale dict: {scale_dict}")
+                    # Debug: Check UNet's LoRA modules
+                    print(f"[LoRAManager] Checking UNet for LoRA modules...")
+                    lora_module_count = 0
+                    for name, module in pipeline.unet.named_modules():
+                        if hasattr(module, 'lora_A') or hasattr(module, 'lora_B') or hasattr(module, 'scaling'):
+                            lora_module_count += 1
+                            if lora_module_count <= 3:  # Show first 3
+                                print(f"[LoRAManager]   LoRA module found: {name}")
+                                if hasattr(module, 'scaling'):
+                                    print(f"[LoRAManager]     scaling: {module.scaling}")
+                    print(f"[LoRAManager] Total LoRA modules in UNet: {lora_module_count}")
 
                     # Apply per-layer weights if specified
                     if lora_config.unet_layer_weights and hasattr(pipeline, 'unet'):

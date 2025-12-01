@@ -21,6 +21,7 @@ import json
 from datetime import datetime
 import numpy as np
 import gc
+import math
 
 
 def print_vram_usage(label: str = ""):
@@ -75,6 +76,111 @@ def get_torch_dtype(dtype_str: str) -> torch.dtype:
         return torch.float16
 
     return dtype_map[dtype_str]
+
+
+def compute_snr(noise_scheduler, timesteps):
+    """
+    Computes SNR (Signal-to-Noise Ratio) from diffusion timesteps.
+
+    SNR = alpha_bar / (1 - alpha_bar)
+
+    Args:
+        noise_scheduler: DDPMScheduler instance
+        timesteps: Tensor of timesteps [batch_size]
+
+    Returns:
+        SNR values [batch_size]
+    """
+    # Get alpha_bar for each timestep
+    alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=timesteps.device)
+    alpha_bar = alphas_cumprod[timesteps].float()
+
+    # SNR = alpha / (1 - alpha)
+    snr = alpha_bar / (1.0 - alpha_bar)
+
+    return snr
+
+
+def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0):
+    """
+    Apply Min-SNR gamma weighting to loss.
+
+    Reference: "Efficient Diffusion Training via Min-SNR Weighting Strategy"
+    https://arxiv.org/abs/2303.09556
+
+    This reweights the loss to ensure all timesteps contribute equally to training,
+    preventing the model from overfitting to high-noise timesteps.
+
+    Args:
+        loss: Unreduced loss tensor [batch_size, ...]
+        timesteps: Tensor of timesteps [batch_size]
+        noise_scheduler: DDPMScheduler instance
+        min_snr_gamma: Minimum SNR gamma value (default: 5.0, standard for SD/SDXL)
+
+    Returns:
+        Weighted loss (same shape as input)
+    """
+    snr = compute_snr(noise_scheduler, timesteps)
+
+    # Min-SNR gamma weighting: min(SNR, gamma) / SNR
+    # This clamps the weight for low-noise (high SNR) timesteps
+    mse_loss_weights = torch.clamp(snr, max=min_snr_gamma) / snr
+
+    # Reshape to match loss dimensions [batch_size, 1, 1, 1]
+    while mse_loss_weights.dim() < loss.dim():
+        mse_loss_weights = mse_loss_weights.unsqueeze(-1)
+
+    # Apply weighting
+    weighted_loss = loss * mse_loss_weights
+
+    return weighted_loss
+
+
+def get_target_from_prediction_type(
+    noise_scheduler,
+    prediction_type: str,
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Get the target tensor based on prediction type.
+
+    Args:
+        noise_scheduler: DDPMScheduler instance
+        prediction_type: "epsilon" (noise), "v_prediction", or "sample"
+        latents: Original latents [B, C, H, W]
+        noise: Sampled noise [B, C, H, W]
+        timesteps: Timesteps [B]
+
+    Returns:
+        Target tensor for loss calculation
+    """
+    if prediction_type == "epsilon":
+        # Predict noise (most common for SD/SDXL)
+        return noise
+
+    elif prediction_type == "v_prediction":
+        # Predict velocity (v = alpha_bar * noise - sqrt(1 - alpha_bar) * latents)
+        alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=latents.device)
+        alpha_bar = alphas_cumprod[timesteps].float()
+
+        # Reshape alpha_bar to [B, 1, 1, 1]
+        while alpha_bar.dim() < latents.dim():
+            alpha_bar = alpha_bar.unsqueeze(-1)
+
+        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar)
+
+        velocity = sqrt_alpha_bar * noise - sqrt_one_minus_alpha_bar * latents
+        return velocity
+
+    elif prediction_type == "sample":
+        # Predict original sample (less common)
+        return latents
+
+    else:
+        raise ValueError(f"Unknown prediction_type: {prediction_type}")
 
 
 class LoRALinearLayer(torch.nn.Module):
@@ -157,6 +263,7 @@ class LoRATrainer:
         mixed_precision: bool = True,
         debug_vram: bool = False,
         use_flash_attention: bool = False,
+        min_snr_gamma: float = 5.0,
     ):
         """
         Initialize LoRA trainer.
@@ -175,6 +282,7 @@ class LoRATrainer:
             mixed_precision: Enable mixed precision training (autocast)
             debug_vram: Enable detailed VRAM profiling (default: False)
             use_flash_attention: Enable Flash Attention for training (faster, lower memory)
+            min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, 0 to disable)
         """
         self.model_path = model_path
         self.output_dir = Path(output_dir)
@@ -193,6 +301,7 @@ class LoRATrainer:
         self.mixed_precision = mixed_precision
         self.debug_vram = debug_vram
         self.use_flash_attention = use_flash_attention
+        self.min_snr_gamma = min_snr_gamma
 
         # Legacy dtype for compatibility (defaults to weight_dtype)
         self.dtype = self.weight_dtype
@@ -204,6 +313,7 @@ class LoRATrainer:
         print(f"  VAE dtype: {vae_dtype} ({self.vae_dtype})")
         print(f"  Mixed precision: {mixed_precision}")
         print(f"  Loss calculation: Always FP32 for numerical stability")
+        print(f"  Min-SNR gamma: {min_snr_gamma} ({'enabled' if min_snr_gamma > 0 else 'disabled'})")
 
         # Initialize tensorboard writer
         # Create subdirectory with timestamp for each training session (useful for resume)
@@ -742,8 +852,26 @@ class LoRATrainer:
         if profile_vram:
             print_vram_usage("[train_step] After UNet forward")
 
+        # Get target based on prediction type
+        prediction_type = self.noise_scheduler.config.prediction_type
+        target = get_target_from_prediction_type(
+            self.noise_scheduler,
+            prediction_type,
+            latents,
+            noise,
+            timesteps,
+        )
+
         # Calculate loss (always in fp32 for numerical stability)
-        loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+        # Use reduction="none" to apply SNR weighting per-sample
+        loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+
+        # Apply Min-SNR gamma weighting if enabled
+        if self.min_snr_gamma > 0:
+            loss = apply_snr_weight(loss, timesteps, self.noise_scheduler, self.min_snr_gamma)
+
+        # Take mean across all dimensions
+        loss = loss.mean()
 
         if profile_vram:
             print_vram_usage("[train_step] After loss calculation")
@@ -873,21 +1001,17 @@ class LoRATrainer:
                 module_name = name
 
             # Generate key prefix based on module type (same as save_checkpoint)
+            # Use diffusers format (compatible with diffusers library)
+            converted_name = module_name.replace(".", "_")
+
             if prefix == "unet":
-                # Convert diffusers format to SD format for U-Net
-                converted_name = self._convert_to_sd_format(module_name)
                 key_prefix = f"lora_unet_{converted_name}"
             elif prefix == "te1":
-                # Text Encoder 1 keys
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_te1_{converted_name}"
             elif prefix == "te2":
-                # Text Encoder 2 keys
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_te2_{converted_name}"
             else:
                 # Unknown prefix, use as-is
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_{prefix}_{converted_name}"
 
             down_key = f"{key_prefix}.lora_down.weight"
@@ -899,27 +1023,7 @@ class LoRATrainer:
                 lora.lora_up.weight.data = state_dict[up_key].to(self.device)
                 loaded_count += 1
             else:
-                # Fallback: Try alternative key format (for backward compatibility)
-                # If checkpoint is in diffusers format but we're using SD format (or vice versa)
-                alternative_key_prefix = None
-
-                if prefix == "unet":
-                    # Try diffusers format (without SD conversion)
-                    alternative_converted = module_name.replace(".", "_")
-                    alternative_key_prefix = f"lora_unet_{alternative_converted}"
-
-                if alternative_key_prefix:
-                    alt_down_key = f"{alternative_key_prefix}.lora_down.weight"
-                    alt_up_key = f"{alternative_key_prefix}.lora_up.weight"
-
-                    if alt_down_key in state_dict and alt_up_key in state_dict:
-                        lora.lora_down.weight.data = state_dict[alt_down_key].to(self.device)
-                        lora.lora_up.weight.data = state_dict[alt_up_key].to(self.device)
-                        loaded_count += 1
-                    else:
-                        print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key} (also tried {alt_down_key})")
-                else:
-                    print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key}")
+                print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key}")
 
         print(f"[LoRATrainer] Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
 
@@ -954,30 +1058,7 @@ class LoRATrainer:
 
         return step
 
-    def _convert_to_sd_format(self, module_name: str) -> str:
-        """
-        Convert diffusers module name to SD/ComfyUI format.
-
-        Diffusers format: down_blocks.0.attentions.0.to_q
-        SD format:        input_blocks_0_1_to_q
-
-        Args:
-            module_name: Diffusers-style module name (e.g., "down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q")
-
-        Returns:
-            SD-style module name (e.g., "input_blocks_0_1_transformer_blocks_0_attn1_to_q")
-        """
-        # Replace dots with underscores
-        converted = module_name.replace('.', '_')
-
-        # Convert block names
-        converted = converted.replace('down_blocks', 'input_blocks')
-        converted = converted.replace('mid_block', 'middle_block')
-        converted = converted.replace('up_blocks', 'output_blocks')
-
-        return converted
-
-    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True):
+    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
         """
         Save LoRA checkpoint as safetensors and optimizer state as .pt.
 
@@ -985,6 +1066,8 @@ class LoRATrainer:
             step: Current training step
             save_path: Path to save checkpoint (default: output_dir/lora_step_{step}.safetensors)
             save_optimizer: Whether to save optimizer state (default: True)
+            max_to_keep: Maximum number of checkpoints to keep (None = keep all)
+            save_every: Save interval (used to calculate which checkpoint to delete)
         """
         if save_path is None:
             save_path = self.output_dir / f"lora_step_{step}.safetensors"
@@ -1006,21 +1089,17 @@ class LoRATrainer:
                 module_name = name
 
             # Generate key prefix based on module type
+            # Use diffusers format (compatible with diffusers library's load_lora_weights)
+            converted_name = module_name.replace(".", "_")
+
             if prefix == "unet":
-                # Convert diffusers format to SD format for U-Net
-                converted_name = self._convert_to_sd_format(module_name)
                 key_prefix = f"lora_unet_{converted_name}"
             elif prefix == "te1":
-                # Text Encoder 1 keys
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_te1_{converted_name}"
             elif prefix == "te2":
-                # Text Encoder 2 keys
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_te2_{converted_name}"
             else:
                 # Unknown prefix, use as-is
-                converted_name = module_name.replace(".", "_")
                 key_prefix = f"lora_{prefix}_{converted_name}"
 
             # Convert to output_dtype for saving (e.g., fp16 to reduce file size)
@@ -1053,6 +1132,47 @@ class LoRATrainer:
             }
             torch.save(optimizer_state, optimizer_path)
             print(f"[LoRATrainer] Optimizer state saved: {optimizer_path}")
+
+        # Remove old checkpoints if max_to_keep is set
+        if max_to_keep is not None and max_to_keep > 0:
+            self._cleanup_old_checkpoints(step, max_to_keep, save_every)
+
+    def _cleanup_old_checkpoints(self, current_step: int, max_to_keep: int, save_every: int):
+        """
+        Remove old checkpoints to keep only the latest N checkpoints.
+
+        Args:
+            current_step: Current training step
+            max_to_keep: Maximum number of checkpoints to keep
+            save_every: Save interval (used to calculate which checkpoint to delete)
+        """
+        # Calculate which step to remove
+        # Example: save_every=100, max_to_keep=10
+        # At step 1100, keep checkpoints from 1100, 1000, 900, 800, ..., 200
+        # Remove checkpoint from step 100
+        remove_step = current_step - (save_every * max_to_keep)
+
+        if remove_step < save_every:
+            # No checkpoint to remove yet
+            return
+
+        # Remove checkpoint at remove_step
+        checkpoint_path = self.output_dir / f"lora_step_{remove_step}.safetensors"
+        optimizer_path = self.output_dir / f"lora_step_{remove_step}.pt"
+
+        if checkpoint_path.exists():
+            try:
+                checkpoint_path.unlink()
+                print(f"[LoRATrainer] Removed old checkpoint: {checkpoint_path}")
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
+
+        if optimizer_path.exists():
+            try:
+                optimizer_path.unlink()
+                print(f"[LoRATrainer] Removed old optimizer state: {optimizer_path}")
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
 
     def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
         """
@@ -1308,6 +1428,8 @@ class LoRATrainer:
         cache_latents_to_disk: bool = True,
         cache_text_embeds_to_disk: bool = False,  # Reserved for future use, not exposed in UI
         dataset_id: Optional[int] = None,
+        # Checkpoint management
+        max_step_saves_to_keep: Optional[int] = None,  # Maximum number of checkpoints to keep (None = keep all)
     ):
         """
         Train LoRA on dataset.
@@ -1723,7 +1845,7 @@ class LoRATrainer:
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
                             pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
-                            self.save_checkpoint(global_step, save_optimizer=False)
+                            self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every)
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
@@ -1743,7 +1865,7 @@ class LoRATrainer:
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
                     print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
-                    self.save_checkpoint(global_step, save_optimizer=False)
+                    self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every)
 
             print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 

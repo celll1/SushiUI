@@ -41,13 +41,20 @@ class TrainingConfigGenerator:
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
-        cache_latents_to_disk: bool = True,
+        cache_latents_to_disk: bool = False,
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
         output_dtype: str = "fp32",
         vae_dtype: str = "fp16",
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
+        min_snr_gamma: float = 5.0,
+        sample_width: int = 1024,
+        sample_height: int = 1024,
+        sample_steps: int = 28,
+        sample_cfg_scale: float = 7.0,
+        sample_sampler: str = "euler",
+        sample_seed: int = 42,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -82,6 +89,7 @@ class TrainingConfigGenerator:
             text_encoder_2_lr: Text encoder 2 learning rate for SDXL (defaults to text_encoder_lr if None)
             cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
             use_flash_attention: Enable Flash Attention for training (faster, lower memory)
+            min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, set to 0 to disable)
 
         Returns:
             YAML configuration string
@@ -119,7 +127,7 @@ class TrainingConfigGenerator:
                                 "caption_dropout_rate": 0.05,
                                 "shuffle_tokens": False,
                                 "cache_latents_to_disk": cache_latents_to_disk,
-                                "resolution": [512, 768, 1024],
+                                "resolution": base_resolutions or [512, 768, 1024],
                             }
                         ],
                         "train": {
@@ -129,7 +137,7 @@ class TrainingConfigGenerator:
                             "train_unet": train_unet,
                             "train_text_encoder": train_text_encoder,
                             "gradient_checkpointing": True,
-                            "noise_scheduler": "flowmatch",
+                            "noise_scheduler": "ddpm",  # ddpm for epsilon prediction (SDXL standard)
                             "optimizer": optimizer,
                             "lr": learning_rate,
                             "unet_lr": unet_lr if unet_lr is not None else learning_rate,
@@ -149,6 +157,7 @@ class TrainingConfigGenerator:
                             "bucket_strategy": bucket_strategy,
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
+                            "min_snr_gamma": min_snr_gamma,
                         },
                         "model": {
                             "name_or_path": base_model_path,
@@ -157,16 +166,16 @@ class TrainingConfigGenerator:
                             "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
-                            "sampler": "flowmatch",
+                            "sampler": sample_sampler,
                             "sample_every": sample_every,
-                            "width": 1024,
-                            "height": 1024,
+                            "width": sample_width,
+                            "height": sample_height,
                             "prompts": sample_prompts or [],
                             "neg": "",
-                            "seed": 42,
+                            "seed": sample_seed,
                             "walk_seed": True,
-                            "guidance_scale": 4,
-                            "sample_steps": 20,
+                            "guidance_scale": sample_cfg_scale,
+                            "sample_steps": sample_steps,
                         },
                     }
                 ],
@@ -252,7 +261,7 @@ class TrainingConfigGenerator:
                             "train_unet": True,
                             "train_text_encoder": True,  # Train text encoder for full fine-tune
                             "gradient_checkpointing": True,
-                            "noise_scheduler": "flowmatch",
+                            "noise_scheduler": "ddpm",  # ddpm for epsilon prediction (SDXL standard)
                             "optimizer": optimizer,
                             "lr": learning_rate,
                             "lr_scheduler": lr_scheduler,
@@ -266,16 +275,16 @@ class TrainingConfigGenerator:
                             "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
-                            "sampler": "flowmatch",
+                            "sampler": sample_sampler,
                             "sample_every": sample_every,
-                            "width": 1024,
-                            "height": 1024,
+                            "width": sample_width,
+                            "height": sample_height,
                             "prompts": sample_prompts or [],
                             "neg": "",
-                            "seed": 42,
+                            "seed": sample_seed,
                             "walk_seed": True,
-                            "guidance_scale": 4,
-                            "sample_steps": 20,
+                            "guidance_scale": sample_cfg_scale,
+                            "sample_steps": sample_steps,
                         },
                     }
                 ],

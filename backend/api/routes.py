@@ -2613,7 +2613,7 @@ class TrainingRunCreateRequest(BaseModel):
     base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]
     bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
     multi_resolution_mode: str = "max"  # "max" or "random"
-    cache_latents_to_disk: bool = True  # Cache VAE latents and text embeddings to disk
+    cache_latents_to_disk: bool = False  # Cache VAE latents and text embeddings to disk (default: False, in-memory cache)
 
     # Component-specific training
     train_unet: bool = True
@@ -2630,6 +2630,7 @@ class TrainingRunCreateRequest(BaseModel):
     vae_dtype: str = "fp16"  # VAE-specific dtype (SDXL VAE works fine with fp16)
     mixed_precision: bool = True  # Enable mixed precision training (autocast)
     use_flash_attention: bool = False  # Enable Flash Attention for training (faster, lower memory)
+    min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
     # Sample generation parameters
     sample_width: int = 1024
@@ -2749,6 +2750,13 @@ async def create_training_run(
                 vae_dtype=request.vae_dtype,
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_seed=request.sample_seed,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

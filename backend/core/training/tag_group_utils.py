@@ -124,26 +124,67 @@ def normalize_tag_for_output(tag: str) -> str:
 class TagGroupManager:
     """Manage tag groups for caption processing."""
 
-    def __init__(self, tag_group_dir: str = "taggroup"):
+    def __init__(self, tag_group_dir: str = "taglist"):
         """
         Initialize tag group manager.
 
         Args:
             tag_group_dir: Directory containing tag group JSON files
         """
-        self.tag_group_dir = Path(tag_group_dir)
+        tag_path = Path(tag_group_dir)
+
+        # If relative path, resolve from project root (parent of backend)
+        if not tag_path.is_absolute():
+            # Get project root
+            # __file__ = backend/core/training/tag_group_utils.py
+            # .parent = backend/core/training
+            # .parent.parent = backend/core
+            # .parent.parent.parent = backend
+            # .parent.parent.parent.parent = project root
+            project_root = Path(__file__).parent.parent.parent.parent
+            tag_path = project_root / tag_group_dir
+
+        self.tag_group_dir = tag_path
         self.tag_groups: Dict[str, Set[str]] = {}
         self._tag_to_group_cache: Dict[str, str] = {}
         self.load_tag_groups()
 
     def load_tag_groups(self):
         """Load tag groups from JSON files."""
+        print(f"[TagGroupManager] Attempting to load tag groups from: {self.tag_group_dir.absolute()}")
+
+        # Add hardcoded Rating and Quality tags (these don't have JSON files)
+        rating_tags = {
+            'general', 'sensitive', 'questionable', 'explicit',
+            'rating:general', 'rating:sensitive', 'rating:questionable', 'rating:explicit'
+        }
+        quality_tags = {
+            'best quality', 'high quality', 'great quality', 'normal quality',
+            'low quality', 'worst quality', 'masterpiece', 'amazing quality'
+        }
+
+        self.tag_groups['Rating'] = rating_tags
+        self.tag_groups['Quality'] = quality_tags
+
+        # Build cache for Rating and Quality
+        for tag in rating_tags:
+            self._tag_to_group_cache[self._normalize_tag(tag)] = 'Rating'
+        for tag in quality_tags:
+            self._tag_to_group_cache[self._normalize_tag(tag)] = 'Quality'
+
+        print(f"[TagGroupManager] Added hardcoded Rating ({len(rating_tags)} tags) and Quality ({len(quality_tags)} tags)")
+
         if not self.tag_group_dir.exists():
-            print(f"[TagGroupManager] Tag group directory not found: {self.tag_group_dir}")
+            print(f"[TagGroupManager] ERROR: Tag group directory not found: {self.tag_group_dir.absolute()}")
+            print(f"[TagGroupManager] Category ordering will not work without tag group files!")
             return
 
-        for json_file in self.tag_group_dir.glob("*.json"):
+        json_files = list(self.tag_group_dir.glob("*.json"))
+        print(f"[TagGroupManager] Found {len(json_files)} JSON files")
+
+        for json_file in json_files:
             group_name = json_file.stem
+            print(f"[TagGroupManager] Loading group '{group_name}' from {json_file.name}")
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -160,7 +201,9 @@ class TagGroupManager:
             except Exception as e:
                 print(f"[TagGroupManager] Failed to load {json_file}: {e}")
 
-        print(f"[TagGroupManager] Loaded {len(self.tag_groups)} tag groups")
+        print(f"[TagGroupManager] Total loaded: {len(self.tag_groups)} tag groups, {len(self._tag_to_group_cache)} tags in cache")
+        if len(self.tag_groups) == 0:
+            print(f"[TagGroupManager] WARNING: No tag groups loaded! Category ordering will not work!")
 
     def _normalize_tag(self, tag: str) -> str:
         """
@@ -307,7 +350,7 @@ class TagGroupManager:
 _tag_group_manager_cache: Dict[str, TagGroupManager] = {}
 
 
-def get_tag_group_manager(tag_group_dir: str = "taggroup") -> TagGroupManager:
+def get_tag_group_manager(tag_group_dir: str = "taglist") -> TagGroupManager:
     """
     Get or create tag group manager (cached).
 

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
-from core.caption_processor import process_caption, get_default_caption_processing_config
+from core.training.caption_processor import process_caption, get_default_caption_processing_config
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -48,6 +48,13 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
     # Get caption processing config (or defaults)
     caption_config = dataset.caption_processing or get_default_caption_processing_config()
 
+    # Debug: Log caption config for first item only
+    if epoch_num == 0:
+        print(f"[TrainRunner] Caption config for dataset {dataset_id}:")
+        print(f"  category_order: {caption_config.get('category_order', None)}")
+        print(f"  normalize_tags: {caption_config.get('normalize_tags', True)}")
+        print(f"  shuffle_tokens: {caption_config.get('shuffle_tokens', False)}")
+
     items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
 
     dataset_items = []
@@ -75,7 +82,7 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
             shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
             shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
             shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
-            tag_group_dir=caption_config.get("tag_group_dir", "taggroup"),
+            tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
             exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
             tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
             tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
@@ -170,7 +177,7 @@ def main():
 
         if network_type == 'lora':
             print("[TrainRunner] Training method: LoRA")
-            from core.lora_trainer import LoRATrainer
+            from core.training.lora_trainer import LoRATrainer
 
             # Get dtype settings from config
             weight_dtype = train_config.get('weight_dtype', 'fp16')
@@ -292,6 +299,135 @@ def main():
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
                 dataset_id=dataset.id,  # Use dataset.id from line 104
+                # Checkpoint management
+                max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
+            )
+
+            print("[TrainRunner] Training completed successfully!")
+
+            # Update run status
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            training_db.commit()
+
+        elif network_type == 'full_finetune':
+            print("[TrainRunner] Training method: Full Parameter Fine-Tuning")
+            from core.training.full_parameter_trainer import FullParameterTrainer
+
+            # Get dtype settings from config
+            weight_dtype = train_config.get('weight_dtype', 'fp16')
+            training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
+            output_dtype = train_config.get('output_dtype', 'fp32')
+            vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
+            mixed_precision = train_config.get('mixed_precision', True)
+            debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
+            use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
+            min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
+
+            # Initialize trainer
+            trainer = FullParameterTrainer(
+                model_path=run.base_model_path,
+                output_dir=run.output_dir,
+                learning_rate=train_config.get('lr', 1e-4),
+                weight_dtype=weight_dtype,
+                training_dtype=training_dtype,
+                output_dtype=output_dtype,
+                vae_dtype=vae_dtype,
+                mixed_precision=mixed_precision,
+                debug_vram=debug_vram,
+                use_flash_attention=use_flash_attention,
+                min_snr_gamma=min_snr_gamma,
+            )
+
+            # Setup optimizer
+            optimizer_type = train_config.get('optimizer', 'adamw8bit')
+            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
+            trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
+
+            # Determine epochs or steps
+            num_epochs = train_config.get('epochs', None)
+            total_steps_config = train_config.get('steps', None)
+
+            if num_epochs:
+                print(f"[TrainRunner] Training for {num_epochs} epochs")
+            elif total_steps_config:
+                num_epochs = None  # Will be calculated by trainer
+                print(f"[TrainRunner] Training for {total_steps_config} steps (epochs will be calculated by trainer)")
+            else:
+                num_epochs = 1
+
+            # Progress callback
+            def progress_callback(step: int, loss: float, lr: float):
+                update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
+
+            # Total steps callback
+            def update_total_steps_callback(total_steps: int):
+                print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
+                run.total_steps = total_steps
+                training_db.commit()
+
+            # Update status to running
+            run.status = "running"
+            training_db.commit()
+            print("[TrainRunner] Status updated to 'running'")
+
+            # Prepare sample configuration
+            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
+            sample_config = {
+                'width': process_config['sample'].get('width', 1024),
+                'height': process_config['sample'].get('height', 1024),
+                'steps': process_config['sample'].get('sample_steps', 20),
+                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
+                'sampler': process_config['sample'].get('sampler', 'euler'),
+                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
+                'seed': process_config['sample'].get('seed', -1),
+            }
+
+            # Get debug parameters from config
+            debug_latents = train_config.get('debug_latents', False)
+            debug_latents_every = train_config.get('debug_latents_every', 50)
+
+            # Get bucketing parameters from config
+            enable_bucketing = train_config.get('enable_bucketing', False)
+            base_resolutions = train_config.get('base_resolutions', [1024])
+            bucket_strategy = train_config.get('bucket_strategy', 'resize')
+            multi_resolution_mode = train_config.get('multi_resolution_mode', 'max')
+
+            # Get latent caching parameters
+            cache_latents_to_disk = True  # Default
+            if 'datasets' in process_config and len(process_config['datasets']) > 0:
+                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+
+            # Create reload_dataset_callback for per-epoch caption processing
+            def reload_dataset_for_epoch(epoch_num: int) -> list:
+                """Reload dataset with caption processing for the current epoch"""
+                return get_dataset_items(datasets_db, dataset.id, epoch_num=epoch_num)
+
+            # Start training
+            trainer.train(
+                dataset_items=dataset_items,
+                num_epochs=num_epochs,
+                target_steps=total_steps_config,
+                batch_size=train_config.get('batch_size', 1),
+                save_every=process_config['save'].get('save_every', 100),
+                save_every_unit=process_config['save'].get('save_every_unit', 'steps'),
+                sample_every=process_config['sample'].get('sample_every', 100),
+                sample_prompts=sample_prompts if sample_prompts else None,
+                sample_config=sample_config if sample_prompts else None,
+                progress_callback=progress_callback,
+                update_total_steps_callback=update_total_steps_callback,
+                reload_dataset_callback=reload_dataset_for_epoch,
+                resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
+                # Bucketing parameters
+                enable_bucketing=enable_bucketing,
+                base_resolutions=base_resolutions,
+                bucket_strategy=bucket_strategy,
+                multi_resolution_mode=multi_resolution_mode,
+                # Latent caching
+                cache_latents_to_disk=cache_latents_to_disk,
+                dataset_id=dataset.id,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
             )

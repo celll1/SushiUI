@@ -60,8 +60,8 @@ class TrainingProcess:
 
         # Construct SushiUI training command
         # Run as script directly instead of module
-        backend_dir = Path(__file__).parent.parent
-        train_runner_path = backend_dir / "core" / "train_runner.py"
+        backend_dir = Path(__file__).parent.parent.parent
+        train_runner_path = backend_dir / "core" / "training" / "train_runner.py"
 
         cmd = [
             self.venv_python,

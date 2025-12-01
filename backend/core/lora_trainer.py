@@ -966,11 +966,17 @@ class LoRATrainer:
         # Use reduction="none" to apply SNR weighting per-sample
         loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
 
-        # Apply Min-SNR gamma weighting if enabled
+        # Take mean across spatial and channel dimensions first (keep batch dimension)
+        # Shape: [B, C, H, W] -> [B]
+        # This matches sd-scripts standard implementation
+        loss = loss.mean([1, 2, 3])
+
+        # Apply Min-SNR gamma weighting if enabled (per-sample in batch)
         if self.min_snr_gamma > 0:
             loss = apply_snr_weight(loss, timesteps, self.noise_scheduler, self.min_snr_gamma)
 
-        # Take mean across all dimensions
+        # Take mean across batch dimension
+        # Shape: [B] -> scalar
         loss = loss.mean()
 
         if profile_vram:

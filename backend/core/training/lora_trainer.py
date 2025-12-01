@@ -1890,19 +1890,15 @@ class LoRATrainer:
                 if epoch == start_epoch:
                     start_batch_idx = global_step % len(batches)
 
-                # Print epoch header before creating progress bar
+                # Print epoch header
                 print(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
+                total_batches = len(batches)
+                print(f"[LoRATrainer] Total batches: {total_batches}")
 
-                # Create progress bar with custom format
-                # Use sys.stderr for better subprocess compatibility, mininterval to reduce output spam
-                # Disable dynamic_ncols to prevent long lines that exceed asyncio buffer
-                import sys
-                pbar = tqdm(batches[start_batch_idx:], desc=f"Epoch {epoch + 1}", ncols=80, leave=True,
-                           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                           initial=start_batch_idx, total=len(batches),
-                           file=sys.stderr, mininterval=1.0, dynamic_ncols=False)
+                # Calculate progress log interval (10% of total batches, minimum 1)
+                progress_interval = max(1, total_batches // 10)
 
-                for batch_idx, batch in enumerate(pbar):
+                for batch_idx, batch in enumerate(batches[start_batch_idx:], start=start_batch_idx):
                     try:
                         # VRAM profiling for first batch only (to avoid spam)
                         profile_vram = self.debug_vram and (global_step == 0)
@@ -1929,7 +1925,7 @@ class LoRATrainer:
                         for item in batch:
                             image_path = item["image_path"]
                             if not os.path.exists(image_path):
-                                pbar.write(f"[LoRATrainer] WARNING: Image not found: {image_path}")
+                                print(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                                 continue
 
                             # Try to load from cache first
@@ -1947,7 +1943,7 @@ class LoRATrainer:
                                     image.verify()  # Verify image integrity
                                     image = Image.open(image_path)  # Reopen after verify
                                 except Exception as img_err:
-                                    pbar.write(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                                    print(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
                                     continue
 
                                 # Encode image
@@ -2016,15 +2012,8 @@ class LoRATrainer:
 
                         global_step += 1
 
-                        # Update progress bar with loss and learning rate
-                        current_lr = self.lr_scheduler.get_last_lr()[0]
-                        pbar.set_postfix({
-                            'loss': f'{loss:.4f}',
-                            'lr': f'{current_lr:.2e}',
-                            'step': global_step
-                        })
-
                         # Log to tensorboard
+                        current_lr = self.lr_scheduler.get_last_lr()[0]
                         self.writer.add_scalar('train/loss', loss, global_step)
                         self.writer.add_scalar('train/learning_rate', current_lr, global_step)
                         self.writer.add_scalar('train/epoch', epoch + 1, global_step)
@@ -2033,25 +2022,29 @@ class LoRATrainer:
                         if progress_callback:
                             progress_callback(global_step, loss, current_lr)
 
+                        # Print progress every 10% of epoch
+                        current_batch = batch_idx - start_batch_idx + 1
+                        if current_batch % progress_interval == 0 or current_batch == total_batches:
+                            progress_pct = (current_batch / total_batches) * 100
+                            print(f"[LoRATrainer] Epoch {epoch + 1}/{num_epochs} - Batch {current_batch}/{total_batches} ({progress_pct:.0f}%) - Loss: {loss:.4f}, LR: {current_lr:.2e}, Step: {global_step}")
+
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
-                            pbar.write(f"[LoRATrainer] Checkpoint saved at step {global_step}")
+                            print(f"[LoRATrainer] Checkpoint saved at step {global_step}")
                             self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every)
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
                         if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
-                            pbar.write(f"[LoRATrainer] Generating samples at step {global_step}")
+                            print(f"[LoRATrainer] Generating samples at step {global_step}")
                             vae_on_cpu = latent_cache is not None
                             self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
 
                     except Exception as e:
-                        pbar.write(f"[LoRATrainer] ERROR processing batch: {e}")
+                        print(f"[LoRATrainer] ERROR processing batch: {e}")
                         import traceback
                         traceback.print_exc()
                         continue
-
-                pbar.close()
 
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:

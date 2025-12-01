@@ -192,10 +192,12 @@ class TagGroupManager:
                     tags = set(data.keys())
                     self.tag_groups[group_name] = tags
 
-                    # Build cache: tag -> group
+                    # Build cache: tag -> group (skip if already cached to preserve priority)
                     for tag in tags:
                         normalized_tag = self._normalize_tag(tag)
-                        self._tag_to_group_cache[normalized_tag] = group_name
+                        # Only add if not already in cache (Rating/Quality have priority)
+                        if normalized_tag not in self._tag_to_group_cache:
+                            self._tag_to_group_cache[normalized_tag] = group_name
 
                 print(f"[TagGroupManager] Loaded {len(tags)} tags for group '{group_name}'")
             except Exception as e:

@@ -423,6 +423,7 @@ class LoRATrainer:
         # Detect model type (SD1.5 vs SDXL)
         self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
         print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
+        print(f"[LoRATrainer] Prediction type: {self.noise_scheduler.config.prediction_type}")
 
         # Enable Flash Attention BEFORE gradient checkpointing
         # Gradient checkpointing must be enabled after setting attention processors

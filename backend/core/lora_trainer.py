@@ -872,6 +872,29 @@ class LoRATrainer:
 
         return step
 
+    def _convert_to_sd_format(self, module_name: str) -> str:
+        """
+        Convert diffusers module name to SD/ComfyUI format.
+
+        Diffusers format: down_blocks.0.attentions.0.to_q
+        SD format:        input_blocks_0_1_to_q
+
+        Args:
+            module_name: Diffusers-style module name (e.g., "down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q")
+
+        Returns:
+            SD-style module name (e.g., "input_blocks_0_1_transformer_blocks_0_attn1_to_q")
+        """
+        # Replace dots with underscores
+        converted = module_name.replace('.', '_')
+
+        # Convert block names
+        converted = converted.replace('down_blocks', 'input_blocks')
+        converted = converted.replace('mid_block', 'middle_block')
+        converted = converted.replace('up_blocks', 'output_blocks')
+
+        return converted
+
     def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True):
         """
         Save LoRA checkpoint as safetensors and optimizer state as .pt.
@@ -892,11 +915,16 @@ class LoRATrainer:
         # Collect all LoRA weights and convert to output_dtype
         state_dict = {}
         for name, lora in self.lora_layers.items():
-            # Save with proper naming convention
-            key_prefix = f"lora_unet_{name.replace('.', '_')}"
+            # Convert diffusers format (down_blocks/mid_block/up_blocks) to SD format (input_blocks/middle_block/output_blocks)
+            converted_name = self._convert_to_sd_format(name)
+            key_prefix = f"lora_unet_{converted_name}"
+
             # Convert to output_dtype for saving (e.g., fp16 to reduce file size)
             state_dict[f"{key_prefix}.lora_down.weight"] = lora.lora_down.weight.detach().cpu().to(dtype=self.output_dtype)
             state_dict[f"{key_prefix}.lora_up.weight"] = lora.lora_up.weight.detach().cpu().to(dtype=self.output_dtype)
+
+            # Add alpha value (LoRA scaling parameter)
+            state_dict[f"{key_prefix}.alpha"] = torch.tensor(self.lora_alpha, dtype=self.output_dtype)
 
         # Add metadata
         metadata = {

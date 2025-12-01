@@ -376,44 +376,37 @@ class LoRAManager:
                 keys = f.keys()
 
                 for key in keys:
-                    # Check for lora_unet_ prefix (some LoRAs use this)
-                    if 'lora_unet_' in key:
-                        # Extract block info from keys like:
-                        # lora_unet_input_blocks_0_...
-                        # lora_unet_middle_block_...
-                        # lora_unet_output_blocks_0_...
+                    # Check for input_blocks / middle_block / output_blocks (SD1.5 format)
+                    if 'input_blocks' in key:
+                        match = re.search(r'input_blocks[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"IN{block_num:02d}")
 
-                        if 'input_blocks' in key:
-                            match = re.search(r'input_blocks[_.](\d+)', key)
-                            if match:
-                                block_num = int(match.group(1))
-                                blocks.add(f"IN{block_num:02d}")
+                    elif 'middle_block' in key:
+                        blocks.add("MID")
 
-                        elif 'middle_block' in key:
-                            blocks.add("MID")
+                    elif 'output_blocks' in key:
+                        match = re.search(r'output_blocks[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"OUT{block_num:02d}")
 
-                        elif 'output_blocks' in key:
-                            match = re.search(r'output_blocks[_.](\d+)', key)
-                            if match:
-                                block_num = int(match.group(1))
-                                blocks.add(f"OUT{block_num:02d}")
+                    # Check for down_blocks / mid_block / up_blocks (SDXL/diffusers format)
+                    elif 'down_blocks' in key:
+                        match = re.search(r'down_blocks[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"IN{block_num:02d}")
 
-                    # Also check for diffusers format (down_blocks, mid_block, up_blocks)
-                    elif 'down_blocks' in key or 'up_blocks' in key or 'mid_block' in key:
-                        if 'down_blocks' in key:
-                            match = re.search(r'down_blocks[_.](\d+)', key)
-                            if match:
-                                block_num = int(match.group(1))
-                                blocks.add(f"IN{block_num:02d}")
+                    elif 'mid_block' in key:
+                        blocks.add("MID")
 
-                        elif 'mid_block' in key:
-                            blocks.add("MID")
-
-                        elif 'up_blocks' in key:
-                            match = re.search(r'up_blocks[_.](\d+)', key)
-                            if match:
-                                block_num = int(match.group(1))
-                                blocks.add(f"OUT{block_num:02d}")
+                    elif 'up_blocks' in key:
+                        match = re.search(r'up_blocks[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"OUT{block_num:02d}")
 
                 # If no blocks found, add BASE
                 if not blocks:

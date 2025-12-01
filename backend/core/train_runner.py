@@ -179,6 +179,12 @@ def main():
             def progress_callback(step: int, loss: float, lr: float):
                 update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
 
+            # Total steps callback (called once when actual total_steps is determined)
+            def update_total_steps_callback(total_steps: int):
+                print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
+                run.total_steps = total_steps
+                training_db.commit()
+
             # Update status to running
             run.status = "running"
             training_db.commit()
@@ -225,6 +231,7 @@ def main():
                 sample_prompts=sample_prompts if sample_prompts else None,
                 sample_config=sample_config if sample_prompts else None,
                 progress_callback=progress_callback,
+                update_total_steps_callback=update_total_steps_callback,
                 resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,

@@ -441,7 +441,7 @@ class LoRATrainer:
                 new_processors = {name: processor for name in self.unet.attn_processors.keys()}
                 self.unet.set_attn_processor(new_processors)
                 num_processors = len(new_processors)
-                print(f"[LoRATrainer] ✓ Flash Attention enabled for {num_processors} attention layers")
+                print(f"[LoRATrainer] [OK] Flash Attention enabled for {num_processors} attention layers")
             except ImportError:
                 print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
             except Exception as e:

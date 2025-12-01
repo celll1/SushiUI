@@ -485,12 +485,8 @@ class LoRATrainer:
         """Apply LoRA layers to U-Net and Text Encoder modules."""
         print(f"[LoRATrainer] Applying LoRA (rank={self.lora_rank}, alpha={self.lora_alpha})")
 
-        # Apply LoRA to U-Net
-        unet_lora_count = self._apply_lora_to_module(
-            self.unet,
-            prefix="unet",
-            target_modules=["to_q", "to_k", "to_v", "to_out.0"]
-        )
+        # Apply LoRA to U-Net (Transformer2DModel approach, compatible with sd-scripts)
+        unet_lora_count = self._apply_lora_to_unet_transformers()
         print(f"[LoRATrainer] Injected {unet_lora_count} LoRA layers into U-Net")
 
         # Apply LoRA to Text Encoder 1
@@ -509,6 +505,110 @@ class LoRATrainer:
                 target_modules=["mlp.fc1", "mlp.fc2"]
             )
             print(f"[LoRATrainer] Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+
+    def _convert_diffusers_to_sd_key(self, diffusers_name: str) -> str:
+        """
+        Convert diffusers-format U-Net module name to SD format.
+
+        Based on sd-scripts conversion mapping for SDXL:
+        - down_blocks.i.attentions.j → input_blocks.{3*i + j + 1}.1
+        - mid_block.attentions.0 → middle_block.1
+        - up_blocks.i.attentions.j → output_blocks.{3*i + j}.1
+
+        Args:
+            diffusers_name: Full diffusers module name (e.g., "down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_q")
+
+        Returns:
+            SD format name (e.g., "input_blocks_4_1_transformer_blocks_0_attn1_to_q")
+        """
+        import re
+
+        # Handle down_blocks
+        match = re.match(r'down_blocks\.(\d+)\.attentions\.(\d+)\.(.+)', diffusers_name)
+        if match:
+            i, j, rest = match.groups()
+            block_idx = 3 * int(i) + int(j) + 1
+            sd_name = f"input_blocks_{block_idx}_1_{rest}"
+            return sd_name.replace(".", "_")
+
+        # Handle mid_block
+        match = re.match(r'mid_block\.attentions\.0\.(.+)', diffusers_name)
+        if match:
+            rest = match.group(1)
+            sd_name = f"middle_block_1_{rest}"
+            return sd_name.replace(".", "_")
+
+        # Handle up_blocks
+        match = re.match(r'up_blocks\.(\d+)\.attentions\.(\d+)\.(.+)', diffusers_name)
+        if match:
+            i, j, rest = match.groups()
+            block_idx = 3 * int(i) + int(j)
+            sd_name = f"output_blocks_{block_idx}_1_{rest}"
+            return sd_name.replace(".", "_")
+
+        # Fallback: just replace dots with underscores
+        return diffusers_name.replace(".", "_")
+
+    def _apply_lora_to_unet_transformers(self) -> int:
+        """
+        Apply LoRA to all Transformer2DModel modules in U-Net.
+        This follows the sd-scripts approach of targeting entire transformer blocks.
+
+        For SDXL, this targets 11 transformer blocks:
+        - down_blocks.1.attentions.0 → input_blocks.4.1 (IN04)
+        - down_blocks.1.attentions.1 → input_blocks.5.1 (IN05)
+        - down_blocks.2.attentions.0 → input_blocks.7.1 (IN07)
+        - down_blocks.2.attentions.1 → input_blocks.8.1 (IN08)
+        - mid_block.attentions.0 → middle_block.1 (MID)
+        - up_blocks.0.attentions.0-2 → output_blocks.0-2.1 (OUT00-OUT02)
+        - up_blocks.1.attentions.0-2 → output_blocks.3-5.1 (OUT03-OUT05)
+
+        Returns:
+            Number of LoRA layers injected
+        """
+        lora_count = 0
+
+        # Find all Transformer2DModel modules
+        transformer_modules = []
+        for name, module in self.unet.named_modules():
+            if module.__class__.__name__ == "Transformer2DModel":
+                transformer_modules.append((name, module))
+
+        print(f"[LoRATrainer] Found {len(transformer_modules)} Transformer2DModel modules in U-Net")
+
+        # For each transformer, apply LoRA to all Linear layers inside
+        for transformer_name, transformer_module in transformer_modules:
+            for child_name, child_module in transformer_module.named_modules():
+                if isinstance(child_module, torch.nn.Linear):
+                    # Build full diffusers name
+                    if child_name:
+                        full_diffusers_name = f"{transformer_name}.{child_name}"
+                    else:
+                        full_diffusers_name = transformer_name
+
+                    # Convert to SD format for storage key
+                    sd_key = self._convert_diffusers_to_sd_key(full_diffusers_name)
+                    storage_key = f"unet.{sd_key}"
+
+                    # Navigate to parent and replace with LoRA
+                    name_parts = full_diffusers_name.split(".")
+                    parent = self.unet
+                    for part in name_parts[:-1]:
+                        parent = getattr(parent, part)
+
+                    child_attr_name = name_parts[-1]
+
+                    # Create LoRA layer
+                    lora_module = inject_lora_into_linear(child_module, self.lora_rank, self.lora_alpha)
+
+                    # Replace in parent
+                    setattr(parent, child_attr_name, lora_module)
+
+                    # Store reference with SD format key
+                    self.lora_layers[storage_key] = lora_module
+                    lora_count += 1
+
+        return lora_count
 
     def _apply_lora_to_module(self, module: torch.nn.Module, prefix: str, target_modules: list) -> int:
         """
@@ -1416,6 +1516,7 @@ class LoRATrainer:
         sample_prompts: List[str] = None,
         sample_config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
+        update_total_steps_callback: Optional[Callable[[int], None]] = None,  # Called once when total_steps is determined
         resume_from_checkpoint: Optional[str] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
@@ -1527,12 +1628,18 @@ class LoRATrainer:
 
         if target_steps is not None:
             # Calculate epochs needed to reach target steps
-            num_epochs = max(1, int(target_steps / steps_per_epoch))
-            # Round up if we're close to the next epoch
-            if (target_steps % steps_per_epoch) > (steps_per_epoch * 0.5):
-                num_epochs += 1
-            total_steps = steps_per_epoch * num_epochs
-            print(f"[LoRATrainer] Target steps: {target_steps}, Calculated epochs: {num_epochs} (actual steps: {total_steps})")
+            # Always train in full epoch units (never stop mid-epoch)
+            # If target_steps < steps_per_epoch, train for 1 full epoch
+            # Otherwise, train for the number of epochs that fit within target_steps
+            if target_steps < steps_per_epoch:
+                num_epochs = 1
+                total_steps = steps_per_epoch
+                print(f"[LoRATrainer] Target steps: {target_steps}, but will complete 1 full epoch ({steps_per_epoch} steps)")
+            else:
+                # Calculate how many full epochs fit within target_steps
+                num_epochs = target_steps // steps_per_epoch
+                total_steps = steps_per_epoch * num_epochs
+                print(f"[LoRATrainer] Target steps: {target_steps}, will train for {num_epochs} full epochs ({total_steps} steps)")
         elif num_epochs is None:
             # Fallback: default to 1 epoch
             num_epochs = 1
@@ -1546,6 +1653,10 @@ class LoRATrainer:
         print(f"  Steps per epoch: {steps_per_epoch}")
         print(f"  Total epochs: {num_epochs}")
         print(f"  Total steps: {total_steps}")
+
+        # Notify total_steps to caller (for DB update)
+        if update_total_steps_callback:
+            update_total_steps_callback(total_steps)
 
         # Generate latent cache if enabled
         latent_cache = None

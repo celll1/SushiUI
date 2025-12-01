@@ -1194,19 +1194,19 @@ class LoRATrainer:
                 prefix = "unet"
                 module_name = name
 
-            # Generate key prefix based on module type
-            # Use diffusers format (compatible with diffusers library's load_lora_weights)
-            converted_name = module_name.replace(".", "_")
+            # Generate key in diffusers format (compatible with diffusers library's load_lora_weights)
+            # diffusers expects keys like: "unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_k"
+            # NOT SD format like: "lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_k"
 
             if prefix == "unet":
-                key_prefix = f"lora_unet_{converted_name}"
+                key_prefix = f"unet.{module_name}"
             elif prefix == "te1":
-                key_prefix = f"lora_te1_{converted_name}"
+                key_prefix = f"text_encoder.{module_name}"
             elif prefix == "te2":
-                key_prefix = f"lora_te2_{converted_name}"
+                key_prefix = f"text_encoder_2.{module_name}"
             else:
                 # Unknown prefix, use as-is
-                key_prefix = f"lora_{prefix}_{converted_name}"
+                key_prefix = f"{prefix}.{module_name}"
 
             # Convert to output_dtype for saving (e.g., fp16 to reduce file size)
             state_dict[f"{key_prefix}.lora_down.weight"] = lora.lora_down.weight.detach().cpu().to(dtype=self.output_dtype)
@@ -1215,14 +1215,14 @@ class LoRATrainer:
             # Add alpha value (LoRA scaling parameter)
             state_dict[f"{key_prefix}.alpha"] = torch.tensor(self.lora_alpha, dtype=self.output_dtype)
 
-        # Add metadata
+        # Add metadata (diffusers-compatible format)
         metadata = {
-            "ss_network_module": "networks.lora",
-            "ss_network_dim": str(self.lora_rank),
-            "ss_network_alpha": str(self.lora_alpha),
-            "ss_base_model": self.model_path,
-            "ss_training_step": str(step),
-            "ss_output_dtype": str(self.output_dtype),  # Record output dtype in metadata
+            "format": "diffusers",  # Indicate this is diffusers format, not SD format
+            "lora_rank": str(self.lora_rank),
+            "lora_alpha": str(self.lora_alpha),
+            "base_model": self.model_path,
+            "training_step": str(step),
+            "output_dtype": str(self.output_dtype),
         }
 
         # Save as safetensors

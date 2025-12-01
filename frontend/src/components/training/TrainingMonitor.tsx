@@ -459,6 +459,22 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                           <div><span className="text-gray-400">Step:</span> {debugVisualization.step}</div>
                           <div><span className="text-gray-400">Timestep:</span> {debugVisualization.timestep}</div>
                           <div><span className="text-gray-400">Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
+                          {debugVisualization.caption && (
+                            <div className="pt-1 border-t border-gray-700">
+                              <div className="text-gray-400 mb-0.5">Caption (processed):</div>
+                              <div
+                                className="text-gray-300 text-xs leading-relaxed max-h-20 overflow-y-auto cursor-help"
+                                title={debugVisualization.caption}
+                              >
+                                {debugVisualization.caption.length > 150
+                                  ? `${debugVisualization.caption.substring(0, 150)}...`
+                                  : debugVisualization.caption}
+                              </div>
+                              <div className="text-gray-500 text-xxs mt-0.5">
+                                (Hover to see full caption)
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Image Comparison with Slider */}

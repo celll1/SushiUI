@@ -295,7 +295,7 @@ class CaptionProcessingPreset(DatasetBase):
     #   "shuffle_keep_first_n": 0,
     #   "shuffle_tag_groups": [],
     #   "shuffle_groups_together": false,
-    #   "tag_group_dir": "taggroup",
+    #   "tag_group_dir": "taglist",
     #   "exclude_person_count_from_shuffle": false,
     #   "tag_dropout_rate": 0.0,
     #   "tag_dropout_per_epoch": false,

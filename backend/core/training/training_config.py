@@ -4,7 +4,7 @@ Training configuration generator for ai-toolkit.
 Generates YAML configuration files based on training parameters.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 import yaml
 
@@ -213,8 +213,36 @@ class TrainingConfigGenerator:
         lr_scheduler: str = "constant",
         optimizer: str = "adamw8bit",
         save_every: int = 100,
+        save_every_unit: str = "steps",
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
+        debug_latents: bool = False,
+        debug_latents_every: int = 50,
+        enable_bucketing: bool = False,
+        base_resolutions: Optional[List[int]] = None,
+        bucket_strategy: str = "resize",
+        multi_resolution_mode: str = "max",
+        train_unet: bool = True,
+        train_text_encoder: bool = True,
+        unet_lr: Optional[float] = None,
+        text_encoder_lr: Optional[float] = None,
+        text_encoder_1_lr: Optional[float] = None,
+        text_encoder_2_lr: Optional[float] = None,
+        cache_latents_to_disk: bool = False,
+        weight_dtype: str = "fp16",
+        training_dtype: str = "fp16",
+        output_dtype: str = "fp32",
+        vae_dtype: str = "fp16",
+        mixed_precision: bool = True,
+        use_flash_attention: bool = False,
+        min_snr_gamma: float = 5.0,
+        sample_width: int = 1024,
+        sample_height: int = 1024,
+        sample_steps: int = 28,
+        sample_cfg_scale: float = 7.0,
+        sample_sampler: str = "euler",
+        sample_seed: int = -1,
+        caption_processing: Optional[dict] = None,
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -242,6 +270,57 @@ class TrainingConfigGenerator:
             raise ValueError("Either total_steps or epochs must be provided")
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
+
+        # Build train config
+        train_config = {
+            "batch_size": batch_size,
+            **({"steps": total_steps} if total_steps else {"epochs": epochs}),
+            "gradient_accumulation_steps": 1,
+            "train_unet": train_unet,
+            "train_text_encoder": train_text_encoder,
+            "gradient_checkpointing": True,
+            "noise_scheduler": "ddpm",
+            "optimizer": optimizer,
+            "lr": learning_rate,
+            "lr_scheduler": lr_scheduler,
+            "weight_dtype": weight_dtype,
+            "dtype": training_dtype,  # Training/activation dtype
+            "output_dtype": output_dtype,
+            "mixed_precision": mixed_precision,
+            "use_flash_attention": use_flash_attention,
+            "min_snr_gamma": min_snr_gamma,
+            "debug_latents": debug_latents,
+            "debug_latents_every": debug_latents_every,
+        }
+
+        # Add component-specific learning rates if specified
+        if unet_lr is not None:
+            train_config["unet_lr"] = unet_lr
+        if text_encoder_lr is not None:
+            train_config["text_encoder_lr"] = text_encoder_lr
+        if text_encoder_1_lr is not None:
+            train_config["text_encoder_1_lr"] = text_encoder_1_lr
+        if text_encoder_2_lr is not None:
+            train_config["text_encoder_2_lr"] = text_encoder_2_lr
+
+        # Add bucketing parameters
+        if enable_bucketing:
+            train_config["enable_bucketing"] = True
+            train_config["base_resolutions"] = base_resolutions or [1024]
+            train_config["bucket_strategy"] = bucket_strategy
+            train_config["multi_resolution_mode"] = multi_resolution_mode
+
+        # Build dataset config
+        dataset_config = {
+            "folder_path": dataset_path,
+            "caption_ext": "txt",
+            "cache_latents_to_disk": cache_latents_to_disk,
+        }
+
+        # Add caption processing config if provided
+        if caption_processing:
+            dataset_config["caption_processing"] = caption_processing
+
         config = {
             "job": run_name,
             "config": {
@@ -253,42 +332,21 @@ class TrainingConfigGenerator:
                         "device": "cuda:0",
                         "trigger_word": "",
                         "network": {
-                            "type": "full",  # Full fine-tuning
+                            "type": "full_finetune",
                         },
                         "save": {
-                            "dtype": "float16",
+                            "dtype": output_dtype,
                             "save_every": save_every,
-                            "max_step_saves_to_keep": 5,  # Fewer saves for full models
+                            "save_every_unit": save_every_unit,
+                            "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
                         },
-                        "datasets": [
-                            {
-                                "folder_path": dataset_path,
-                                "caption_ext": "txt",
-                                "caption_dropout_rate": 0.05,
-                                "shuffle_tokens": False,
-                                "cache_latents_to_disk": cache_latents_to_disk,
-                                "resolution": [512, 768, 1024],
-                            }
-                        ],
-                        "train": {
-                            "batch_size": batch_size,
-                            **({"steps": total_steps} if total_steps else {"epochs": epochs}),
-                            "gradient_accumulation_steps": 1,
-                            "train_unet": True,
-                            "train_text_encoder": True,  # Train text encoder for full fine-tune
-                            "gradient_checkpointing": True,
-                            "noise_scheduler": "ddpm",  # ddpm for epsilon prediction (SDXL standard)
-                            "optimizer": optimizer,
-                            "lr": learning_rate,
-                            "lr_scheduler": lr_scheduler,
-                            "ema_config": {"use_ema": True, "ema_decay": 0.99},
-                            "dtype": "bf16",
-                        },
+                        "datasets": [dataset_config],
+                        "train": train_config,
                         "model": {
                             "name_or_path": base_model_path,
                             "is_flux": False,
                             "quantize": False,
-                            "vae_dtype": vae_dtype,  # VAE-specific dtype
+                            "vae_dtype": vae_dtype,
                         },
                         "sample": {
                             "sampler": sample_sampler,
@@ -301,6 +359,7 @@ class TrainingConfigGenerator:
                             "walk_seed": True,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
+                            "schedule_type": "sgm_uniform",
                         },
                     }
                 ],

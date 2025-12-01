@@ -13,6 +13,9 @@ import hashlib
 from typing import List, Dict, Optional
 from pathlib import Path
 
+# Debug flag: log reordered tokens only once
+_logged_reordered_tokens = False
+
 
 def process_caption(
     caption: str,
@@ -33,7 +36,7 @@ def process_caption(
     shuffle_keep_first_n: int = 0,
     shuffle_tag_groups: Optional[List[str]] = None,  # Tag groups to shuffle (e.g., ["Character", "General"])
     shuffle_groups_together: bool = False,  # Shuffle all groups together vs within each group
-    tag_group_dir: str = "taggroup",  # Directory containing tag group JSON files
+    tag_group_dir: str = "taglist",  # Directory containing tag group JSON files
     exclude_person_count_from_shuffle: bool = False,  # Exclude person count tags from General shuffle
     # Tag dropout
     tag_dropout_rate: float = 0.0,
@@ -87,7 +90,7 @@ def process_caption(
     # Step 1: Category ordering (reorder tags by category)
     # This is done FIRST, before any dropout or shuffle
     if category_order and len(category_order) > 0:
-        from core.tag_group_utils import get_tag_group_manager
+        from core.training.tag_group_utils import get_tag_group_manager
         tag_manager = get_tag_group_manager(tag_group_dir)
 
         # Group tokens by category
@@ -103,6 +106,15 @@ def process_caption(
             else:
                 unknown_tags.append(token)
 
+        # Debug: Log categorization results (once)
+        global _logged_reordered_tokens
+        if not _logged_reordered_tokens:
+            print(f"[CaptionProcessor] Categorized groups found: {list(categorized.keys())}")
+            print(f"[CaptionProcessor] Category order specified: {category_order}")
+            for cat in category_order:
+                if cat in categorized:
+                    print(f"  {cat}: {categorized[cat][:3]}")
+
         # Rebuild token_list in category order
         reordered_tokens = []
         for category in category_order:
@@ -111,6 +123,11 @@ def process_caption(
 
         # Add unknown tags at the end
         reordered_tokens.extend(unknown_tags)
+
+        # Debug: Log reordered tokens only once
+        if not _logged_reordered_tokens:
+            print(f"[CaptionProcessor] Example reordered tokens: {reordered_tokens[:10]}")
+            _logged_reordered_tokens = True
 
         token_list = reordered_tokens
 
@@ -140,7 +157,7 @@ def process_caption(
         # Initialize tag manager if category-specific rates are provided
         tag_manager = None
         if tag_dropout_category_rates:
-            from core.tag_group_utils import get_tag_group_manager
+            from core.training.tag_group_utils import get_tag_group_manager
             tag_manager = get_tag_group_manager(tag_group_dir)
 
         new_token_list = []
@@ -187,7 +204,7 @@ def process_caption(
     if shuffle_tokens and len(token_list) > 1:
         # Tag group-based shuffle
         if shuffle_tag_groups:
-            from core.tag_group_utils import get_tag_group_manager
+            from core.training.tag_group_utils import get_tag_group_manager
 
             tag_manager = get_tag_group_manager(tag_group_dir)
 
@@ -229,7 +246,7 @@ def process_caption(
 
     # Step 6: Tag normalization (normalize tags to standard format)
     if normalize_tags:
-        from core.tag_group_utils import normalize_tag_for_output
+        from core.training.tag_group_utils import normalize_tag_for_output
         token_list = [normalize_tag_for_output(token) for token in token_list]
 
     # 再結合

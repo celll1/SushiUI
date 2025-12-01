@@ -982,20 +982,22 @@ class LoRATrainer:
 
         # Calculate loss (always in fp32 for numerical stability)
         # Use reduction="none" to apply SNR weighting per-sample
-        loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
 
         # Take mean across spatial and channel dimensions first (keep batch dimension)
         # Shape: [B, C, H, W] -> [B]
         # This matches sd-scripts standard implementation
-        loss = loss.mean([1, 2, 3])
+        loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Apply Min-SNR gamma weighting if enabled (per-sample in batch)
         if self.min_snr_gamma > 0:
-            loss = apply_snr_weight(loss, timesteps, self.noise_scheduler, self.min_snr_gamma)
+            loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
+        else:
+            loss_per_sample_weighted = loss_per_sample
 
         # Take mean across batch dimension
         # Shape: [B] -> scalar
-        loss = loss.mean()
+        loss = loss_per_sample_weighted.mean()
 
         if profile_vram:
             print_vram_usage("[train_step] After loss calculation")
@@ -1022,8 +1024,11 @@ class LoRATrainer:
                 'actual_noise': noise[0:1].detach().cpu(),
                 'predicted_latent': predicted_latent[0:1].detach().cpu(),
                 'timestep': timestep_value,
-                'loss': loss.item(),
+                'loss': loss_per_sample_weighted[0].item(),  # Per-sample loss (weighted) for first sample
+                'loss_batch_mean': loss.item(),  # Batch mean loss (for reference)
+                'loss_unweighted': loss_per_sample[0].item(),  # Raw MSE loss for first sample (no Min-SNR)
                 'batch_size': batch_size,
+                'min_snr_gamma': self.min_snr_gamma,
             }
 
             # Add caption if available (save first caption in batch)
@@ -1606,7 +1611,7 @@ class LoRATrainer:
         # Setup bucketing if enabled
         bucket_manager = None
         if enable_bucketing:
-            from core.bucketing import BucketManager
+            from core.training.bucketing import BucketManager
 
             if base_resolutions is None:
                 base_resolutions = [1024]  # Default to SDXL base
@@ -1696,7 +1701,7 @@ class LoRATrainer:
         # Generate latent cache if enabled
         latent_cache = None
         if cache_latents_to_disk and dataset_id is not None:
-            from core.latent_cache import LatentCache
+            from core.training.latent_cache import LatentCache
 
             latent_cache = LatentCache(dataset_id=dataset_id)
 
@@ -1718,13 +1723,18 @@ class LoRATrainer:
                 cached_count = 0
 
                 # Create progress bar for latent cache generation
+                import sys
                 cache_pbar = tqdm(
                     total=total_images,
                     desc="[LatentCache] Encoding images",
                     unit="img",
                     ncols=100,
-                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                    file=sys.stdout,
+                    dynamic_ncols=False,
+                    mininterval=0.1  # Update every 0.1 seconds
                 )
+                sys.stdout.flush()  # Force flush stdout before starting
 
                 for batch_idx, batch in enumerate(batches):
                     for item in batch:
@@ -1767,8 +1777,10 @@ class LoRATrainer:
                                 cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
 
                         cache_pbar.update(1)
+                        sys.stdout.flush()  # Flush after each update
 
                 cache_pbar.close()
+                sys.stdout.flush()  # Final flush
                 print(f"[LatentCache] Cache generation complete: {cached_count} images cached")
 
                 # Save cache metadata
@@ -1855,12 +1867,11 @@ class LoRATrainer:
 
                     # Rebuild buckets/batches with new captions
                     if enable_bucketing:
-                        bucket_manager = BucketManager(base_resolutions=base_resolutions, bucket_tolerance=64)
+                        bucket_manager = BucketManager(base_resolutions=base_resolutions)
                         for idx, item in enumerate(dataset_items):
                             width = item.get("width", 1024)
                             height = item.get("height", 1024)
-                            bucket_manager.add_image(
-                                image_index=idx,
+                            bucket_manager.assign_image_to_bucket(
                                 image_path=item["image_path"],
                                 width=width,
                                 height=height,

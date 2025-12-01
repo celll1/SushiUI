@@ -23,8 +23,8 @@ from core.controlnet_manager import controlnet_manager
 from core.controlnet_preprocessor import controlnet_preprocessor
 from core.tipo_manager import tipo_manager
 from core.tagger_manager import tagger_manager
-from core.training_config import TrainingConfigGenerator
-from core.training_process import training_process_manager
+from core.training.training_config import TrainingConfigGenerator
+from core.training.training_process import training_process_manager
 from core.tensorboard_manager import tensorboard_manager
 from core.schedulers import (
     get_available_samplers,
@@ -2891,8 +2891,36 @@ async def create_training_run(
                 lr_scheduler=request.lr_scheduler,
                 optimizer=request.optimizer,
                 save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
                 sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_seed=request.sample_seed,
+                caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
             )
 
         # Save config file
@@ -3405,6 +3433,10 @@ async def visualize_debug_latent(
         "timestep": data.get("timestep", 0),
         "loss": data.get("loss", 0.0),
     }
+
+    # Add caption if available
+    if "caption" in data:
+        result["caption"] = data["caption"]
 
     if "latents" in data:
         img = latent_to_image(data["latents"])

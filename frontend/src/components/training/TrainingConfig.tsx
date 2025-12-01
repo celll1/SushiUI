@@ -89,6 +89,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [vaeDtype, setVaeDtype] = useState<string>("fp16");
   const [mixedPrecision, setMixedPrecision] = useState(true);
   const [useFlashAttention, setUseFlashAttention] = useState(false);
+  const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -292,6 +293,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       vae_dtype: vaeDtype,
       mixed_precision: mixedPrecision,
       use_flash_attention: useFlashAttention,
+      min_snr_gamma: minSnrGamma,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -837,10 +839,30 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 Flash Attention (faster training, lower memory)
               </label>
             </div>
+
+            {/* Min-SNR Gamma */}
+            <div className="space-y-1">
+              <label htmlFor="min-snr-gamma" className="block text-xs text-gray-300">
+                Min-SNR Gamma (loss weighting)
+              </label>
+              <input
+                type="number"
+                id="min-snr-gamma"
+                value={minSnrGamma}
+                onChange={(e) => setMinSnrGamma(parseFloat(e.target.value) || 0)}
+                step={0.5}
+                min={0}
+                max={20}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500">
+                Default: 5.0. Set to 0 to disable. Prevents overfitting to high-noise timesteps.
+              </p>
+            </div>
           </div>
 
           <p className="text-xs text-gray-500">
-            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage.
+            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps.
           </p>
         </div>
 

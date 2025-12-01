@@ -424,15 +424,8 @@ class LoRATrainer:
         self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
         print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
 
-        # Enable gradient checkpointing BEFORE freezing weights
-        # This must be done before LoRA application to avoid breaking gradients
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
-        else:
-            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
-
-        # Enable Flash Attention if requested
+        # Enable Flash Attention BEFORE gradient checkpointing
+        # Gradient checkpointing must be enabled after setting attention processors
         if self.use_flash_attention:
             try:
                 from core.attention_processors import FlashAttnProcessor
@@ -446,6 +439,14 @@ class LoRATrainer:
                 print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
             except Exception as e:
                 print(f"[LoRATrainer] WARNING: Failed to enable Flash Attention: {e}")
+
+        # Enable gradient checkpointing AFTER Flash Attention setup
+        # This must be done before LoRA application to avoid breaking gradients
+        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            self.unet.enable_gradient_checkpointing()
+            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+        else:
+            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
 
         # Freeze all base weights
         self.vae.requires_grad_(False)

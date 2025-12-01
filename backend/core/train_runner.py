@@ -137,6 +137,7 @@ def main():
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
+            min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
 
             # Initialize trainer
             trainer = LoRATrainer(
@@ -152,6 +153,7 @@ def main():
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
+                min_snr_gamma=min_snr_gamma,
             )
 
             # Setup optimizer
@@ -234,6 +236,8 @@ def main():
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
                 dataset_id=dataset.id,  # Use dataset.id from line 104
+                # Checkpoint management
+                max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
             )
 
             print("[TrainRunner] Training completed successfully!")

@@ -2729,6 +2729,7 @@ async def create_training_run(
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
                 sample_prompts=request.sample_prompts or [],
                 debug_latents=request.debug_latents,

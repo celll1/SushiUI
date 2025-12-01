@@ -372,27 +372,55 @@ class LoRATrainer:
         self.lr_scheduler = None
 
     def _apply_lora(self):
-        """Apply LoRA layers to UNet attention modules."""
+        """Apply LoRA layers to U-Net and Text Encoder modules."""
         print(f"[LoRATrainer] Applying LoRA (rank={self.lora_rank}, alpha={self.lora_alpha})")
 
-        # Target attention projection layers
-        target_modules = ["to_q", "to_k", "to_v", "to_out.0"]
+        # Apply LoRA to U-Net
+        unet_lora_count = self._apply_lora_to_module(
+            self.unet,
+            prefix="unet",
+            target_modules=["to_q", "to_k", "to_v", "to_out.0"]
+        )
+        print(f"[LoRATrainer] Injected {unet_lora_count} LoRA layers into U-Net")
 
+        # Apply LoRA to Text Encoder 1
+        te1_lora_count = self._apply_lora_to_module(
+            self.text_encoder,
+            prefix="te1",
+            target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
+        )
+        print(f"[LoRATrainer] Injected {te1_lora_count} LoRA layers into Text Encoder 1")
+
+        # Apply LoRA to Text Encoder 2 (SDXL)
+        if self.text_encoder_2 is not None:
+            te2_lora_count = self._apply_lora_to_module(
+                self.text_encoder_2,
+                prefix="te2",
+                target_modules=["mlp.fc1", "mlp.fc2"]
+            )
+            print(f"[LoRATrainer] Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+
+    def _apply_lora_to_module(self, module: torch.nn.Module, prefix: str, target_modules: list) -> int:
+        """
+        Apply LoRA to target layers in a module.
+
+        Args:
+            module: The module to apply LoRA to (unet, text_encoder, etc.)
+            prefix: Prefix for LoRA layer names (e.g., "unet", "te1", "te2")
+            target_modules: List of target module name patterns (e.g., ["to_q", "to_k"])
+
+        Returns:
+            Number of LoRA layers injected
+        """
         lora_count = 0
-
-        # Recursively find and inject LoRA into target modules
-        # We need to replace modules in the parent, so we track parent-child relationships
-        def replace_module(parent_module, child_name, new_module):
-            """Replace a child module in the parent module."""
-            setattr(parent_module, child_name, new_module)
 
         # Collect modules to replace (can't modify dict while iterating)
         modules_to_replace = []
-        for name, module in self.unet.named_modules():
+        for name, submodule in module.named_modules():
             # Check if this is a target module
             if any(target in name for target in target_modules):
-                if isinstance(module, torch.nn.Linear):
-                    modules_to_replace.append((name, module))
+                if isinstance(submodule, torch.nn.Linear):
+                    modules_to_replace.append((name, submodule))
 
         # Replace modules
         for full_name, original_module in modules_to_replace:
@@ -401,7 +429,7 @@ class LoRATrainer:
             name_parts = full_name.split(".")
 
             # Navigate to parent module
-            parent = self.unet
+            parent = module
             for part in name_parts[:-1]:
                 parent = getattr(parent, part)
 
@@ -413,20 +441,12 @@ class LoRATrainer:
             # Replace in parent
             setattr(parent, child_name, lora_module)
 
-            # Store reference
-            self.lora_layers[full_name] = lora_module
+            # Store reference with prefix
+            storage_key = f"{prefix}.{full_name}"
+            self.lora_layers[storage_key] = lora_module
             lora_count += 1
 
-        print(f"[LoRATrainer] Injected {lora_count} LoRA layers into U-Net")
-
-        # Count trainable parameters (LoRA only)
-        trainable_params = 0
-        for lora in self.lora_layers.values():
-            trainable_params += sum(p.numel() for p in lora.lora_down.parameters())
-            trainable_params += sum(p.numel() for p in lora.lora_up.parameters())
-
-        total_params = sum(p.numel() for p in self.unet.parameters())
-        print(f"[LoRATrainer] Trainable LoRA params: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
+        return lora_count
 
     def setup_optimizer(self, optimizer_type: str = "adamw8bit", lr_scheduler_type: str = "constant", total_steps: int = 1000):
         """Setup optimizer and learning rate scheduler."""
@@ -477,9 +497,13 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
-    def encode_prompt(self, prompt: str):
+    def encode_prompt(self, prompt: str, requires_grad: bool = False):
         """
         Encode text prompt to embeddings.
+
+        Args:
+            prompt: Text prompt to encode
+            requires_grad: Whether to enable gradient computation for text encoders (for training)
 
         Returns:
             For SD1.5: text_embeddings tensor
@@ -505,7 +529,10 @@ class LoRATrainer:
                 return_tensors="pt",
             )
 
-            with torch.no_grad():
+            # Enable/disable gradient based on training mode
+            context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+            with context_manager:
                 # Encode with first text encoder
                 text_embeddings_1 = self.text_encoder(
                     text_inputs_1.input_ids.to(self.device),
@@ -534,7 +561,10 @@ class LoRATrainer:
                 return_tensors="pt",
             )
 
-            with torch.no_grad():
+            # Enable/disable gradient based on training mode
+            context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+            with context_manager:
                 text_embeddings = self.text_encoder(
                     text_inputs.input_ids.to(self.device),
                 )[0]
@@ -915,9 +945,31 @@ class LoRATrainer:
         # Collect all LoRA weights and convert to output_dtype
         state_dict = {}
         for name, lora in self.lora_layers.items():
-            # Convert diffusers format (down_blocks/mid_block/up_blocks) to SD format (input_blocks/middle_block/output_blocks)
-            converted_name = self._convert_to_sd_format(name)
-            key_prefix = f"lora_unet_{converted_name}"
+            # Parse prefix and module name (e.g., "unet.down_blocks.0..." or "te1.text_model.encoder...")
+            if "." in name:
+                prefix, module_name = name.split(".", 1)
+            else:
+                # Fallback for legacy keys without prefix
+                prefix = "unet"
+                module_name = name
+
+            # Generate key prefix based on module type
+            if prefix == "unet":
+                # Convert diffusers format to SD format for U-Net
+                converted_name = self._convert_to_sd_format(module_name)
+                key_prefix = f"lora_unet_{converted_name}"
+            elif prefix == "te1":
+                # Text Encoder 1 keys
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_te1_{converted_name}"
+            elif prefix == "te2":
+                # Text Encoder 2 keys
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_te2_{converted_name}"
+            else:
+                # Unknown prefix, use as-is
+                converted_name = module_name.replace(".", "_")
+                key_prefix = f"lora_{prefix}_{converted_name}"
 
             # Convert to output_dtype for saving (e.g., fp16 to reduce file size)
             state_dict[f"{key_prefix}.lora_down.weight"] = lora.lora_down.weight.detach().cpu().to(dtype=self.output_dtype)
@@ -1544,9 +1596,9 @@ class LoRATrainer:
 
                             batch_latents.append(latents)
 
-                            # Encode caption
+                            # Encode caption (with gradient for text encoder training)
                             caption = item.get("caption", "")
-                            prompt_output = self.encode_prompt(caption)
+                            prompt_output = self.encode_prompt(caption, requires_grad=True)
 
                             if self.is_sdxl:
                                 text_emb, pooled_emb = prompt_output

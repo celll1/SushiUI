@@ -162,6 +162,8 @@ class LoRAManager:
                 print(f"[LoRAManager] Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
 
                 # Load LoRA weights
+                # diffusers automatically converts SD format (lora_unet_*, lora_te1_*, lora_te2_*)
+                # to diffusers format, so no manual conversion needed
                 adapter_name = f"lora_{i}"
                 print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
                 pipeline.load_lora_weights(
@@ -176,6 +178,16 @@ class LoRAManager:
                 if hasattr(pipeline, 'set_adapters'):
                     print(f"[LoRAManager] Setting adapter with strength={lora_config.strength}")
                     pipeline.set_adapters(adapter_name, adapter_weights=lora_config.strength)
+
+                    # Debug: Check if adapter is actually active
+                    if hasattr(pipeline, 'get_active_adapters'):
+                        active_adapters = pipeline.get_active_adapters()
+                        print(f"[LoRAManager] Active adapters after set_adapters: {active_adapters}")
+
+                    # Debug: Check UNet's LoRA scale
+                    if hasattr(pipeline.unet, 'get_scale_dict'):
+                        scale_dict = pipeline.unet.get_scale_dict()
+                        print(f"[LoRAManager] UNet LoRA scale dict: {scale_dict}")
 
                     # Apply per-layer weights if specified
                     if lora_config.unet_layer_weights and hasattr(pipeline, 'unet'):

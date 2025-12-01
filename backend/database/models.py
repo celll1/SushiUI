@@ -151,6 +151,22 @@ class Dataset(DatasetBase):
     caption_suffixes = Column(JSON, default=list)
     default_caption_type = Column(String, default="tags")
 
+    # Caption processing settings (for training)
+    # These are stored in Dataset for reusability but applied per TrainingRun via dataset_configs
+    caption_processing = Column(JSON, default=dict)  # {
+    #   "caption_dropout_rate": 0.0,
+    #   "token_dropout_rate": 0.0,
+    #   "keep_tokens": 0,
+    #   "shuffle_tokens": false,
+    #   "shuffle_per_epoch": false,
+    #   "shuffle_keep_first_n": 0,
+    #   "tag_dropout_rate": 0.0,
+    #   "tag_dropout_per_epoch": false,
+    #   "tag_dropout_keep_first_n": 0,
+    #   "tag_dropout_category_rates": {},
+    #   "tag_dropout_exclude_person_count": false
+    # }
+
     # Image pair settings
     image_suffixes = Column(JSON, default=list)
 
@@ -185,6 +201,7 @@ class Dataset(DatasetBase):
             "description": self.description,
             "caption_suffixes": self.caption_suffixes or [],
             "default_caption_type": self.default_caption_type,
+            "caption_processing": self.caption_processing or {},
             "image_suffixes": self.image_suffixes or [],
             "recursive": self.recursive,
             "max_depth": self.max_depth,
@@ -255,6 +272,48 @@ class DatasetItem(DatasetBase):
             "exif_data": self.exif_data,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class CaptionProcessingPreset(DatasetBase):
+    """Preset for caption processing settings (reusable across datasets)"""
+    __tablename__ = "caption_processing_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Caption processing configuration (same format as Dataset.caption_processing)
+    config = Column(JSON, nullable=False)  # {
+    #   "caption_dropout_rate": 0.0,
+    #   "token_dropout_rate": 0.0,
+    #   "keep_tokens": 0,
+    #   "shuffle_tokens": false,
+    #   "shuffle_per_epoch": false,
+    #   "shuffle_keep_first_n": 0,
+    #   "shuffle_tag_groups": [],
+    #   "shuffle_groups_together": false,
+    #   "tag_group_dir": "taggroup",
+    #   "exclude_person_count_from_shuffle": false,
+    #   "tag_dropout_rate": 0.0,
+    #   "tag_dropout_per_epoch": false,
+    #   "tag_dropout_keep_first_n": 0,
+    #   "tag_dropout_category_rates": {},
+    #   "tag_dropout_exclude_person_count": false
+    # }
+
+    # Timestamps
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "config": self.config or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

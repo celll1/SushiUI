@@ -2240,6 +2240,124 @@ async def get_dataset(dataset_id: int, db: Session = Depends(get_datasets_db)):
         raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset.to_dict()
 
+class CaptionProcessingUpdateRequest(BaseModel):
+    caption_processing: Dict[str, Any]
+
+@router.patch("/datasets/{dataset_id}/caption-processing")
+async def update_caption_processing(
+    dataset_id: int,
+    request: CaptionProcessingUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Update caption processing configuration for a dataset"""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset.caption_processing = request.caption_processing
+    db.commit()
+    db.refresh(dataset)
+    return dataset.to_dict()
+
+
+# ============================================================
+# Caption Processing Presets API
+# ============================================================
+
+class CaptionProcessingPresetCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    config: Dict[str, Any]
+
+class CaptionProcessingPresetUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+@router.get("/caption-processing-presets")
+async def list_caption_processing_presets(db: Session = Depends(get_datasets_db)):
+    """List all caption processing presets"""
+    from database.models import CaptionProcessingPreset
+    presets = db.query(CaptionProcessingPreset).order_by(CaptionProcessingPreset.name).all()
+    return [preset.to_dict() for preset in presets]
+
+@router.post("/caption-processing-presets")
+async def create_caption_processing_preset(
+    request: CaptionProcessingPresetCreateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Create a new caption processing preset"""
+    from database.models import CaptionProcessingPreset
+
+    # Check if preset with same name already exists
+    existing = db.query(CaptionProcessingPreset).filter(CaptionProcessingPreset.name == request.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Preset with name '{request.name}' already exists")
+
+    preset = CaptionProcessingPreset(
+        name=request.name,
+        description=request.description,
+        config=request.config
+    )
+    db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return preset.to_dict()
+
+@router.get("/caption-processing-presets/{preset_id}")
+async def get_caption_processing_preset(preset_id: int, db: Session = Depends(get_datasets_db)):
+    """Get caption processing preset by ID"""
+    from database.models import CaptionProcessingPreset
+    preset = db.query(CaptionProcessingPreset).filter(CaptionProcessingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return preset.to_dict()
+
+@router.patch("/caption-processing-presets/{preset_id}")
+async def update_caption_processing_preset(
+    preset_id: int,
+    request: CaptionProcessingPresetUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Update caption processing preset"""
+    from database.models import CaptionProcessingPreset
+    preset = db.query(CaptionProcessingPreset).filter(CaptionProcessingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    if request.name is not None:
+        # Check if new name conflicts with existing preset
+        existing = db.query(CaptionProcessingPreset).filter(
+            CaptionProcessingPreset.name == request.name,
+            CaptionProcessingPreset.id != preset_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Preset with name '{request.name}' already exists")
+        preset.name = request.name
+
+    if request.description is not None:
+        preset.description = request.description
+
+    if request.config is not None:
+        preset.config = request.config
+
+    db.commit()
+    db.refresh(preset)
+    return preset.to_dict()
+
+@router.delete("/caption-processing-presets/{preset_id}", status_code=204)
+async def delete_caption_processing_preset(preset_id: int, db: Session = Depends(get_datasets_db)):
+    """Delete caption processing preset"""
+    from database.models import CaptionProcessingPreset
+    preset = db.query(CaptionProcessingPreset).filter(CaptionProcessingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    db.delete(preset)
+    db.commit()
+    return None
+
+
 @router.delete("/datasets/{dataset_id}", status_code=204)
 async def delete_dataset(dataset_id: int, db: Session = Depends(get_datasets_db)):
     """Delete dataset"""
@@ -2758,6 +2876,7 @@ async def create_training_run(
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
                 sample_seed=request.sample_seed,
+                caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

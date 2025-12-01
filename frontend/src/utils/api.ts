@@ -873,6 +873,26 @@ export default api;
 // Dataset Management API
 // ============================================================
 
+export interface CaptionProcessingConfig {
+  normalize_tags?: boolean;  // Normalize tags to standard format (default: true)
+  category_order?: string[];  // Category order (e.g., ["Rating", "Quality", "Character", ...])
+  caption_dropout_rate?: number;
+  token_dropout_rate?: number;
+  keep_tokens?: number;
+  shuffle_tokens?: boolean;
+  shuffle_per_epoch?: boolean;
+  shuffle_keep_first_n?: number;
+  shuffle_tag_groups?: string[];  // Tag groups to shuffle (e.g., ["Character", "General"])
+  shuffle_groups_together?: boolean;  // Shuffle all groups together vs within each group
+  tag_group_dir?: string;  // Directory containing tag group JSON files
+  exclude_person_count_from_shuffle?: boolean;  // Exclude person count tags from shuffle
+  tag_dropout_rate?: number;
+  tag_dropout_per_epoch?: boolean;
+  tag_dropout_keep_first_n?: number;
+  tag_dropout_category_rates?: Record<string, number>;  // Per-category dropout rates
+  tag_dropout_exclude_person_count?: boolean;
+}
+
 export interface Dataset {
   id: number;
   name: string;
@@ -880,6 +900,7 @@ export interface Dataset {
   description?: string;
   recursive: boolean;
   read_exif: boolean;
+  caption_processing?: CaptionProcessingConfig;
   total_items: number;
   total_captions: number;
   total_tags: number;
@@ -918,6 +939,68 @@ export const getDataset = async (id: number): Promise<Dataset> => {
 
 export const deleteDataset = async (id: number): Promise<void> => {
   await api.delete(`/datasets/${id}`);
+};
+
+export const updateCaptionProcessing = async (
+  id: number,
+  captionProcessing: CaptionProcessingConfig
+): Promise<Dataset> => {
+  const response = await api.patch(`/datasets/${id}/caption-processing`, {
+    caption_processing: captionProcessing,
+  });
+  return response.data;
+};
+
+// ============================================================
+// Caption Processing Presets API
+// ============================================================
+
+export interface CaptionProcessingPreset {
+  id: number;
+  name: string;
+  description?: string;
+  config: CaptionProcessingConfig;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const listCaptionProcessingPresets = async (): Promise<CaptionProcessingPreset[]> => {
+  const response = await api.get("/caption-processing-presets");
+  return response.data;
+};
+
+export const createCaptionProcessingPreset = async (
+  name: string,
+  description: string | null,
+  config: CaptionProcessingConfig
+): Promise<CaptionProcessingPreset> => {
+  const response = await api.post("/caption-processing-presets", {
+    name,
+    description,
+    config,
+  });
+  return response.data;
+};
+
+export const getCaptionProcessingPreset = async (id: number): Promise<CaptionProcessingPreset> => {
+  const response = await api.get(`/caption-processing-presets/${id}`);
+  return response.data;
+};
+
+export const updateCaptionProcessingPreset = async (
+  id: number,
+  updates: {
+    name?: string;
+    description?: string;
+    config?: CaptionProcessingConfig;
+  }
+): Promise<CaptionProcessingPreset> => {
+  const response = await api.patch(`/caption-processing-presets/${id}`, updates);
+  return response.data;
+};
+
+export const deleteCaptionProcessingPreset = async (id: number): Promise<void> => {
+  await api.delete(`/caption-processing-presets/${id}`);
 };
 
 export interface DatasetScanResponse {

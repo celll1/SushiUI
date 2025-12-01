@@ -853,6 +853,7 @@ class LoRATrainer:
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
         debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
     ) -> float:
         """
@@ -863,6 +864,7 @@ class LoRATrainer:
             text_embeddings: Text prompt embeddings [B, 77, 768]
             pooled_embeddings: Pooled text embeddings (SDXL only)
             debug_save_path: If provided, save latents for debugging
+            debug_captions: Captions for debug output (optional)
             profile_vram: If True, print VRAM usage at each step
 
         Returns:
@@ -1012,7 +1014,8 @@ class LoRATrainer:
             with torch.no_grad():
                 predicted_latent = noisy_latents - model_pred
 
-            torch.save({
+            # Prepare debug data
+            debug_data = {
                 'latents': latents[0:1].detach().cpu(),  # Save only first item in batch
                 'noisy_latents': noisy_latents[0:1].detach().cpu(),
                 'predicted_noise': model_pred[0:1].detach().cpu(),
@@ -1021,10 +1024,19 @@ class LoRATrainer:
                 'timestep': timestep_value,
                 'loss': loss.item(),
                 'batch_size': batch_size,
-            }, debug_save_path / f"latents_t{timestep_value:04d}.pt")
+            }
+
+            # Add caption if available (save first caption in batch)
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                # Also save all captions in batch for reference
+                debug_data['all_captions'] = debug_captions
+
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
 
             del predicted_latent  # Free memory after debug save
-            print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value})")
+            caption_info = f" (caption: {debug_captions[0][:50]}...)" if debug_captions and len(debug_captions) > 0 else ""
+            print(f"[Debug] Saved latents to {debug_save_path} (timestep={timestep_value}){caption_info}")
 
         # Backward pass
         if profile_vram:
@@ -1539,6 +1551,7 @@ class LoRATrainer:
         sample_config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
         update_total_steps_callback: Optional[Callable[[int], None]] = None,  # Called once when total_steps is determined
+        reload_dataset_callback: Optional[Callable[[int], List[Dict[str, Any]]]] = None,  # Called each epoch to reload dataset with new captions
         resume_from_checkpoint: Optional[str] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
@@ -1833,6 +1846,34 @@ class LoRATrainer:
         # Training loop
         try:
             for epoch in range(start_epoch, num_epochs):
+                # Reload dataset for this epoch if callback is provided
+                # This allows caption processing (shuffle/dropout) to vary per epoch
+                if reload_dataset_callback is not None and epoch > 0:
+                    print(f"[LoRATrainer] Reloading dataset for epoch {epoch + 1} (caption processing may change)...")
+                    dataset_items = reload_dataset_callback(epoch)
+                    print(f"[LoRATrainer] Reloaded {len(dataset_items)} items")
+
+                    # Rebuild buckets/batches with new captions
+                    if enable_bucketing:
+                        bucket_manager = BucketManager(base_resolutions=base_resolutions, bucket_tolerance=64)
+                        for idx, item in enumerate(dataset_items):
+                            width = item.get("width", 1024)
+                            height = item.get("height", 1024)
+                            bucket_manager.add_image(
+                                image_index=idx,
+                                image_path=item["image_path"],
+                                width=width,
+                                height=height,
+                                caption=item.get("caption", "")
+                            )
+                        bucket_manager.shuffle_buckets()
+                        batches = bucket_manager.build_batch_indices(batch_size)
+                    else:
+                        batches = []
+                        for start_idx in range(0, len(dataset_items), batch_size):
+                            end_idx = min(start_idx + batch_size, len(dataset_items))
+                            batches.append(dataset_items[start_idx:end_idx])
+
                 # Calculate starting batch index for this epoch (for resume)
                 start_batch_idx = 0
                 if epoch == start_epoch:
@@ -1860,6 +1901,7 @@ class LoRATrainer:
                         batch_latents = []
                         batch_text_embeddings = []
                         batch_pooled_embeddings = [] if self.is_sdxl else None
+                        batch_captions = []  # Store captions for debug output
 
                         # Get bucket dimensions (all items in batch have same resolution)
                         first_item = batch[0]
@@ -1905,6 +1947,7 @@ class LoRATrainer:
 
                             # Encode caption (with gradient for text encoder training)
                             caption = item.get("caption", "")
+                            batch_captions.append(caption)  # Store for debug output
                             prompt_output = self.encode_prompt(caption, requires_grad=True)
 
                             if self.is_sdxl:
@@ -1937,16 +1980,18 @@ class LoRATrainer:
 
                         # Determine if we should save debug latents for this step
                         debug_save_path = None
+                        debug_captions = None
                         if debug_dir is not None and global_step % debug_latents_every == 0:
                             debug_save_path = debug_dir / f"step_{global_step:06d}"
+                            debug_captions = batch_captions  # Pass captions for debug output
 
                         # Handle SD1.5 vs SDXL output
                         if self.is_sdxl:
                             loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings,
-                                                 debug_save_path=debug_save_path, profile_vram=profile_vram)
+                                                 debug_save_path=debug_save_path, debug_captions=debug_captions, profile_vram=profile_vram)
                         else:
                             loss = self.train_step(batched_latents, batched_text_embeddings,
-                                                 debug_save_path=debug_save_path, profile_vram=profile_vram)
+                                                 debug_save_path=debug_save_path, debug_captions=debug_captions, profile_vram=profile_vram)
 
                         # Free batch tensors after training step to reduce VRAM usage
                         del batched_latents, batched_text_embeddings

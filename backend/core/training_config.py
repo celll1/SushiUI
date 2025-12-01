@@ -56,6 +56,8 @@ class TrainingConfigGenerator:
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
         sample_seed: int = 42,
+        # Caption processing settings
+        caption_processing: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -127,8 +129,19 @@ class TrainingConfigGenerator:
                             {
                                 "folder_path": dataset_path,
                                 "caption_ext": "txt",
-                                "caption_dropout_rate": 0.05,
-                                "shuffle_tokens": False,
+                                # Legacy caption settings (kept for backward compatibility)
+                                "caption_dropout_rate": caption_processing.get("caption_dropout_rate", 0.0) if caption_processing else 0.0,
+                                "shuffle_tokens": caption_processing.get("shuffle_tokens", False) if caption_processing else False,
+                                # Caption processing settings (SushiUI extended)
+                                "token_dropout_rate": caption_processing.get("token_dropout_rate", 0.0) if caption_processing else 0.0,
+                                "keep_tokens": caption_processing.get("keep_tokens", 0) if caption_processing else 0,
+                                "shuffle_per_epoch": caption_processing.get("shuffle_per_epoch", False) if caption_processing else False,
+                                "shuffle_keep_first_n": caption_processing.get("shuffle_keep_first_n", 0) if caption_processing else 0,
+                                "tag_dropout_rate": caption_processing.get("tag_dropout_rate", 0.0) if caption_processing else 0.0,
+                                "tag_dropout_per_epoch": caption_processing.get("tag_dropout_per_epoch", False) if caption_processing else False,
+                                "tag_dropout_keep_first_n": caption_processing.get("tag_dropout_keep_first_n", 0) if caption_processing else 0,
+                                "tag_dropout_exclude_person_count": caption_processing.get("tag_dropout_exclude_person_count", False) if caption_processing else False,
+                                # Other settings
                                 "cache_latents_to_disk": cache_latents_to_disk,
                                 "resolution": base_resolutions or [512, 768, 1024],
                             }

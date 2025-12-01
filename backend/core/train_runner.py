@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
+from core.caption_processor import process_caption, get_default_caption_processing_config
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -27,8 +28,26 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def get_dataset_items(db: Session, dataset_id: int) -> list:
-    """Get all items from dataset."""
+def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
+    """
+    Get all items from dataset with caption processing applied.
+
+    Args:
+        db: Database session
+        dataset_id: Dataset ID
+        epoch_num: Current epoch number (for per-epoch shuffle/dropout)
+
+    Returns:
+        List of dataset items with processed captions
+    """
+    # Get dataset and its caption processing config
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise ValueError(f"Dataset {dataset_id} not found")
+
+    # Get caption processing config (or defaults)
+    caption_config = dataset.caption_processing or get_default_caption_processing_config()
+
     items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
 
     dataset_items = []
@@ -39,11 +58,35 @@ def get_dataset_items(db: Session, dataset_id: int) -> list:
             DatasetCaption.caption_type == "tags"
         ).first()
 
-        caption = primary_caption.content if primary_caption else ""
+        raw_caption = primary_caption.content if primary_caption else ""
+
+        # Apply caption processing (dropout, shuffle, etc.)
+        processed_caption = process_caption(
+            caption=raw_caption,
+            epoch_num=epoch_num,
+            item_path=item.image_path,
+            normalize_tags=caption_config.get("normalize_tags", True),
+            category_order=caption_config.get("category_order", None),
+            caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+            token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+            keep_tokens=caption_config.get("keep_tokens", 0),
+            shuffle_tokens=caption_config.get("shuffle_tokens", False),
+            shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+            shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+            shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+            shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+            tag_group_dir=caption_config.get("tag_group_dir", "taggroup"),
+            exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+            tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+            tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+            tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+            tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+            tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+        )
 
         dataset_items.append({
             "image_path": item.image_path,
-            "caption": caption,
+            "caption": processed_caption,
             "width": item.width,
             "height": item.height,
         })
@@ -219,6 +262,11 @@ def main():
             if 'datasets' in process_config and len(process_config['datasets']) > 0:
                 cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
 
+            # Create reload_dataset_callback for per-epoch caption processing
+            def reload_dataset_for_epoch(epoch_num: int) -> list:
+                """Reload dataset with caption processing for the current epoch"""
+                return get_dataset_items(datasets_db, dataset.id, epoch_num=epoch_num)
+
             # Start training
             trainer.train(
                 dataset_items=dataset_items,
@@ -232,6 +280,7 @@ def main():
                 sample_config=sample_config if sample_prompts else None,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
+                reload_dataset_callback=reload_dataset_for_epoch,  # Reload dataset per epoch for caption processing
                 resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,

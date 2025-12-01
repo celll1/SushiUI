@@ -185,37 +185,45 @@ class FullParameterTrainer(LoRATrainer):
 
         print(f"[FullParameterTrainer] Optimizer setup complete: {optimizer_type}, scheduler: {lr_scheduler_type}")
 
-    def save_checkpoint(self, step: int, checkpoint_path: Path, save_optimizer: bool = True):
+    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
         """
         Save full model checkpoint.
 
         Args:
             step: Current training step
-            checkpoint_path: Path to save checkpoint
+            save_path: Path to save checkpoint (default: output_dir/full_step_{step}.safetensors)
             save_optimizer: Whether to save optimizer state
+            max_to_keep: Maximum number of checkpoints to keep (None = keep all)
+            save_every: Save interval (used for checkpoint cleanup)
         """
-        print(f"[FullParameterTrainer] Saving checkpoint to {checkpoint_path}")
+        if save_path is None:
+            save_path = self.output_dir / f"full_step_{step}.safetensors"
+        else:
+            save_path = Path(save_path)
 
-        # Save U-Net state dict
-        checkpoint_data = {
-            "unet": self.unet.state_dict(),
-            "step": step,
-        }
+        print(f"[FullParameterTrainer] Saving checkpoint to {save_path}")
+
+        # Flatten U-Net state dict (safetensors requires flat dict of tensors)
+        checkpoint_data = {}
+        for key, value in self.unet.state_dict().items():
+            checkpoint_data[f"unet.{key}"] = value
 
         # Optionally save text encoder states
         if self.train_text_encoder:
             if self.text_encoder:
-                checkpoint_data["text_encoder"] = self.text_encoder.state_dict()
+                for key, value in self.text_encoder.state_dict().items():
+                    checkpoint_data[f"text_encoder.{key}"] = value
             if self.is_sdxl and self.text_encoder_2:
-                checkpoint_data["text_encoder_2"] = self.text_encoder_2.state_dict()
+                for key, value in self.text_encoder_2.state_dict().items():
+                    checkpoint_data[f"text_encoder_2.{key}"] = value
 
         # Save as safetensors
         from safetensors.torch import save_file
-        save_file(checkpoint_data, str(checkpoint_path))
+        save_file(checkpoint_data, str(save_path))
 
         # Save optimizer state separately (as .pt file)
         if save_optimizer and self.optimizer is not None:
-            optimizer_path = checkpoint_path.with_suffix(".pt")
+            optimizer_path = save_path.with_suffix(".pt")
             torch.save({
                 "optimizer": self.optimizer.state_dict(),
                 "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
@@ -223,7 +231,45 @@ class FullParameterTrainer(LoRATrainer):
             }, optimizer_path)
             print(f"[FullParameterTrainer] Optimizer state saved: {optimizer_path}")
 
-        print(f"[FullParameterTrainer] Checkpoint saved: {checkpoint_path}")
+        print(f"[FullParameterTrainer] Checkpoint saved: {save_path}")
+
+        # Cleanup old checkpoints if max_to_keep is set
+        if max_to_keep is not None and max_to_keep > 0:
+            self._cleanup_old_checkpoints(step, max_to_keep, save_every)
+
+    def _cleanup_old_checkpoints(self, current_step: int, max_to_keep: int, save_every: int):
+        """
+        Remove old checkpoints to keep only the latest N checkpoints.
+
+        Args:
+            current_step: Current training step
+            max_to_keep: Maximum number of checkpoints to keep
+            save_every: Save interval (used to calculate which checkpoint to delete)
+        """
+        # Calculate which step to remove
+        remove_step = current_step - (save_every * max_to_keep)
+
+        if remove_step < save_every:
+            # No checkpoint to remove yet
+            return
+
+        # Remove checkpoint at remove_step
+        checkpoint_path = self.output_dir / f"full_step_{remove_step}.safetensors"
+        optimizer_path = self.output_dir / f"full_step_{remove_step}.pt"
+
+        if checkpoint_path.exists():
+            try:
+                checkpoint_path.unlink()
+                print(f"[FullParameterTrainer] Removed old checkpoint: {checkpoint_path}")
+            except Exception as e:
+                print(f"[FullParameterTrainer] WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
+
+        if optimizer_path.exists():
+            try:
+                optimizer_path.unlink()
+                print(f"[FullParameterTrainer] Removed old optimizer state: {optimizer_path}")
+            except Exception as e:
+                print(f"[FullParameterTrainer] WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
 
     def merge_and_save(self, output_path: str):
         """

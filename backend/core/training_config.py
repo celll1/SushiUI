@@ -27,6 +27,7 @@ class TrainingConfigGenerator:
         lora_rank: int = 16,
         lora_alpha: int = 16,
         save_every: int = 100,
+        save_every_unit: str = "steps",
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
@@ -73,6 +74,7 @@ class TrainingConfigGenerator:
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha
             save_every: Save checkpoint every N steps/epochs
+            save_every_unit: Unit for save_every ("steps" or "epochs")
             sample_every: Generate sample every N steps/epochs
             sample_prompts: List of prompts for sample generation
             debug_latents: Enable debug mode to save latents
@@ -118,6 +120,7 @@ class TrainingConfigGenerator:
                         "save": {
                             "dtype": "float16",
                             "save_every": save_every,
+                            "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 10,
                         },
                         "datasets": [

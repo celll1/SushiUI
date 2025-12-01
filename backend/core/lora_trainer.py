@@ -424,6 +424,7 @@ class LoRATrainer:
         self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
         print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
         print(f"[LoRATrainer] Prediction type: {self.noise_scheduler.config.prediction_type}")
+        print(f"[LoRATrainer] VAE scaling factor: {self.vae.config.scaling_factor}")
 
         # Enable Flash Attention BEFORE gradient checkpointing
         # Gradient checkpointing must be enabled after setting attention processors
@@ -963,6 +964,19 @@ class LoRATrainer:
             noise,
             timesteps,
         )
+
+        # Debug: Verify target correctness on first step
+        if not hasattr(self, '_debug_logged_target_verification'):
+            print(f"[LoRATrainer] Target verification (prediction_type='{prediction_type}'):")
+            if prediction_type == "epsilon":
+                target_matches_noise = torch.equal(target, noise)
+                print(f"  - Target is identical to noise: {target_matches_noise}")
+                if not target_matches_noise:
+                    print(f"  - WARNING: Target should equal noise for epsilon prediction!")
+                    print(f"  - Target mean: {target.mean().item():.6f}, Noise mean: {noise.mean().item():.6f}")
+            print(f"  - Target shape: {target.shape}")
+            print(f"  - Target dtype: {target.dtype}")
+            self._debug_logged_target_verification = True
 
         # Calculate loss (always in fp32 for numerical stability)
         # Use reduction="none" to apply SNR weighting per-sample

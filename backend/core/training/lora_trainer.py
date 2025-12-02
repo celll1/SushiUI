@@ -252,6 +252,7 @@ class LoRATrainer:
         self,
         model_path: str,
         output_dir: str,
+        run_name: str = None,  # Add run_name parameter
         lora_rank: int = 16,
         lora_alpha: int = 16,
         learning_rate: float = 1e-4,
@@ -271,6 +272,7 @@ class LoRATrainer:
         Args:
             model_path: Path to base Stable Diffusion model
             output_dir: Directory to save checkpoints
+            run_name: Training run name (for checkpoint filename generation)
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha (scaling factor)
             learning_rate: Learning rate
@@ -286,6 +288,7 @@ class LoRATrainer:
         """
         self.model_path = model_path
         self.output_dir = Path(output_dir)
+        self.run_name = run_name or Path(output_dir).name  # Use directory name if not provided
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.lora_rank = lora_rank
@@ -1235,13 +1238,23 @@ class LoRATrainer:
 
         Args:
             step: Current training step
-            save_path: Path to save checkpoint (default: output_dir/lora_step_{step}.safetensors)
+            save_path: Path to save checkpoint (default: output_dir/{run_name}_step_{step}.safetensors)
             save_optimizer: Whether to save optimizer state (default: True)
             max_to_keep: Maximum number of checkpoints to keep (None = keep all)
             save_every: Save interval (used to calculate which checkpoint to delete)
         """
         if save_path is None:
-            save_path = self.output_dir / f"lora_step_{step}.safetensors"
+            # Extract short name from run_name
+            # If run_name is in format "YYYYMMDD_HHMMSS_ID", use only ID
+            # Otherwise, use full run_name
+            import re
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)  # Extract ID part
+            else:
+                short_name = self.run_name  # Use full name
+
+            save_path = self.output_dir / f"{short_name}_step_{step}.safetensors"
         else:
             save_path = Path(save_path)
 
@@ -1327,9 +1340,17 @@ class LoRATrainer:
             # No checkpoint to remove yet
             return
 
+        # Extract short name from run_name (same logic as save_checkpoint)
+        import re
+        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+        if match:
+            short_name = match.group(1)
+        else:
+            short_name = self.run_name
+
         # Remove checkpoint at remove_step
-        checkpoint_path = self.output_dir / f"lora_step_{remove_step}.safetensors"
-        optimizer_path = self.output_dir / f"lora_step_{remove_step}.pt"
+        checkpoint_path = self.output_dir / f"{short_name}_step_{remove_step}.safetensors"
+        optimizer_path = self.output_dir / f"{short_name}_step_{remove_step}.pt"
 
         if checkpoint_path.exists():
             try:

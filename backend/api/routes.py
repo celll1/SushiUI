@@ -3240,9 +3240,10 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
     import glob
     output_dir = Path(run.output_dir)
     if output_dir.exists():
-        # Find all checkpoint files (lora_step_*.safetensors)
-        checkpoint_files = glob.glob(str(output_dir / "lora_step_*.safetensors"))
-        # Convert to relative paths and sort
+        # Find all checkpoint files (*_step_*.safetensors)
+        # Pattern matches both old format (lora_step_*.safetensors) and new format ({run_name}_step_*.safetensors)
+        checkpoint_files = glob.glob(str(output_dir / "*_step_*.safetensors"))
+        # Convert to absolute paths and sort
         checkpoint_paths = sorted([str(Path(p)) for p in checkpoint_files])
 
         # Update database if changed

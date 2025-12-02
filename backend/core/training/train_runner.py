@@ -304,7 +304,17 @@ def main():
                 all_items = []
                 for ds_config in dataset_configs:
                     dataset_id = ds_config["dataset_id"]
+                    dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+                    if not dataset:
+                        print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
+                        continue
+
                     items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+
+                    # Add dataset_unique_id to each item for cache management
+                    for item in items:
+                        item["dataset_unique_id"] = dataset.unique_id
+
                     all_items.extend(items)
                 return all_items
 
@@ -438,7 +448,17 @@ def main():
                 all_items = []
                 for ds_config in dataset_configs:
                     dataset_id = ds_config["dataset_id"]
+                    dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+                    if not dataset:
+                        print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
+                        continue
+
                     items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+
+                    # Add dataset_unique_id to each item for cache management
+                    for item in items:
+                        item["dataset_unique_id"] = dataset.unique_id
+
                     all_items.extend(items)
                 return all_items
 

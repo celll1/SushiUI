@@ -15,9 +15,10 @@ class TrainingConfigGenerator:
     @staticmethod
     def generate_lora_config(
         run_name: str,
-        dataset_path: str,
+        dataset_path: str,  # Deprecated - kept for backward compatibility
         base_model_path: str,
         output_dir: str,
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,  # New: multiple datasets
         total_steps: Optional[int] = None,
         epochs: Optional[int] = None,
         batch_size: int = 1,
@@ -64,9 +65,10 @@ class TrainingConfigGenerator:
 
         Args:
             run_name: Training run identifier
-            dataset_path: Path to dataset directory
+            dataset_path: Path to dataset directory (deprecated, use dataset_configs)
             base_model_path: Path to base model
             output_dir: Output directory for checkpoints
+            dataset_configs: List of dataset configurations with path and caption_processing
             total_steps: Total training steps (mutually exclusive with epochs)
             epochs: Number of epochs (mutually exclusive with total_steps)
             batch_size: Batch size
@@ -103,6 +105,58 @@ class TrainingConfigGenerator:
             raise ValueError("Either total_steps or epochs must be provided")
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
+
+        # Build datasets array
+        datasets_array = []
+        if dataset_configs:
+            # Use multiple datasets
+            for ds_config in dataset_configs:
+                ds_path = ds_config.get("path", "")
+                ds_caption_processing = ds_config.get("caption_processing", {})
+
+                dataset_entry = {
+                    "folder_path": ds_path,
+                    "caption_ext": "txt",
+                    # Legacy caption settings (kept for backward compatibility)
+                    "caption_dropout_rate": ds_caption_processing.get("caption_dropout_rate", 0.0),
+                    "shuffle_tokens": ds_caption_processing.get("shuffle_tokens", False),
+                    # Caption processing settings (SushiUI extended)
+                    "token_dropout_rate": ds_caption_processing.get("token_dropout_rate", 0.0),
+                    "keep_tokens": ds_caption_processing.get("keep_tokens", 0),
+                    "shuffle_per_epoch": ds_caption_processing.get("shuffle_per_epoch", False),
+                    "shuffle_keep_first_n": ds_caption_processing.get("shuffle_keep_first_n", 0),
+                    "tag_dropout_rate": ds_caption_processing.get("tag_dropout_rate", 0.0),
+                    "tag_dropout_per_epoch": ds_caption_processing.get("tag_dropout_per_epoch", False),
+                    "tag_dropout_keep_first_n": ds_caption_processing.get("tag_dropout_keep_first_n", 0),
+                    "tag_dropout_exclude_person_count": ds_caption_processing.get("tag_dropout_exclude_person_count", False),
+                    # Other settings
+                    "cache_latents_to_disk": cache_latents_to_disk,
+                    "resolution": base_resolutions or [512, 768, 1024],
+                }
+                datasets_array.append(dataset_entry)
+        else:
+            # Fallback: use single dataset_path (backward compatibility)
+            dataset_entry = {
+                "folder_path": dataset_path,
+                "caption_ext": "txt",
+                # Legacy caption settings (kept for backward compatibility)
+                "caption_dropout_rate": caption_processing.get("caption_dropout_rate", 0.0) if caption_processing else 0.0,
+                "shuffle_tokens": caption_processing.get("shuffle_tokens", False) if caption_processing else False,
+                # Caption processing settings (SushiUI extended)
+                "token_dropout_rate": caption_processing.get("token_dropout_rate", 0.0) if caption_processing else 0.0,
+                "keep_tokens": caption_processing.get("keep_tokens", 0) if caption_processing else 0,
+                "shuffle_per_epoch": caption_processing.get("shuffle_per_epoch", False) if caption_processing else False,
+                "shuffle_keep_first_n": caption_processing.get("shuffle_keep_first_n", 0) if caption_processing else 0,
+                "tag_dropout_rate": caption_processing.get("tag_dropout_rate", 0.0) if caption_processing else 0.0,
+                "tag_dropout_per_epoch": caption_processing.get("tag_dropout_per_epoch", False) if caption_processing else False,
+                "tag_dropout_keep_first_n": caption_processing.get("tag_dropout_keep_first_n", 0) if caption_processing else 0,
+                "tag_dropout_exclude_person_count": caption_processing.get("tag_dropout_exclude_person_count", False) if caption_processing else False,
+                # Other settings
+                "cache_latents_to_disk": cache_latents_to_disk,
+                "resolution": base_resolutions or [512, 768, 1024],
+            }
+            datasets_array.append(dataset_entry)
+
         config = {
             "job": run_name,
             "config": {
@@ -125,27 +179,7 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 10,
                         },
-                        "datasets": [
-                            {
-                                "folder_path": dataset_path,
-                                "caption_ext": "txt",
-                                # Legacy caption settings (kept for backward compatibility)
-                                "caption_dropout_rate": caption_processing.get("caption_dropout_rate", 0.0) if caption_processing else 0.0,
-                                "shuffle_tokens": caption_processing.get("shuffle_tokens", False) if caption_processing else False,
-                                # Caption processing settings (SushiUI extended)
-                                "token_dropout_rate": caption_processing.get("token_dropout_rate", 0.0) if caption_processing else 0.0,
-                                "keep_tokens": caption_processing.get("keep_tokens", 0) if caption_processing else 0,
-                                "shuffle_per_epoch": caption_processing.get("shuffle_per_epoch", False) if caption_processing else False,
-                                "shuffle_keep_first_n": caption_processing.get("shuffle_keep_first_n", 0) if caption_processing else 0,
-                                "tag_dropout_rate": caption_processing.get("tag_dropout_rate", 0.0) if caption_processing else 0.0,
-                                "tag_dropout_per_epoch": caption_processing.get("tag_dropout_per_epoch", False) if caption_processing else False,
-                                "tag_dropout_keep_first_n": caption_processing.get("tag_dropout_keep_first_n", 0) if caption_processing else 0,
-                                "tag_dropout_exclude_person_count": caption_processing.get("tag_dropout_exclude_person_count", False) if caption_processing else False,
-                                # Other settings
-                                "cache_latents_to_disk": cache_latents_to_disk,
-                                "resolution": base_resolutions or [512, 768, 1024],
-                            }
-                        ],
+                        "datasets": datasets_array,
                         "train": {
                             "batch_size": batch_size,
                             **({"steps": total_steps} if total_steps else {"epochs": epochs}),
@@ -203,9 +237,10 @@ class TrainingConfigGenerator:
     @staticmethod
     def generate_full_finetune_config(
         run_name: str,
-        dataset_path: str,
+        dataset_path: str,  # Deprecated - kept for backward compatibility
         base_model_path: str,
         output_dir: str,
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,  # New: multiple datasets
         total_steps: Optional[int] = None,
         epochs: Optional[int] = None,
         batch_size: int = 1,
@@ -310,16 +345,38 @@ class TrainingConfigGenerator:
             train_config["bucket_strategy"] = bucket_strategy
             train_config["multi_resolution_mode"] = multi_resolution_mode
 
-        # Build dataset config
-        dataset_config = {
-            "folder_path": dataset_path,
-            "caption_ext": "txt",
-            "cache_latents_to_disk": cache_latents_to_disk,
-        }
+        # Build datasets array
+        datasets_array = []
+        if dataset_configs:
+            # Use multiple datasets
+            for ds_config in dataset_configs:
+                ds_path = ds_config.get("path", "")
+                ds_caption_processing = ds_config.get("caption_processing", {})
 
-        # Add caption processing config if provided
-        if caption_processing:
-            dataset_config["caption_processing"] = caption_processing
+                dataset_entry = {
+                    "folder_path": ds_path,
+                    "caption_ext": "txt",
+                    "cache_latents_to_disk": cache_latents_to_disk,
+                }
+
+                # Add caption processing if provided
+                if ds_caption_processing:
+                    dataset_entry["caption_processing"] = ds_caption_processing
+
+                datasets_array.append(dataset_entry)
+        else:
+            # Fallback: use single dataset_path (backward compatibility)
+            dataset_config = {
+                "folder_path": dataset_path,
+                "caption_ext": "txt",
+                "cache_latents_to_disk": cache_latents_to_disk,
+            }
+
+            # Add caption processing config if provided
+            if caption_processing:
+                dataset_config["caption_processing"] = caption_processing
+
+            datasets_array.append(dataset_config)
 
         config = {
             "job": run_name,
@@ -340,7 +397,7 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
                         },
-                        "datasets": [dataset_config],
+                        "datasets": datasets_array,
                         "train": train_config,
                         "model": {
                             "name_or_path": base_model_path,

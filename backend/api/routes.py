@@ -15,7 +15,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
-from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample
+from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset
 from core.pipeline import pipeline_manager
 from core.taesd import taesd_manager
 from core.lora_manager import lora_manager
@@ -2839,6 +2839,16 @@ async def create_training_run(
         else:
             raise HTTPException(status_code=400, detail="Either dataset_id or dataset_configs must be provided")
 
+        # Build dataset_configs_for_yaml (with path and caption_processing)
+        dataset_configs_for_yaml = []
+        for config in dataset_configs:
+            dataset = datasets_db.query(Dataset).filter(Dataset.id == config["dataset_id"]).first()
+            if dataset:
+                dataset_configs_for_yaml.append({
+                    "path": dataset.path,
+                    "caption_processing": dataset.caption_processing or {}
+                })
+
         # Generate run_id and auto-generate run_name if not provided
         import uuid
         from datetime import datetime
@@ -2873,9 +2883,10 @@ async def create_training_run(
         if request.training_method == "lora":
             config_yaml = config_generator.generate_lora_config(
                 run_name=run_name,
-                dataset_path=primary_dataset.path,
+                dataset_path=primary_dataset.path,  # Kept for backward compatibility
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
+                dataset_configs=dataset_configs_for_yaml,  # New: multiple datasets
                 total_steps=request.total_steps,
                 epochs=request.epochs,
                 batch_size=request.batch_size,
@@ -2919,9 +2930,10 @@ async def create_training_run(
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
                 run_name=run_name,
-                dataset_path=primary_dataset.path,
+                dataset_path=primary_dataset.path,  # Kept for backward compatibility
                 base_model_path=request.base_model_path,
                 output_dir=output_dir_str,
+                dataset_configs=dataset_configs_for_yaml,  # New: multiple datasets
                 total_steps=request.total_steps,
                 epochs=request.epochs,
                 batch_size=request.batch_size,
@@ -3322,6 +3334,41 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
 
     return {"checkpoints": checkpoints}
 
+@router.get("/training/runs/{run_id}/checkpoints/{checkpoint_filename}")
+async def download_checkpoint(run_id: int, checkpoint_filename: str, db: Session = Depends(get_training_db)):
+    """Download a specific checkpoint file"""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    import os
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    output_dir = Path(run.output_dir)
+    checkpoint_path = output_dir / checkpoint_filename
+
+    # Security check: ensure the file is within the output directory
+    try:
+        checkpoint_path = checkpoint_path.resolve()
+        output_dir = output_dir.resolve()
+        if not str(checkpoint_path).startswith(str(output_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception as e:
+        raise HTTPException(status_code=403, detail="Invalid checkpoint path")
+
+    if not checkpoint_path.exists():
+        raise HTTPException(status_code=404, detail="Checkpoint file not found")
+
+    if not checkpoint_path.is_file():
+        raise HTTPException(status_code=400, detail="Not a file")
+
+    return FileResponse(
+        path=str(checkpoint_path),
+        filename=checkpoint_filename,
+        media_type="application/octet-stream"
+    )
+
 @router.get("/training/runs/{run_id}/debug-latents")
 async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db)):
     """Get list of debug latent saves for a training run"""
@@ -3661,3 +3708,90 @@ async def get_training_samples(
         })
 
     return {"samples": samples}
+
+
+# ============================================================
+# Training Presets API
+# ============================================================
+
+class TrainingPresetCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    training_method: str  # 'lora' or 'full_finetune'
+    config: Dict[str, Any]  # Training parameters (excluding dataset and model path)
+
+class TrainingPresetUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+@router.get("/training/presets")
+async def list_training_presets(db: Session = Depends(get_training_db)):
+    """Get list of all training presets"""
+    presets = db.query(TrainingPreset).order_by(TrainingPreset.created_at.desc()).all()
+    return {"presets": [preset.to_dict() for preset in presets]}
+
+@router.get("/training/presets/{preset_id}")
+async def get_training_preset(preset_id: int, db: Session = Depends(get_training_db)):
+    """Get a specific training preset by ID"""
+    preset = db.query(TrainingPreset).filter(TrainingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return preset.to_dict()
+
+@router.post("/training/presets", status_code=201)
+async def create_training_preset(request: TrainingPresetCreateRequest, db: Session = Depends(get_training_db)):
+    """Create a new training preset"""
+    # Check if name already exists
+    existing = db.query(TrainingPreset).filter(TrainingPreset.name == request.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Preset with name '{request.name}' already exists")
+
+    preset = TrainingPreset(
+        name=request.name,
+        description=request.description,
+        training_method=request.training_method,
+        config=request.config
+    )
+    db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return preset.to_dict()
+
+@router.patch("/training/presets/{preset_id}")
+async def update_training_preset(preset_id: int, request: TrainingPresetUpdateRequest, db: Session = Depends(get_training_db)):
+    """Update an existing training preset"""
+    preset = db.query(TrainingPreset).filter(TrainingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    if request.name is not None:
+        # Check if new name conflicts with another preset
+        existing = db.query(TrainingPreset).filter(
+            TrainingPreset.name == request.name,
+            TrainingPreset.id != preset_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Preset with name '{request.name}' already exists")
+        preset.name = request.name
+
+    if request.description is not None:
+        preset.description = request.description
+
+    if request.config is not None:
+        preset.config = request.config
+
+    db.commit()
+    db.refresh(preset)
+    return preset.to_dict()
+
+@router.delete("/training/presets/{preset_id}")
+async def delete_training_preset(preset_id: int, db: Session = Depends(get_training_db)):
+    """Delete a training preset"""
+    preset = db.query(TrainingPreset).filter(TrainingPreset.id == preset_id).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    db.delete(preset)
+    db.commit()
+    return {"message": "Preset deleted successfully"}

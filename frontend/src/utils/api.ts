@@ -1383,3 +1383,58 @@ export const visualizeDebugLatent = async (
   const response = await api.get(`/training/runs/${runId}/debug-latents/${step}/visualize`, { params });
   return response.data;
 };
+
+// ============================================================
+// Training Presets API
+// ============================================================
+
+export interface TrainingPreset {
+  id: number;
+  name: string;
+  description?: string;
+  training_method: "lora" | "full_finetune";
+  config: Record<string, any>;  // Training parameters (excluding dataset and model path)
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrainingPresetsResponse {
+  presets: TrainingPreset[];
+}
+
+export interface TrainingPresetCreateRequest {
+  name: string;
+  description?: string;
+  training_method: "lora" | "full_finetune";
+  config: Record<string, any>;
+}
+
+export interface TrainingPresetUpdateRequest {
+  name?: string;
+  description?: string;
+  config?: Record<string, any>;
+}
+
+export const listTrainingPresets = async (): Promise<TrainingPresetsResponse> => {
+  const response = await api.get("/training/presets");
+  return response.data;
+};
+
+export const getTrainingPreset = async (id: number): Promise<TrainingPreset> => {
+  const response = await api.get(`/training/presets/${id}`);
+  return response.data;
+};
+
+export const createTrainingPreset = async (data: TrainingPresetCreateRequest): Promise<TrainingPreset> => {
+  const response = await api.post("/training/presets", data);
+  return response.data;
+};
+
+export const updateTrainingPreset = async (id: number, data: TrainingPresetUpdateRequest): Promise<TrainingPreset> => {
+  const response = await api.patch(`/training/presets/${id}`, data);
+  return response.data;
+};
+
+export const deleteTrainingPreset = async (id: number): Promise<void> => {
+  await api.delete(`/training/presets/${id}`);
+};

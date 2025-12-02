@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo, getSamplers, getScheduleTypes } from "@/utils/api";
+import { X, Save, FolderOpen, Trash2 } from "lucide-react";
+import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -98,11 +98,19 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
 
+  // Presets
+  const [presets, setPresets] = useState<TrainingPreset[]>([]);
+  const [showPresetDialog, setShowPresetDialog] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const [presetDescription, setPresetDescription] = useState("");
+  const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
+
   useEffect(() => {
     loadDatasets();
     loadModels();
     loadSamplers();
     loadScheduleTypes();
+    loadPresets();
   }, []);
 
   const loadDatasets = async () => {
@@ -153,6 +161,16 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       setScheduleTypes(data.schedule_types);
     } catch (error) {
       console.error("Failed to load schedule types:", error);
+    }
+  };
+
+  // Helper function: Load presets from API
+  const loadPresets = async () => {
+    try {
+      const response = await listTrainingPresets();
+      setPresets(response.presets);
+    } catch (error) {
+      console.error("Failed to load presets:", error);
     }
   };
 
@@ -218,6 +236,144 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       }
     } catch (err) {
       console.error("Failed to import from generation panel:", err);
+    }
+  };
+
+  // Get current config (excluding dataset and model path)
+  const getCurrentConfig = () => {
+    return {
+      useEpochs,
+      totalSteps,
+      epochs,
+      batchSize,
+      learningRate,
+      lrScheduler,
+      optimizer,
+      loraRank,
+      loraAlpha,
+      saveEvery,
+      saveEveryUnit,
+      sampleEvery,
+      resumeFromCheckpoint,
+      samplePrompts,
+      sampleWidth,
+      sampleHeight,
+      sampleSteps,
+      sampleCfgScale,
+      sampleSampler,
+      sampleScheduleType,
+      sampleSeed,
+      debugLatents,
+      debugLatentsEvery,
+      enableBucketing,
+      baseResolutions,
+      bucketStrategy,
+      multiResolutionMode,
+      cacheLatentsToDisk,
+      trainUnet,
+      trainTextEncoder,
+      unetLr,
+      textEncoderLr,
+      textEncoder1Lr,
+      textEncoder2Lr,
+      weightDtype,
+      trainingDtype,
+      outputDtype,
+      vaeDtype,
+      mixedPrecision,
+      useFlashAttention,
+      minSnrGamma,
+    };
+  };
+
+  // Save current config as preset
+  const handleSavePreset = async () => {
+    if (!presetName.trim()) {
+      alert("Please enter a preset name");
+      return;
+    }
+
+    try {
+      await createTrainingPreset({
+        name: presetName,
+        description: presetDescription || undefined,
+        training_method: trainingMethod,
+        config: getCurrentConfig(),
+      });
+      await loadPresets();
+      setShowPresetDialog(false);
+      setPresetName("");
+      setPresetDescription("");
+      alert("Preset saved successfully");
+    } catch (error: any) {
+      console.error("Failed to save preset:", error);
+      alert(error.response?.data?.detail || "Failed to save preset");
+    }
+  };
+
+  // Load preset into form
+  const handleLoadPreset = (preset: TrainingPreset) => {
+    const config = preset.config;
+
+    // Apply config (excluding dataset and model path)
+    if (config.useEpochs !== undefined) setUseEpochs(config.useEpochs);
+    if (config.totalSteps !== undefined) setTotalSteps(config.totalSteps);
+    if (config.epochs !== undefined) setEpochs(config.epochs);
+    if (config.batchSize !== undefined) setBatchSize(config.batchSize);
+    if (config.learningRate !== undefined) setLearningRate(config.learningRate);
+    if (config.lrScheduler !== undefined) setLrScheduler(config.lrScheduler);
+    if (config.optimizer !== undefined) setOptimizer(config.optimizer);
+    if (config.loraRank !== undefined) setLoraRank(config.loraRank);
+    if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
+    if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
+    if (config.saveEveryUnit !== undefined) setSaveEveryUnit(config.saveEveryUnit);
+    if (config.sampleEvery !== undefined) setSampleEvery(config.sampleEvery);
+    if (config.resumeFromCheckpoint !== undefined) setResumeFromCheckpoint(config.resumeFromCheckpoint);
+    if (config.samplePrompts !== undefined) setSamplePrompts(config.samplePrompts);
+    if (config.sampleWidth !== undefined) setSampleWidth(config.sampleWidth);
+    if (config.sampleHeight !== undefined) setSampleHeight(config.sampleHeight);
+    if (config.sampleSteps !== undefined) setSampleSteps(config.sampleSteps);
+    if (config.sampleCfgScale !== undefined) setSampleCfgScale(config.sampleCfgScale);
+    if (config.sampleSampler !== undefined) setSampleSampler(config.sampleSampler);
+    if (config.sampleScheduleType !== undefined) setSampleScheduleType(config.sampleScheduleType);
+    if (config.sampleSeed !== undefined) setSampleSeed(config.sampleSeed);
+    if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
+    if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
+    if (config.enableBucketing !== undefined) setEnableBucketing(config.enableBucketing);
+    if (config.baseResolutions !== undefined) setBaseResolutions(config.baseResolutions);
+    if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
+    if (config.multiResolutionMode !== undefined) setMultiResolutionMode(config.multiResolutionMode);
+    if (config.cacheLatentsToDisk !== undefined) setCacheLatentsToDisk(config.cacheLatentsToDisk);
+    if (config.trainUnet !== undefined) setTrainUnet(config.trainUnet);
+    if (config.trainTextEncoder !== undefined) setTrainTextEncoder(config.trainTextEncoder);
+    if (config.unetLr !== undefined) setUnetLr(config.unetLr);
+    if (config.textEncoderLr !== undefined) setTextEncoderLr(config.textEncoderLr);
+    if (config.textEncoder1Lr !== undefined) setTextEncoder1Lr(config.textEncoder1Lr);
+    if (config.textEncoder2Lr !== undefined) setTextEncoder2Lr(config.textEncoder2Lr);
+    if (config.weightDtype !== undefined) setWeightDtype(config.weightDtype);
+    if (config.trainingDtype !== undefined) setTrainingDtype(config.trainingDtype);
+    if (config.outputDtype !== undefined) setOutputDtype(config.outputDtype);
+    if (config.vaeDtype !== undefined) setVaeDtype(config.vaeDtype);
+    if (config.mixedPrecision !== undefined) setMixedPrecision(config.mixedPrecision);
+    if (config.useFlashAttention !== undefined) setUseFlashAttention(config.useFlashAttention);
+    if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
+
+    // Also switch to the preset's training method
+    if (preset.training_method) setTrainingMethod(preset.training_method);
+
+    setShowLoadPresetDialog(false);
+  };
+
+  // Delete preset
+  const handleDeletePreset = async (presetId: number) => {
+    if (!confirm("Are you sure you want to delete this preset?")) return;
+
+    try {
+      await deleteTrainingPreset(presetId);
+      await loadPresets();
+    } catch (error) {
+      console.error("Failed to delete preset:", error);
+      alert("Failed to delete preset");
     }
   };
 
@@ -324,12 +480,30 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     <div className="h-full overflow-y-auto">
       <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
         <h2 className="text-lg font-semibold">New Training Run</h2>
-        <button
-          onClick={onClose}
-          className="p-1.5 hover:bg-gray-700 rounded transition-colors"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowLoadPresetDialog(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors"
+          >
+            <FolderOpen className="h-4 w-4" />
+            Load Preset
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPresetDialog(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+          >
+            <Save className="h-4 w-4" />
+            Save Preset
+          </button>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-gray-700 rounded transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="p-4 space-y-4 max-w-2xl">
@@ -1294,6 +1468,117 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           </button>
         </div>
       </form>
+
+      {/* Save Preset Dialog */}
+      {showPresetDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Save Training Preset</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">Preset Name *</label>
+                <input
+                  type="text"
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  placeholder="e.g., SDXL LoRA Quick"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">Description (Optional)</label>
+                <textarea
+                  value={presetDescription}
+                  onChange={(e) => setPresetDescription(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  rows={3}
+                  placeholder="Describe this preset..."
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowPresetDialog(false)}
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePreset}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load Preset Dialog */}
+      {showLoadPresetDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">Load Training Preset</h3>
+            {presets.length === 0 ? (
+              <p className="text-gray-400 text-sm">No presets saved yet</p>
+            ) : (
+              <div className="space-y-2">
+                {presets.map((preset) => (
+                  <div
+                    key={preset.id}
+                    className="bg-gray-700/50 border border-gray-600 rounded p-3 hover:bg-gray-700 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h4 className="font-medium">{preset.name}</h4>
+                          <span className="text-xs px-2 py-0.5 bg-blue-600 rounded">
+                            {preset.training_method === "lora" ? "LoRA" : "Full Finetune"}
+                          </span>
+                        </div>
+                        {preset.description && (
+                          <p className="text-sm text-gray-400 mb-2">{preset.description}</p>
+                        )}
+                        <p className="text-xs text-gray-500">
+                          Created: {new Date(preset.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleLoadPreset(preset)}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors"
+                        >
+                          Load
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePreset(preset.id)}
+                          className="p-1.5 bg-red-600 hover:bg-red-500 rounded transition-colors"
+                          title="Delete preset"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowLoadPresetDialog(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

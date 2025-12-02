@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
 import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
+import CheckpointList from "./CheckpointList";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
@@ -319,6 +320,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <h3 className="font-semibold mb-2 text-sm">Loss</h3>
               <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
             </div>
+          )}
+
+          {/* Checkpoint List */}
+          {(currentRun.status === "running" || currentRun.status === "completed") && (
+            <CheckpointList checkpoints={currentRun.checkpoint_paths} runId={currentRun.id} />
           )}
         </div>
 

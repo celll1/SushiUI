@@ -450,6 +450,15 @@ class LoRATrainer:
         else:
             print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
 
+        # Enable gradient checkpointing for Text Encoders (sd-scripts/ai-toolkit approach)
+        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 1")
+
+        if self.text_encoder_2 is not None and hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+            self.text_encoder_2.gradient_checkpointing_enable()
+            print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 2")
+
         # Freeze all base weights
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
@@ -467,11 +476,16 @@ class LoRATrainer:
         if self.debug_vram:
             print_vram_usage("After loading models to GPU")
 
-        # Set to eval mode (except UNet which will have LoRA)
+        # Set to eval mode
         self.vae.eval()
         self.text_encoder.eval()
         if self.text_encoder_2 is not None:
             self.text_encoder_2.eval()
+
+        # U-Net must be in train mode for gradient checkpointing to work (sd-scripts approach)
+        # This is required according to Diffusers TI example
+        self.unet.train()
+        print(f"[LoRATrainer] U-Net set to train mode for gradient checkpointing")
 
         # LoRA layers storage
         self.lora_layers = {}
@@ -919,6 +933,13 @@ class LoRATrainer:
 
         if profile_vram:
             print_vram_usage("[train_step] Before UNet forward")
+
+        # Enable gradients on inputs for gradient checkpointing (sd-scripts approach)
+        # This is required for gradient checkpointing to recompute activations correctly
+        noisy_latents.requires_grad_(True)
+        text_embeddings.requires_grad_(True)
+        if pooled_embeddings is not None:
+            pooled_embeddings.requires_grad_(True)
 
         # Predict noise using UNet (LoRA is already integrated)
         # Use autocast if mixed precision is enabled

@@ -2081,29 +2081,49 @@ class LoRATrainer:
                 # This allows caption processing (shuffle/dropout) to vary per epoch
                 if reload_dataset_callback is not None and epoch > 0:
                     print(f"[LoRATrainer] Reloading dataset for epoch {epoch + 1} (caption processing may change)...")
-                    dataset_items = reload_dataset_callback(epoch)
-                    print(f"[LoRATrainer] Reloaded {len(dataset_items)} items")
+                    try:
+                        dataset_items = reload_dataset_callback(epoch)
+                        print(f"[LoRATrainer] Reloaded {len(dataset_items)} items")
 
-                    # Rebuild buckets/batches with new captions
-                    if enable_bucketing:
-                        bucket_manager = BucketManager(base_resolutions=base_resolutions)
-                        for idx, item in enumerate(dataset_items):
-                            width = item.get("width", 1024)
-                            height = item.get("height", 1024)
-                            bucket_manager.assign_image_to_bucket(
-                                image_path=item["image_path"],
-                                width=width,
-                                height=height,
-                                caption=item.get("caption", ""),
-                                dataset_unique_id=item.get("dataset_unique_id")
-                            )
-                        bucket_manager.shuffle_buckets()
-                        batches = bucket_manager.build_batch_indices(batch_size)
-                    else:
-                        batches = []
-                        for start_idx in range(0, len(dataset_items), batch_size):
-                            end_idx = min(start_idx + batch_size, len(dataset_items))
-                            batches.append(dataset_items[start_idx:end_idx])
+                        # Debug: Check first reloaded item
+                        if len(dataset_items) > 0:
+                            first_item = dataset_items[0]
+                            print(f"[LoRATrainer] First reloaded item keys: {list(first_item.keys())}")
+                            print(f"[LoRATrainer] First reloaded item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
+
+                        # Rebuild buckets/batches with new captions
+                        if enable_bucketing:
+                            print(f"[LoRATrainer] Rebuilding buckets for epoch {epoch + 1}...")
+                            bucket_manager = BucketManager(base_resolutions=base_resolutions)
+                            for idx, item in enumerate(dataset_items):
+                                width = item.get("width", 1024)
+                                height = item.get("height", 1024)
+                                bucket_manager.assign_image_to_bucket(
+                                    image_path=item["image_path"],
+                                    width=width,
+                                    height=height,
+                                    caption=item.get("caption", ""),
+                                    dataset_unique_id=item.get("dataset_unique_id")
+                                )
+                            bucket_manager.shuffle_buckets()
+                            batches = bucket_manager.build_batch_indices(batch_size)
+                            print(f"[LoRATrainer] Rebuilt {len(batches)} batches")
+
+                            # Debug: Check first rebuilt batch
+                            if len(batches) > 0 and len(batches[0]) > 0:
+                                first_batch_item = batches[0][0]
+                                print(f"[LoRATrainer] First batch item keys after rebuild: {list(first_batch_item.keys())}")
+                                print(f"[LoRATrainer] First batch item dataset_unique_id after rebuild: {first_batch_item.get('dataset_unique_id', 'MISSING')}")
+                        else:
+                            batches = []
+                            for start_idx in range(0, len(dataset_items), batch_size):
+                                end_idx = min(start_idx + batch_size, len(dataset_items))
+                                batches.append(dataset_items[start_idx:end_idx])
+                    except Exception as reload_err:
+                        print(f"[LoRATrainer] ERROR: Failed to reload dataset for epoch {epoch + 1}: {reload_err}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
 
                 # Calculate starting batch index for this epoch (for resume)
                 start_batch_idx = 0
@@ -2115,11 +2135,26 @@ class LoRATrainer:
                 total_batches = len(batches)
                 print(f"[LoRATrainer] Total batches: {total_batches}")
 
+                # Debug: Check if batches are valid
+                if total_batches == 0:
+                    print(f"[LoRATrainer] ERROR: No batches generated for epoch {epoch + 1}")
+                    raise RuntimeError(f"No batches generated for epoch {epoch + 1}")
+
                 # Calculate progress log interval (10% of total batches, minimum 1)
                 progress_interval = max(1, total_batches // 10)
 
+                print(f"[LoRATrainer] Starting batch loop from batch {start_batch_idx}...")
+
                 for batch_idx, batch in enumerate(batches[start_batch_idx:], start=start_batch_idx):
                     try:
+                        # Debug: Log batch entry (first batch only to avoid spam)
+                        if batch_idx == start_batch_idx:
+                            print(f"[LoRATrainer] Processing first batch {batch_idx}, batch size: {len(batch)}")
+                            if len(batch) > 0:
+                                first_item = batch[0]
+                                print(f"[LoRATrainer] First batch item keys: {list(first_item.keys())}")
+                                print(f"[LoRATrainer] First batch item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
+
                         # VRAM profiling for first batch only (to avoid spam)
                         profile_vram = self.debug_vram and (global_step == 0)
 
@@ -2142,52 +2177,70 @@ class LoRATrainer:
                             target_height = None
 
                         # Load and encode all images in batch
-                        for item in batch:
-                            image_path = item["image_path"]
-                            if not os.path.exists(image_path):
-                                print(f"[LoRATrainer] WARNING: Image not found: {image_path}")
-                                continue
-
-                            # Try to load from cache first
-                            latents = None
-                            if len(latent_caches) > 0:
-                                dataset_unique_id = item.get("dataset_unique_id")
-                                if dataset_unique_id and dataset_unique_id in latent_caches:
-                                    cache = latent_caches[dataset_unique_id]
-                                    if target_width is not None and target_height is not None:
-                                        latents = cache.load_latent(
-                                            image_path, target_width, target_height, device=self.device
-                                        )
-
-                            # If not cached, encode normally
-                            if latents is None:
-                                try:
-                                    image = Image.open(image_path)
-                                    image.verify()  # Verify image integrity
-                                    image = Image.open(image_path)  # Reopen after verify
-
-                                    # Encode image
-                                    if target_width is not None and target_height is not None:
-                                        latents = self.encode_image(image, target_width=target_width, target_height=target_height)
-                                    else:
-                                        latents = self.encode_image(image)
-                                except Exception as img_err:
-                                    print(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                        for item_idx, item in enumerate(batch):
+                            try:
+                                image_path = item["image_path"]
+                                if not os.path.exists(image_path):
+                                    print(f"[LoRATrainer] WARNING: Image not found: {image_path}")
                                     continue
 
-                            batch_latents.append(latents)
+                                # Try to load from cache first
+                                latents = None
+                                if len(latent_caches) > 0:
+                                    dataset_unique_id = item.get("dataset_unique_id")
+                                    if dataset_unique_id and dataset_unique_id in latent_caches:
+                                        cache = latent_caches[dataset_unique_id]
+                                        if target_width is not None and target_height is not None:
+                                            try:
+                                                latents = cache.load_latent(
+                                                    image_path, target_width, target_height, device=self.device
+                                                )
+                                            except Exception as cache_err:
+                                                print(f"[LoRATrainer] WARNING: Cache load failed for {image_path}: {cache_err}")
+                                                latents = None
+                                    else:
+                                        # Debug: Log missing dataset_unique_id (first batch only)
+                                        if batch_idx == start_batch_idx and item_idx == 0:
+                                            if not dataset_unique_id:
+                                                print(f"[LoRATrainer] WARNING: No dataset_unique_id in item")
+                                            elif dataset_unique_id not in latent_caches:
+                                                print(f"[LoRATrainer] WARNING: dataset_unique_id {dataset_unique_id[:8]}... not in latent_caches")
+                                                print(f"[LoRATrainer] Available cache IDs: {[uid[:8] + '...' for uid in latent_caches.keys()]}")
 
-                            # Encode caption (with gradient for text encoder training)
-                            caption = item.get("caption", "")
-                            batch_captions.append(caption)  # Store for debug output
-                            prompt_output = self.encode_prompt(caption, requires_grad=True)
+                                # If not cached, encode normally
+                                if latents is None:
+                                    try:
+                                        image = Image.open(image_path)
+                                        image.verify()  # Verify image integrity
+                                        image = Image.open(image_path)  # Reopen after verify
 
-                            if self.is_sdxl:
-                                text_emb, pooled_emb = prompt_output
-                                batch_text_embeddings.append(text_emb)
-                                batch_pooled_embeddings.append(pooled_emb)
-                            else:
-                                batch_text_embeddings.append(prompt_output)
+                                        # Encode image
+                                        if target_width is not None and target_height is not None:
+                                            latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                                        else:
+                                            latents = self.encode_image(image)
+                                    except Exception as img_err:
+                                        print(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                                        continue
+
+                                batch_latents.append(latents)
+
+                                # Encode caption (with gradient for text encoder training)
+                                caption = item.get("caption", "")
+                                batch_captions.append(caption)  # Store for debug output
+                                prompt_output = self.encode_prompt(caption, requires_grad=True)
+
+                                if self.is_sdxl:
+                                    text_emb, pooled_emb = prompt_output
+                                    batch_text_embeddings.append(text_emb)
+                                    batch_pooled_embeddings.append(pooled_emb)
+                                else:
+                                    batch_text_embeddings.append(prompt_output)
+                            except Exception as item_err:
+                                print(f"[LoRATrainer] ERROR: Failed to process item {item_idx} in batch {batch_idx}: {item_err}")
+                                import traceback
+                                traceback.print_exc()
+                                continue
 
                         # Skip if batch is empty (all items failed)
                         if len(batch_latents) == 0:

@@ -3235,6 +3235,21 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
+    # Update checkpoint_paths by scanning output directory
+    from pathlib import Path
+    import glob
+    output_dir = Path(run.output_dir)
+    if output_dir.exists():
+        # Find all checkpoint files (lora_step_*.safetensors)
+        checkpoint_files = glob.glob(str(output_dir / "lora_step_*.safetensors"))
+        # Convert to relative paths and sort
+        checkpoint_paths = sorted([str(Path(p)) for p in checkpoint_files])
+
+        # Update database if changed
+        if checkpoint_paths != run.checkpoint_paths:
+            run.checkpoint_paths = checkpoint_paths
+            db.commit()
+
     # Get process status if available
     process = training_process_manager.get_process(run_id)
     process_status = process.get_status() if process else None

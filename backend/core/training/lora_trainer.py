@@ -1786,7 +1786,8 @@ class LoRATrainer:
 
                 # Generate cache for all images in all batches
                 total_images = sum(len(batch) for batch in batches)
-                cached_count = 0
+                new_cached_count = 0
+                existing_cached_count = 0
 
                 # Create progress bar for latent cache generation
                 import sys
@@ -1837,16 +1838,22 @@ class LoRATrainer:
                                 latent_cache.save_latent(
                                     image_path, target_width, target_height, latents
                                 )
-                                cached_count += 1
+                                new_cached_count += 1
                             except Exception as e:
                                 cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+                        else:
+                            # Already cached
+                            existing_cached_count += 1
 
                         cache_pbar.update(1)
                         sys.stdout.flush()  # Flush after each update
 
                 cache_pbar.close()
                 sys.stdout.flush()  # Final flush
-                print(f"[LatentCache] Cache generation complete: {cached_count} images cached")
+                print(f"[LatentCache] Cache generation complete:")
+                print(f"[LatentCache]   Existing cache used: {existing_cached_count} images")
+                print(f"[LatentCache]   Newly cached: {new_cached_count} images")
+                print(f"[LatentCache]   Total: {existing_cached_count + new_cached_count} images")
 
                 # Save cache metadata
                 latent_cache.save_cache_info(
@@ -1863,6 +1870,38 @@ class LoRATrainer:
                     print_vram_usage("After moving VAE to CPU")
             else:
                 print(f"[LoRATrainer] Using existing latent cache (dataset_id={dataset_id})")
+
+                # Count cache statistics
+                total_images = sum(len(batch) for batch in batches)
+                existing_cached_count = 0
+                missing_count = 0
+
+                for batch in batches:
+                    for item in batch:
+                        # Get bucket dimensions if available
+                        if "bucket_width" in item and "bucket_height" in item:
+                            target_width = item["bucket_width"]
+                            target_height = item["bucket_height"]
+                        else:
+                            target_width = item.get("width", 1024)
+                            target_height = item.get("height", 1024)
+
+                        # Check if cached
+                        cached_latent = latent_cache.load_latent(
+                            item["image_path"], target_width, target_height, device='cpu'
+                        )
+
+                        if cached_latent is not None:
+                            existing_cached_count += 1
+                        else:
+                            missing_count += 1
+
+                print(f"[LatentCache] Cache statistics:")
+                print(f"[LatentCache]   Existing cache: {existing_cached_count} images")
+                if missing_count > 0:
+                    print(f"[LatentCache]   Cache miss (will encode on-the-fly): {missing_count} images")
+                print(f"[LatentCache]   Total: {total_images} images")
+
                 print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
                 # Move VAE to CPU
                 self.vae.to('cpu')

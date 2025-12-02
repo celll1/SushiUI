@@ -2194,11 +2194,31 @@ class DatasetCreateRequest(BaseModel):
     recursive: bool = True
     read_exif: bool = False
 
+def update_dataset_statistics(dataset: Dataset, db: Session):
+    """Update dataset statistics by counting items and captions"""
+    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
+    total_captions = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(
+            db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
+        )
+    ).count()
+
+    # Only update if values changed (avoid unnecessary writes)
+    if dataset.total_items != total_items or dataset.total_captions != total_captions:
+        dataset.total_items = total_items
+        dataset.total_captions = total_captions
+        db.commit()
+
 @router.get("/datasets")
 async def list_datasets(db: Session = Depends(get_datasets_db)):
     """List all datasets"""
     try:
         datasets = db.query(Dataset).order_by(Dataset.created_at.desc()).all()
+
+        # Update statistics for each dataset before returning
+        for dataset in datasets:
+            update_dataset_statistics(dataset, db)
+
         return {"datasets": [d.to_dict() for d in datasets], "total": len(datasets)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2220,11 +2240,29 @@ async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(ge
             description=request.description,
             recursive=request.recursive,
             read_exif=request.read_exif,
-            file_extensions=[".png", ".jpg", ".jpeg", ".webp"]
+            file_extensions=[".png", ".jpg", ".jpeg", ".webp"],
+            total_items=0,
+            total_captions=0,
+            total_tags=0
         )
         db.add(dataset)
         db.commit()
         db.refresh(dataset)
+
+        # Calculate statistics by counting existing items/captions
+        # (User may have already added items manually or from previous scan)
+        total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
+        total_captions = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id.in_(
+                db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
+            )
+        ).count()
+
+        dataset.total_items = total_items
+        dataset.total_captions = total_captions
+        db.commit()
+        db.refresh(dataset)
+
         return dataset.to_dict()
     except HTTPException:
         raise

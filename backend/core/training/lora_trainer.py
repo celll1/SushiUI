@@ -2094,7 +2094,8 @@ class LoRATrainer:
                                 image_path=item["image_path"],
                                 width=width,
                                 height=height,
-                                caption=item.get("caption", "")
+                                caption=item.get("caption", ""),
+                                dataset_unique_id=item.get("dataset_unique_id")
                             )
                         bucket_manager.shuffle_buckets()
                         batches = bucket_manager.build_batch_indices(batch_size)

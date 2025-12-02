@@ -193,6 +193,7 @@ def main():
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
+                run_name=run.run_name,  # Pass run_name for checkpoint filename generation
                 lora_rank=network_config.get('linear', 16),
                 lora_alpha=network_config.get('linear_alpha', 16),
                 learning_rate=train_config.get('lr', 1e-4),

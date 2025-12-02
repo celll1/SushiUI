@@ -476,16 +476,16 @@ class LoRATrainer:
         if self.debug_vram:
             print_vram_usage("After loading models to GPU")
 
-        # Set to eval mode
+        # Set VAE to eval mode (never trained)
         self.vae.eval()
-        self.text_encoder.eval()
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.eval()
 
-        # U-Net must be in train mode for gradient checkpointing to work (sd-scripts approach)
+        # U-Net and Text Encoders must be in train mode for gradient checkpointing to work (sd-scripts approach)
         # This is required according to Diffusers TI example
         self.unet.train()
-        print(f"[LoRATrainer] U-Net set to train mode for gradient checkpointing")
+        self.text_encoder.train()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.train()
+        print(f"[LoRATrainer] U-Net and Text Encoders set to train mode for gradient checkpointing")
 
         # LoRA layers storage
         self.lora_layers = {}

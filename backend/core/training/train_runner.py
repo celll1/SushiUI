@@ -164,6 +164,7 @@ def main():
 
         # Load all datasets and combine items
         all_dataset_items = []
+        dataset_unique_ids = []  # Collect unique IDs for cache management
         for i, ds_config in enumerate(dataset_configs):
             dataset_id = ds_config["dataset_id"]
             dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -172,10 +173,16 @@ def main():
                 sys.exit(1)
 
             print(f"[TrainRunner] Dataset {i+1}: {dataset.name} ({dataset.path})")
+            dataset_unique_ids.append(dataset.unique_id)
 
-            # Get dataset items
+            # Get dataset items and tag with dataset_unique_id for cache management
             dataset_items = get_dataset_items(datasets_db, dataset_id)
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
+
+            # Add dataset_unique_id to each item for cache management
+            for item in dataset_items:
+                item["dataset_unique_id"] = dataset.unique_id
+
             all_dataset_items.extend(dataset_items)
 
         print(f"[TrainRunner] Total dataset items: {len(all_dataset_items)}")
@@ -325,7 +332,7 @@ def main():
                 multi_resolution_mode=multi_resolution_mode,
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
-                dataset_id=dataset.id,  # Use dataset.id from line 104
+                dataset_unique_ids=dataset_unique_ids,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
             )
@@ -459,7 +466,7 @@ def main():
                 multi_resolution_mode=multi_resolution_mode,
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
-                dataset_id=dataset.id,
+                dataset_unique_ids=dataset_unique_ids,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
             )

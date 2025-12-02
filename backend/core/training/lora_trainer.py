@@ -1634,7 +1634,7 @@ class LoRATrainer:
         # Latent caching
         cache_latents_to_disk: bool = True,
         cache_text_embeds_to_disk: bool = False,  # Reserved for future use, not exposed in UI
-        dataset_id: Optional[int] = None,
+        dataset_unique_ids: Optional[List[str]] = None,  # List of dataset unique IDs for cache management
         # Checkpoint management
         max_step_saves_to_keep: Optional[int] = None,  # Maximum number of checkpoints to keep (None = keep all)
     ):
@@ -1764,32 +1764,57 @@ class LoRATrainer:
         if update_total_steps_callback:
             update_total_steps_callback(total_steps)
 
-        # Generate latent cache if enabled
-        latent_cache = None
-        if cache_latents_to_disk and dataset_id is not None:
+        # Generate latent cache if enabled (per-dataset management)
+        latent_caches = {}  # Map: dataset_unique_id -> LatentCache instance
+        image_to_cache_id = {}  # Map: image_path -> dataset_unique_id
+
+        if cache_latents_to_disk and dataset_unique_ids is not None and len(dataset_unique_ids) > 0:
             from core.training.latent_cache import LatentCache
 
-            latent_cache = LatentCache(dataset_id=dataset_id)
+            print(f"[LoRATrainer] Initializing {len(dataset_unique_ids)} latent cache(s)...")
 
-            # Check if cache is valid
+            # Create LatentCache instance for each dataset
+            for unique_id in dataset_unique_ids:
+                latent_caches[unique_id] = LatentCache(dataset_unique_id=unique_id)
+                print(f"[LoRATrainer]   Dataset {unique_id[:8]}...: {latent_caches[unique_id].cache_dir}")
+
+            # Build image_path -> dataset_unique_id mapping from dataset_items
+            print(f"[LoRATrainer] Building image-to-cache mapping...")
+            for batch in batches:
+                for item in batch:
+                    image_path = item["image_path"]
+                    dataset_unique_id = item.get("dataset_unique_id")
+                    if dataset_unique_id:
+                        image_to_cache_id[image_path] = dataset_unique_id
+
+            print(f"[LoRATrainer] Mapped {len(image_to_cache_id)} images to {len(latent_caches)} cache(s)")
+
+            # Check cache validity and generate if needed for each dataset
             model_type = "sdxl" if self.is_sdxl else "sd15"
-            if not latent_cache.is_valid(self.model_path, model_type):
-                print(f"[LoRATrainer] Generating latent cache (dataset_id={dataset_id})...")
+            caches_to_generate = []
+
+            for unique_id, cache in latent_caches.items():
+                if not cache.is_valid(self.model_path, model_type):
+                    caches_to_generate.append((unique_id, cache))
+
+            if len(caches_to_generate) > 0:
+                print(f"[LoRATrainer] Generating latent cache for {len(caches_to_generate)} dataset(s)...")
                 print(f"[LoRATrainer] This will take some time but significantly reduces VRAM during training.")
 
-                # Clear old cache
-                latent_cache.clear()
+                # Clear old caches
+                for unique_id, cache in caches_to_generate:
+                    cache.clear()
 
                 # Move VAE to GPU for encoding
                 print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
                 self.vae.to(self.device)
 
-                # Generate cache for all images in all batches
+                # Generate cache for all images
                 total_images = sum(len(batch) for batch in batches)
-                new_cached_count = 0
-                existing_cached_count = 0
+                total_new_cached = 0
+                total_existing_cached = 0
 
-                # Create progress bar for latent cache generation
+                # Create progress bar
                 import sys
                 cache_pbar = tqdm(
                     total=total_images,
@@ -1799,13 +1824,21 @@ class LoRATrainer:
                     bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
                     file=sys.stdout,
                     dynamic_ncols=False,
-                    mininterval=0.1  # Update every 0.1 seconds
+                    mininterval=0.1
                 )
-                sys.stdout.flush()  # Force flush stdout before starting
+                sys.stdout.flush()
 
-                for batch_idx, batch in enumerate(batches):
+                for batch in batches:
                     for item in batch:
-                        # Get bucket dimensions if available
+                        image_path = item["image_path"]
+                        dataset_unique_id = item.get("dataset_unique_id")
+
+                        if not dataset_unique_id or dataset_unique_id not in latent_caches:
+                            cache_pbar.write(f"[LatentCache] WARNING: No cache for image {image_path}")
+                            cache_pbar.update(1)
+                            continue
+
+                        # Get target dimensions
                         if "bucket_width" in item and "bucket_height" in item:
                             target_width = item["bucket_width"]
                             target_height = item["bucket_height"]
@@ -1813,14 +1846,15 @@ class LoRATrainer:
                             target_width = item.get("width", 1024)
                             target_height = item.get("height", 1024)
 
+                        # Get cache for this dataset
+                        cache = latent_caches[dataset_unique_id]
+
                         # Check if already cached
-                        cached_latent = latent_cache.load_latent(
-                            item["image_path"], target_width, target_height, device=self.device
+                        cached_latent = cache.load_latent(
+                            image_path, target_width, target_height, device=self.device
                         )
 
                         if cached_latent is None:
-                            # Load image
-                            image_path = item["image_path"]
                             if not os.path.exists(image_path):
                                 cache_pbar.write(f"[LatentCache] WARNING: Image not found: {image_path}")
                                 cache_pbar.update(1)
@@ -1828,39 +1862,43 @@ class LoRATrainer:
 
                             try:
                                 image = Image.open(image_path)
-                                image.verify()  # Verify image integrity
-                                image = Image.open(image_path)  # Reopen after verify
+                                image.verify()
+                                image = Image.open(image_path)
 
-                                # Encode and cache
                                 latents = self.encode_image(
                                     image, target_width=target_width, target_height=target_height
                                 )
-                                latent_cache.save_latent(
+                                cache.save_latent(
                                     image_path, target_width, target_height, latents
                                 )
-                                new_cached_count += 1
+                                total_new_cached += 1
                             except Exception as e:
                                 cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
                         else:
-                            # Already cached
-                            existing_cached_count += 1
+                            total_existing_cached += 1
 
                         cache_pbar.update(1)
-                        sys.stdout.flush()  # Flush after each update
+                        sys.stdout.flush()
 
                 cache_pbar.close()
-                sys.stdout.flush()  # Final flush
+                sys.stdout.flush()
                 print(f"[LatentCache] Cache generation complete:")
-                print(f"[LatentCache]   Existing cache used: {existing_cached_count} images")
-                print(f"[LatentCache]   Newly cached: {new_cached_count} images")
-                print(f"[LatentCache]   Total: {existing_cached_count + new_cached_count} images")
+                print(f"[LatentCache]   Existing cache used: {total_existing_cached} images")
+                print(f"[LatentCache]   Newly cached: {total_new_cached} images")
+                print(f"[LatentCache]   Total: {total_existing_cached + total_new_cached} images")
 
-                # Save cache metadata
-                latent_cache.save_cache_info(
-                    model_path=self.model_path,
-                    model_type=model_type,
-                    item_count=total_images
-                )
+                # Save cache metadata for each dataset
+                for unique_id, cache in latent_caches.items():
+                    # Count images for this dataset
+                    dataset_image_count = sum(
+                        1 for batch in batches for item in batch
+                        if item.get("dataset_unique_id") == unique_id
+                    )
+                    cache.save_cache_info(
+                        model_path=self.model_path,
+                        model_type=model_type,
+                        item_count=dataset_image_count
+                    )
 
                 # Move VAE back to CPU to free VRAM
                 print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
@@ -1869,16 +1907,24 @@ class LoRATrainer:
                 if self.debug_vram:
                     print_vram_usage("After moving VAE to CPU")
             else:
-                print(f"[LoRATrainer] Using existing latent cache (dataset_id={dataset_id})")
+                print(f"[LoRATrainer] Using existing latent cache(s)")
 
-                # Count cache statistics
+                # Count cache statistics per dataset
                 total_images = sum(len(batch) for batch in batches)
-                existing_cached_count = 0
-                missing_count = 0
+                total_existing_cached = 0
+                total_missing = 0
+                cache_stats = {uid: {"cached": 0, "missing": 0} for uid in latent_caches.keys()}
 
                 for batch in batches:
                     for item in batch:
-                        # Get bucket dimensions if available
+                        image_path = item["image_path"]
+                        dataset_unique_id = item.get("dataset_unique_id")
+
+                        if not dataset_unique_id or dataset_unique_id not in latent_caches:
+                            total_missing += 1
+                            continue
+
+                        # Get target dimensions
                         if "bucket_width" in item and "bucket_height" in item:
                             target_width = item["bucket_width"]
                             target_height = item["bucket_height"]
@@ -1887,23 +1933,24 @@ class LoRATrainer:
                             target_height = item.get("height", 1024)
 
                         # Check if cached
-                        cached_latent = latent_cache.load_latent(
-                            item["image_path"], target_width, target_height, device='cpu'
+                        cache = latent_caches[dataset_unique_id]
+                        cached_latent = cache.load_latent(
+                            image_path, target_width, target_height, device='cpu'
                         )
 
                         if cached_latent is not None:
-                            existing_cached_count += 1
+                            total_existing_cached += 1
+                            cache_stats[dataset_unique_id]["cached"] += 1
                         else:
-                            missing_count += 1
+                            total_missing += 1
+                            cache_stats[dataset_unique_id]["missing"] += 1
 
                 print(f"[LatentCache] Cache statistics:")
-                print(f"[LatentCache]   Existing cache: {existing_cached_count} images")
-                if missing_count > 0:
-                    print(f"[LatentCache]   Cache miss (will encode on-the-fly): {missing_count} images")
-                print(f"[LatentCache]   Total: {total_images} images")
+                for unique_id, stats in cache_stats.items():
+                    print(f"[LatentCache]   Dataset {unique_id[:8]}...: {stats['cached']} cached, {stats['missing']} missing")
+                print(f"[LatentCache]   Total: {total_existing_cached} cached, {total_missing} missing ({total_images} images)")
 
                 print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
-                # Move VAE to CPU
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
                 if self.debug_vram:
@@ -2034,11 +2081,14 @@ class LoRATrainer:
 
                             # Try to load from cache first
                             latents = None
-                            if latent_cache is not None:
-                                if target_width is not None and target_height is not None:
-                                    latents = latent_cache.load_latent(
-                                        image_path, target_width, target_height, device=self.device
-                                    )
+                            if len(latent_caches) > 0:
+                                dataset_unique_id = item.get("dataset_unique_id")
+                                if dataset_unique_id and dataset_unique_id in latent_caches:
+                                    cache = latent_caches[dataset_unique_id]
+                                    if target_width is not None and target_height is not None:
+                                        latents = cache.load_latent(
+                                            image_path, target_width, target_height, device=self.device
+                                        )
 
                             # If not cached, encode normally
                             if latents is None:
@@ -2141,7 +2191,7 @@ class LoRATrainer:
                         # Generate samples at step 0 (initial) or every sample_every steps
                         if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
                             print(f"[LoRATrainer] Generating samples at step {global_step}")
-                            vae_on_cpu = latent_cache is not None
+                            vae_on_cpu = len(latent_caches) > 0
                             self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
 
                     except Exception as e:

@@ -143,6 +143,7 @@ class Dataset(DatasetBase):
     __tablename__ = "datasets"
 
     id = Column(Integer, primary_key=True, index=True)
+    unique_id = Column(String, unique=True, index=True, nullable=False)  # UUID for cache directory naming
     name = Column(String, unique=True, index=True, nullable=False)
     path = Column(String, nullable=False)
     description = Column(Text, nullable=True)
@@ -196,6 +197,7 @@ class Dataset(DatasetBase):
     def to_dict(self):
         return {
             "id": self.id,
+            "unique_id": self.unique_id,
             "name": self.name,
             "path": self.path,
             "description": self.description,

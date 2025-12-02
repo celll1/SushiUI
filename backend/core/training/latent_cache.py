@@ -22,7 +22,7 @@ class LatentCache:
     Manages disk cache for VAE latents and optionally text embeddings.
 
     Cache directory structure:
-        cache/datasets/{dataset_id}/
+        cache/datasets/{dataset_unique_id}/
             ├── latents/
             │   ├── {image_hash}.pt
             │   └── ...
@@ -34,16 +34,16 @@ class LatentCache:
             └── cache_info.json
     """
 
-    def __init__(self, dataset_id: int, base_cache_dir: str = "cache/datasets"):
+    def __init__(self, dataset_unique_id: str, base_cache_dir: str = "cache/datasets"):
         """
         Initialize latent cache.
 
         Args:
-            dataset_id: Dataset ID
+            dataset_unique_id: Dataset unique ID (UUID)
             base_cache_dir: Base directory for cache (relative to project root)
         """
-        self.dataset_id = dataset_id
-        self.cache_dir = Path(base_cache_dir) / str(dataset_id)
+        self.dataset_unique_id = dataset_unique_id
+        self.cache_dir = Path(base_cache_dir) / dataset_unique_id
         self.latents_dir = self.cache_dir / "latents"
         self.embeddings_dir = self.cache_dir / "text_embeddings"
         self.cache_info_path = self.cache_dir / "cache_info.json"
@@ -242,7 +242,7 @@ class LatentCache:
             item_count: Number of items in dataset
         """
         info = {
-            'dataset_id': self.dataset_id,
+            'dataset_unique_id': self.dataset_unique_id,
             'model_path': model_path,
             'model_type': model_type,
             'created_at': datetime.utcnow().isoformat(),

@@ -120,7 +120,14 @@ class TrainingProcess:
                     break
 
                 # Decode with error handling (ignore invalid UTF-8 bytes)
-                line = line_bytes.decode('utf-8', errors='replace').strip()
+                try:
+                    line = line_bytes.decode('utf-8').strip()
+                except UnicodeDecodeError as e:
+                    # Log the problematic bytes for debugging
+                    print(f"[Training] UnicodeDecodeError at position {e.start}-{e.end}: {line_bytes[max(0, e.start-10):e.end+10].hex()}")
+                    print(f"[Training] Full line (hex): {line_bytes.hex()}")
+                    # Replace invalid bytes and continue
+                    line = line_bytes.decode('utf-8', errors='replace').strip()
 
                 # Send log to callback
                 if log_callback:

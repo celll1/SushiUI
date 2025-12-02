@@ -119,7 +119,8 @@ class TrainingProcess:
                 if not line_bytes:
                     break
 
-                line = line_bytes.decode('utf-8').strip()
+                # Decode with error handling (ignore invalid UTF-8 bytes)
+                line = line_bytes.decode('utf-8', errors='replace').strip()
 
                 # Send log to callback
                 if log_callback:

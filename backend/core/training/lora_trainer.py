@@ -356,7 +356,18 @@ class LoRATrainer:
             self.text_encoder = temp_pipeline.text_encoder
             self.tokenizer = temp_pipeline.tokenizer
             self.unet = temp_pipeline.unet
-            self.noise_scheduler = temp_pipeline.scheduler
+
+            # IMPORTANT: Always use DDPMScheduler for training (not the inference scheduler from model)
+            # The model may contain EulerDiscreteScheduler or other inference schedulers,
+            # but training requires DDPMScheduler with specific settings (sd-scripts approach)
+            self.noise_scheduler = DDPMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                clip_sample=False,
+                prediction_type="epsilon"
+            )
 
             # SDXL-specific components
             if is_sdxl_model:

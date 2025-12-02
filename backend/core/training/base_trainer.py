@@ -235,7 +235,7 @@ class BaseTrainer:
         print("[BaseTrainer] Setting Flash Attention processors...")
 
         try:
-            from core.attention_processors import FlashAttnProcessor
+            from core.inference.attention_processors import FlashAttnProcessor
             processor = FlashAttnProcessor()
 
             # Count attention layers

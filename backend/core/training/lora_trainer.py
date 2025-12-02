@@ -444,7 +444,7 @@ class LoRATrainer:
         # Gradient checkpointing must be enabled after setting attention processors
         if self.use_flash_attention:
             try:
-                from core.attention_processors import FlashAttnProcessor
+                from core.inference.attention_processors import FlashAttnProcessor
                 print(f"[LoRATrainer] Setting Flash Attention processors...")
                 processor = FlashAttnProcessor()
                 new_processors = {name: processor for name in self.unet.attn_processors.keys()}
@@ -1434,7 +1434,7 @@ class LoRATrainer:
 
         # Replace with user-selected scheduler and schedule_type
         # IMPORTANT: Use inference scheduler for sample generation, not training scheduler (DDPM)
-        from core.schedulers import get_scheduler
+        from core.inference.schedulers import get_scheduler
         temp_pipeline.scheduler = get_scheduler(temp_pipeline, sampler, schedule_type)
         print(f"[LoRATrainer] Using scheduler: {temp_pipeline.scheduler.__class__.__name__} (sampler={sampler}, schedule_type={schedule_type})")
 

@@ -1910,11 +1910,12 @@ class LoRATrainer:
             else:
                 print(f"[LoRATrainer] Using existing latent cache(s)")
 
-                # Count cache statistics per dataset
+                # Count cache statistics per dataset and collect missing images
                 total_images = sum(len(batch) for batch in batches)
                 total_existing_cached = 0
                 total_missing = 0
                 cache_stats = {uid: {"cached": 0, "missing": 0} for uid in latent_caches.keys()}
+                missing_images = []  # Collect images that need to be cached
 
                 for batch in batches:
                     for item in batch:
@@ -1945,13 +1946,79 @@ class LoRATrainer:
                         else:
                             total_missing += 1
                             cache_stats[dataset_unique_id]["missing"] += 1
+                            missing_images.append(item)
 
                 print(f"[LatentCache] Cache statistics:")
                 for unique_id, stats in cache_stats.items():
                     print(f"[LatentCache]   Dataset {unique_id[:8]}...: {stats['cached']} cached, {stats['missing']} missing")
                 print(f"[LatentCache]   Total: {total_existing_cached} cached, {total_missing} missing ({total_images} images)")
 
-                print(f"[LoRATrainer] VAE will stay on CPU during training to save VRAM")
+                # Generate cache for missing images
+                if len(missing_images) > 0:
+                    print(f"[LoRATrainer] Generating cache for {len(missing_images)} missing image(s)...")
+                    print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
+                    self.vae.to(self.device)
+
+                    import sys
+                    cache_pbar = tqdm(
+                        total=len(missing_images),
+                        desc="[LatentCache] Encoding missing images",
+                        unit="img",
+                        ncols=100,
+                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                        file=sys.stdout,
+                        dynamic_ncols=False,
+                        mininterval=0.1
+                    )
+                    sys.stdout.flush()
+
+                    newly_cached = 0
+                    for item in missing_images:
+                        image_path = item["image_path"]
+                        dataset_unique_id = item.get("dataset_unique_id")
+
+                        if not dataset_unique_id or dataset_unique_id not in latent_caches:
+                            cache_pbar.update(1)
+                            continue
+
+                        # Get target dimensions
+                        if "bucket_width" in item and "bucket_height" in item:
+                            target_width = item["bucket_width"]
+                            target_height = item["bucket_height"]
+                        else:
+                            target_width = item.get("width", 1024)
+                            target_height = item.get("height", 1024)
+
+                        cache = latent_caches[dataset_unique_id]
+
+                        if not os.path.exists(image_path):
+                            cache_pbar.write(f"[LatentCache] WARNING: Image not found: {image_path}")
+                            cache_pbar.update(1)
+                            continue
+
+                        try:
+                            image = Image.open(image_path)
+                            image.verify()
+                            image = Image.open(image_path)
+
+                            latents = self.encode_image(
+                                image, target_width=target_width, target_height=target_height
+                            )
+                            cache.save_latent(
+                                image_path, target_width, target_height, latents
+                            )
+                            newly_cached += 1
+                        except Exception as e:
+                            cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+
+                        cache_pbar.update(1)
+                        sys.stdout.flush()
+
+                    cache_pbar.close()
+                    sys.stdout.flush()
+                    print(f"[LatentCache] Generated cache for {newly_cached} new image(s)")
+
+                print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
                 if self.debug_vram:

@@ -1368,8 +1368,7 @@ class LoRATrainer:
         num_steps = config.get("steps", 28)
         cfg_scale = config.get("cfg_scale", 7.0)
         sampler = config.get("sampler", "euler")
-        # Note: schedule_type is not used with copy.deepcopy(self.noise_scheduler)
-        # The scheduler's timestep distribution is determined by the scheduler class itself
+        schedule_type = config.get("schedule_type", "sgm_uniform")
         seed = config.get("seed", -1)
 
         # Set components to eval mode
@@ -1379,21 +1378,17 @@ class LoRATrainer:
         if self.text_encoder_2 is not None:
             self.text_encoder_2.eval()
 
-        # Create a separate scheduler instance for sample generation
-        # IMPORTANT: Use inference scheduler (Euler) for sample generation, not training scheduler (DDPM)
-        # self.noise_scheduler is DDPMScheduler (training only), but we need EulerDiscreteScheduler for inference
+        # Create temporary pipeline for prompt encoding and component access
+        # Use a dummy inference scheduler (will be replaced by get_scheduler)
         from diffusers import EulerDiscreteScheduler
-        temp_scheduler = EulerDiscreteScheduler.from_config({
+        dummy_scheduler = EulerDiscreteScheduler.from_config({
             "beta_start": 0.00085,
             "beta_end": 0.012,
             "beta_schedule": "scaled_linear",
             "num_train_timesteps": 1000,
             "prediction_type": "epsilon",
-            "timestep_spacing": "leading",
-            "steps_offset": 1,
         })
 
-        # Create temporary pipeline for prompt encoding and component access
         if self.is_sdxl:
             from diffusers import StableDiffusionXLPipeline
             temp_pipeline = StableDiffusionXLPipeline(
@@ -1403,7 +1398,7 @@ class LoRATrainer:
                 tokenizer=self.tokenizer,
                 tokenizer_2=self.tokenizer_2,
                 unet=self.unet,
-                scheduler=temp_scheduler,
+                scheduler=dummy_scheduler,
             )
         else:
             from diffusers import StableDiffusionPipeline
@@ -1412,8 +1407,14 @@ class LoRATrainer:
                 text_encoder=self.text_encoder,
                 tokenizer=self.tokenizer,
                 unet=self.unet,
-                scheduler=temp_scheduler,
+                scheduler=dummy_scheduler,
             )
+
+        # Replace with user-selected scheduler and schedule_type
+        # IMPORTANT: Use inference scheduler for sample generation, not training scheduler (DDPM)
+        from core.schedulers import get_scheduler
+        temp_pipeline.scheduler = get_scheduler(temp_pipeline, sampler, schedule_type)
+        print(f"[LoRATrainer] Using scheduler: {temp_pipeline.scheduler.__class__.__name__} (sampler={sampler}, schedule_type={schedule_type})")
 
         # VRAM optimization: Use sequential component loading
         print(f"[LoRATrainer] Applying VRAM optimization (sequential component loading)")

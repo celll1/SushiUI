@@ -1380,9 +1380,18 @@ class LoRATrainer:
             self.text_encoder_2.eval()
 
         # Create a separate scheduler instance for sample generation
-        # IMPORTANT: Don't reuse self.noise_scheduler because it will be modified
-        import copy
-        temp_scheduler = copy.deepcopy(self.noise_scheduler)
+        # IMPORTANT: Use inference scheduler (Euler) for sample generation, not training scheduler (DDPM)
+        # self.noise_scheduler is DDPMScheduler (training only), but we need EulerDiscreteScheduler for inference
+        from diffusers import EulerDiscreteScheduler
+        temp_scheduler = EulerDiscreteScheduler.from_config({
+            "beta_start": 0.00085,
+            "beta_end": 0.012,
+            "beta_schedule": "scaled_linear",
+            "num_train_timesteps": 1000,
+            "prediction_type": "epsilon",
+            "timestep_spacing": "leading",
+            "steps_offset": 1,
+        })
 
         # Create temporary pipeline for prompt encoding and component access
         if self.is_sdxl:

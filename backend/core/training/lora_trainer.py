@@ -862,7 +862,10 @@ class LoRATrainer:
 
         # Convert to torch tensor (H, W, C) -> (C, H, W)
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
-        image_tensor = image_tensor.to(device=self.device, dtype=self.vae.dtype)
+
+        # Get VAE device (it might be on CPU if latent caching is enabled)
+        vae_device = next(self.vae.parameters()).device
+        image_tensor = image_tensor.to(device=vae_device, dtype=self.vae.dtype)
 
         # Encode to latents
         with torch.no_grad():

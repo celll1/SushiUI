@@ -43,7 +43,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   // UI controls
   const [smoothingFactor, setSmoothingFactor] = useState(0.9);
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
-  const [showSmooth, setShowSmooth] = useState(true);
+
+  // Tooltip state
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; step: number; loss: number; smoothLoss: number } | null>(null);
 
   // Calculate smooth loss on client side
   const smoothLossData = useMemo(() => {
@@ -159,6 +161,54 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     Math.round(minStep + ((maxStep - minStep) / (xTicks - 1)) * i)
   );
 
+  // Handle mouse move to show tooltip
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svgRect = e.currentTarget.getBoundingClientRect();
+    const mouseX = e.clientX - svgRect.left;
+
+    // Convert to viewBox coordinates
+    const scaleFactorX = actualWidth / svgRect.width;
+    const viewBoxX = mouseX * scaleFactorX;
+
+    // Check if mouse is within chart area
+    if (viewBoxX < padding.left || viewBoxX > actualWidth - padding.right) {
+      setTooltip(null);
+      return;
+    }
+
+    // Find nearest data point by step
+    const hoveredStep = minStep + ((viewBoxX - padding.left) / chartWidth) * (maxStep - minStep);
+
+    // Find closest data point
+    let closestIndex = 0;
+    let minDistance = Math.abs(lossData[0].step - hoveredStep);
+
+    for (let i = 1; i < lossData.length; i++) {
+      const distance = Math.abs(lossData[i].step - hoveredStep);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestIndex = i;
+      }
+    }
+
+    const closestPoint = lossData[closestIndex];
+    const closestSmooth = smoothLossData[closestIndex];
+    const pointX = scaleX(closestSmooth.step);
+    const pointY = scaleY(closestSmooth.value);  // Use smooth loss Y position
+
+    setTooltip({
+      x: pointX,
+      y: pointY,
+      step: closestSmooth.step,
+      loss: closestPoint.value,
+      smoothLoss: closestSmooth.value
+    });
+  };
+
+  const handleMouseLeave = () => {
+    setTooltip(null);
+  };
+
   return (
     <div className="bg-gray-800 border border-gray-700 rounded p-4">
       {/* Header with controls */}
@@ -211,17 +261,6 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         <span className="text-xs text-gray-400 w-12 text-right">
           {(smoothingFactor * 100).toFixed(0)}%
         </span>
-
-        {/* Toggle smooth line */}
-        <label className="flex items-center gap-2 cursor-pointer ml-2">
-          <input
-            type="checkbox"
-            checked={showSmooth}
-            onChange={(e) => setShowSmooth(e.target.checked)}
-            className="rounded text-blue-500 focus:ring-blue-500"
-          />
-          <span className="text-xs text-gray-400">Show smooth</span>
-        </label>
       </div>
 
       <svg
@@ -231,6 +270,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         preserveAspectRatio="xMidYMid meet"
         className="text-gray-400"
         style={{ fontFamily: "monospace", fontSize: "10px", maxWidth: "100%" }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
       >
         {/* Y-axis */}
         <line
@@ -344,37 +385,108 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           Loss
         </text>
 
-        {/* Smooth loss line (behind, if enabled) */}
-        {showSmooth && smoothingFactor > 0 && (
-          <path
-            d={smoothLinePath}
-            fill="none"
-            stroke="#60a5fa"
-            strokeWidth="2.5"
-            strokeLinejoin="round"
-            opacity="0.7"
-          />
-        )}
-
-        {/* Raw loss line */}
+        {/* Raw loss line (behind) */}
         <path
           d={rawLinePath}
           fill="none"
           stroke="#3b82f6"
           strokeWidth="1.5"
           strokeLinejoin="round"
-          opacity={showSmooth && smoothingFactor > 0 ? 0.3 : 1.0}
+          opacity="0.3"
         />
+
+        {/* Smooth loss line (always shown) */}
+        {smoothingFactor > 0 && (
+          <path
+            d={smoothLinePath}
+            fill="none"
+            stroke="#60a5fa"
+            strokeWidth="2.5"
+            strokeLinejoin="round"
+            opacity="0.9"
+          />
+        )}
+
+        {/* Tooltip */}
+        {tooltip && (
+          <g>
+            {/* Crosshair vertical line */}
+            <line
+              x1={tooltip.x}
+              y1={padding.top}
+              x2={tooltip.x}
+              y2={height - padding.bottom}
+              stroke="#94a3b8"
+              strokeWidth="1"
+              strokeDasharray="4 2"
+              opacity="0.5"
+            />
+
+            {/* Tooltip point indicator */}
+            <circle
+              cx={tooltip.x}
+              cy={tooltip.y}
+              r="4"
+              fill="#3b82f6"
+              stroke="#fff"
+              strokeWidth="2"
+            />
+
+            {/* Tooltip box */}
+            <g>
+              {/* Background */}
+              <rect
+                x={tooltip.x + 10}
+                y={tooltip.y - 40}
+                width="140"
+                height="50"
+                fill="#1f2937"
+                stroke="#4b5563"
+                strokeWidth="1"
+                rx="4"
+              />
+
+              {/* Text content */}
+              <text
+                x={tooltip.x + 15}
+                y={tooltip.y - 25}
+                fill="#e5e7eb"
+                fontSize="11"
+                fontFamily="monospace"
+              >
+                Step: {tooltip.step}
+              </text>
+              <text
+                x={tooltip.x + 15}
+                y={tooltip.y - 10}
+                fill="#3b82f6"
+                fontSize="11"
+                fontFamily="monospace"
+              >
+                Loss: {tooltip.loss.toFixed(4)}
+              </text>
+              <text
+                x={tooltip.x + 15}
+                y={tooltip.y + 5}
+                fill="#60a5fa"
+                fontSize="11"
+                fontFamily="monospace"
+              >
+                Smooth: {tooltip.smoothLoss.toFixed(4)}
+              </text>
+            </g>
+          </g>
+        )}
       </svg>
 
       {/* Legend and stats */}
       <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-4 h-0.5 bg-blue-500"></div>
+            <div className="w-4 h-0.5 bg-blue-500 opacity-30"></div>
             <span>Raw ({lossData.length} points)</span>
           </div>
-          {showSmooth && smoothingFactor > 0 && (
+          {smoothingFactor > 0 && (
             <div className="flex items-center gap-2">
               <div className="w-4 h-0.5 bg-blue-400"></div>
               <span>Smooth (EMA {(smoothingFactor * 100).toFixed(0)}%)</span>
@@ -382,8 +494,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           )}
         </div>
         <span>
-          Latest: {lossData[lossData.length - 1]?.value.toFixed(4)} (Step{" "}
-          {lossData[lossData.length - 1]?.step})
+          Latest: {smoothLossData[smoothLossData.length - 1]?.value.toFixed(4)} (Step{" "}
+          {smoothLossData[smoothLossData.length - 1]?.step})
         </span>
       </div>
     </div>

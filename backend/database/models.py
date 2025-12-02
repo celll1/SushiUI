@@ -483,6 +483,36 @@ class TrainingRun(TrainingBase):
         }
 
 
+class TrainingPreset(TrainingBase):
+    """Training configuration preset for quick reuse"""
+    __tablename__ = "training_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+
+    # Training method
+    training_method = Column(String, nullable=False)  # 'lora' or 'full_finetune'
+
+    # Configuration (JSON)
+    config = Column(JSON, nullable=False)  # All training parameters except dataset and model path
+
+    # Timestamps
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "training_method": self.training_method,
+            "config": self.config,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class TrainingCheckpoint(TrainingBase):
     """Training checkpoint saved during training"""
     __tablename__ = "training_checkpoints"

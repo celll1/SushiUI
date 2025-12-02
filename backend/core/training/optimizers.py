@@ -88,19 +88,39 @@ class OptimizerFactory:
             return optimizer
 
         elif optimizer_type == "adafactor":
-            # PyTorch native Adafactor
-            # Parameters: lr, beta2_decay, eps, d, weight_decay, foreach, maximize
-            optimizer = torch.optim.Adafactor(
-                params,
-                lr=learning_rate,
-                beta2_decay=-0.8,
-                eps=(1e-30, 1e-3),
-                d=1.0,
-                weight_decay=weight_decay,
-                foreach=False,
-            )
-            print(f"[OptimizerFactory] Created Adafactor optimizer")
-            return optimizer
+            # transformers Adafactor (used by sd-scripts and ai-toolkit)
+            # More feature-rich than PyTorch native (supports clip_threshold, relative_step, etc.)
+            try:
+                from transformers.optimization import Adafactor
+
+                optimizer = Adafactor(
+                    params,
+                    lr=learning_rate,
+                    eps=(1e-30, 1e-3),
+                    clip_threshold=1.0,
+                    decay_rate=-0.8,
+                    beta1=None,
+                    weight_decay=weight_decay,
+                    scale_parameter=False,
+                    relative_step=False,
+                    warmup_init=False,
+                )
+                print(f"[OptimizerFactory] Created Adafactor optimizer (transformers)")
+                return optimizer
+            except ImportError:
+                # Fallback to PyTorch native Adafactor (limited features)
+                print(f"[OptimizerFactory] WARNING: transformers not available, using PyTorch native Adafactor")
+                optimizer = torch.optim.Adafactor(
+                    params,
+                    lr=learning_rate,
+                    beta2_decay=-0.8,
+                    eps=(1e-30, 1e-3),
+                    d=1.0,
+                    weight_decay=weight_decay,
+                    foreach=False,
+                )
+                print(f"[OptimizerFactory] Created Adafactor optimizer (PyTorch native)")
+                return optimizer
 
         # bitsandbytes optimizers
         elif optimizer_type in ["adamw8bit", "paged_adamw", "paged_adamw8bit", "lion8bit", "paged_lion8bit"]:

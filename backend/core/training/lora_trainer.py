@@ -2116,19 +2116,48 @@ class LoRATrainer:
             print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 
             # Save final checkpoint (with optimizer state for potential resume)
-            self.save_checkpoint(global_step, self.output_dir / "lora_final.safetensors", save_optimizer=True)
+            # Use run_name format: extract short name if auto-generated
+            import re
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)  # Extract ID part
+            else:
+                short_name = self.run_name  # Use full name
+
+            final_path = self.output_dir / f"{short_name}_final.safetensors"
+            self.save_checkpoint(global_step, final_path, save_optimizer=True)
 
         except KeyboardInterrupt:
             print(f"\n[LoRATrainer] Training interrupted by user at step {global_step}")
             print(f"[LoRATrainer] Saving checkpoint at interruption point...")
-            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_interrupted.safetensors", save_optimizer=True)
+
+            # Use run_name format
+            import re
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)
+            else:
+                short_name = self.run_name
+
+            interrupted_path = self.output_dir / f"{short_name}_step_{global_step}_interrupted.safetensors"
+            self.save_checkpoint(global_step, interrupted_path, save_optimizer=True)
             print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise to propagate the interruption
 
         except Exception as e:
             print(f"\n[LoRATrainer] Training failed with error at step {global_step}: {e}")
             print(f"[LoRATrainer] Saving checkpoint at failure point...")
-            self.save_checkpoint(global_step, self.output_dir / f"lora_step_{global_step}_failed.safetensors", save_optimizer=True)
+
+            # Use run_name format
+            import re
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)
+            else:
+                short_name = self.run_name
+
+            failed_path = self.output_dir / f"{short_name}_step_{global_step}_failed.safetensors"
+            self.save_checkpoint(global_step, failed_path, save_optimizer=True)
             print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise the exception
 

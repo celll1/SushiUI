@@ -237,7 +237,8 @@ class BucketManager:
         width: int,
         height: int,
         caption: str = "",
-        target_resolution: Optional[int] = None
+        target_resolution: Optional[int] = None,
+        dataset_unique_id: Optional[str] = None
     ) -> Tuple[BucketResolution, Dict]:
         """
         Assign an image to the best bucket.
@@ -310,6 +311,10 @@ class BucketManager:
             "bucket_height": bucket.height,
             "target_resolution": target_resolution,
         }
+
+        # Add dataset_unique_id if provided (for cache management)
+        if dataset_unique_id is not None:
+            image_info["dataset_unique_id"] = dataset_unique_id
 
         # Add to bucket
         if bucket not in self.buckets:

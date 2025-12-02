@@ -238,7 +238,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
           {/* Controls */}
           <div className="flex space-x-3">
-            {currentRun.status === "pending" || currentRun.status === "stopped" || currentRun.status === "failed" ? (
+            {currentRun.status === "pending" || currentRun.status === "stopped" || currentRun.status === "failed" || currentRun.status === "completed" ? (
               <>
                 <button
                   onClick={handleStart}
@@ -268,15 +268,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               >
                 <Square className="h-4 w-4" />
                 <span>{isStopping ? "Stopping..." : "Stop Training"}</span>
-              </button>
-            ) : currentRun.status === "completed" ? (
-              <button
-                onClick={handleDelete}
-                disabled={isDeleting}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-              >
-                <Trash2 className="h-4 w-4" />
-                <span>{isDeleting ? "Deleting..." : "Delete"}</span>
               </button>
             ) : null}
           </div>

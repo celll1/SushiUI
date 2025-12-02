@@ -19,9 +19,9 @@ from diffusers import (
 from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
-from core.prompt_processors import PromptEditingProcessor
-from core.schedulers import get_scheduler
-from core.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+from core.prompts.processors import PromptEditingProcessor
+from core.inference.schedulers import get_scheduler
+from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 # Prompt parser imports are done locally in methods to avoid circular imports
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
@@ -361,7 +361,7 @@ class DiffusionPipelineManager:
 
     def _apply_controlnets(self, pipeline, controlnet_images, width, height, is_sdxl):
         """Apply ControlNets to the pipeline"""
-        from core.controlnet_manager import controlnet_manager
+        from core.extensions.controlnet_manager import controlnet_manager
 
         if not controlnet_images:
             return pipeline
@@ -513,7 +513,7 @@ class DiffusionPipelineManager:
             For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
             For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
         """
-        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
+        from core.prompts.prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
         # Use provided pipeline or default to txt2img_pipeline
         if pipeline is None:
@@ -715,7 +715,7 @@ class DiffusionPipelineManager:
             For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
             For SDXL: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
         """
-        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
+        from core.prompts.prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
         # Use provided pipeline or default to txt2img_pipeline
         if pipeline is None:
@@ -816,7 +816,7 @@ class DiffusionPipelineManager:
         # Tokenize to check length
         tokenizer = pipeline.tokenizer if hasattr(pipeline, 'tokenizer') else None
         if tokenizer:
-            from .prompt_parser import parse_prompt_attention
+            from core.prompts.prompt_parser import parse_prompt_attention
 
             # Get clean prompt for length check
             clean_prompt = prompt
@@ -878,7 +878,7 @@ class DiffusionPipelineManager:
             return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
         # Has emphasis but fits in single chunk - use pipeline.encode_prompt then apply weights
-        from .prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
+        from core.prompts.prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
         # Parse to get clean text
         parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]
@@ -1273,7 +1273,7 @@ class DiffusionPipelineManager:
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
             if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.attention_processors import set_attention_processor
+                from core.inference.attention_processors import set_attention_processor
                 self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
             # Call custom sampling loop
@@ -1321,7 +1321,7 @@ class DiffusionPipelineManager:
         finally:
             # Restore original attention processors if they were changed
             if self.original_processors is not None:
-                from core.attention_processors import restore_processors
+                from core.inference.attention_processors import restore_processors
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
@@ -1694,7 +1694,7 @@ class DiffusionPipelineManager:
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
             if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.attention_processors import set_attention_processor
+                from core.inference.attention_processors import set_attention_processor
                 self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
             # Use t_start directly for custom sampling loop
@@ -1757,7 +1757,7 @@ class DiffusionPipelineManager:
         finally:
             # Restore original attention processors if they were changed
             if self.original_processors is not None:
-                from core.attention_processors import restore_processors
+                from core.inference.attention_processors import restore_processors
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
@@ -1979,7 +1979,7 @@ class DiffusionPipelineManager:
         # NAG has its own processors that will be set in custom_sampling_loop
         attention_type = params.get("attention_type", "normal")
         if not params.get("nag_enable", False) and attention_type != "normal":
-            from core.attention_processors import set_attention_processor
+            from core.inference.attention_processors import set_attention_processor
             self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
 
         # Use t_start directly for custom sampling loop
@@ -2040,7 +2040,7 @@ class DiffusionPipelineManager:
 
         # Restore original attention processors if they were changed
         if self.original_processors is not None:
-            from core.attention_processors import restore_processors
+            from core.inference.attention_processors import restore_processors
             restore_processors(pipeline_to_use.unet, self.original_processors)
             self.original_processors = None
 

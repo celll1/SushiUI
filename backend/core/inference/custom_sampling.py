@@ -356,7 +356,7 @@ def custom_sampling_loop(
     original_processors = None
 
     if nag_active:
-        from core.nag_processor import set_nag_processors
+        from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}, attention={attention_type}")
 
         # Set NAG processors on cross-attention layers
@@ -430,7 +430,7 @@ def custom_sampling_loop(
                 current_sigma = float(scheduler.sigmas[i].item())
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
-                    from core.nag_processor import restore_original_processors
+                    from core.inference.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
                     # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps
@@ -727,7 +727,7 @@ def custom_sampling_loop(
 
     # Restore original processors if NAG was active
     if nag_active and original_processors is not None:
-        from core.nag_processor import restore_original_processors
+        from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
     # ===== STAGE 3: VAE DECODE =====
@@ -949,7 +949,7 @@ def custom_img2img_sampling_loop(
     original_processors = None
 
     if nag_active:
-        from core.nag_processor import set_nag_processors
+        from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
         original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
@@ -984,7 +984,7 @@ def custom_img2img_sampling_loop(
                 current_sigma = float(scheduler.sigmas[i].item())
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
-                    from core.nag_processor import restore_original_processors
+                    from core.inference.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
                     # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps
@@ -1277,7 +1277,7 @@ def custom_img2img_sampling_loop(
 
     # Restore original processors if NAG was active
     if nag_active and original_processors is not None:
-        from core.nag_processor import restore_original_processors
+        from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
     # ===== STAGE 3: VAE DECODE =====
@@ -1545,7 +1545,7 @@ def custom_inpaint_sampling_loop(
     original_processors = None
 
     if nag_active:
-        from core.nag_processor import set_nag_processors
+        from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
         original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
@@ -1578,7 +1578,7 @@ def custom_inpaint_sampling_loop(
                 current_sigma = float(scheduler.sigmas[i].item())
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
-                    from core.nag_processor import restore_original_processors
+                    from core.inference.nag_processor import restore_original_processors
                     restore_original_processors(unet, original_processors)
                     nag_active = False
                     # IMPORTANT: Clear NAG negative embeddings so they won't be concatenated in future steps

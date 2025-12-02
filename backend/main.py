@@ -50,8 +50,8 @@ async def startup_event():
     from api.websocket import manager
     from database import GallerySessionLocal
     from database.models import UserSettings
-    from core.lora_manager import lora_manager
-    from core.controlnet_manager import controlnet_manager
+    from core.extensions.lora_manager import lora_manager
+    from core.extensions.controlnet_manager import controlnet_manager
     from core.pipeline import pipeline_manager
 
     asyncio.create_task(manager.start_sender())

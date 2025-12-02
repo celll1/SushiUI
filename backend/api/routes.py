@@ -17,16 +17,16 @@ from concurrent.futures import ThreadPoolExecutor
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
 from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset
 from core.pipeline import pipeline_manager
-from core.taesd import taesd_manager
-from core.lora_manager import lora_manager
-from core.controlnet_manager import controlnet_manager
-from core.controlnet_preprocessor import controlnet_preprocessor
-from core.tipo_manager import tipo_manager
-from core.tagger_manager import tagger_manager
+from core.utils.taesd import taesd_manager
+from core.extensions.lora_manager import lora_manager
+from core.extensions.controlnet_manager import controlnet_manager
+from core.extensions.controlnet_preprocessor import controlnet_preprocessor
+from core.extensions.tipo_manager import tipo_manager
+from core.extensions.tagger_manager import tagger_manager
 from core.training.training_config import TrainingConfigGenerator
 from core.training.training_process import training_process_manager
-from core.tensorboard_manager import tensorboard_manager
-from core.schedulers import (
+from core.utils.tensorboard_manager import tensorboard_manager
+from core.inference.schedulers import (
     get_available_samplers,
     get_sampler_display_names,
     get_available_schedule_types,

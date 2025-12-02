@@ -2746,7 +2746,7 @@ class TrainingRunCreateRequest(BaseModel):
     batch_size: int = 1
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
-    optimizer: str = "adamw8bit"
+    optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
 
     # LoRA specific
     lora_rank: Optional[int] = 16

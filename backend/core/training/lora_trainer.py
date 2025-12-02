@@ -690,7 +690,13 @@ class LoRATrainer:
         return lora_count
 
     def setup_optimizer(self, optimizer_type: str = "adamw8bit", lr_scheduler_type: str = "constant", total_steps: int = 1000):
-        """Setup optimizer and learning rate scheduler."""
+        """
+        Setup optimizer and learning rate scheduler using OptimizerFactory.
+
+        See OptimizerFactory.get_available_optimizers() for supported optimizers.
+        """
+        from core.training.optimizers import OptimizerFactory
+
         print(f"[LoRATrainer] Setting up optimizer: {optimizer_type}")
 
         # Get trainable parameters (LoRA weights only, not original layer weights)
@@ -700,27 +706,19 @@ class LoRATrainer:
             trainable_params.extend(lora.lora_down.parameters())
             trainable_params.extend(lora.lora_up.parameters())
 
-        if optimizer_type == "adamw8bit":
-            try:
-                import bitsandbytes as bnb
-                self.optimizer = bnb.optim.AdamW8bit(
-                    trainable_params,
-                    lr=self.learning_rate,
-                    betas=(0.9, 0.999),
-                    weight_decay=0.01,
-                    eps=1e-8,
-                )
-                print("[LoRATrainer] Using AdamW8bit optimizer")
-            except ImportError:
-                print("[LoRATrainer] bitsandbytes not available, falling back to AdamW")
-                self.optimizer = torch.optim.AdamW(
-                    trainable_params,
-                    lr=self.learning_rate,
-                    betas=(0.9, 0.999),
-                    weight_decay=0.01,
-                    eps=1e-8,
-                )
-        else:
+        # Create optimizer using factory
+        try:
+            self.optimizer = OptimizerFactory.create_optimizer(
+                optimizer_type=optimizer_type,
+                params=trainable_params,
+                learning_rate=self.learning_rate,
+                weight_decay=0.01,
+                betas=(0.9, 0.999),
+                eps=1e-8,
+            )
+        except (ValueError, ImportError) as e:
+            print(f"[LoRATrainer] ERROR: {e}")
+            print("[LoRATrainer] Falling back to AdamW")
             self.optimizer = torch.optim.AdamW(
                 trainable_params,
                 lr=self.learning_rate,

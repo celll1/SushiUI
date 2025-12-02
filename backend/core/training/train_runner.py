@@ -150,21 +150,42 @@ def main():
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
             sys.exit(1)
 
-        # Get dataset (from datasets.db)
-        dataset = datasets_db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
-        if not dataset:
-            print(f"[TrainRunner] ERROR: Dataset {run.dataset_id} not found")
+        # Get dataset configs (support multiple datasets)
+        dataset_configs = run.dataset_configs or []
+        if not dataset_configs and run.dataset_id:
+            # Fallback to legacy single dataset
+            dataset_configs = [{"dataset_id": run.dataset_id, "caption_types": [], "filters": {}}]
+
+        if not dataset_configs:
+            print("[TrainRunner] ERROR: No datasets configured")
             sys.exit(1)
 
-        print(f"[TrainRunner] Dataset: {dataset.name} ({dataset.path})")
+        print(f"[TrainRunner] Loading {len(dataset_configs)} dataset(s)...")
 
-        # Get dataset items (from datasets.db)
-        dataset_items = get_dataset_items(datasets_db, dataset.id)
-        print(f"[TrainRunner] Dataset items: {len(dataset_items)}")
+        # Load all datasets and combine items
+        all_dataset_items = []
+        for i, ds_config in enumerate(dataset_configs):
+            dataset_id = ds_config["dataset_id"]
+            dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if not dataset:
+                print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found")
+                sys.exit(1)
 
-        if len(dataset_items) == 0:
-            print("[TrainRunner] ERROR: Dataset is empty")
+            print(f"[TrainRunner] Dataset {i+1}: {dataset.name} ({dataset.path})")
+
+            # Get dataset items
+            dataset_items = get_dataset_items(datasets_db, dataset_id)
+            print(f"[TrainRunner]   Items: {len(dataset_items)}")
+            all_dataset_items.extend(dataset_items)
+
+        print(f"[TrainRunner] Total dataset items: {len(all_dataset_items)}")
+
+        if len(all_dataset_items) == 0:
+            print("[TrainRunner] ERROR: All datasets are empty")
             sys.exit(1)
+
+        # Use combined dataset items
+        dataset_items = all_dataset_items
 
         # Extract training parameters from config
         process_config = config['config']['process'][0]
@@ -272,8 +293,13 @@ def main():
 
             # Create reload_dataset_callback for per-epoch caption processing
             def reload_dataset_for_epoch(epoch_num: int) -> list:
-                """Reload dataset with caption processing for the current epoch"""
-                return get_dataset_items(datasets_db, dataset.id, epoch_num=epoch_num)
+                """Reload all datasets with caption processing for the current epoch"""
+                all_items = []
+                for ds_config in dataset_configs:
+                    dataset_id = ds_config["dataset_id"]
+                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+                    all_items.extend(items)
+                return all_items
 
             # Start training
             trainer.train(
@@ -401,8 +427,13 @@ def main():
 
             # Create reload_dataset_callback for per-epoch caption processing
             def reload_dataset_for_epoch(epoch_num: int) -> list:
-                """Reload dataset with caption processing for the current epoch"""
-                return get_dataset_items(datasets_db, dataset.id, epoch_num=epoch_num)
+                """Reload all datasets with caption processing for the current epoch"""
+                all_items = []
+                for ds_config in dataset_configs:
+                    dataset_id = ds_config["dataset_id"]
+                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+                    all_items.extend(items)
+                return all_items
 
             # Start training
             trainer.train(

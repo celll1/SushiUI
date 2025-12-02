@@ -803,10 +803,27 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setOptimizer(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="adamw8bit">AdamW 8-bit</option>
-                <option value="adamw">AdamW</option>
-                <option value="lion">Lion</option>
+                <optgroup label="Standard">
+                  <option value="adamw">AdamW (32-bit)</option>
+                  <option value="adamw8bit">AdamW 8-bit</option>
+                  <option value="adafactor">Adafactor</option>
+                </optgroup>
+                <optgroup label="Paged (CPU Offload)">
+                  <option value="paged_adamw">Paged AdamW</option>
+                  <option value="paged_adamw8bit">Paged AdamW 8-bit</option>
+                </optgroup>
+                <optgroup label="Lion">
+                  <option value="lion8bit">Lion 8-bit</option>
+                  <option value="paged_lion8bit">Paged Lion 8-bit</option>
+                </optgroup>
               </select>
+              <p className="text-xs text-gray-500 mt-1">
+                {optimizer === "adafactor" && "Adaptive learning rate, no momentum"}
+                {optimizer === "lion8bit" && "Sign-based momentum"}
+                {optimizer.startsWith("paged_") && "CPU offloading when GPU memory is full"}
+                {optimizer === "adamw8bit" && "8-bit quantization"}
+                {optimizer === "adamw" && "32-bit full precision"}
+              </p>
             </div>
           </div>
 

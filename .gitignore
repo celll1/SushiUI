@@ -72,6 +72,13 @@ tmp/
 temp/
 .cache/
 
+# トレーニングキャッシュ
+backend/cache/
+cache/datasets/
+**/cache_info.json
+*.latent
+*.npz
+
 # デバッグスクリプト
 debug_*.py
 patch_torch_dll.py

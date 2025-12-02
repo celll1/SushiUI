@@ -1823,7 +1823,6 @@ class LoRATrainer:
                                 continue
 
                             try:
-                                from PIL import Image
                                 image = Image.open(image_path)
                                 image.verify()  # Verify image integrity
                                 image = Image.open(image_path)  # Reopen after verify
@@ -2005,15 +2004,15 @@ class LoRATrainer:
                                     image = Image.open(image_path)
                                     image.verify()  # Verify image integrity
                                     image = Image.open(image_path)  # Reopen after verify
+
+                                    # Encode image
+                                    if target_width is not None and target_height is not None:
+                                        latents = self.encode_image(image, target_width=target_width, target_height=target_height)
+                                    else:
+                                        latents = self.encode_image(image)
                                 except Exception as img_err:
                                     print(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
                                     continue
-
-                                # Encode image
-                                if target_width is not None and target_height is not None:
-                                    latents = self.encode_image(image, target_width=target_width, target_height=target_height)
-                                else:
-                                    latents = self.encode_image(image)
 
                             batch_latents.append(latents)
 

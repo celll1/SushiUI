@@ -1498,43 +1498,6 @@ async def cleanup_temp_images(max_age_hours: int = 24):
         print(f"Error cleaning up temp images: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/taglist/{category}")
-async def get_taglist(category: str):
-    """
-    Get tag list for a specific category from taglist directory
-    Categories: general, character, artist, copyright, meta, model
-    """
-    try:
-        # Map category names to file names (capitalize first letter)
-        category_map = {
-            "general": "General",
-            "character": "Character",
-            "artist": "Artist",
-            "copyright": "Copyright",
-            "meta": "Meta",
-            "model": "Model"
-        }
-
-        if category.lower() not in category_map:
-            raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
-
-        filename = category_map[category.lower()]
-        taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
-
-        if not os.path.exists(taglist_path):
-            raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_path}")
-
-        import json
-        with open(taglist_path, "r", encoding="utf-8") as f:
-            tags = json.load(f)
-
-        return tags
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error loading taglist: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.get("/taglist/timestamps")
 async def get_taglist_timestamps():
     """
@@ -1573,6 +1536,43 @@ async def get_taglist_timestamps():
         return timestamps
     except Exception as e:
         print(f"Error getting tag file timestamps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/taglist/{category}")
+async def get_taglist(category: str):
+    """
+    Get tag list for a specific category from taglist directory
+    Categories: general, character, artist, copyright, meta, model
+    """
+    try:
+        # Map category names to file names (capitalize first letter)
+        category_map = {
+            "general": "General",
+            "character": "Character",
+            "artist": "Artist",
+            "copyright": "Copyright",
+            "meta": "Meta",
+            "model": "Model"
+        }
+
+        if category.lower() not in category_map:
+            raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
+
+        filename = category_map[category.lower()]
+        taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
+
+        if not os.path.exists(taglist_path):
+            raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_path}")
+
+        import json
+        with open(taglist_path, "r", encoding="utf-8") as f:
+            tags = json.load(f)
+
+        return tags
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error loading taglist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/tagother/tag_other_names")

@@ -1451,7 +1451,7 @@ class LoRATrainer:
             move_vae_to_cpu,
             log_device_status,
         )
-        from core.custom_sampling import custom_sampling_loop
+        from core.inference.custom_sampling import custom_sampling_loop
 
         # Start with components on CPU for VRAM optimization
         move_text_encoders_to_cpu(temp_pipeline)

@@ -114,11 +114,52 @@ export function removeFromRecentTags(tag: string): void {
 }
 
 /**
- * Normalize tag format for comparison
- * Converts both underscore and space formats to a common format
+ * Normalize tag for matching purposes (does not modify the original tag).
+ *
+ * This is the canonical normalization function used throughout the app for tag comparison.
+ * Based on backend's normalize_tag_for_matching() from tag_group_utils.py.
+ *
+ * Handles various escape patterns:
+ * - character_name_(series)           → character name (series)
+ * - character name (series)           → character name (series)
+ * - character name \(series\)         → character name (series)
+ * - character_name_\(series\)         → character name (series)
+ * - character name \\(series\\)       → character name (series)
+ * - character_name_\\(series\\)       → character name (series)
+ *
+ * @param tag - Tag string in any format
+ * @returns Normalized tag for matching (lowercase, spaces, no escapes)
+ *
+ * @example
+ * normalizeTag("hatsune_miku_(vocaloid)") // → "hatsune miku (vocaloid)"
+ * normalizeTag("hatsune miku \\(vocaloid\\)") // → "hatsune miku (vocaloid)"
+ * normalizeTag("hatsune_miku_\\(vocaloid\\)") // → "hatsune miku (vocaloid)"
  */
 function normalizeTag(tag: string): string {
-  return tag.toLowerCase().replace(/[_\s]/g, "");
+  let normalized = tag.trim();
+
+  // Remove excessive escaping: \\ → nothing
+  normalized = normalized.replace(/\\\\/g, '');
+  normalized = normalized.replace(/\\/g, '');
+
+  // Normalize underscores to spaces
+  normalized = normalized.replace(/_/g, ' ');
+
+  // Lowercase for matching
+  normalized = normalized.toLowerCase();
+
+  return normalized;
+}
+
+/**
+ * Export normalized tag for use in other modules.
+ * This ensures consistent tag matching across the entire application.
+ *
+ * @param tag - Tag string in any format
+ * @returns Normalized tag for matching
+ */
+export function normalizeTagForMatching(tag: string): string {
+  return normalizeTag(tag);
 }
 
 // IndexedDB cache for tag indices

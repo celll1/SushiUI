@@ -30,6 +30,7 @@ interface TagSuggestion {
 
 // Category colors mapping (for tag chips)
 const getCategoryColor = (category: string): string => {
+  const normalized = category.toLowerCase().replace(/\s+/g, '');
   const colors: Record<string, string> = {
     character: "bg-blue-600 dark:bg-blue-700 hover:bg-blue-500",
     artist: "bg-purple-600 dark:bg-purple-700 hover:bg-purple-500",
@@ -37,10 +38,12 @@ const getCategoryColor = (category: string): string => {
     general: "bg-green-600 dark:bg-green-700 hover:bg-green-500",
     meta: "bg-gray-600 dark:bg-gray-700 hover:bg-gray-500",
     quality: "bg-yellow-600 dark:bg-yellow-700 hover:bg-yellow-500",
+    qualitytag: "bg-yellow-600 dark:bg-yellow-700 hover:bg-yellow-500", // "Quality Tag"
     rating: "bg-red-600 dark:bg-red-700 hover:bg-red-500",
+    ratingtag: "bg-red-600 dark:bg-red-700 hover:bg-red-500", // "Rating Tag"
     model: "bg-indigo-600 dark:bg-indigo-700 hover:bg-indigo-500",
   };
-  return colors[category.toLowerCase()] || "bg-green-600 dark:bg-green-700 hover:bg-green-500";
+  return colors[normalized] || "bg-green-600 dark:bg-green-700 hover:bg-green-500";
 };
 
 export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnProps) {
@@ -95,7 +98,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
             for (const tag of tagList) {
               const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
               if (results.length > 0 && results[0].tag === tag) {
-                categoryMap[tag] = results[0].category.toLowerCase();
+                // Store category as-is (will be normalized in getCategoryColor)
+                categoryMap[tag] = results[0].category;
               }
             }
             setTagCategories(categoryMap);
@@ -168,13 +172,13 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     setShowSuggestions(false);
 
     // If tag was selected from suggestions, category is already in tagCategories
-    // If manually typed, try to look it up
+    // If manually typed, try to look it up (using tagSuggestions.ts format)
     if (tag && !tagCategories[tag] && tagSuggestionsContext.isLoaded) {
       tagSuggestionsContext.searchTags(tag, 1, 'all').then(results => {
         if (results.length > 0 && results[0].tag === tag) {
           setTagCategories(prev => ({
             ...prev,
-            [tag]: results[0].category.toLowerCase()
+            [tag]: results[0].category // Use tagSuggestions.ts format as-is
           }));
         }
       }).catch(err => console.error("Failed to fetch tag category:", err));
@@ -253,7 +257,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
           const newCategories: Record<string, string> = { ...tagCategories };
           suggestions.forEach(s => {
             if (!newCategories[s.tag]) {
-              newCategories[s.tag] = s.category.toLowerCase();
+              // Store category as-is (will be normalized in getCategoryColor)
+              newCategories[s.tag] = s.category;
             }
           });
           setTagCategories(newCategories);

@@ -522,6 +522,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       setSamplers(data.samplers);
     } catch (error) {
       console.error("Failed to load samplers:", error);
+      // Fallback: set common samplers if API fails
+      setSamplers([
+        { id: "euler", name: "Euler" },
+        { id: "euler_ancestral", name: "Euler Ancestral" },
+        { id: "heun", name: "Heun" },
+        { id: "dpm_2", name: "DPM2" },
+        { id: "dpm_2_ancestral", name: "DPM2 Ancestral" },
+        { id: "lms", name: "LMS" },
+        { id: "dpm_pp_2s_ancestral", name: "DPM++ 2S Ancestral" },
+        { id: "dpm_pp_sde", name: "DPM++ SDE" },
+        { id: "dpm_pp_2m", name: "DPM++ 2M" },
+        { id: "dpm_pp_2m_sde", name: "DPM++ 2M SDE" },
+        { id: "dpm_pp_3m_sde", name: "DPM++ 3M SDE" },
+      ]);
     }
   };
 
@@ -531,6 +545,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       setScheduleTypes(data.schedule_types);
     } catch (error) {
       console.error("Failed to load schedule types:", error);
+      // Fallback: set common schedule types if API fails
+      setScheduleTypes([
+        { id: "uniform", name: "Uniform" },
+        { id: "karras", name: "Karras" },
+        { id: "exponential", name: "Exponential" },
+        { id: "sgm_uniform", name: "SGM Uniform" },
+        { id: "simple", name: "Simple" },
+        { id: "ddim_uniform", name: "DDIM Uniform" },
+      ]);
     }
   };
 

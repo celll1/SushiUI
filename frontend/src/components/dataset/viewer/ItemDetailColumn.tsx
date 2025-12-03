@@ -8,7 +8,7 @@ import {
   updateItemCaption,
 } from "@/utils/api";
 import TagSuggestions from "@/components/common/TagSuggestions";
-import { TagFilterMode } from "@/utils/tagSuggestions";
+import { TagFilterMode, normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 
 interface ItemDetailColumnProps {
@@ -95,11 +95,17 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
           try {
             const categoryMap: Record<string, string> = {};
             // Search each tag to get its category from pre-loaded JSON files
+            // Use normalized matching to handle various tag formats
             for (const tag of tagList) {
               const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-              if (results.length > 0 && results[0].tag === tag) {
-                // Store category as-is (will be normalized in getCategoryColor)
-                categoryMap[tag] = results[0].category;
+              if (results.length > 0) {
+                // Compare normalized forms to handle format differences
+                const normalizedUserTag = normalizeTagForMatching(tag);
+                const normalizedResultTag = normalizeTagForMatching(results[0].tag);
+                if (normalizedUserTag === normalizedResultTag) {
+                  // Store category as-is (will be normalized in getCategoryColor)
+                  categoryMap[tag] = results[0].category;
+                }
               }
             }
             setTagCategories(categoryMap);
@@ -172,14 +178,19 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     setShowSuggestions(false);
 
     // If tag was selected from suggestions, category is already in tagCategories
-    // If manually typed, try to look it up (using tagSuggestions.ts format)
+    // If manually typed, try to look it up (using normalized matching)
     if (tag && !tagCategories[tag] && tagSuggestionsContext.isLoaded) {
       tagSuggestionsContext.searchTags(tag, 1, 'all').then(results => {
-        if (results.length > 0 && results[0].tag === tag) {
-          setTagCategories(prev => ({
-            ...prev,
-            [tag]: results[0].category // Use tagSuggestions.ts format as-is
-          }));
+        if (results.length > 0) {
+          // Compare normalized forms to handle format differences
+          const normalizedUserTag = normalizeTagForMatching(tag);
+          const normalizedResultTag = normalizeTagForMatching(results[0].tag);
+          if (normalizedUserTag === normalizedResultTag) {
+            setTagCategories(prev => ({
+              ...prev,
+              [tag]: results[0].category // Use tagSuggestions.ts format as-is
+            }));
+          }
         }
       }).catch(err => console.error("Failed to fetch tag category:", err));
     }

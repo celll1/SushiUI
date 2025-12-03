@@ -2723,6 +2723,53 @@ async def get_random_caption(
     }
 
 # ============================================================
+# Dataset Item Caption Update API
+# ============================================================
+
+class CaptionUpdateRequest(BaseModel):
+    caption_type: str = "tags"
+    content: str
+
+@router.patch("/datasets/items/{item_id}/captions")
+async def update_item_caption(
+    item_id: int,
+    request: CaptionUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Update caption for a dataset item"""
+    # Check item exists
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Find existing caption
+    caption = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id == item_id,
+        DatasetCaption.caption_type == request.caption_type
+    ).first()
+
+    if caption:
+        # Update existing caption
+        caption.content = request.content
+        caption.updated_at = datetime.utcnow()
+    else:
+        # Create new caption
+        caption = DatasetCaption(
+            item_id=item_id,
+            caption_type=request.caption_type,
+            content=request.content,
+            source="manual"
+        )
+        db.add(caption)
+
+    db.commit()
+    db.refresh(caption)
+
+    return {"status": "success", "caption": caption.to_dict()}
+
+# Tag Dictionary Search API was removed - frontend uses tagSuggestions.ts (JSON files) instead
+
+# ============================================================
 # Training API Endpoints
 # ============================================================
 

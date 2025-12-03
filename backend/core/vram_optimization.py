@@ -369,12 +369,13 @@ def move_text_encoders_to_gpu(pipeline):
     print("[VRAM] Moving Text Encoders to GPU for encoding...")
 
     if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-        pipeline.text_encoder.to('cuda:0')
+        pipeline.text_encoder.to('cuda:0', non_blocking=False)
 
     if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-        pipeline.text_encoder_2.to('cuda:0')
+        pipeline.text_encoder_2.to('cuda:0', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() can cause sync delays over VPN
+    # Removed to reduce latency - cache will be freed naturally
 
 
 def move_text_encoders_to_cpu(pipeline):
@@ -382,12 +383,12 @@ def move_text_encoders_to_cpu(pipeline):
     print("[VRAM] Moving Text Encoders to CPU to free VRAM...")
 
     if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-        pipeline.text_encoder.to('cpu')
+        pipeline.text_encoder.to('cpu', non_blocking=False)
 
     if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-        pipeline.text_encoder_2.to('cpu')
+        pipeline.text_encoder_2.to('cpu', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() removed to reduce VPN latency
 
 
 def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_compile: bool = False):
@@ -409,8 +410,8 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_com
             # Restore original unet if quantization was used before
             if hasattr(pipeline, '_original_unet'):
                 pipeline.unet = pipeline._original_unet
-            pipeline.unet.to('cuda:0')
-            torch.cuda.empty_cache()
+            pipeline.unet.to('cuda:0', non_blocking=False)
+            # Note: torch.cuda.empty_cache() removed to reduce VPN latency
             return
 
         # Complex path: quantization or torch.compile requested
@@ -485,9 +486,9 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_com
                     print(f"[torch.compile] Warning: Compilation failed: {e}")
                     print(f"[torch.compile] Continuing without torch.compile")
 
-            pipeline.unet.to('cuda:0')
+            pipeline.unet.to('cuda:0', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() removed to reduce VPN latency
 
 
 def move_unet_to_cpu(pipeline):
@@ -495,9 +496,9 @@ def move_unet_to_cpu(pipeline):
     print("[VRAM] Moving U-Net to CPU to free VRAM...")
 
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
-        pipeline.unet.to('cpu')
+        pipeline.unet.to('cpu', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() removed to reduce VPN latency
 
 
 def move_vae_to_gpu(pipeline):
@@ -505,9 +506,9 @@ def move_vae_to_gpu(pipeline):
     print("[VRAM] Moving VAE to GPU for decode...")
 
     if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-        pipeline.vae.to('cuda:0')
+        pipeline.vae.to('cuda:0', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() removed to reduce VPN latency
 
 
 def move_vae_to_cpu(pipeline):
@@ -515,6 +516,6 @@ def move_vae_to_cpu(pipeline):
     print("[VRAM] Moving VAE to CPU to free VRAM...")
 
     if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-        pipeline.vae.to('cpu')
+        pipeline.vae.to('cpu', non_blocking=False)
 
-    torch.cuda.empty_cache()
+    # Note: torch.cuda.empty_cache() removed to reduce VPN latency

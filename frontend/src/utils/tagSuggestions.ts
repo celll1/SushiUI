@@ -172,6 +172,7 @@ interface CachedIndex {
   hash: string;
   index: Array<[string, Array<{ tag: string; count: number }>]>; // Serialized Map
   timestamp: number;
+  fileModTime?: number; // File modification timestamp from server (ms)
 }
 
 /**
@@ -279,6 +280,23 @@ export function formatTagForDisplay(tag: string): string {
 }
 
 /**
+ * Fetch file modification timestamps from server
+ */
+async function fetchFileTimestamps(): Promise<Record<string, number>> {
+  try {
+    const response = await fetch('/api/v1/taglist/timestamps');
+    if (!response.ok) {
+      console.error('[TagSuggestions] Failed to fetch timestamps');
+      return {};
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('[TagSuggestions] Error fetching timestamps:', error);
+    return {};
+  }
+}
+
+/**
  * Build index for fast prefix lookup
  * Groups tags by their first 2 normalized characters
  */
@@ -302,17 +320,49 @@ function buildIndex(tags: TagData, categoryName: string): Map<string, Array<{ ta
 }
 
 /**
- * Load tags from a specific category with caching
+ * Load tags from a specific category with timestamp-based caching
  */
-async function loadCategory(category: keyof typeof categories): Promise<void> {
+async function loadCategory(category: keyof typeof categories, fileTimestamps?: Record<string, number>): Promise<void> {
   if (categories[category].loaded) {
     return;
   }
 
   try {
-    console.log(`[TagSuggestions] Loading ${category} tags from API`);
+    console.log(`[TagSuggestions] Loading ${category} tags`);
     const startTime = performance.now();
 
+    // Get file modification timestamp if available
+    const fileModTime = fileTimestamps?.[category];
+
+    // Check if we have a valid cached index
+    const cached = await getCachedIndex(category);
+
+    // If cache exists and file hasn't been modified, use cache without fetching
+    if (cached && fileModTime && cached.fileModTime === fileModTime) {
+      console.log(`[TagSuggestions] Using cached index for ${category} (file unchanged, ${fileModTime})`);
+      const index = new Map(cached.index);
+
+      // We don't have the actual tag data, but we can reconstruct it from the index
+      const tags: TagData = {};
+      for (const entries of cached.index) {
+        for (const { tag, count } of entries[1]) {
+          tags[tag] = count;
+        }
+      }
+
+      categories[category].tags = tags;
+      categories[category].index = index;
+      categories[category].loaded = true;
+
+      const elapsed = (performance.now() - startTime).toFixed(0);
+      console.log(`[TagSuggestions] Loaded ${Object.keys(tags).length} tags for ${category} from cache in ${elapsed}ms`);
+
+      notifyProgress(category, true);
+      return;
+    }
+
+    // Cache miss or file changed - fetch from server
+    console.log(`[TagSuggestions] Fetching ${category} tags from server (${cached ? 'file changed' : 'no cache'})`);
     const response = await fetch(`/api/v1/taglist/${category}`);
     if (!response.ok) {
       console.error(`[TagSuggestions] Failed to load ${category} tags: HTTP ${response.status}`);
@@ -322,29 +372,20 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
     const data: TagData = await response.json();
     const dataHash = await calculateHash(data);
 
-    // Check if we have a valid cached index
-    const cached = await getCachedIndex(category);
-    let index: Map<string, Array<{ tag: string; count: number }>>;
+    // Build new index
+    console.log(`[TagSuggestions] Building new index for ${category}`);
+    const index = buildIndex(data, category);
 
-    if (cached && cached.hash === dataHash) {
-      // Use cached index
-      console.log(`[TagSuggestions] Using cached index for ${category} (hash match)`);
-      index = new Map(cached.index);
-    } else {
-      // Build new index
-      console.log(`[TagSuggestions] Building new index for ${category}`);
-      index = buildIndex(data, category);
-
-      // Save to cache
-      const serializedIndex: Array<[string, Array<{ tag: string; count: number }>]> = Array.from(index.entries());
-      await saveCachedIndex({
-        category,
-        hash: dataHash,
-        index: serializedIndex,
-        timestamp: Date.now()
-      });
-      console.log(`[TagSuggestions] Cached index saved for ${category}`);
-    }
+    // Save to cache with file modification time
+    const serializedIndex: Array<[string, Array<{ tag: string; count: number }>]> = Array.from(index.entries());
+    await saveCachedIndex({
+      category,
+      hash: dataHash,
+      index: serializedIndex,
+      timestamp: Date.now(),
+      fileModTime: fileModTime || Date.now()
+    });
+    console.log(`[TagSuggestions] Cached index saved for ${category} (mtime: ${fileModTime})`);
 
     categories[category].tags = data;
     categories[category].index = index;
@@ -362,9 +403,9 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
 }
 
 /**
- * Load tag other names (aliases in different languages) with caching
+ * Load tag other names (aliases in different languages) with timestamp-based caching
  */
-async function loadTagOtherNames(): Promise<void> {
+async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promise<void> {
   if (otherNamesLoaded) {
     return;
   }
@@ -373,6 +414,41 @@ async function loadTagOtherNames(): Promise<void> {
     console.log('[TagSuggestions] Loading tag other names');
     const startTime = performance.now();
 
+    // Get file modification timestamp if available
+    const fileModTime = fileTimestamps?.['other_names'];
+
+    // Check if we have a valid cached index
+    const cached = await getCachedIndex('other_names');
+
+    // If cache exists and file hasn't been modified, use cache without fetching
+    if (cached && fileModTime && cached.fileModTime === fileModTime) {
+      console.log(`[TagSuggestions] Using cached index for other_names (file unchanged, ${fileModTime})`);
+      const index = new Map(cached.index as any);
+
+      // Reconstruct tagOtherNames from index (reverse lookup)
+      const data: TagOtherNames = {};
+      for (const [normalizedOtherName, { originalTag, displayName }] of index.entries()) {
+        if (!data[originalTag]) {
+          data[originalTag] = [];
+        }
+        if (!data[originalTag].includes(displayName)) {
+          data[originalTag].push(displayName);
+        }
+      }
+
+      tagOtherNames = data;
+      otherNamesIndex = index;
+      otherNamesLoaded = true;
+
+      const elapsed = (performance.now() - startTime).toFixed(0);
+      console.log(`[TagSuggestions] Loaded ${Object.keys(data).length} tags with other names from cache in ${elapsed}ms`);
+
+      notifyProgress('other_names', true);
+      return;
+    }
+
+    // Cache miss or file changed - fetch from server
+    console.log(`[TagSuggestions] Fetching tag other names from server (${cached ? 'file changed' : 'no cache'})`);
     const response = await fetch('/api/v1/tagother/tag_other_names');
     if (!response.ok) {
       console.error(`[TagSuggestions] Failed to load tag other names: HTTP ${response.status}`);
@@ -382,35 +458,26 @@ async function loadTagOtherNames(): Promise<void> {
     const data: TagOtherNames = await response.json();
     const dataHash = await calculateHash(data);
 
-    // Check if we have a valid cached index
-    const cached = await getCachedIndex('other_names');
-    let index: Map<string, { originalTag: string; displayName: string }>;
-
-    if (cached && cached.hash === dataHash) {
-      // Use cached index
-      console.log(`[TagSuggestions] Using cached index for other_names (hash match)`);
-      index = new Map(cached.index as any); // Deserialize Map
-    } else {
-      // Build new index
-      console.log(`[TagSuggestions] Building new index for other_names`);
-      index = new Map();
-      for (const [originalTag, otherNames] of Object.entries(data)) {
-        for (const otherName of otherNames) {
-          const normalized = normalizeTag(otherName);
-          index.set(normalized, { originalTag, displayName: otherName });
-        }
+    // Build new index
+    console.log(`[TagSuggestions] Building new index for other_names`);
+    const index = new Map<string, { originalTag: string; displayName: string }>();
+    for (const [originalTag, otherNames] of Object.entries(data)) {
+      for (const otherName of otherNames) {
+        const normalized = normalizeTag(otherName);
+        index.set(normalized, { originalTag, displayName: otherName });
       }
-
-      // Save to cache
-      const serializedIndex = Array.from(index.entries());
-      await saveCachedIndex({
-        category: 'other_names',
-        hash: dataHash,
-        index: serializedIndex as any,
-        timestamp: Date.now()
-      });
-      console.log(`[TagSuggestions] Cached index saved for other_names`);
     }
+
+    // Save to cache with file modification time
+    const serializedIndex = Array.from(index.entries());
+    await saveCachedIndex({
+      category: 'other_names',
+      hash: dataHash,
+      index: serializedIndex as any,
+      timestamp: Date.now(),
+      fileModTime: fileModTime || Date.now()
+    });
+    console.log(`[TagSuggestions] Cached index saved for other_names (mtime: ${fileModTime})`);
 
     tagOtherNames = data;
     otherNamesIndex = index;
@@ -428,14 +495,20 @@ async function loadTagOtherNames(): Promise<void> {
 }
 
 /**
- * Load all tag categories (now supports progressive loading via callbacks)
+ * Load all tag categories with timestamp-based caching
  * Each category will trigger onCategoryLoaded callback when it finishes
+ * Fetches file timestamps first to avoid unnecessary data fetches
  */
 export async function loadAllTags(): Promise<void> {
+  // Fetch file timestamps first (lightweight check)
+  console.log('[TagSuggestions] Fetching file timestamps...');
+  const fileTimestamps = await fetchFileTimestamps();
+  console.log('[TagSuggestions] File timestamps:', fileTimestamps);
+
   // Load all categories in parallel, each will notify via callbacks when done
   const promises = [
-    ...Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories)),
-    loadTagOtherNames()
+    ...Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories, fileTimestamps)),
+    loadTagOtherNames(fileTimestamps)
   ];
 
   // Wait for all to complete (though UI can update progressively via callbacks)

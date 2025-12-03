@@ -680,6 +680,50 @@ paths:
                   items:
                     type: string
 
+  /taglist/timestamps:
+    get:
+      tags: [tags]
+      summary: Get tag file modification timestamps
+      description: Get modification timestamps for all tag files to check if cache is stale
+      operationId: getTagFileTimestamps
+      responses:
+        '200':
+          description: Modification timestamps for tag files
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  general:
+                    type: number
+                    description: Unix timestamp (ms) of General.json
+                  character:
+                    type: number
+                    description: Unix timestamp (ms) of Character.json
+                  artist:
+                    type: number
+                    description: Unix timestamp (ms) of Artist.json
+                  copyright:
+                    type: number
+                    description: Unix timestamp (ms) of Copyright.json
+                  meta:
+                    type: number
+                    description: Unix timestamp (ms) of Meta.json
+                  model:
+                    type: number
+                    description: Unix timestamp (ms) of Model.json
+                  other_names:
+                    type: number
+                    description: Unix timestamp (ms) of tag_other_names.json
+                example:
+                  general: 1733270400000
+                  character: 1733270400000
+                  artist: 1733270400000
+                  copyright: 1733270400000
+                  meta: 1733270400000
+                  model: 1733270400000
+                  other_names: 1733270400000
+
   /tipo/load-model:
     post:
       tags: [tipo]

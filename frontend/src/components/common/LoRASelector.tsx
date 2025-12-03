@@ -78,10 +78,9 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
 
   useEffect(() => {
-    if (modelLoaded) {
-      loadAvailableLoras();
-    }
-  }, [modelLoaded]);
+    // Load LoRAs immediately on mount, independent of model load
+    loadAvailableLoras();
+  }, []);
 
   const loadAvailableLoras = async () => {
     try {

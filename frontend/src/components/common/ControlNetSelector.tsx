@@ -159,22 +159,21 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   useEffect(() => {
-    if (modelLoaded) {
-      loadControlNets();
-      loadPreprocessors();
-      // Load persisted images on startup (like Img2ImgPanel does)
-      if (!imagesLoaded) {
-        loadPersistedImages();
-        setImagesLoaded(true);
-      }
-      // Detect model types for existing ControlNets
-      value.forEach((cn, index) => {
-        if (cn.model_path) {
-          detectModelType(cn.model_path, index);
-        }
-      });
+    // Load ControlNets and preprocessors immediately on mount, independent of model load
+    loadControlNets();
+    loadPreprocessors();
+    // Load persisted images on startup (like Img2ImgPanel does)
+    if (!imagesLoaded) {
+      loadPersistedImages();
+      setImagesLoaded(true);
     }
-  }, [modelLoaded]);
+    // Detect model types for existing ControlNets
+    value.forEach((cn, index) => {
+      if (cn.model_path) {
+        detectModelType(cn.model_path, index);
+      }
+    });
+  }, []);
 
   const loadPreprocessors = async () => {
     try {

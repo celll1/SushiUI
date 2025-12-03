@@ -176,14 +176,32 @@ interface CachedIndex {
 
 /**
  * Calculate SHA-256 hash of JSON data
+ * Falls back to simple hash if crypto.subtle is not available (HTTP context)
  */
 async function calculateHash(data: any): Promise<string> {
   const jsonString = JSON.stringify(data);
-  const encoder = new TextEncoder();
-  const dataBuffer = encoder.encode(jsonString);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Check if crypto.subtle is available (HTTPS or localhost only)
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const encoder = new TextEncoder();
+      const dataBuffer = encoder.encode(jsonString);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      console.warn('[TagSuggestions] crypto.subtle.digest failed, using fallback hash');
+    }
+  }
+
+  // Fallback: simple string hash for HTTP contexts (insecure but functional)
+  let hash = 0;
+  for (let i = 0; i < jsonString.length; i++) {
+    const char = jsonString.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash).toString(16);
 }
 
 /**

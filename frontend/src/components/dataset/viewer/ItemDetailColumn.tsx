@@ -8,12 +8,8 @@ import {
   updateItemCaption,
 } from "@/utils/api";
 import TagSuggestions from "@/components/common/TagSuggestions";
-import {
-  searchTags,
-  TagFilterMode,
-  getNextFilterMode,
-  getPreviousFilterMode
-} from "@/utils/tagSuggestions";
+import { TagFilterMode } from "@/utils/tagSuggestions";
+import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 
 interface ItemDetailColumnProps {
   item: DatasetItem | null;
@@ -48,6 +44,7 @@ const getCategoryColor = (category: string): string => {
 };
 
 export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnProps) {
+  const tagSuggestionsContext = useTagSuggestions();
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [tagCategories, setTagCategories] = useState<Record<string, string>>({});
@@ -90,13 +87,13 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
         });
         setHasChanges(false);
 
-        // Fetch category information for existing tags using tagSuggestions.ts
-        if (tagList.length > 0) {
+        // Fetch category information for existing tags using Context (pre-loaded tags)
+        if (tagList.length > 0 && tagSuggestionsContext.isLoaded) {
           try {
             const categoryMap: Record<string, string> = {};
-            // Search each tag to get its category from JSON files
+            // Search each tag to get its category from pre-loaded JSON files
             for (const tag of tagList) {
-              const results = await searchTags(tag, 1, 'all');
+              const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
               if (results.length > 0 && results[0].tag === tag) {
                 categoryMap[tag] = results[0].category.toLowerCase();
               }
@@ -172,8 +169,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
 
     // If tag was selected from suggestions, category is already in tagCategories
     // If manually typed, try to look it up
-    if (tag && !tagCategories[tag]) {
-      searchTags(tag, 1, 'all').then(results => {
+    if (tag && !tagCategories[tag] && tagSuggestionsContext.isLoaded) {
+      tagSuggestionsContext.searchTags(tag, 1, 'all').then(results => {
         if (results.length > 0 && results[0].tag === tag) {
           setTagCategories(prev => ({
             ...prev,
@@ -236,8 +233,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
       console.log("[Autocomplete] Searching for:", newTag.trim());
 
       try {
-        // Use tagSuggestions.ts searchTags (JSON file-based)
-        const results = await searchTags(newTag.trim(), 20, filterMode);
+        // Use tagSuggestions Context (pre-loaded JSON files)
+        const results = await tagSuggestionsContext.searchTags(newTag.trim(), 20, filterMode);
         console.log("[Autocomplete] Response:", results);
 
         // Results already match TagSuggestion format
@@ -306,8 +303,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
 
   const handleFilterChange = (direction: 'next' | 'prev') => {
     const newMode = direction === 'next'
-      ? getNextFilterMode(filterMode)
-      : getPreviousFilterMode(filterMode);
+      ? tagSuggestionsContext.getNextFilterMode(filterMode)
+      : tagSuggestionsContext.getPreviousFilterMode(filterMode);
     setFilterMode(newMode);
     console.log("[Filter] Changed to:", newMode);
   };

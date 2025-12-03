@@ -5,6 +5,7 @@ import "./globals.css";
 import { StartupProvider } from "@/contexts/StartupContext";
 import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { TagSuggestionsProvider } from "@/contexts/TagSuggestionsContext";
 import { useEffect } from "react";
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
@@ -23,9 +24,11 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthProvider>
-      <StartupProvider>
-        <GenerationQueueProvider>{children}</GenerationQueueProvider>
-      </StartupProvider>
+      <TagSuggestionsProvider>
+        <StartupProvider>
+          <GenerationQueueProvider>{children}</GenerationQueueProvider>
+        </StartupProvider>
+      </TagSuggestionsProvider>
     </AuthProvider>
   );
 }

@@ -18,12 +18,22 @@ interface StartupProviderProps {
   children: ReactNode;
 }
 
+// Global flag to prevent duplicate polling (across re-mounts in dev mode)
+let globalPollingStarted = false;
+
 export function StartupProvider({ children }: StartupProviderProps) {
   const [isBackendReady, setIsBackendReady] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
   const [hasShownAlert, setHasShownAlert] = useState(false);
 
   useEffect(() => {
+    // Prevent duplicate polling if already started
+    if (globalPollingStarted) {
+      console.log("[StartupContext] Already polling, skipping duplicate mount");
+      return;
+    }
+
+    globalPollingStarted = true;
     console.log("[StartupContext] Initializing...");
     let hasShownAlertInSession = false;
 
@@ -54,14 +64,16 @@ export function StartupProvider({ children }: StartupProviderProps) {
     }, 1000);
 
     // Stop polling after 60 seconds
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       console.log("[StartupContext] Polling timeout reached");
       clearInterval(pollInterval);
+      globalPollingStarted = false; // Allow retry on timeout
     }, 60000);
 
     return () => {
       console.log("[StartupContext] Cleanup");
       clearInterval(pollInterval);
+      clearTimeout(timeout);
     };
   }, []); // Empty dependency array - only run once on mount
 

@@ -28,22 +28,32 @@ interface TagSuggestionsContextValue {
 
 const TagSuggestionsContext = createContext<TagSuggestionsContextValue | undefined>(undefined);
 
+// Global flag to prevent duplicate loading (across re-mounts in dev mode)
+let globalLoadingStarted = false;
+
 export function TagSuggestionsProvider({ children }: { children: React.ReactNode }) {
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false); // Don't block UI
   const [isLoaded, setIsLoaded] = useState(false);
   const [loadStatus, setLoadStatus] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    console.log("[TagSuggestionsProvider] Starting to load all tags...");
+    // Prevent duplicate loading if already started
+    if (globalLoadingStarted) {
+      console.log("[TagSuggestionsProvider] Already loading, skipping duplicate mount");
+      setLoadStatus(getCategoriesLoadStatus());
+      return;
+    }
+
+    globalLoadingStarted = true;
+    console.log("[TagSuggestionsProvider] Starting to load all tags (background)...");
     setIsLoading(true);
 
     // Listen to category load events
     const unsubscribe = onCategoryLoaded((category, loaded) => {
-      console.log(`[TagSuggestionsProvider] Category loaded: ${category} (${loaded})`);
       setLoadStatus((prev) => ({ ...prev, [category]: loaded }));
     });
 
-    // Load all tags
+    // Load all tags in background (non-blocking)
     loadAllTags()
       .then(() => {
         console.log("[TagSuggestionsProvider] All tags loaded successfully");
@@ -54,6 +64,7 @@ export function TagSuggestionsProvider({ children }: { children: React.ReactNode
       .catch((err) => {
         console.error("[TagSuggestionsProvider] Failed to load tags:", err);
         setIsLoading(false);
+        globalLoadingStarted = false; // Allow retry on error
       });
 
     return () => {

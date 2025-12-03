@@ -1233,13 +1233,24 @@ async def get_schedule_types():
 @router.get("/loras")
 async def get_loras():
     """Get available LoRA files"""
-    loras = lora_manager.get_available_loras()
-    return {
-        "loras": [
-            {"path": lora, "name": os.path.basename(lora)}
-            for lora in loras
-        ]
-    }
+    try:
+        loras = lora_manager.get_available_loras()
+        print(f"[DEBUG] get_loras: Found {len(loras)} LoRA files")
+        if len(loras) > 0:
+            print(f"[DEBUG] First LoRA: {loras[0]}")
+        result = {
+            "loras": [
+                {"path": lora, "name": os.path.basename(lora)}
+                for lora in loras
+            ]
+        }
+        print(f"[DEBUG] Returning {len(result['loras'])} LoRAs")
+        return result
+    except Exception as e:
+        print(f"[ERROR] get_loras failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/loras/{lora_name:path}")
 async def get_lora_info(lora_name: str):
@@ -1279,13 +1290,24 @@ async def tokenize_prompt(prompt: str = Form(...)):
 @router.get("/controlnets")
 async def get_controlnets():
     """Get available ControlNet models"""
-    controlnets = controlnet_manager.get_available_controlnets()
-    return {
-        "controlnets": [
-            {"path": cn, "name": os.path.basename(cn)}
-            for cn in controlnets
-        ]
-    }
+    try:
+        controlnets = controlnet_manager.get_available_controlnets()
+        print(f"[DEBUG] get_controlnets: Found {len(controlnets)} ControlNet models")
+        if len(controlnets) > 0:
+            print(f"[DEBUG] First ControlNet: {controlnets[0]}")
+        result = {
+            "controlnets": [
+                {"path": cn, "name": os.path.basename(cn)}
+                for cn in controlnets
+            ]
+        }
+        print(f"[DEBUG] Returning {len(result['controlnets'])} ControlNets")
+        return result
+    except Exception as e:
+        print(f"[ERROR] get_controlnets failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/controlnets/{controlnet_path:path}/info")
 async def get_controlnet_info(controlnet_path: str):

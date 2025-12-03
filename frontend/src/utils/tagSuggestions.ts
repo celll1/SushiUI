@@ -295,7 +295,7 @@ async function loadCategory(category: keyof typeof categories): Promise<void> {
     console.log(`[TagSuggestions] Loading ${category} tags from API`);
     const startTime = performance.now();
 
-    const response = await fetch(`/api/taglist/${category}`);
+    const response = await fetch(`/api/v1/taglist/${category}`);
     if (!response.ok) {
       console.error(`[TagSuggestions] Failed to load ${category} tags: HTTP ${response.status}`);
       return;
@@ -355,7 +355,7 @@ async function loadTagOtherNames(): Promise<void> {
     console.log('[TagSuggestions] Loading tag other names');
     const startTime = performance.now();
 
-    const response = await fetch('/api/tagother/tag_other_names');
+    const response = await fetch('/api/v1/tagother/tag_other_names');
     if (!response.ok) {
       console.error(`[TagSuggestions] Failed to load tag other names: HTTP ${response.status}`);
       return;

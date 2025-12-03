@@ -1535,6 +1535,46 @@ async def get_taglist(category: str):
         print(f"Error loading taglist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/taglist/timestamps")
+async def get_taglist_timestamps():
+    """
+    Get modification timestamps for all tag files to check if cache is stale
+    Returns Unix timestamps in milliseconds
+    """
+    try:
+        category_map = {
+            "general": "General",
+            "character": "Character",
+            "artist": "Artist",
+            "copyright": "Copyright",
+            "meta": "Meta",
+            "model": "Model"
+        }
+
+        timestamps = {}
+
+        # Get taglist file timestamps
+        for category_key, filename in category_map.items():
+            taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
+            if os.path.exists(taglist_path):
+                mtime = os.path.getmtime(taglist_path)
+                timestamps[category_key] = int(mtime * 1000)  # Convert to ms
+            else:
+                timestamps[category_key] = 0  # File doesn't exist
+
+        # Get tag_other_names timestamp
+        tagother_path = os.path.join(settings.root_dir, "tagother", "tag_other_names.json")
+        if os.path.exists(tagother_path):
+            mtime = os.path.getmtime(tagother_path)
+            timestamps["other_names"] = int(mtime * 1000)
+        else:
+            timestamps["other_names"] = 0
+
+        return timestamps
+    except Exception as e:
+        print(f"Error getting tag file timestamps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/tagother/tag_other_names")
 async def get_tag_other_names():
     """

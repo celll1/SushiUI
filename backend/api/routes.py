@@ -1175,27 +1175,60 @@ async def get_current_model():
 
 @router.get("/samplers")
 async def get_samplers():
-    """Get available samplers"""
-    samplers = get_available_samplers()
-    display_names = get_sampler_display_names()
-    return {
-        "samplers": [
-            {"id": sampler_id, "name": display_names.get(sampler_id, sampler_id)}
-            for sampler_id in samplers
-        ]
-    }
+    """Get available samplers (static list, doesn't require model)"""
+    try:
+        samplers = get_available_samplers()
+        display_names = get_sampler_display_names()
+        return {
+            "samplers": [
+                {"id": sampler_id, "name": display_names.get(sampler_id, sampler_id)}
+                for sampler_id in samplers
+            ]
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to get samplers: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return hardcoded fallback
+        return {
+            "samplers": [
+                {"id": "euler", "name": "Euler"},
+                {"id": "euler_a", "name": "Euler a"},
+                {"id": "dpmpp_2m", "name": "DPM++ 2M"},
+                {"id": "dpmpp_sde", "name": "DPM++ SDE"},
+                {"id": "dpm2", "name": "DPM2"},
+                {"id": "dpm2_a", "name": "DPM2 a"},
+                {"id": "heun", "name": "Heun"},
+                {"id": "ddim", "name": "DDIM"},
+                {"id": "lms", "name": "LMS"},
+                {"id": "unipc", "name": "UniPC"},
+            ]
+        }
 
 @router.get("/schedule-types")
 async def get_schedule_types():
-    """Get available schedule types"""
-    schedule_types = get_available_schedule_types()
-    display_names = get_schedule_type_display_names()
-    return {
-        "schedule_types": [
-            {"id": schedule_id, "name": display_names.get(schedule_id, schedule_id)}
-            for schedule_id in schedule_types
-        ]
-    }
+    """Get available schedule types (static list, doesn't require model)"""
+    try:
+        schedule_types = get_available_schedule_types()
+        display_names = get_schedule_type_display_names()
+        return {
+            "schedule_types": [
+                {"id": schedule_id, "name": display_names.get(schedule_id, schedule_id)}
+                for schedule_id in schedule_types
+            ]
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to get schedule types: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return hardcoded fallback
+        return {
+            "schedule_types": [
+                {"id": "uniform", "name": "Uniform"},
+                {"id": "karras", "name": "Karras"},
+                {"id": "exponential", "name": "Exponential"},
+            ]
+        }
 
 @router.get("/loras")
 async def get_loras():

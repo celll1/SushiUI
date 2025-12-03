@@ -1,3 +1,5 @@
-from .pipeline import DiffusionPipelineManager, pipeline_manager
+# Core module
+# Import pipeline only when explicitly needed to avoid circular dependencies
+# Use: from core.pipeline import pipeline_manager
 
-__all__ = ["DiffusionPipelineManager", "pipeline_manager"]
+__all__ = []

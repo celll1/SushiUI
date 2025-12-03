@@ -279,13 +279,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   }, [developerMode]);
 
-  // Load samplers and schedule types when model is loaded
+  // Load samplers and schedule types immediately on mount (don't wait for model)
   useEffect(() => {
-    if (modelLoaded) {
-      loadSamplers();
-      loadScheduleTypes();
-    }
-  }, [modelLoaded]);
+    loadSamplers();
+    loadScheduleTypes();
+  }, []); // Empty deps - load once on mount
 
   // Save params to localStorage whenever they change (but only after mounted)
   useEffect(() => {

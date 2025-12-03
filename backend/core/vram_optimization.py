@@ -402,13 +402,20 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_com
     if quantization in [None, "", "none"]:
         quantization = None
 
-    if quantization:
-        print(f"[VRAM] Moving U-Net to GPU with {quantization} quantization...")
-    else:
-        print("[VRAM] Moving U-Net to GPU for inference...")
-
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+        # Fast path: No quantization and no torch.compile (most common case)
+        if not quantization and not use_torch_compile:
+            print("[VRAM] Moving U-Net to GPU for inference...")
+            # Restore original unet if quantization was used before
+            if hasattr(pipeline, '_original_unet'):
+                pipeline.unet = pipeline._original_unet
+            pipeline.unet.to('cuda:0')
+            torch.cuda.empty_cache()
+            return
+
+        # Complex path: quantization or torch.compile requested
         if quantization:
+            print(f"[VRAM] Moving U-Net to GPU with {quantization} quantization...")
             # Store original unet on CPU if not already stored
             if not hasattr(pipeline, '_original_unet'):
                 print(f"[VRAM] Storing original U-Net on CPU...")

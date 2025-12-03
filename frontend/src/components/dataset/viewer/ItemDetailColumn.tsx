@@ -1,8 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Undo2, Redo2, Copy, Clipboard, Plus, X } from "lucide-react";
-import { getDatasetItem, DatasetItem, DatasetCaptionData } from "@/utils/api";
+import { useState, useEffect, useRef } from "react";
+import { Undo2, Redo2, Copy, Clipboard } from "lucide-react";
+import {
+  getDatasetItem,
+  DatasetItem,
+  updateItemCaption,
+} from "@/utils/api";
+import TagSuggestions from "@/components/common/TagSuggestions";
+import {
+  searchTags,
+  TagFilterMode,
+  getNextFilterMode,
+  getPreviousFilterMode
+} from "@/utils/tagSuggestions";
 
 interface ItemDetailColumnProps {
   item: DatasetItem | null;
@@ -15,9 +26,31 @@ interface EditHistory {
   future: string[][];
 }
 
+interface TagSuggestion {
+  tag: string;
+  count: number;
+  category: string;
+}
+
+// Category colors mapping (for tag chips)
+const getCategoryColor = (category: string): string => {
+  const colors: Record<string, string> = {
+    character: "bg-blue-600 dark:bg-blue-700 hover:bg-blue-500",
+    artist: "bg-purple-600 dark:bg-purple-700 hover:bg-purple-500",
+    copyright: "bg-pink-600 dark:bg-pink-700 hover:bg-pink-500",
+    general: "bg-green-600 dark:bg-green-700 hover:bg-green-500",
+    meta: "bg-gray-600 dark:bg-gray-700 hover:bg-gray-500",
+    quality: "bg-yellow-600 dark:bg-yellow-700 hover:bg-yellow-500",
+    rating: "bg-red-600 dark:bg-red-700 hover:bg-red-500",
+    model: "bg-indigo-600 dark:bg-indigo-700 hover:bg-indigo-500",
+  };
+  return colors[category.toLowerCase()] || "bg-green-600 dark:bg-green-700 hover:bg-green-500";
+};
+
 export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnProps) {
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
+  const [tagCategories, setTagCategories] = useState<Record<string, string>>({});
   const [newTag, setNewTag] = useState("");
   const [history, setHistory] = useState<EditHistory>({
     past: [],
@@ -25,6 +58,12 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     future: [],
   });
   const [hasChanges, setHasChanges] = useState(false);
+  const [tagSuggestions, setTagSuggestions] = useState<TagSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+  const [filterMode, setFilterMode] = useState<TagFilterMode>("all");
+  const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 });
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (item) {
@@ -50,6 +89,24 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
           future: [],
         });
         setHasChanges(false);
+
+        // Fetch category information for existing tags using tagSuggestions.ts
+        if (tagList.length > 0) {
+          try {
+            const categoryMap: Record<string, string> = {};
+            // Search each tag to get its category from JSON files
+            for (const tag of tagList) {
+              const results = await searchTags(tag, 1, 'all');
+              if (results.length > 0 && results[0].tag === tag) {
+                categoryMap[tag] = results[0].category.toLowerCase();
+              }
+            }
+            setTagCategories(categoryMap);
+            console.log("[ItemDetail] Loaded tag categories:", categoryMap);
+          } catch (err) {
+            console.error("Failed to load tag categories:", err);
+          }
+        }
       } else {
         setTags([]);
         setHistory({ past: [], present: [], future: [] });
@@ -99,17 +156,32 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     setHasChanges(true);
   };
 
-  const handleAddTag = () => {
-    if (!newTag.trim()) return;
+  const handleAddTag = (tag?: string) => {
+    const tagToAdd = tag || newTag.trim().toLowerCase().replace(/\s+/g, "_");
+    if (!tagToAdd) return;
 
-    const tag = newTag.trim().toLowerCase().replace(/\s+/g, "_");
-    if (tags.includes(tag)) {
+    if (tags.includes(tagToAdd)) {
       setNewTag("");
+      setShowSuggestions(false);
       return;
     }
 
-    pushHistory([...tags, tag]);
+    pushHistory([...tags, tagToAdd]);
     setNewTag("");
+    setShowSuggestions(false);
+
+    // If tag was selected from suggestions, category is already in tagCategories
+    // If manually typed, try to look it up
+    if (tag && !tagCategories[tag]) {
+      searchTags(tag, 1, 'all').then(results => {
+        if (results.length > 0 && results[0].tag === tag) {
+          setTagCategories(prev => ({
+            ...prev,
+            [tag]: results[0].category.toLowerCase()
+          }));
+        }
+      }).catch(err => console.error("Failed to fetch tag category:", err));
+    }
   };
 
   const handleRemoveTag = (index: number) => {
@@ -131,14 +203,113 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     }
   };
 
-  const handleSave = () => {
-    // TODO: Implement save to backend
-    console.log("Saving tags:", tags);
-    setHasChanges(false);
+  const handleSave = async () => {
+    if (!item) return;
+
+    try {
+      const content = tags.join(", ");
+      await updateItemCaption(item.id, {
+        caption_type: "tags",
+        content,
+      });
+      setHasChanges(false);
+      console.log("Tags saved successfully");
+    } catch (err) {
+      console.error("Failed to save tags:", err);
+      alert("Failed to save tags. Please try again.");
+    }
   };
 
   const handleRevert = () => {
     loadItemDetails();
+  };
+
+  // Tag suggestions logic using tagSuggestions.ts (same as Generate screen)
+  useEffect(() => {
+    const handleSearch = async () => {
+      if (newTag.trim().length < 2) {
+        setTagSuggestions([]);
+        setShowSuggestions(false);
+        return;
+      }
+
+      console.log("[Autocomplete] Searching for:", newTag.trim());
+
+      try {
+        // Use tagSuggestions.ts searchTags (JSON file-based)
+        const results = await searchTags(newTag.trim(), 20, filterMode);
+        console.log("[Autocomplete] Response:", results);
+
+        // Results already match TagSuggestion format
+        const suggestions: TagSuggestion[] = results.map(r => ({
+          tag: r.tag,
+          count: r.count,
+          category: r.category,
+        }));
+
+        setTagSuggestions(suggestions);
+        setShowSuggestions(suggestions.length > 0);
+        setSelectedSuggestionIndex(0);
+
+        // Update category map with discovered categories
+        if (suggestions.length > 0) {
+          const newCategories: Record<string, string> = { ...tagCategories };
+          suggestions.forEach(s => {
+            if (!newCategories[s.tag]) {
+              newCategories[s.tag] = s.category.toLowerCase();
+            }
+          });
+          setTagCategories(newCategories);
+        }
+
+        // Update position
+        if (inputRef.current) {
+          const rect = inputRef.current.getBoundingClientRect();
+          setSuggestionPosition({
+            top: rect.bottom + window.scrollY + 4,
+            left: rect.left + window.scrollX,
+          });
+        }
+      } catch (err) {
+        console.error("[Autocomplete] Failed to search tags:", err);
+      }
+    };
+
+    const debounceTimer = setTimeout(handleSearch, 300);
+    return () => clearTimeout(debounceTimer);
+  }, [newTag, filterMode]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || tagSuggestions.length === 0) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleAddTag();
+      }
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedSuggestionIndex((prev) =>
+        Math.min(prev + 1, tagSuggestions.length - 1)
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedSuggestionIndex((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddTag(tagSuggestions[selectedSuggestionIndex].tag);
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
+    }
+  };
+
+  const handleFilterChange = (direction: 'next' | 'prev') => {
+    const newMode = direction === 'next'
+      ? getNextFilterMode(filterMode)
+      : getPreviousFilterMode(filterMode);
+    setFilterMode(newMode);
+    console.log("[Filter] Changed to:", newMode);
   };
 
   if (!item) {
@@ -194,7 +365,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
                 onClick={handleUndo}
                 disabled={history.past.length === 0}
                 className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Undo"
+                title="Undo (Ctrl+Z)"
               >
                 <Undo2 className="h-3 w-3" />
               </button>
@@ -202,21 +373,21 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
                 onClick={handleRedo}
                 disabled={history.future.length === 0}
                 className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Redo"
+                title="Redo (Ctrl+Y)"
               >
                 <Redo2 className="h-3 w-3" />
               </button>
               <button
                 onClick={handleCopyTags}
                 className="p-0.5 hover:bg-gray-700 rounded transition-colors"
-                title="Copy"
+                title="Copy Tags (Ctrl+C)"
               >
                 <Copy className="h-3 w-3" />
               </button>
               <button
                 onClick={handlePasteTags}
                 className="p-0.5 hover:bg-gray-700 rounded transition-colors"
-                title="Paste"
+                title="Paste Tags (Ctrl+V)"
               >
                 <Clipboard className="h-3 w-3" />
               </button>
@@ -228,45 +399,37 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
             {tags.length === 0 ? (
               <div className="text-xs text-gray-500 w-full text-center py-2">No tags</div>
             ) : (
-              tags.map((tag, index) => (
-                <div
-                  key={index}
-                  className="flex items-center space-x-1 px-1.5 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-[10px] transition-colors group h-fit"
-                >
-                  <span>{tag}</span>
-                  <button
+              tags.map((tag, index) => {
+                const category = tagCategories[tag] || "general";
+                const colorClass = getCategoryColor(category);
+                return (
+                  <div
+                    key={index}
+                    className={`flex items-center space-x-1 px-1.5 py-0.5 ${colorClass} rounded text-[10px] transition-colors group h-fit cursor-pointer`}
+                    title={`Category: ${category}`}
                     onClick={() => handleRemoveTag(index)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    <X className="h-2.5 w-2.5" />
-                  </button>
-                </div>
-              ))
+                    <span>{tag}</span>
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[8px]">
+                      ✕
+                    </span>
+                  </div>
+                );
+              })
             )}
           </div>
 
-          {/* Add Tag - Compact */}
-          <div className="flex-shrink-0 flex items-center space-x-1 mt-2">
+          {/* Add Tag - Compact with Autocomplete */}
+          <div className="flex-shrink-0 mt-2 relative">
             <input
+              ref={inputRef}
               type="text"
               value={newTag}
               onChange={(e) => setNewTag(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleAddTag();
-                }
-              }}
-              placeholder="Add tag..."
-              className="flex-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
+              onKeyDown={handleKeyDown}
+              placeholder="Type to search tags..."
+              className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
             />
-            <button
-              onClick={handleAddTag}
-              disabled={!newTag.trim()}
-              className="px-2 py-1 bg-blue-600 hover:bg-blue-500 rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              +
-            </button>
           </div>
         </div>
 
@@ -309,6 +472,18 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
             Revert
           </button>
         </div>
+      )}
+
+      {/* Tag Suggestions Dropdown */}
+      {showSuggestions && tagSuggestions.length > 0 && (
+        <TagSuggestions
+          suggestions={tagSuggestions}
+          selectedIndex={selectedSuggestionIndex}
+          onSelect={handleAddTag}
+          position={suggestionPosition}
+          filterMode={filterMode}
+          onFilterChange={handleFilterChange}
+        />
       )}
     </div>
   );

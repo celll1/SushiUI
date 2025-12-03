@@ -1438,3 +1438,22 @@ export const updateTrainingPreset = async (id: number, data: TrainingPresetUpdat
 export const deleteTrainingPreset = async (id: number): Promise<void> => {
   await api.delete(`/training/presets/${id}`);
 };
+
+// ============================================================
+// Dataset Caption Update API
+// ============================================================
+
+export interface CaptionUpdateRequest {
+  caption_type: string;
+  content: string;
+}
+
+export const updateItemCaption = async (
+  itemId: number,
+  data: CaptionUpdateRequest
+): Promise<{ status: string; caption: DatasetCaptionData }> => {
+  const response = await api.patch(`/datasets/items/${itemId}/captions`, data);
+  return response.data;
+};
+
+// Tag Dictionary Search API was removed - use tagSuggestions.ts instead

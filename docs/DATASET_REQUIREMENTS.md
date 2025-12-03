@@ -2834,6 +2834,87 @@ components:
 
 ## 13. 変更履歴
 
+### Version 1.4.0 (2025-12-03)
+
+**主な変更**:
+
+1. **タグ編集UIの強化**
+   - タグの追加・削除・並び替え機能
+   - カテゴリ別カラーコーディング（Character: 青、Artist: 紫、General: 緑など）
+   - ドラッグ&ドロップによるタグ並び替え
+   - Undo/Redo機能（編集履歴管理）
+   - タグオートコンプリート（TagDictionary連携、人気順表示）
+
+2. **タグショートカット機能**
+   - よく使うタグをショートカットに登録
+   - ワンクリックでタグ追加/削除
+   - ショートカットリストの管理（追加・削除・並び替え）
+   - ローカルストレージに保存（ユーザーごと）
+
+3. **未知タグの処理**
+   - TagDictionaryに存在しないタグの自動検出
+   - 新規タグ追加の確認ダイアログ表示
+   - ユーザー追加タグの専用JSON管理（`taglist/user_added.json`）
+   - カテゴリ選択UI（Character, Artist, General, etc.）
+   - タグサジェストに公式タグとマージ表示
+   - カウント管理（データセット内使用回数）
+
+4. **エクスポート機能**
+   - **TXTエクスポート**: `tags` フィールドのみを `.txt` ファイルに出力
+     - 差分検出: 既存の `.txt` ファイルと比較し、変更があった場合のみ書き込み
+     - バッチエクスポート: 選択アイテムまたは全アイテムに対応
+   - **JSONエクスポート**: 全フィールド（tags, captions, metadata）を `.json` ファイルに出力
+     - 差分検出: 既存の `.json` ファイルと比較し、変更があった場合のみ書き込み
+     - ストレージ負荷最小化: 変更なしの場合はスキップ
+     - フォーマット: `{image_path: {tags: [...], captions: {...}, metadata: {...}}}`
+
+5. **インポート機能**
+   - **TXT/JSONインポート**: ファイルからキャプションを再読み込み
+   - モード選択:
+     - **追加（デフォルト）**: 既存データを保持し、新規データを追加
+     - **上書き**: 既存データを削除し、新規データで置き換え
+   - バッチ処理: 複数ファイルの一括インポート
+   - 競合解決: 同一タグの重複検出・マージ
+
+6. **モバイルUI対応**
+   - レスポンシブデザインの実装
+   - 3カラムレイアウト → 1カラムレイアウト（モバイル）
+   - タッチジェスチャー対応（タグの並び替え、スワイプ操作）
+   - モバイル最適化されたフィルターUI
+   - 参考実装: `Txt2ImgPanel.tsx`, `ImageGrid.tsx` のモバイル対応
+
+7. **API エンドポイント追加**
+   - `PATCH /datasets/items/{item_id}/captions` - キャプション更新（Undo/Redo対応）
+   - `POST /datasets/{dataset_id}/export/txt` - TXTエクスポート（差分検出）
+   - `POST /datasets/{dataset_id}/export/json` - JSONエクスポート（差分検出）
+   - `POST /datasets/{dataset_id}/import/txt` - TXTインポート（追加/上書き）
+   - `POST /datasets/{dataset_id}/import/json` - JSONインポート（追加/上書き）
+   - `GET /datasets/tags/shortcuts` - タグショートカット取得
+   - `POST /datasets/tags/shortcuts` - タグショートカット保存
+
+8. **タグカラーコーディング**
+   - カテゴリ別カラーマッピング:
+     - Character: `bg-blue-600`
+     - Artist: `bg-purple-600`
+     - Copyright: `bg-pink-600`
+     - General: `bg-green-600`
+     - Meta: `bg-gray-600`
+     - Quality: `bg-yellow-600`
+     - Rating: `bg-red-600`
+     - Model: `bg-indigo-600`
+   - ダークモード対応（`dark:bg-xxx-700`）
+   - ホバー時のハイライト
+
+**実装の優先度**:
+- Phase 1 (High): タグ編集UI、オートコンプリート、Undo/Redo
+- Phase 2 (Medium): カラーコーディング、ドラッグ&ドロップ、ショートカット、未知タグ処理
+- Phase 3 (Low): エクスポート、インポート、モバイルUI
+
+**技術的詳細**:
+- フロントエンド: React DnD（ドラッグ&ドロップ）、React UseHooks（Undo/Redo）
+- バックエンド: 差分検出アルゴリズム（SHA256ハッシュ比較）
+- モバイル: TailwindCSS responsive utilities (`sm:`, `md:`, `lg:`)
+
 ### Version 1.3.0 (2025-11-29)
 
 **主な変更**:
@@ -2982,7 +3063,7 @@ components:
 ---
 
 **作成日**: 2025-11-29
-**最終更新**: 2025-11-29
-**バージョン**: 1.3.0
+**最終更新**: 2025-12-03
+**バージョン**: 1.4.0
 **作成者**: Claude Code
 **レビュー**: 未実施

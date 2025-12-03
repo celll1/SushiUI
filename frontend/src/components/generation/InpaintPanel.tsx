@@ -378,13 +378,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   }, [developerMode]);
 
-  // When model loads on startup, load samplers and schedule types
+  // Load samplers and schedule types immediately on mount (don't wait for model)
   useEffect(() => {
-    if (modelLoaded) {
-      loadSamplers();
-      loadScheduleTypes();
-    }
-  }, [modelLoaded]);
+    loadSamplers();
+    loadScheduleTypes();
+  }, []); // Empty deps - load once on mount
 
   // When backend becomes ready, reload temp images if not already loaded
   useEffect(() => {

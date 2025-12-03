@@ -241,10 +241,15 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
 
+  // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed")
+    : params.controlnets;
+
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
-    controlnets: await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed"),
+    controlnets: controlnets,
   };
 
   const formData = new FormData();
@@ -306,10 +311,15 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
 
+  // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed")
+    : params.controlnets;
+
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
-    controlnets: await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed"),
+    controlnets: controlnets,
   };
 
   const formData = new FormData();
@@ -384,10 +394,15 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
 
+  // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed")
+    : params.controlnets;
+
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
-    controlnets: await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed"),
+    controlnets: controlnets,
   };
 
   const formData = new FormData();

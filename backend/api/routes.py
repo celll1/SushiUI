@@ -2671,18 +2671,43 @@ async def list_dataset_items(
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
+    tags: Optional[str] = None,  # Comma-separated tags to filter by
     db: Session = Depends(get_datasets_db)
 ):
-    """List dataset items with pagination and search"""
+    """List dataset items with pagination and search
+
+    Args:
+        dataset_id: Dataset ID
+        page: Page number (1-indexed)
+        page_size: Items per page
+        search: Text search in filename (base_name)
+        tags: Comma-separated tags to filter (e.g. "1girl,solo"). Item must contain ALL specified tags.
+    """
     query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
-    
+
+    # Filename search
     if search:
         query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
-    
+
+    # Tag filter: Find items that have captions containing ALL specified tags
+    if tags:
+        tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
+        if tag_list:
+            # Join with DatasetCaption table (caption_type = "tags")
+            query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
+            query = query.filter(DatasetCaption.caption_type == "tags")
+
+            # Filter by each tag (comma-separated in caption content)
+            for tag in tag_list:
+                # Match tag as whole word in comma-separated list
+                query = query.filter(
+                    func.lower(DatasetCaption.content).like(f"%{tag}%")
+                )
+
     total = query.count()
     offset = (page - 1) * page_size
     items = query.order_by(DatasetItem.id).offset(offset).limit(page_size).all()
-    
+
     return {
         "items": [item.to_dict() for item in items],
         "total": total,

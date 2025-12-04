@@ -16,18 +16,25 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [currentItem, setCurrentItem] = useState<DatasetItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState(""); // Comma-separated tags
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const pageSize = 50;
 
   useEffect(() => {
     loadItems();
-  }, [datasetId, page, search]);
+  }, [datasetId, page, search, tagFilter]);
 
   const loadItems = async () => {
     setLoading(true);
     try {
-      const response = await listDatasetItems(datasetId, page, pageSize, search || undefined);
+      const response = await listDatasetItems(
+        datasetId,
+        page,
+        pageSize,
+        search || undefined,
+        tagFilter || undefined
+      );
       setItems(response.items);
       setTotal(response.total);
 
@@ -70,6 +77,11 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setPage(1);
   };
 
+  const handleTagFilterChange = (value: string) => {
+    setTagFilter(value);
+    setPage(1);
+  };
+
   return (
     <div className="flex h-full gap-3">
       {/* Left Column: Item Grid */}
@@ -79,6 +91,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           selectedItems={selectedItems}
           currentItem={currentItem}
           search={search}
+          tagFilter={tagFilter}
           page={page}
           total={total}
           pageSize={pageSize}
@@ -86,6 +99,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           onSelectItem={handleSelectItem}
           onToggleSelection={handleToggleSelection}
           onSearchChange={handleSearchChange}
+          onTagFilterChange={handleTagFilterChange}
           onPageChange={setPage}
         />
       </div>

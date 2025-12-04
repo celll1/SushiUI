@@ -1109,10 +1109,12 @@ export const listDatasetItems = async (
   datasetId: number,
   page: number = 1,
   pageSize: number = 50,
-  search?: string
+  search?: string,
+  tags?: string // Comma-separated tags
 ): Promise<DatasetItemListResponse> => {
   const params: any = { page, page_size: pageSize };
   if (search) params.search = search;
+  if (tags) params.tags = tags;
   const response = await api.get(`/datasets/${datasetId}/items`, { params });
   return response.data;
 };

@@ -81,6 +81,82 @@ class ControlNetManager:
 
         return None
 
+    def _is_valid_controlnet_file(self, file_path: Path) -> bool:
+        """
+        Validate if a file is a valid ControlNet model file.
+
+        Checks:
+        1. File extension (.safetensors, .pth, .pt, .bin)
+        2. File contains ControlNet-specific keys
+        3. Excludes training artifacts (optimizer states, debug latents, etc.)
+
+        Returns:
+            True if valid ControlNet model, False otherwise
+        """
+        # Exclude known training artifacts by filename patterns
+        filename = file_path.name.lower()
+        exclude_patterns = [
+            'optimizer',           # optimizer states
+            'debug_latent',        # debug latent images
+            'scheduler',           # scheduler states
+            'ema',                 # EMA states
+            'checkpoint',          # training checkpoints
+            'step_',               # step-specific saves (intermediate)
+        ]
+
+        for pattern in exclude_patterns:
+            if pattern in filename:
+                print(f"[ControlNetManager] Excluding training artifact: {file_path.name}")
+                return False
+
+        # Check file extension
+        if file_path.suffix not in ['.safetensors', '.pth', '.pt', '.bin']:
+            return False
+
+        # For .safetensors files, verify they contain ControlNet or LLLite keys
+        if file_path.suffix == '.safetensors':
+            try:
+                from safetensors import safe_open
+
+                with safe_open(file_path, framework="pt", device="cpu") as f:
+                    keys = list(f.keys())
+
+                    # Check for ControlNet-specific key patterns
+                    # Standard ControlNet: input_blocks, middle_block, zero_convs
+                    # LLLite: lllite_unet, conditioning1, lora_down, lora_up
+                    controlnet_key_patterns = [
+                        'input_blocks',
+                        'middle_block',
+                        'output_blocks',
+                        'zero_convs',
+                        'controlnet',
+                        'lllite_unet',
+                        'conditioning1',
+                    ]
+
+                    has_controlnet_keys = any(
+                        any(pattern in key for pattern in controlnet_key_patterns)
+                        for key in keys
+                    )
+
+                    if not has_controlnet_keys:
+                        print(f"[ControlNetManager] Excluding non-ControlNet file (no ControlNet keys): {file_path.name}")
+                        return False
+
+            except Exception as e:
+                print(f"[ControlNetManager] Could not validate {file_path.name}: {e}")
+                # If we can't read it, exclude it to be safe
+                return False
+
+        # For .pt/.bin files, apply filename heuristics
+        elif file_path.suffix in ['.pt', '.bin', '.pth']:
+            # Exclude obviously non-ControlNet files
+            if any(pattern in filename for pattern in ['latent', 'noise', 'tensor']):
+                print(f"[ControlNetManager] Excluding non-ControlNet .pt file: {file_path.name}")
+                return False
+
+        return True
+
     def get_available_controlnets(self) -> List[str]:
         """Get list of available ControlNet models from default and additional directories"""
         controlnets = []
@@ -97,10 +173,12 @@ class ControlNetManager:
             # Look for .safetensors and .pth files
             for file in controlnet_dir.glob("**/*"):
                 if file.suffix in [".safetensors", ".pth", ".pt", ".bin"]:
-                    relative_path = file.relative_to(controlnet_dir)
-                    controlnets.append(str(relative_path))
+                    # Validate file before adding
+                    if self._is_valid_controlnet_file(file):
+                        relative_path = file.relative_to(controlnet_dir)
+                        controlnets.append(str(relative_path))
 
-        print(f"[ControlNetManager] Total ControlNet models found: {len(controlnets)}")
+        print(f"[ControlNetManager] Total valid ControlNet models found: {len(controlnets)}")
         return sorted(list(set(controlnets)))  # Remove duplicates
 
     def is_lllite_model(self, controlnet_path: str) -> bool:

@@ -95,6 +95,84 @@ class LoRAManager:
 
         return None
 
+    def _is_valid_lora_file(self, file_path: Path) -> bool:
+        """
+        Validate if a file is a valid LoRA model file.
+
+        Checks:
+        1. File extension (.safetensors, .pt, .bin)
+        2. File contains LoRA-specific keys (lora_unet_*, lora_te*, etc.)
+        3. Excludes training artifacts (optimizer states, debug latents, etc.)
+
+        Returns:
+            True if valid LoRA model, False otherwise
+        """
+        # Exclude known training artifacts by filename patterns
+        filename = file_path.name.lower()
+        exclude_patterns = [
+            'optimizer',           # optimizer states
+            'debug_latent',        # debug latent images
+            'scheduler',           # scheduler states
+            'ema',                 # EMA states
+            'checkpoint',          # training checkpoints (not final LoRA)
+            'step_',               # step-specific saves (intermediate)
+        ]
+
+        for pattern in exclude_patterns:
+            if pattern in filename:
+                print(f"[LoRAManager] Excluding training artifact: {file_path.name}")
+                return False
+
+        # Check file extension
+        if file_path.suffix not in ['.safetensors', '.pt', '.bin']:
+            return False
+
+        # For .safetensors files, verify they contain LoRA keys
+        if file_path.suffix == '.safetensors':
+            try:
+                from safetensors import safe_open
+
+                with safe_open(file_path, framework="pt", device="cpu") as f:
+                    keys = list(f.keys())
+
+                    # Check for LoRA-specific key patterns
+                    # Common LoRA keys: lora_unet_*, lora_te1_*, lora_te2_*, lora_te_*
+                    # Diffusers format: *.lora_A.*, *.lora_B.*, *.alpha
+                    lora_key_patterns = [
+                        'lora_unet',
+                        'lora_te',
+                        '.lora_A.',
+                        '.lora_B.',
+                        '.alpha',
+                        'lora_down',
+                        'lora_up',
+                    ]
+
+                    has_lora_keys = any(
+                        any(pattern in key for pattern in lora_key_patterns)
+                        for key in keys
+                    )
+
+                    if not has_lora_keys:
+                        print(f"[LoRAManager] Excluding non-LoRA file (no LoRA keys): {file_path.name}")
+                        return False
+
+            except Exception as e:
+                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
+                # If we can't read it, exclude it to be safe
+                return False
+
+        # For .pt/.bin files, we can't easily validate without loading
+        # But we can apply filename heuristics
+        elif file_path.suffix in ['.pt', '.bin']:
+            # If it's a .pt file and doesn't look like a LoRA name, exclude it
+            # Most LoRAs have descriptive names, not technical names like "latent_0.pt"
+            if any(pattern in filename for pattern in ['latent', 'noise', 'tensor']):
+                print(f"[LoRAManager] Excluding non-LoRA .pt file: {file_path.name}")
+                return False
+
+        return True
+
     def get_available_loras(self) -> List[str]:
         """Get list of available LoRA files from default and additional directories"""
         lora_files = []
@@ -117,12 +195,13 @@ class LoRAManager:
             for ext in [".safetensors", ".pt", ".bin"]:
                 found = list(lora_dir.rglob(f"*{ext}"))
                 print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
-                lora_files.extend([
-                    str(f.relative_to(lora_dir))
-                    for f in found
-                ])
 
-        print(f"[LoRAManager] Total LoRA files found: {len(lora_files)}")
+                # Validate each file before adding
+                for f in found:
+                    if self._is_valid_lora_file(f):
+                        lora_files.append(str(f.relative_to(lora_dir)))
+
+        print(f"[LoRAManager] Total valid LoRA files found: {len(lora_files)}")
         return sorted(list(set(lora_files)))  # Remove duplicates
 
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:

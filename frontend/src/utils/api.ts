@@ -919,6 +919,7 @@ export interface Dataset {
   total_items: number;
   total_captions: number;
   total_tags: number;
+  tag_statistics?: Record<string, { count: number }>;
   created_at: string;
   updated_at: string;
   last_scanned_at?: string;

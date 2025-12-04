@@ -121,13 +121,15 @@ export default function ItemGridColumn({
 
         // Update category map
         if (suggestions.length > 0) {
-          const newCategories: Record<string, string> = { ...tagCategories };
-          suggestions.forEach(s => {
-            if (!newCategories[s.tag]) {
-              newCategories[s.tag] = s.category;
-            }
+          setTagCategories(prev => {
+            const newCategories = { ...prev };
+            suggestions.forEach(s => {
+              if (!newCategories[s.tag]) {
+                newCategories[s.tag] = s.category;
+              }
+            });
+            return newCategories;
           });
-          setTagCategories(newCategories);
         }
 
         // Update position - show above input
@@ -146,7 +148,7 @@ export default function ItemGridColumn({
 
     const debounceTimer = setTimeout(handleSearch, 300);
     return () => clearTimeout(debounceTimer);
-  }, [newFilterTag, filterMode, tagSuggestionsContext, tagCategories, suppressSuggestions]);
+  }, [newFilterTag, filterMode, tagSuggestionsContext, suppressSuggestions]);
 
   const handleAddFilterTag = (tagToAdd?: string) => {
     const tag = tagToAdd || newFilterTag.trim();
@@ -211,6 +213,14 @@ export default function ItemGridColumn({
     setFilterMode(newMode);
   };
 
+  const handleBlur = () => {
+    // Close suggestions when input loses focus
+    // Use setTimeout to allow click events on suggestions to fire first
+    setTimeout(() => {
+      setShowSuggestions(false);
+    }, 200);
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -258,6 +268,7 @@ export default function ItemGridColumn({
             value={newFilterTag}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
             placeholder="Add tag filter..."
             className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
           />

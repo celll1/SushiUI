@@ -188,21 +188,33 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // WebSocket progress callback
+  // Use refs for WebSocket callback to prevent recreations
+  const isGeneratingRef = useRef(isGenerating);
+  const developerModeRef = useRef(developerMode);
+
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  useEffect(() => {
+    developerModeRef.current = developerMode;
+  }, [developerMode]);
+
+  // WebSocket progress callback - stable reference
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
-    if (isGenerating) {
+    if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(totalSteps);
       if (preview) {
         setPreviewImage(preview);
       }
-      if (metrics && developerMode) {
+      if (metrics && developerModeRef.current) {
         setCfgMetrics(prev => [...prev, metrics]);
       }
     }
-  }, [isGenerating, developerMode]);
+  }, []); // Empty deps - stable callback
 
-  // Setup WebSocket connection
+  // Setup WebSocket connection - runs once
   useEffect(() => {
     wsClient.connect();
     wsClient.subscribe(handleProgress);
@@ -210,7 +222,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     return () => {
       wsClient.unsubscribe(handleProgress);
     };
-  }, [handleProgress]);
+  }, [handleProgress]); // handleProgress is now stable
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {

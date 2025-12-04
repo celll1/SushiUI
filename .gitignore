@@ -96,6 +96,8 @@ docs/DEVELOPMENT.md
 docs/TRAINING_REQUIREMENTS.md
 docs/sd-app-requirements.md
 CLAUDE.md
+memo.md
+**/memo.md
 
 # Claude Code
 .claude/

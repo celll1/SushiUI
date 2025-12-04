@@ -388,6 +388,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   useEffect(() => {
     if (isBackendReady) {
       const reloadImages = async () => {
+        console.log("[Inpaint] Backend ready, reloading images if needed");
+
+        // Reload preview image if it's a backend URL
+        const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+        if (savedPreview && savedPreview.startsWith('/outputs/')) {
+          console.log("[Inpaint] Reloading preview image from backend:", savedPreview);
+          // Force reload by adding timestamp
+          setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+        }
+
         // Reload input image if not loaded
         if (!inputImagePreview) {
           const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);

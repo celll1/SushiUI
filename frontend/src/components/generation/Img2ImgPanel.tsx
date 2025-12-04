@@ -319,6 +319,44 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     loadInitialData();
   }, []);
 
+  // Reload images when backend becomes ready
+  useEffect(() => {
+    if (!isBackendReady) return;
+
+    const reloadImages = async () => {
+      console.log("[Img2Img] Backend ready, reloading images if needed");
+
+      // Reload preview image if it's a backend URL
+      const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+      if (savedPreview && savedPreview.startsWith('/outputs/')) {
+        console.log("[Img2Img] Reloading preview image from backend:", savedPreview);
+        // Force reload by adding timestamp
+        setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+      }
+
+      // Reload input image if needed
+      const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (savedInputRef) {
+        try {
+          const imageData = await loadTempImage(savedInputRef);
+          if (imageData) {
+            setInputImagePreview(imageData);
+            // Update dimensions
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        } catch (error) {
+          console.error("[Img2Img] Failed to reload input image:", error);
+        }
+      }
+    };
+
+    reloadImages();
+  }, [isBackendReady]);
+
   // Reset torch.compile when developer mode is disabled
   useEffect(() => {
     if (!developerMode && params.use_torch_compile) {

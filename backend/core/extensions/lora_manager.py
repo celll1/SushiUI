@@ -114,8 +114,6 @@ class LoRAManager:
             'debug_latent',        # debug latent images
             'scheduler',           # scheduler states
             'ema',                 # EMA states
-            'checkpoint',          # training checkpoints (not final LoRA)
-            'step_',               # step-specific saves (intermediate)
         ]
 
         for pattern in exclude_patterns:
@@ -155,6 +153,8 @@ class LoRAManager:
 
                     if not has_lora_keys:
                         print(f"[LoRAManager] Excluding non-LoRA file (no LoRA keys): {file_path.name}")
+                        if len(keys) > 0:
+                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
                         return False
 
             except Exception as e:
@@ -162,13 +162,52 @@ class LoRAManager:
                 # If we can't read it, exclude it to be safe
                 return False
 
-        # For .pt/.bin files, we can't easily validate without loading
-        # But we can apply filename heuristics
+        # For .pt/.bin files, check contents to distinguish LoRA from optimizer
         elif file_path.suffix in ['.pt', '.bin']:
-            # If it's a .pt file and doesn't look like a LoRA name, exclude it
-            # Most LoRAs have descriptive names, not technical names like "latent_0.pt"
-            if any(pattern in filename for pattern in ['latent', 'noise', 'tensor']):
-                print(f"[LoRAManager] Excluding non-LoRA .pt file: {file_path.name}")
+            try:
+                import torch
+
+                # Load state dict keys only (without loading full tensors)
+                state_dict = torch.load(file_path, map_location='cpu', weights_only=False)
+
+                # Check if it's an optimizer state (has 'state', 'param_groups' keys)
+                if isinstance(state_dict, dict):
+                    keys = list(state_dict.keys())
+
+                    # Optimizer state has these keys
+                    if 'state' in keys and 'param_groups' in keys:
+                        print(f"[LoRAManager] Excluding optimizer state: {file_path.name}")
+                        return False
+
+                    # Check for LoRA-specific patterns
+                    lora_key_patterns = [
+                        'lora_unet',
+                        'lora_te',
+                        '.lora_A.',
+                        '.lora_B.',
+                        '.alpha',
+                        'lora_down',
+                        'lora_up',
+                    ]
+
+                    has_lora_keys = any(
+                        any(pattern in key for pattern in lora_key_patterns)
+                        for key in keys
+                    )
+
+                    if not has_lora_keys:
+                        print(f"[LoRAManager] Excluding non-LoRA .pt file (no LoRA keys): {file_path.name}")
+                        if len(keys) > 0:
+                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
+                        return False
+                else:
+                    # Not a dict, probably not a LoRA
+                    print(f"[LoRAManager] Excluding non-dict .pt file: {file_path.name}")
+                    return False
+
+            except Exception as e:
+                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
+                # If we can't read it, exclude it to be safe
                 return False
 
         return True

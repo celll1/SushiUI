@@ -62,16 +62,7 @@ export default function ImageGrid() {
   const [totalImages, setTotalImages] = useState(0);
   const imagesPerPage = 100;
 
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
-
-  useEffect(() => {
-    loadImages();
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange, currentPage]);
-
-  const loadImages = async () => {
+  const loadImages = useCallback(async () => {
     try {
       setLoading(true);
 
@@ -101,7 +92,17 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+
+  // Reset to page 1 when filters change, then load images
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+
+  // Load images when filters or page change
+  useEffect(() => {
+    loadImages();
+  }, [loadImages]);
 
   const findImageByHash = (hash: string): GeneratedImage | undefined => {
     return images.find((img) => img.image_hash === hash);

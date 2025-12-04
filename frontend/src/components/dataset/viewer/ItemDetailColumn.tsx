@@ -89,6 +89,8 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
         if (tagList.length > 0 && tagSuggestionsContext.isLoaded) {
           try {
             const categoryMap: Record<string, string> = {};
+            const notFoundTags: string[] = [];
+
             // Search each tag to get its category from pre-loaded JSON files
             // Use normalized matching to handle various tag formats
             for (const tag of tagList) {
@@ -100,11 +102,22 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
                 if (normalizedUserTag === normalizedResultTag) {
                   // Store category as-is (will be normalized in getCategoryColor)
                   categoryMap[tag] = results[0].category;
+                } else {
+                  console.warn(`[ItemDetail] Tag normalization mismatch: "${tag}" -> "${normalizedUserTag}" vs result "${normalizedResultTag}"`);
+                  notFoundTags.push(tag);
                 }
+              } else {
+                console.warn(`[ItemDetail] Tag not found in suggestions: "${tag}"`);
+                notFoundTags.push(tag);
               }
             }
-            setTagCategories(categoryMap);
+
+            // Merge with existing categories instead of replacing
+            setTagCategories(prev => ({ ...prev, ...categoryMap }));
             console.log("[ItemDetail] Loaded tag categories:", categoryMap);
+            if (notFoundTags.length > 0) {
+              console.warn("[ItemDetail] Tags without category:", notFoundTags);
+            }
           } catch (err) {
             console.error("Failed to load tag categories:", err);
           }
@@ -178,18 +191,18 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     setNewTag("");
     setShowSuggestions(false);
 
-    // If tag was selected from suggestions, category is already in tagCategories
-    // If manually typed, try to look it up (using normalized matching)
-    if (tag && !tagCategories[tag] && tagSuggestionsContext.isLoaded) {
-      tagSuggestionsContext.searchTags(tag, 1, 'all').then(results => {
+    // Always try to fetch category if not already present
+    // This handles both manual input and suggestion selection
+    if (!tagCategories[tagToAdd] && tagSuggestionsContext.isLoaded) {
+      tagSuggestionsContext.searchTags(tagToAdd, 1, 'all').then(results => {
         if (results.length > 0) {
           // Compare normalized forms to handle format differences
-          const normalizedUserTag = normalizeTagForMatching(tag);
+          const normalizedUserTag = normalizeTagForMatching(tagToAdd);
           const normalizedResultTag = normalizeTagForMatching(results[0].tag);
           if (normalizedUserTag === normalizedResultTag) {
             setTagCategories(prev => ({
               ...prev,
-              [tag]: results[0].category // Use tagSuggestions.ts format as-is
+              [tagToAdd]: results[0].category
             }));
           }
         }

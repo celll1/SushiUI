@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Undo2, Redo2, Copy, Clipboard } from "lucide-react";
 import {
   getDatasetItem,
@@ -65,13 +65,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
   const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (item) {
-      loadItemDetails();
-    }
-  }, [item]);
-
-  const loadItemDetails = async () => {
+  const loadItemDetails = useCallback(async () => {
     if (!item) return;
 
     try {
@@ -121,7 +115,13 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     } catch (err) {
       console.error("Failed to load item details:", err);
     }
-  };
+  }, [item, datasetId, tagSuggestionsContext]);
+
+  useEffect(() => {
+    if (item) {
+      loadItemDetails();
+    }
+  }, [item, loadItemDetails]);
 
   const pushHistory = (newTags: string[]) => {
     setHistory({
@@ -290,7 +290,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
 
     const debounceTimer = setTimeout(handleSearch, 300);
     return () => clearTimeout(debounceTimer);
-  }, [newTag, filterMode]);
+  }, [newTag, filterMode, tagSuggestionsContext, tagCategories]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!showSuggestions || tagSuggestions.length === 0) {

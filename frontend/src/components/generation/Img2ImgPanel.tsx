@@ -359,8 +359,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Reset torch.compile when developer mode is disabled
   useEffect(() => {
-    if (!developerMode && params.use_torch_compile) {
-      setParams({ ...params, use_torch_compile: false });
+    if (!developerMode) {
+      setParams(prev => {
+        if (prev.use_torch_compile) {
+          return { ...prev, use_torch_compile: false };
+        }
+        return prev;
+      });
     }
   }, [developerMode]);
 

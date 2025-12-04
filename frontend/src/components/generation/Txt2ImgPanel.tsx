@@ -272,6 +272,21 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   }, []);
 
+  // Reload images when backend becomes ready
+  useEffect(() => {
+    if (!isBackendReady) return;
+
+    console.log("[Txt2Img] Backend ready, reloading preview image if needed");
+
+    // Reload preview image if it's a backend URL
+    const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+    if (savedPreview && savedPreview.startsWith('/outputs/')) {
+      console.log("[Txt2Img] Reloading preview image from backend:", savedPreview);
+      // Force reload by adding timestamp
+      setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+    }
+  }, [isBackendReady]);
+
   // Reset torch.compile when developer mode is disabled
   useEffect(() => {
     if (!developerMode && params.use_torch_compile) {

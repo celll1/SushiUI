@@ -275,11 +275,12 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
           setTagCategories(newCategories);
         }
 
-        // Update position
+        // Update position - show above input to avoid covering text
         if (inputRef.current) {
           const rect = inputRef.current.getBoundingClientRect();
+          const suggestionsHeight = 256; // max-h-64 from TagSuggestions
           setSuggestionPosition({
-            top: rect.bottom + window.scrollY + 4,
+            top: rect.top + window.scrollY - suggestionsHeight - 8, // Show above input
             left: rect.left + window.scrollX,
           });
         }
@@ -418,12 +419,12 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
                 return (
                   <div
                     key={index}
-                    className={`flex items-center space-x-1 px-1.5 py-0.5 ${colorClass} rounded text-[10px] transition-colors group h-fit cursor-pointer`}
+                    className={`flex items-center space-x-1 px-2 py-1 ${colorClass} rounded text-xs transition-colors group h-fit cursor-pointer`}
                     title={`Category: ${category}`}
                     onClick={() => handleRemoveTag(index)}
                   >
                     <span>{tag}</span>
-                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[8px]">
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
                       ✕
                     </span>
                   </div>

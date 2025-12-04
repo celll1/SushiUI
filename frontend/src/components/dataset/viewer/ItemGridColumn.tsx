@@ -8,6 +8,7 @@ interface ItemGridColumnProps {
   selectedItems: Set<number>;
   currentItem: DatasetItem | null;
   search: string;
+  tagFilter: string;
   page: number;
   total: number;
   pageSize: number;
@@ -15,6 +16,7 @@ interface ItemGridColumnProps {
   onSelectItem: (item: DatasetItem) => void;
   onToggleSelection: (itemId: number) => void;
   onSearchChange: (search: string) => void;
+  onTagFilterChange: (tagFilter: string) => void;
   onPageChange: (page: number) => void;
 }
 
@@ -23,6 +25,7 @@ export default function ItemGridColumn({
   selectedItems,
   currentItem,
   search,
+  tagFilter,
   page,
   total,
   pageSize,
@@ -30,6 +33,7 @@ export default function ItemGridColumn({
   onSelectItem,
   onToggleSelection,
   onSearchChange,
+  onTagFilterChange,
   onPageChange,
 }: ItemGridColumnProps) {
   const totalPages = Math.ceil(total / pageSize);
@@ -40,23 +44,29 @@ export default function ItemGridColumn({
       <div className="p-3 border-b border-gray-700">
         <h3 className="text-sm font-semibold mb-3">Items ({total})</h3>
 
-        {/* Search */}
+        {/* Filename Search */}
         <div className="relative mb-2">
           <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search..."
+            placeholder="Search filename..."
             className="w-full pl-8 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
           />
         </div>
 
-        {/* Filters button */}
-        <button className="w-full flex items-center justify-center space-x-1 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs transition-colors">
-          <Filter className="h-3.5 w-3.5" />
-          <span>Filters</span>
-        </button>
+        {/* Tag Filter */}
+        <div className="relative">
+          <Filter className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+          <input
+            type="text"
+            value={tagFilter}
+            onChange={(e) => onTagFilterChange(e.target.value)}
+            placeholder="Filter by tags (comma-separated)..."
+            className="w-full pl-8 pr-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
+          />
+        </div>
       </div>
 
       {/* Grid */}

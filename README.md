@@ -439,6 +439,13 @@ noise_pred = noise_pred.clamp(-clamp_value, clamp_value)
 
 将来的に実装する場合は、マスク領域のバウンディングボックス検出、切り出し、リサイズ、処理、貼り付けの一連の処理が必要です。
 
+## 謝辞
+
+このプロジェクトは以下のオープンソースプロジェクトを参考に開発されました：
+
+- **[ostris/ai-toolkit](https://github.com/ostris/ai-toolkit)** (MIT License) - LoRA学習アーキテクチャ、量子化アプローチ
+- **[kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)** (Apache-2.0) - FP8量子化実装、学習パイプライン構造
+
 ## 注意事項
 
 - GPUメモリが不足する場合は、画像サイズやバッチサイズを調整してください

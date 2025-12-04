@@ -18,7 +18,7 @@ interface GenerationQueueProps {
 }
 
 export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProps) {
-  const { queue, currentItem, removeFromQueue } = useGenerationQueue();
+  const { queue, currentItem, removeFromQueue, cancelRelatedItems } = useGenerationQueue();
   const [elapsedTime, setElapsedTime] = useState(0);
   const [lastGenInfo, setLastGenInfo] = useState<LastGenerationInfo | null>(null);
 
@@ -156,15 +156,25 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
                   <span className="text-xs text-gray-400">
                     #{index + 1}
                   </span>
+                  {item.isLoopStep && item.loopStepIndex !== undefined && (
+                    <span className="text-xs text-purple-400">
+                      [Loop {item.loopStepIndex + 1}]
+                    </span>
+                  )}
+                  {item.loopGroupId && !item.isLoopStep && (
+                    <span className="text-xs text-blue-400">
+                      [Base]
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-300 truncate" title={item.prompt}>
                   {item.prompt || "No prompt"}
                 </p>
               </div>
               <button
-                onClick={() => removeFromQueue(item.id)}
+                onClick={() => cancelRelatedItems(item.id)}
                 className="ml-1 text-gray-400 hover:text-red-500 flex-shrink-0"
-                title="Remove from queue"
+                title={item.loopGroupId ? "Cancel related items" : "Remove from queue"}
               >
                 <svg
                   className="w-3 h-3"

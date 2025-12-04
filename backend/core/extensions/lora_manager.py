@@ -125,7 +125,7 @@ class LoRAManager:
         if file_path.suffix not in ['.safetensors', '.pt', '.bin']:
             return False
 
-        # For .safetensors files, verify they contain LoRA keys
+        # For .safetensors files, verify they contain LoRA keys by checking architecture
         if file_path.suffix == '.safetensors':
             try:
                 from safetensors import safe_open
@@ -133,28 +133,29 @@ class LoRAManager:
                 with safe_open(file_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
 
-                    # Check for LoRA-specific key patterns
-                    # Common LoRA keys: lora_unet_*, lora_te1_*, lora_te2_*, lora_te_*
-                    # Diffusers format: *.lora_A.*, *.lora_B.*, *.alpha
-                    lora_key_patterns = [
-                        'lora_unet',
-                        'lora_te',
-                        '.lora_A.',
-                        '.lora_B.',
-                        '.alpha',
-                        'lora_down',
-                        'lora_up',
-                    ]
+                    # LoRA architecture detection:
+                    # LoRA files have lora_down AND lora_up weights (rank decomposition)
+                    # Full parameter fine-tune has only full weights (unet.*.weight without lora)
 
-                    has_lora_keys = any(
-                        any(pattern in key for pattern in lora_key_patterns)
-                        for key in keys
-                    )
+                    has_lora_down = any('lora_down' in key for key in keys)
+                    has_lora_up = any('lora_up' in key for key in keys)
 
-                    if not has_lora_keys:
-                        print(f"[LoRAManager] Excluding non-LoRA file (no LoRA keys): {file_path.name}")
+                    # Alternative LoRA formats (diffusers, kohya-ss variants)
+                    has_lora_A = any('.lora_A.' in key for key in keys)
+                    has_lora_B = any('.lora_B.' in key for key in keys)
+                    has_lora_unet = any('lora_unet' in key for key in keys)
+                    has_lora_te = any('lora_te' in key for key in keys)
+
+                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
+                    is_lora = (has_lora_down and has_lora_up) or \
+                              (has_lora_A and has_lora_B) or \
+                              (has_lora_unet or has_lora_te)
+
+                    if not is_lora:
+                        print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
                         if len(keys) > 0:
                             print(f"[LoRAManager]   Sample keys: {keys[:5]}")
+                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
                         return False
 
             except Exception as e:
@@ -179,26 +180,24 @@ class LoRAManager:
                         print(f"[LoRAManager] Excluding optimizer state: {file_path.name}")
                         return False
 
-                    # Check for LoRA-specific patterns
-                    lora_key_patterns = [
-                        'lora_unet',
-                        'lora_te',
-                        '.lora_A.',
-                        '.lora_B.',
-                        '.alpha',
-                        'lora_down',
-                        'lora_up',
-                    ]
+                    # Check for LoRA architecture (same as .safetensors)
+                    has_lora_down = any('lora_down' in key for key in keys)
+                    has_lora_up = any('lora_up' in key for key in keys)
+                    has_lora_A = any('.lora_A.' in key for key in keys)
+                    has_lora_B = any('.lora_B.' in key for key in keys)
+                    has_lora_unet = any('lora_unet' in key for key in keys)
+                    has_lora_te = any('lora_te' in key for key in keys)
 
-                    has_lora_keys = any(
-                        any(pattern in key for pattern in lora_key_patterns)
-                        for key in keys
-                    )
+                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
+                    is_lora = (has_lora_down and has_lora_up) or \
+                              (has_lora_A and has_lora_B) or \
+                              (has_lora_unet or has_lora_te)
 
-                    if not has_lora_keys:
-                        print(f"[LoRAManager] Excluding non-LoRA .pt file (no LoRA keys): {file_path.name}")
+                    if not is_lora:
+                        print(f"[LoRAManager] Excluding non-LoRA .pt file (full parameter or other): {file_path.name}")
                         if len(keys) > 0:
                             print(f"[LoRAManager]   Sample keys: {keys[:5]}")
+                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
                         return False
                 else:
                     # Not a dict, probably not a LoRA

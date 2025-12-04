@@ -119,33 +119,35 @@ class ControlNetManager:
                 with safe_open(file_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
 
-                    # Check for ControlNet-specific key patterns
-                    # Standard ControlNet: input_blocks, middle_block, zero_convs
-                    # LLLite: lllite_unet, conditioning1, lora_down, lora_up
+                    # ControlNet architecture detection based on actual model structures
+                    #
+                    # Standard ControlNet (SD1.5): input_blocks, middle_block, zero_convs
+                    # Standard ControlNet (SDXL diffusers): controlnet_cond_embedding, add_embedding
+                    # ControlNet LLLite: lllite_unet, conditioning1
+                    # ControlNet LLLite (training checkpoint): conditioning_encoder, control_layers
                     # IP-Adapter: image_proj, ip_adapter
-                    # T2I-Adapter: adapter, body, down, up
-                    controlnet_key_patterns = [
-                        'input_blocks',
-                        'middle_block',
-                        'output_blocks',
-                        'zero_convs',
-                        'controlnet',
-                        'lllite_unet',
-                        'conditioning1',
-                        'image_proj',      # IP-Adapter
-                        'ip_adapter',      # IP-Adapter
-                        'adapter.',        # T2I-Adapter
-                    ]
+                    # T2I-Adapter (diffusers): adapter.body
+                    # T2I-Adapter (original): body.0, body.1
 
-                    has_controlnet_keys = any(
-                        any(pattern in key for pattern in controlnet_key_patterns)
-                        for key in keys
-                    )
+                    # Check for each architecture pattern
+                    is_standard_cn_sd15 = any('input_blocks' in k or 'middle_block' in k or 'zero_convs' in k for k in keys)
+                    is_standard_cn_sdxl = any('controlnet_cond_embedding' in k for k in keys)
+                    is_lllite = any('lllite_unet' in k or 'conditioning1' in k for k in keys)
+                    is_lllite_checkpoint = any('conditioning_encoder' in k and 'control_layers' in k for k in keys)
+                    is_ip_adapter = any('image_proj' in k or 'ip_adapter' in k for k in keys)
+                    is_t2i_adapter_diffusers = any('adapter.body' in k for k in keys)
+                    is_t2i_adapter_original = any(k.startswith('body.') for k in keys)
 
-                    if not has_controlnet_keys:
-                        print(f"[ControlNetManager] Excluding non-ControlNet file (no ControlNet keys): {file_path.name}")
+                    is_controlnet = (is_standard_cn_sd15 or is_standard_cn_sdxl or
+                                    is_lllite or is_lllite_checkpoint or
+                                    is_ip_adapter or is_t2i_adapter_diffusers or
+                                    is_t2i_adapter_original)
+
+                    if not is_controlnet:
+                        print(f"[ControlNetManager] Excluding non-ControlNet file (unknown architecture): {file_path.name}")
                         if len(keys) > 0:
                             print(f"[ControlNetManager]   Sample keys: {keys[:5]}")
+                            print(f"[ControlNetManager]   Architecture checks: SD15={is_standard_cn_sd15}, SDXL={is_standard_cn_sdxl}, LLLite={is_lllite}, IP-Adapter={is_ip_adapter}, T2I-Adapter={is_t2i_adapter_diffusers or is_t2i_adapter_original}")
                         return False
 
             except Exception as e:

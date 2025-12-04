@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { GenerationParams, Img2ImgParams, InpaintParams } from "@/utils/api";
 
@@ -42,6 +42,19 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentItem, setCurrentItem] = useState<QueueItem | null>(null);
   const [generateForever, setGenerateForever] = useState<boolean>(false);
+
+  // Use refs to store latest values for startNextInQueue callback
+  const queueRef = useRef<QueueItem[]>([]);
+  const currentItemRef = useRef<QueueItem | null>(null);
+
+  // Keep refs updated
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  useEffect(() => {
+    currentItemRef.current = currentItem;
+  }, [currentItem]);
 
   const addToQueue = useCallback((item: Omit<QueueItem, "id" | "status" | "addedAt">) => {
     const newItem: QueueItem = {
@@ -105,6 +118,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startNextInQueue = useCallback(() => {
+    const queue = queueRef.current;
+    const currentItem = currentItemRef.current;
+
     console.log("[QueueContext] startNextInQueue - current queue:", queue);
     console.log("[QueueContext] currentItem:", currentItem);
 
@@ -150,9 +166,10 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     console.log("[QueueContext] No pending items found, setting currentItem to null");
     setCurrentItem(null);
     return null;
-  }, [queue, currentItem]);
+  }, []); // No dependencies - use refs instead
 
   const completeCurrentItem = useCallback(() => {
+    const currentItem = currentItemRef.current;
     if (!currentItem) return;
 
     console.log("[QueueContext] Completing item:", currentItem.id);
@@ -164,9 +181,10 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     // Remove completed item from queue
     setQueue((prev) => prev.filter((item) => item.id !== currentItem.id));
     setCurrentItem(null);
-  }, [currentItem]);
+  }, []); // No dependencies - use ref instead
 
   const failCurrentItem = useCallback(() => {
+    const currentItem = currentItemRef.current;
     if (!currentItem) return;
 
     console.log("[QueueContext] Failing item:", currentItem.id);
@@ -177,7 +195,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       )
     );
     setCurrentItem(null);
-  }, [currentItem]);
+  }, []); // No dependencies - use ref instead
 
   const clearQueue = useCallback(() => {
     setQueue([]);
@@ -190,6 +208,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // If pathname changed and there's a current item generating
+    const currentItem = currentItemRef.current;
     if (pathname !== prevPathname && currentItem) {
       console.log("[QueueContext] Page navigation detected while generating, marking current item as completed");
       console.log(`[QueueContext] Navigated from ${prevPathname} to ${pathname}`);
@@ -199,7 +218,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       setCurrentItem(null);
     }
     setPrevPathname(pathname);
-  }, [pathname, prevPathname, currentItem]);
+  }, [pathname, prevPathname]); // Removed currentItem from dependencies, use ref instead
 
   return (
     <GenerationQueueContext.Provider

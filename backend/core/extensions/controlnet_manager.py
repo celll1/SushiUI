@@ -122,6 +122,8 @@ class ControlNetManager:
                     # Check for ControlNet-specific key patterns
                     # Standard ControlNet: input_blocks, middle_block, zero_convs
                     # LLLite: lllite_unet, conditioning1, lora_down, lora_up
+                    # IP-Adapter: image_proj, ip_adapter
+                    # T2I-Adapter: adapter, body, down, up
                     controlnet_key_patterns = [
                         'input_blocks',
                         'middle_block',
@@ -130,6 +132,9 @@ class ControlNetManager:
                         'controlnet',
                         'lllite_unet',
                         'conditioning1',
+                        'image_proj',      # IP-Adapter
+                        'ip_adapter',      # IP-Adapter
+                        'adapter.',        # T2I-Adapter
                     ]
 
                     has_controlnet_keys = any(
@@ -139,6 +144,8 @@ class ControlNetManager:
 
                     if not has_controlnet_keys:
                         print(f"[ControlNetManager] Excluding non-ControlNet file (no ControlNet keys): {file_path.name}")
+                        if len(keys) > 0:
+                            print(f"[ControlNetManager]   Sample keys: {keys[:5]}")
                         return False
 
             except Exception as e:

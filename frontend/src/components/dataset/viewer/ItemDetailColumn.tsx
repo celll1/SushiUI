@@ -14,6 +14,7 @@ import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 interface ItemDetailColumnProps {
   item: DatasetItem | null;
   datasetId: number;
+  tagCategoryCache: Record<string, string>; // Pre-loaded category map from parent
 }
 
 interface EditHistory {
@@ -41,7 +42,7 @@ const getCategoryColor = (category: string): string => {
   return colors[normalized] || "bg-green-600 dark:bg-green-700 hover:bg-green-500";
 };
 
-export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnProps) {
+export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: ItemDetailColumnProps) {
   const tagSuggestionsContext = useTagSuggestions();
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
@@ -53,6 +54,19 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     future: [],
   });
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Initialize tag categories from cache when item loads
+  useEffect(() => {
+    if (tags.length > 0 && Object.keys(tagCategoryCache).length > 0) {
+      const categories: Record<string, string> = {};
+      for (const tag of tags) {
+        if (tagCategoryCache[tag]) {
+          categories[tag] = tagCategoryCache[tag];
+        }
+      }
+      setTagCategories(prev => ({ ...prev, ...categories }));
+    }
+  }, [tags, tagCategoryCache]);
 
   const loadItemDetails = useCallback(async () => {
     if (!item) return;
@@ -73,43 +87,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
         });
         setHasChanges(false);
 
-        // Fetch category information for existing tags using Context (pre-loaded tags)
-        if (tagList.length > 0 && tagSuggestionsContext.isLoaded) {
-          try {
-            const categoryMap: Record<string, string> = {};
-            const notFoundTags: string[] = [];
-
-            // Search each tag to get its category from pre-loaded JSON files
-            // Use normalized matching to handle various tag formats
-            for (const tag of tagList) {
-              const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-              if (results.length > 0) {
-                // Compare normalized forms to handle format differences
-                const normalizedUserTag = normalizeTagForMatching(tag);
-                const normalizedResultTag = normalizeTagForMatching(results[0].tag);
-                if (normalizedUserTag === normalizedResultTag) {
-                  // Store category as-is (will be normalized in getCategoryColor)
-                  categoryMap[tag] = results[0].category;
-                } else {
-                  console.warn(`[ItemDetail] Tag normalization mismatch: "${tag}" -> "${normalizedUserTag}" vs result "${normalizedResultTag}"`);
-                  notFoundTags.push(tag);
-                }
-              } else {
-                console.warn(`[ItemDetail] Tag not found in suggestions: "${tag}"`);
-                notFoundTags.push(tag);
-              }
-            }
-
-            // Merge with existing categories instead of replacing
-            setTagCategories(prev => ({ ...prev, ...categoryMap }));
-            console.log("[ItemDetail] Loaded tag categories:", categoryMap);
-            if (notFoundTags.length > 0) {
-              console.warn("[ItemDetail] Tags without category:", notFoundTags);
-            }
-          } catch (err) {
-            console.error("Failed to load tag categories:", err);
-          }
-        }
+        // Categories are loaded from cache via useEffect (Line 59-69)
       } else {
         setTags([]);
         setHistory({ past: [], present: [], future: [] });

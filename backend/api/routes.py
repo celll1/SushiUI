@@ -2715,6 +2715,43 @@ async def list_dataset_items(
         "page_size": page_size
     }
 
+@router.get("/datasets/{dataset_id}/tags")
+async def get_dataset_tags(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """Get all unique tags in dataset (from 'tags' caption type)
+
+    Returns:
+        List of unique tags across all items in the dataset
+    """
+    # Get all items in dataset
+    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+
+    if not items:
+        return {"tags": []}
+
+    # Get all item IDs
+    item_ids = [item.id for item in items]
+
+    # Get all tag captions for these items
+    tag_captions = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(item_ids),
+        DatasetCaption.caption_type == "tags"
+    ).all()
+
+    # Extract unique tags
+    unique_tags = set()
+    for caption in tag_captions:
+        if caption.content:
+            tags = caption.content.split(",")
+            for tag in tags:
+                tag = tag.strip()
+                if tag:
+                    unique_tags.add(tag)
+
+    return {"tags": sorted(list(unique_tags))}
+
 @router.get("/datasets/{dataset_id}/items/{item_id}")
 async def get_dataset_item(
     dataset_id: int,
@@ -2726,16 +2763,16 @@ async def get_dataset_item(
         DatasetItem.dataset_id == dataset_id,
         DatasetItem.id == item_id
     ).first()
-    
+
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
-    
+
     # Get all captions for this item
     captions = db.query(DatasetCaption).filter(DatasetCaption.item_id == item_id).all()
-    
+
     result = item.to_dict()
     result["captions"] = [c.to_dict() for c in captions]
-    
+
     return result
 
 @router.get("/serve-image")

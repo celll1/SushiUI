@@ -1124,6 +1124,11 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export const getDatasetTags = async (datasetId: number): Promise<string[]> => {
+  const response = await api.get(`/datasets/${datasetId}/tags`);
+  return response.data.tags;
+};
+
 export interface CaptionSubtype {
   subtype: string;
   count: number;

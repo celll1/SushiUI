@@ -561,21 +561,33 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
 
-  // WebSocket progress callback
+  // Use refs for WebSocket callback to prevent recreations
+  const isGeneratingRef = useRef(isGenerating);
+  const developerModeRef = useRef(developerMode);
+
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  useEffect(() => {
+    developerModeRef.current = developerMode;
+  }, [developerMode]);
+
+  // WebSocket progress callback - stable reference
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
-    if (isGenerating) {
+    if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(totalSteps);
       if (preview) {
         setPreviewImage(preview);
       }
-      if (metrics && developerMode) {
+      if (metrics && developerModeRef.current) {
         setCfgMetrics(prev => [...prev, metrics]);
       }
     }
-  }, [isGenerating, developerMode]);
+  }, []); // Empty deps - stable callback
 
-  // Setup WebSocket connection
+  // Setup WebSocket connection - runs once
   useEffect(() => {
     wsClient.connect();
     wsClient.subscribe(handleProgress);
@@ -583,7 +595,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     return () => {
       wsClient.unsubscribe(handleProgress);
     };
-  }, [handleProgress]);
+  }, [handleProgress]); // handleProgress is now stable
 
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });

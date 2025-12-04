@@ -7,8 +7,8 @@ import {
   DatasetItem,
   updateItemCaption,
 } from "@/utils/api";
-import TagSuggestions from "@/components/common/TagSuggestions";
-import { TagFilterMode, normalizeTagForMatching } from "@/utils/tagSuggestions";
+import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
+import { normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 
 interface ItemDetailColumnProps {
@@ -22,11 +22,6 @@ interface EditHistory {
   future: string[][];
 }
 
-interface TagSuggestion {
-  tag: string;
-  count: number;
-  category: string;
-}
 
 // Category colors mapping (for tag chips)
 const getCategoryColor = (category: string): string => {
@@ -58,13 +53,6 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     future: [],
   });
   const [hasChanges, setHasChanges] = useState(false);
-  const [tagSuggestions, setTagSuggestions] = useState<TagSuggestion[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
-  const [filterMode, setFilterMode] = useState<TagFilterMode>("all");
-  const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 });
-  const [suppressSuggestions, setSuppressSuggestions] = useState(false); // Prevent reshow after Esc
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const loadItemDetails = useCallback(async () => {
     if (!item) return;
@@ -177,38 +165,6 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     setHasChanges(true);
   };
 
-  const handleAddTag = (tag?: string) => {
-    const tagToAdd = tag || newTag.trim().toLowerCase().replace(/\s+/g, "_");
-    if (!tagToAdd) return;
-
-    if (tags.includes(tagToAdd)) {
-      setNewTag("");
-      setShowSuggestions(false);
-      return;
-    }
-
-    pushHistory([...tags, tagToAdd]);
-    setNewTag("");
-    setShowSuggestions(false);
-
-    // Always try to fetch category if not already present
-    // This handles both manual input and suggestion selection
-    if (!tagCategories[tagToAdd] && tagSuggestionsContext.isLoaded) {
-      tagSuggestionsContext.searchTags(tagToAdd, 1, 'all').then(results => {
-        if (results.length > 0) {
-          // Compare normalized forms to handle format differences
-          const normalizedUserTag = normalizeTagForMatching(tagToAdd);
-          const normalizedResultTag = normalizeTagForMatching(results[0].tag);
-          if (normalizedUserTag === normalizedResultTag) {
-            setTagCategories(prev => ({
-              ...prev,
-              [tagToAdd]: results[0].category
-            }));
-          }
-        }
-      }).catch(err => console.error("Failed to fetch tag category:", err));
-    }
-  };
 
   const handleRemoveTag = (index: number) => {
     const newTags = tags.filter((_, i) => i !== index);
@@ -250,105 +206,18 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
     loadItemDetails();
   };
 
-  // Tag suggestions logic using tagSuggestions.ts (same as Generate screen)
-  useEffect(() => {
-    const handleSearch = async () => {
-      if (newTag.trim().length < 2) {
-        setTagSuggestions([]);
-        setShowSuggestions(false);
-        return;
-      }
-
-      // Don't show suggestions if user pressed Esc
-      if (suppressSuggestions) {
-        return;
-      }
-
-      console.log("[Autocomplete] Searching for:", newTag.trim());
-
-      try {
-        // Use tagSuggestions Context (pre-loaded JSON files)
-        const results = await tagSuggestionsContext.searchTags(newTag.trim(), 20, filterMode);
-        console.log("[Autocomplete] Response:", results);
-
-        // Results already match TagSuggestion format
-        const suggestions: TagSuggestion[] = results.map(r => ({
-          tag: r.tag,
-          count: r.count,
-          category: r.category,
-        }));
-
-        setTagSuggestions(suggestions);
-        setShowSuggestions(suggestions.length > 0);
-        setSelectedSuggestionIndex(0);
-
-        // Update category map with discovered categories
-        if (suggestions.length > 0) {
-          const newCategories: Record<string, string> = { ...tagCategories };
-          suggestions.forEach(s => {
-            if (!newCategories[s.tag]) {
-              // Store category as-is (will be normalized in getCategoryColor)
-              newCategories[s.tag] = s.category;
-            }
-          });
-          setTagCategories(newCategories);
-        }
-
-        // Update position - show above input to avoid covering text
-        if (inputRef.current) {
-          const rect = inputRef.current.getBoundingClientRect();
-          const suggestionsHeight = 256; // max-h-64 from TagSuggestions
-          setSuggestionPosition({
-            top: rect.top + window.scrollY - suggestionsHeight - 8, // Show above input
-            left: rect.left + window.scrollX,
-          });
-        }
-      } catch (err) {
-        console.error("[Autocomplete] Failed to search tags:", err);
-      }
-    };
-
-    const debounceTimer = setTimeout(handleSearch, 300);
-    return () => clearTimeout(debounceTimer);
-  }, [newTag, filterMode, tagSuggestionsContext, tagCategories, suppressSuggestions]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!showSuggestions || tagSuggestions.length === 0) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleAddTag();
-      }
-      return;
+  const handleTagAdd = (tag: string, category: string) => {
+    if (tags.includes(tag)) {
+      return; // Don't add duplicates
     }
 
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setSelectedSuggestionIndex((prev) =>
-        Math.min(prev + 1, tagSuggestions.length - 1)
-      );
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setSelectedSuggestionIndex((prev) => Math.max(prev - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      handleAddTag(tagSuggestions[selectedSuggestionIndex].tag);
-    } else if (e.key === "Escape") {
-      setShowSuggestions(false);
-      setSuppressSuggestions(true); // Don't reshow until next input
-    }
-  };
+    pushHistory([...tags, tag]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNewTag(e.target.value);
-    setSuppressSuggestions(false); // Allow suggestions again on input change
-  };
-
-  const handleFilterChange = (direction: 'next' | 'prev') => {
-    const newMode = direction === 'next'
-      ? tagSuggestionsContext.getNextFilterMode(filterMode)
-      : tagSuggestionsContext.getPreviousFilterMode(filterMode);
-    setFilterMode(newMode);
-    console.log("[Filter] Changed to:", newMode);
+    // Store category for this tag
+    setTagCategories(prev => ({
+      ...prev,
+      [tag]: category
+    }));
   };
 
   if (!item) {
@@ -458,16 +327,15 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
             )}
           </div>
 
-          {/* Add Tag - Compact with Autocomplete */}
-          <div className="flex-shrink-0 mt-2 relative">
-            <input
-              ref={inputRef}
-              type="text"
+          {/* Add Tag - with Autocomplete */}
+          <div className="flex-shrink-0 mt-2">
+            <InputWithTagSuggestions
               value={newTag}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
+              onChange={setNewTag}
+              onTagAdd={handleTagAdd}
               placeholder="Type to search tags..."
               className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
+              showSuggestionsAbove={true}
             />
           </div>
         </div>
@@ -511,18 +379,6 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
             Revert
           </button>
         </div>
-      )}
-
-      {/* Tag Suggestions Dropdown */}
-      {showSuggestions && tagSuggestions.length > 0 && (
-        <TagSuggestions
-          suggestions={tagSuggestions}
-          selectedIndex={selectedSuggestionIndex}
-          onSelect={handleAddTag}
-          position={suggestionPosition}
-          filterMode={filterMode}
-          onFilterChange={handleFilterChange}
-        />
       )}
     </div>
   );

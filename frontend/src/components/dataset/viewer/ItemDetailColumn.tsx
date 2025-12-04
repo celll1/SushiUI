@@ -63,6 +63,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const [filterMode, setFilterMode] = useState<TagFilterMode>("all");
   const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 });
+  const [suppressSuggestions, setSuppressSuggestions] = useState(false); // Prevent reshow after Esc
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadItemDetails = useCallback(async () => {
@@ -245,6 +246,11 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
         return;
       }
 
+      // Don't show suggestions if user pressed Esc
+      if (suppressSuggestions) {
+        return;
+      }
+
       console.log("[Autocomplete] Searching for:", newTag.trim());
 
       try {
@@ -291,7 +297,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
 
     const debounceTimer = setTimeout(handleSearch, 300);
     return () => clearTimeout(debounceTimer);
-  }, [newTag, filterMode, tagSuggestionsContext, tagCategories]);
+  }, [newTag, filterMode, tagSuggestionsContext, tagCategories, suppressSuggestions]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!showSuggestions || tagSuggestions.length === 0) {
@@ -315,7 +321,13 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
       handleAddTag(tagSuggestions[selectedSuggestionIndex].tag);
     } else if (e.key === "Escape") {
       setShowSuggestions(false);
+      setSuppressSuggestions(true); // Don't reshow until next input
     }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewTag(e.target.value);
+    setSuppressSuggestions(false); // Allow suggestions again on input change
   };
 
   const handleFilterChange = (direction: 'next' | 'prev') => {
@@ -439,7 +451,7 @@ export default function ItemDetailColumn({ item, datasetId }: ItemDetailColumnPr
               ref={inputRef}
               type="text"
               value={newTag}
-              onChange={(e) => setNewTag(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder="Type to search tags..."
               className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"

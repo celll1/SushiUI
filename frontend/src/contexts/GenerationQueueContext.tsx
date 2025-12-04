@@ -28,6 +28,7 @@ interface GenerationQueueContextType {
   updateQueueItem: (id: string, updates: Partial<QueueItem>) => void;
   updateQueueItemByLoop: (loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => void;
   cancelLoopGroup: (loopGroupId: string) => void;
+  cancelRelatedItems: (itemId: string) => void;
   startNextInQueue: () => QueueItem | null;
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
@@ -43,18 +44,13 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [currentItem, setCurrentItem] = useState<QueueItem | null>(null);
   const [generateForever, setGenerateForever] = useState<boolean>(false);
 
-  // Use refs to store latest values for startNextInQueue callback
-  const queueRef = useRef<QueueItem[]>([]);
-  const currentItemRef = useRef<QueueItem | null>(null);
+  // Use refs that are synchronously updated alongside state
+  const queueRef = useRef<QueueItem[]>(queue);
+  const currentItemRef = useRef<QueueItem | null>(currentItem);
 
-  // Keep refs updated
-  useEffect(() => {
-    queueRef.current = queue;
-  }, [queue]);
-
-  useEffect(() => {
-    currentItemRef.current = currentItem;
-  }, [currentItem]);
+  // Synchronously update refs whenever state changes
+  queueRef.current = queue;
+  currentItemRef.current = currentItem;
 
   const addToQueue = useCallback((item: Omit<QueueItem, "id" | "status" | "addedAt">) => {
     const newItem: QueueItem = {
@@ -117,22 +113,88 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const startNextInQueue = useCallback(() => {
-    const queue = queueRef.current;
-    const currentItem = currentItemRef.current;
+  // Smart cancel: determine what to cancel based on item type and position
+  const cancelRelatedItems = useCallback((itemId: string) => {
+    const item = queueRef.current.find((i) => i.id === itemId);
+    if (!item || !item.loopGroupId) {
+      // No loop group - just remove this item
+      console.log(`[QueueContext] Removing single item: ${itemId}`);
+      removeFromQueue(itemId);
+      return;
+    }
 
-    console.log("[QueueContext] startNextInQueue - current queue:", queue);
-    console.log("[QueueContext] currentItem:", currentItem);
+    const { loopGroupId, isLoopStep, loopStepIndex } = item;
+    const allItemsInGroup = queueRef.current.filter((i) => i.loopGroupId === loopGroupId);
+
+    // Case 1: Cancelling main generation (Base)
+    if (!isLoopStep) {
+      console.log(`[QueueContext] Cancelling main generation and all related loop steps for group: ${loopGroupId}`);
+      // Remove all items in this loop group (main + all loop steps)
+      setQueue((prev) => prev.filter((i) => i.loopGroupId !== loopGroupId));
+
+      // Clear loopGroupId from currentItem if it belongs to this group
+      setCurrentItem((prev) => {
+        if (prev && prev.loopGroupId === loopGroupId) {
+          return { ...prev, loopGroupId: undefined, loopStepIndex: undefined };
+        }
+        return prev;
+      });
+      return;
+    }
+
+    // Case 2 & 3: Cancelling loop step
+    const maxLoopStepIndex = Math.max(
+      ...allItemsInGroup
+        .filter((i) => i.isLoopStep && i.loopStepIndex !== undefined)
+        .map((i) => i.loopStepIndex!)
+    );
+
+    // Case 2: Cancelling first or middle loop step - cancel this and all following steps
+    if (loopStepIndex !== undefined && loopStepIndex < maxLoopStepIndex) {
+      console.log(`[QueueContext] Cancelling loop step ${loopStepIndex} and all following steps in group: ${loopGroupId}`);
+      setQueue((prev) => prev.filter((i) =>
+        !(i.loopGroupId === loopGroupId &&
+          i.isLoopStep === true &&
+          i.loopStepIndex !== undefined &&
+          i.loopStepIndex >= loopStepIndex)
+      ));
+
+      // Clear loopGroupId from currentItem if it's a later step
+      setCurrentItem((prev) => {
+        if (prev &&
+            prev.loopGroupId === loopGroupId &&
+            prev.isLoopStep === true &&
+            prev.loopStepIndex !== undefined &&
+            prev.loopStepIndex >= loopStepIndex) {
+          return { ...prev, loopGroupId: undefined, loopStepIndex: undefined };
+        }
+        return prev;
+      });
+      return;
+    }
+
+    // Case 3: Cancelling last loop step - only cancel this step
+    console.log(`[QueueContext] Cancelling only the last loop step ${loopStepIndex} in group: ${loopGroupId}`);
+    removeFromQueue(itemId);
+  }, [removeFromQueue]);
+
+  const startNextInQueue = useCallback(() => {
+    // Access latest values from refs (synchronously updated)
+    const currentQueue = queueRef.current;
+    const currentItemValue = currentItemRef.current;
+
+    console.log("[QueueContext] startNextInQueue - current queue:", currentQueue);
+    console.log("[QueueContext] currentItem:", currentItemValue);
 
     let nextItem: QueueItem | undefined;
 
     // If current item is part of a loop group, prioritize next step in same group
-    if (currentItem?.loopGroupId) {
-      const currentLoopGroupId = currentItem.loopGroupId;
-      const currentLoopStepIndex = currentItem.loopStepIndex ?? -1;
+    if (currentItemValue?.loopGroupId) {
+      const currentLoopGroupId = currentItemValue.loopGroupId;
+      const currentLoopStepIndex = currentItemValue.loopStepIndex ?? -1;
 
       // Find next step in the same loop group
-      nextItem = queue.find((item) =>
+      nextItem = currentQueue.find((item) =>
         item.status === "pending" &&
         item.loopGroupId === currentLoopGroupId &&
         (item.loopStepIndex ?? 0) === currentLoopStepIndex + 1
@@ -144,7 +206,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
     // If no loop step found, get next pending item in queue order
     if (!nextItem) {
-      nextItem = queue.find((item) => item.status === "pending");
+      nextItem = currentQueue.find((item) => item.status === "pending");
       console.log("[QueueContext] Found next pending item:", nextItem);
     }
 
@@ -155,7 +217,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       // Update the item in queue to generating status
       setQueue((prev) =>
         prev.map((item) =>
-          item.id === nextItem.id ? updatedItem : item
+          item.id === nextItem!.id ? updatedItem : item
         )
       );
 
@@ -166,36 +228,36 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     console.log("[QueueContext] No pending items found, setting currentItem to null");
     setCurrentItem(null);
     return null;
-  }, []); // No dependencies - use refs instead
+  }, []); // Empty deps - uses refs for latest values
 
   const completeCurrentItem = useCallback(() => {
-    const currentItem = currentItemRef.current;
-    if (!currentItem) return;
+    const currentItemValue = currentItemRef.current;
+    if (!currentItemValue) return;
 
-    console.log("[QueueContext] Completing item:", currentItem.id);
+    console.log("[QueueContext] Completing item:", currentItemValue.id);
     // Mark completion time before removing
     const endTime = Date.now();
-    const elapsedMs = currentItem.startTime ? endTime - currentItem.startTime : 0;
+    const elapsedMs = currentItemValue.startTime ? endTime - currentItemValue.startTime : 0;
     console.log(`[QueueContext] Generation took ${(elapsedMs / 1000).toFixed(2)}s`);
 
     // Remove completed item from queue
-    setQueue((prev) => prev.filter((item) => item.id !== currentItem.id));
+    setQueue((prev) => prev.filter((item) => item.id !== currentItemValue.id));
     setCurrentItem(null);
-  }, []); // No dependencies - use ref instead
+  }, []); // Empty deps - uses refs
 
   const failCurrentItem = useCallback(() => {
-    const currentItem = currentItemRef.current;
-    if (!currentItem) return;
+    const currentItemValue = currentItemRef.current;
+    if (!currentItemValue) return;
 
-    console.log("[QueueContext] Failing item:", currentItem.id);
+    console.log("[QueueContext] Failing item:", currentItemValue.id);
     // Mark as failed but keep in queue for user to see
     setQueue((prev) =>
       prev.map((item) =>
-        item.id === currentItem.id ? { ...item, status: "failed" as const } : item
+        item.id === currentItemValue.id ? { ...item, status: "failed" as const } : item
       )
     );
     setCurrentItem(null);
-  }, []); // No dependencies - use ref instead
+  }, []); // Empty deps - uses refs
 
   const clearQueue = useCallback(() => {
     setQueue([]);
@@ -208,17 +270,19 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // If pathname changed and there's a current item generating
-    const currentItem = currentItemRef.current;
-    if (pathname !== prevPathname && currentItem) {
-      console.log("[QueueContext] Page navigation detected while generating, marking current item as completed");
-      console.log(`[QueueContext] Navigated from ${prevPathname} to ${pathname}`);
+    if (pathname !== prevPathname) {
+      const currentItemValue = currentItemRef.current;
+      if (currentItemValue) {
+        console.log("[QueueContext] Page navigation detected while generating, marking current item as completed");
+        console.log(`[QueueContext] Navigated from ${prevPathname} to ${pathname}`);
 
-      // Remove current item from queue (generation continues in background)
-      setQueue((prev) => prev.filter((item) => item.id !== currentItem.id));
-      setCurrentItem(null);
+        // Remove current item from queue (generation continues in background)
+        setQueue((prev) => prev.filter((item) => item.id === currentItemValue.id));
+        setCurrentItem(null);
+      }
+      setPrevPathname(pathname);
     }
-    setPrevPathname(pathname);
-  }, [pathname, prevPathname]); // Removed currentItem from dependencies, use ref instead
+  }, [pathname, prevPathname]); // Use refs for currentItem
 
   return (
     <GenerationQueueContext.Provider
@@ -230,6 +294,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         updateQueueItem,
         updateQueueItemByLoop,
         cancelLoopGroup,
+        cancelRelatedItems,
         startNextInQueue,
         completeCurrentItem,
         failCurrentItem,

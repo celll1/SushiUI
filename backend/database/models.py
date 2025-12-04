@@ -143,7 +143,7 @@ class Dataset(DatasetBase):
     __tablename__ = "datasets"
 
     id = Column(Integer, primary_key=True, index=True)
-    unique_id = Column(String, unique=True, index=True, nullable=False)  # UUID for cache directory naming
+    unique_id = Column(String, unique=True, index=True, nullable=False, default=lambda: str(uuid.uuid4()))  # UUID for cache directory naming
     name = Column(String, unique=True, index=True, nullable=False)
     path = Column(String, nullable=False)
     description = Column(Text, nullable=True)

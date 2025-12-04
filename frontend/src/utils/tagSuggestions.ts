@@ -519,17 +519,17 @@ export async function loadAllTags(): Promise<void> {
 // Special tags that should always be available
 const SPECIAL_TAGS = {
   rating: [
-    { tag: "sensitive", category: "Rating Tag" },
-    { tag: "explicit", category: "Rating Tag" },
-    { tag: "questionable", category: "Rating Tag" },
-    { tag: "general", category: "Rating Tag" },
+    { tag: "sensitive", category: "Rating" },
+    { tag: "explicit", category: "Rating" },
+    { tag: "questionable", category: "Rating" },
+    { tag: "general", category: "Rating" },
   ],
   quality: [
-    { tag: "best_quality", category: "Quality Tag" },
-    { tag: "normal_quality", category: "Quality Tag" },
-    { tag: "bad_quality", category: "Quality Tag" },
-    { tag: "worst_quality", category: "Quality Tag" },
-    { tag: "masterpiece", category: "Quality Tag" },
+    { tag: "best_quality", category: "Quality" },
+    { tag: "normal_quality", category: "Quality" },
+    { tag: "bad_quality", category: "Quality" },
+    { tag: "worst_quality", category: "Quality" },
+    { tag: "masterpiece", category: "Quality" },
   ],
 };
 

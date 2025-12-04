@@ -185,6 +185,9 @@ class Dataset(DatasetBase):
     total_captions = Column(Integer, default=0)
     total_tags = Column(Integer, default=0)
 
+    # Tag statistics: {"tag": {"category": "...", "count": N}}
+    tag_statistics = Column(JSON, default=dict)
+
     # Timestamps
     created_at = Column(DateTime, default=get_local_now, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -213,6 +216,7 @@ class Dataset(DatasetBase):
             "total_items": self.total_items,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
+            "tag_statistics": self.tag_statistics or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_scanned_at": self.last_scanned_at.isoformat() if self.last_scanned_at else None,

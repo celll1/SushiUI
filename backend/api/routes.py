@@ -2529,6 +2529,51 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     total_tags = db.query(func.count(TagDictionary.id)).scalar()
     return {"total_tags": total_tags or 0}
 
+async def compute_tag_statistics(dataset_id: int, db: Session) -> dict:
+    """
+    Compute tag statistics for a dataset: tag counts only (no categories)
+    Returns: {"tag": {"count": N}, ...}
+
+    Note: Categories are determined by frontend (tagSuggestions.ts) to maintain consistency.
+    Backend only counts tag occurrences.
+    """
+    print(f"[Dataset] Computing tag statistics for dataset {dataset_id}...")
+
+    # Get all items in dataset
+    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+    if not items:
+        print(f"[Dataset] No items found, returning empty statistics")
+        return {}
+
+    # Get all tag captions
+    item_ids = [item.id for item in items]
+    tag_captions = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(item_ids),
+        DatasetCaption.caption_type == "tags"
+    ).all()
+
+    # Count tag occurrences
+    tag_counts: dict[str, int] = {}
+    for caption in tag_captions:
+        if caption.content:
+            tags = caption.content.split(",")
+            for tag in tags:
+                tag = tag.strip()
+                if tag:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    print(f"[Dataset] Found {len(tag_counts)} unique tags")
+
+    # Build final statistics (count only, categories added by frontend)
+    statistics = {}
+    for tag, count in tag_counts.items():
+        statistics[tag] = {
+            "count": count
+        }
+
+    print(f"[Dataset] Tag statistics computed: {len(statistics)} tags")
+    return statistics
+
 @router.post("/datasets/{dataset_id}/scan")
 async def scan_dataset(
     dataset_id: int,
@@ -2538,40 +2583,40 @@ async def scan_dataset(
     import os
     from PIL import Image
     import hashlib
-    
+
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
+
     if not os.path.exists(dataset.path):
         raise HTTPException(status_code=400, detail=f"Directory not found: {dataset.path}")
-    
+
     # Supported image extensions
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
     caption_exts = {".txt"}
-    
+
     # Scan directory
     items_found = 0
     captions_found = 0
-    
+
     def scan_directory(dir_path, current_depth=0):
         nonlocal items_found, captions_found
-        
+
         try:
             entries = os.listdir(dir_path)
         except PermissionError:
             print(f"[Dataset Scan] Permission denied: {dir_path}")
             return
-        
+
         # Group files by base name
         file_groups = {}
         for entry in entries:
             entry_path = os.path.join(dir_path, entry)
-            
+
             if os.path.isfile(entry_path):
                 base_name, ext = os.path.splitext(entry)
                 ext_lower = ext.lower()
-                
+
                 if ext_lower in image_exts:
                     if base_name not in file_groups:
                         file_groups[base_name] = {"images": [], "captions": []}
@@ -2580,39 +2625,39 @@ async def scan_dataset(
                     if base_name not in file_groups:
                         file_groups[base_name] = {"images": [], "captions": []}
                     file_groups[base_name]["captions"].append(entry_path)
-            
+
             elif os.path.isdir(entry_path) and dataset.recursive:
                 max_depth = dataset.max_depth if dataset.max_depth else float('inf')
                 if current_depth < max_depth:
                     scan_directory(entry_path, current_depth + 1)
-        
+
         # Process file groups
         for base_name, files in file_groups.items():
             if not files["images"]:
                 continue
-            
+
             # Use first image as primary
             image_path = files["images"][0]
-            
+
             try:
                 # Read image metadata
                 with Image.open(image_path) as img:
                     width, height = img.size
                     file_size = os.path.getsize(image_path)
-                    
+
                     # Calculate image hash
                     with open(image_path, 'rb') as f:
                         image_hash = hashlib.sha256(f.read()).hexdigest()
-                    
+
                     # Check if item already exists
                     existing_item = db.query(DatasetItem).filter(
                         DatasetItem.dataset_id == dataset_id,
                         DatasetItem.image_hash == image_hash
                     ).first()
-                    
+
                     if existing_item:
                         continue  # Skip duplicate
-                    
+
                     # Create dataset item
                     item = DatasetItem(
                         dataset_id=dataset_id,
@@ -2627,7 +2672,7 @@ async def scan_dataset(
                     db.add(item)
                     db.flush()  # Get item.id
                     items_found += 1
-                    
+
                     # Process captions
                     for caption_path in files["captions"]:
                         try:
@@ -2644,21 +2689,25 @@ async def scan_dataset(
                                     captions_found += 1
                         except Exception as e:
                             print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
-            
+
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
-    
+
     # Start scanning
     scan_directory(dataset.path)
-    
+
+    # Compute tag statistics
+    tag_statistics = await compute_tag_statistics(dataset_id, db)
+
     # Update dataset statistics
     dataset.total_items = items_found
     dataset.total_captions = captions_found
+    dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()
-    
+
     db.commit()
     db.refresh(dataset)
-    
+
     return {
         "items_found": items_found,
         "captions_found": captions_found,
@@ -2899,13 +2948,15 @@ async def update_item_caption(
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    # Find existing caption
+    # Get old caption content for tag statistics update
+    old_content = None
     caption = db.query(DatasetCaption).filter(
         DatasetCaption.item_id == item_id,
         DatasetCaption.caption_type == request.caption_type
     ).first()
 
     if caption:
+        old_content = caption.content
         # Update existing caption
         caption.content = request.content
         caption.updated_at = datetime.utcnow()
@@ -2921,6 +2972,44 @@ async def update_item_caption(
 
     db.commit()
     db.refresh(caption)
+
+    # Update tag statistics if this is a "tags" caption
+    if request.caption_type == "tags":
+        dataset = db.query(Dataset).filter(Dataset.id == item.dataset_id).first()
+        if dataset and dataset.tag_statistics:
+            tag_statistics = dataset.tag_statistics.copy()
+
+            # Parse old and new tags
+            old_tags = set()
+            if old_content:
+                old_tags = {tag.strip() for tag in old_content.split(",") if tag.strip()}
+
+            new_tags = set()
+            if request.content:
+                new_tags = {tag.strip() for tag in request.content.split(",") if tag.strip()}
+
+            # Tags removed
+            removed_tags = old_tags - new_tags
+            for tag in removed_tags:
+                if tag in tag_statistics:
+                    tag_statistics[tag]["count"] -= 1
+                    if tag_statistics[tag]["count"] <= 0:
+                        del tag_statistics[tag]
+
+            # Tags added
+            added_tags = new_tags - old_tags
+            for tag in added_tags:
+                if tag in tag_statistics:
+                    tag_statistics[tag]["count"] += 1
+                else:
+                    # New tag - no category determination (frontend handles it)
+                    tag_statistics[tag] = {
+                        "count": 1
+                    }
+
+            # Save updated statistics
+            dataset.tag_statistics = tag_statistics
+            db.commit()
 
     return {"status": "success", "caption": caption.to_dict()}
 

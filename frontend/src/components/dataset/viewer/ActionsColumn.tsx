@@ -2,23 +2,54 @@
 
 import { CheckSquare, Square, Tag, Trash2, Download } from "lucide-react";
 
+interface TagStatistic {
+  category: string;
+  count: number;
+}
+
 interface ActionsColumnProps {
   datasetId: number;
   selectedItems: Set<number>;
   totalItems: number;
+  tagStatistics?: Record<string, TagStatistic>;
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onRefresh: () => void;
 }
 
+// Category colors (same as ItemDetailColumn)
+const getCategoryColor = (category: string): string => {
+  const normalized = category.toLowerCase().replace(/\s+/g, '');
+  const colors: Record<string, string> = {
+    character: "bg-blue-600 dark:bg-blue-700",
+    artist: "bg-purple-600 dark:bg-purple-700",
+    copyright: "bg-pink-600 dark:bg-pink-700",
+    general: "bg-green-600 dark:bg-green-700",
+    meta: "bg-gray-600 dark:bg-gray-700",
+    quality: "bg-yellow-600 dark:bg-yellow-700",
+    qualitytag: "bg-yellow-600 dark:bg-yellow-700",
+    rating: "bg-red-600 dark:bg-red-700",
+    ratingtag: "bg-red-600 dark:bg-red-700",
+    model: "bg-indigo-600 dark:bg-indigo-700",
+  };
+  return colors[normalized] || "bg-green-600 dark:bg-green-700";
+};
+
 export default function ActionsColumn({
   datasetId,
   selectedItems,
   totalItems,
+  tagStatistics,
   onSelectAll,
   onDeselectAll,
   onRefresh,
 }: ActionsColumnProps) {
+  // Sort tags by count (most common first)
+  const sortedTags = tagStatistics
+    ? Object.entries(tagStatistics)
+        .sort((a, b) => b[1].count - a[1].count)
+        .slice(0, 50) // Show top 50
+    : [];
   const handleBatchTag = () => {
     console.log("Batch tagging", selectedItems.size, "items");
     // TODO: Implement batch tagger
@@ -102,6 +133,38 @@ export default function ActionsColumn({
               <span>Export Dataset</span>
             </button>
           </div>
+        </div>
+
+        {/* Tag Statistics */}
+        <div className="bg-gray-800 rounded-lg p-3">
+          <h4 className="text-xs font-semibold mb-2">Tag Statistics</h4>
+          {sortedTags.length > 0 ? (
+            <div className="space-y-1 max-h-96 overflow-y-auto">
+              {sortedTags.map(([tag, stats]) => {
+                const colorClass = getCategoryColor(stats.category);
+                return (
+                  <div
+                    key={tag}
+                    className="flex items-center justify-between text-xs group hover:bg-gray-700 rounded px-1.5 py-0.5 transition-colors"
+                  >
+                    <div className="flex items-center space-x-1.5 flex-1 min-w-0">
+                      <span className={`px-1.5 py-0.5 ${colorClass} rounded text-[10px] flex-shrink-0`}>
+                        {stats.category}
+                      </span>
+                      <span className="text-gray-200 truncate">{tag}</span>
+                    </div>
+                    <span className="text-gray-400 text-[10px] font-mono ml-2 flex-shrink-0">
+                      {stats.count}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-[10px] text-gray-500 text-center py-4">
+              No tag statistics available. Scan dataset to generate.
+            </div>
+          )}
         </div>
 
         {/* Auto-Tagger (Placeholder) */}

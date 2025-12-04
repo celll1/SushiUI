@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { listDatasetItems, DatasetItem, getDatasetTags } from "@/utils/api";
+import { listDatasetItems, DatasetItem, Dataset, getDataset } from "@/utils/api";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 import ItemGridColumn from "./viewer/ItemGridColumn";
@@ -14,6 +14,7 @@ interface DatasetViewerProps {
 
 export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const tagSuggestionsContext = useTagSuggestions();
+  const [dataset, setDataset] = useState<Dataset | null>(null);
   const [items, setItems] = useState<DatasetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
   const [currentItem, setCurrentItem] = useState<DatasetItem | null>(null);
@@ -24,55 +25,58 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [total, setTotal] = useState(0);
   const pageSize = 50;
 
-  // Tag category cache for entire dataset (shared across all items)
+  // Tag category cache (tag -> category)
   const [tagCategoryCache, setTagCategoryCache] = useState<Record<string, string>>({});
-  const [cacheLoading, setCacheLoading] = useState(false);
+  // Tag statistics with categories (tag -> {category, count})
+  const [tagStatistics, setTagStatistics] = useState<Record<string, { category: string; count: number }> | undefined>(undefined);
 
-  // Load tag categories for entire dataset (runs once on mount)
+  // Load dataset and compute categories using tagSuggestions
   useEffect(() => {
-    const loadTagCategories = async () => {
+    const loadDataset = async () => {
       if (!tagSuggestionsContext.isLoaded) {
         return; // Wait for tag suggestions to load
       }
 
-      setCacheLoading(true);
       try {
-        console.log("[DatasetViewer] Loading all tags for dataset...");
-        const allTags = await getDatasetTags(datasetId);
-        console.log(`[DatasetViewer] Found ${allTags.length} unique tags`);
+        const data = await getDataset(datasetId);
+        setDataset(data);
 
-        // Fetch categories for all tags (batched search)
-        const categoryMap: Record<string, string> = {};
-        let foundCount = 0;
-        let notFoundCount = 0;
+        // Build tag category cache using tagSuggestions
+        if (data.tag_statistics) {
+          const categoryMap: Record<string, string> = {};
+          const statsWithCategories: Record<string, { category: string; count: number }> = {};
 
-        for (const tag of allTags) {
-          const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-          if (results.length > 0) {
-            const normalizedUserTag = normalizeTagForMatching(tag);
-            const normalizedResultTag = normalizeTagForMatching(results[0].tag);
-            if (normalizedUserTag === normalizedResultTag) {
-              categoryMap[tag] = results[0].category;
-              foundCount++;
-            } else {
-              notFoundCount++;
+          for (const [tag, stats] of Object.entries(data.tag_statistics)) {
+            // Use tagSuggestions to get category
+            const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
+            let category = "General"; // Default
+
+            if (results.length > 0) {
+              const normalizedUserTag = normalizeTagForMatching(tag);
+              const normalizedResultTag = normalizeTagForMatching(results[0].tag);
+              if (normalizedUserTag === normalizedResultTag) {
+                category = results[0].category;
+              }
             }
-          } else {
-            notFoundCount++;
-          }
-        }
 
-        setTagCategoryCache(categoryMap);
-        console.log(`[DatasetViewer] Tag category cache ready: ${foundCount} found, ${notFoundCount} not found`);
+            categoryMap[tag] = category;
+            statsWithCategories[tag] = {
+              category,
+              count: stats.count
+            };
+          }
+
+          setTagCategoryCache(categoryMap);
+          setTagStatistics(statsWithCategories);
+          console.log(`[DatasetViewer] Loaded ${Object.keys(categoryMap).length} tag categories using tagSuggestions`);
+        }
       } catch (err) {
-        console.error("[DatasetViewer] Failed to load tag categories:", err);
-      } finally {
-        setCacheLoading(false);
+        console.error("[DatasetViewer] Failed to load dataset:", err);
       }
     };
 
-    loadTagCategories();
-  }, [datasetId, tagSuggestionsContext]);
+    loadDataset();
+  }, [datasetId, tagSuggestionsContext.isLoaded]);
 
   useEffect(() => {
     loadItems();
@@ -172,6 +176,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           datasetId={datasetId}
           selectedItems={selectedItems}
           totalItems={total}
+          tagStatistics={tagStatistics}
           onSelectAll={handleSelectAll}
           onDeselectAll={handleDeselectAll}
           onRefresh={loadItems}

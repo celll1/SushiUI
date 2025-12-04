@@ -66,6 +66,7 @@ export default function InputWithTagSuggestions({
       if (value.trim().length < 2) {
         setTagSuggestions([]);
         setShowSuggestions(false);
+        setSelectedSuggestionIndex(0);
         return;
       }
 
@@ -82,9 +83,17 @@ export default function InputWithTagSuggestions({
           category: r.category,
         }));
 
-        setTagSuggestions(suggestions);
+        setTagSuggestions(prevSuggestions => {
+          // Only reset selection if the number of suggestions changed
+          if (prevSuggestions.length !== suggestions.length) {
+            setSelectedSuggestionIndex(0);
+          } else {
+            // Keep current selection within bounds
+            setSelectedSuggestionIndex(prev => Math.min(prev, suggestions.length - 1));
+          }
+          return suggestions;
+        });
         setShowSuggestions(suggestions.length > 0);
-        setSelectedSuggestionIndex(0);
 
         // Update position
         if (inputRef.current) {
@@ -164,6 +173,14 @@ export default function InputWithTagSuggestions({
     setFilterMode(newMode);
   };
 
+  const handleBlur = () => {
+    // Close suggestions when input loses focus
+    // Use setTimeout to allow click events on suggestions to fire first
+    setTimeout(() => {
+      setShowSuggestions(false);
+    }, 200);
+  };
+
   return (
     <div className="relative">
       <input
@@ -172,6 +189,7 @@ export default function InputWithTagSuggestions({
         value={value}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
+        onBlur={handleBlur}
         placeholder={placeholder}
         className={className}
       />

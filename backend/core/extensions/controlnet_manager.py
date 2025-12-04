@@ -100,8 +100,6 @@ class ControlNetManager:
             'debug_latent',        # debug latent images
             'scheduler',           # scheduler states
             'ema',                 # EMA states
-            'checkpoint',          # training checkpoints
-            'step_',               # step-specific saves (intermediate)
         ]
 
         for pattern in exclude_patterns:

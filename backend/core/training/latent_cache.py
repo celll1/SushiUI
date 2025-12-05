@@ -284,8 +284,22 @@ class LatentCache:
         if info is None:
             return False
 
-        # Check model compatibility
-        if info.get('model_path') != model_path:
+        # Normalize paths for comparison (resolve to absolute, case-normalized)
+        from pathlib import Path
+        cached_model_path = info.get('model_path')
+        if cached_model_path is None:
+            return False
+
+        try:
+            cached_path_normalized = Path(cached_model_path).resolve()
+            current_path_normalized = Path(model_path).resolve()
+        except Exception:
+            # If path resolution fails, fall back to string comparison
+            cached_path_normalized = cached_model_path
+            current_path_normalized = model_path
+
+        # Check model compatibility (compare normalized paths)
+        if cached_path_normalized != current_path_normalized:
             return False
 
         if info.get('model_type') != model_type:

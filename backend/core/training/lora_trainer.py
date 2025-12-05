@@ -1831,11 +1831,16 @@ class LoRATrainer:
                     caches_to_generate.append((unique_id, cache))
 
             if len(caches_to_generate) > 0:
-                print(f"[LoRATrainer] Generating latent cache for {len(caches_to_generate)} dataset(s)...")
-                print(f"[LoRATrainer] This will take some time but significantly reduces VRAM during training.")
+                print(f"\n{'='*80}")
+                print(f"[LatentCache] Cache validation failed for {len(caches_to_generate)} dataset(s)")
+                print(f"[LatentCache] Regenerating cache (this will take some time but significantly reduces VRAM during training)")
+                print(f"[LatentCache] Model: {self.model_path}")
+                print(f"[LatentCache] Model type: {model_type}")
+                print(f"{'='*80}\n")
 
                 # Clear old caches
                 for unique_id, cache in caches_to_generate:
+                    print(f"[LatentCache] Clearing old cache for dataset {unique_id[:8]}...")
                     cache.clear()
 
                 # Move VAE to GPU for encoding
@@ -1847,19 +1852,12 @@ class LoRATrainer:
                 total_new_cached = 0
                 total_existing_cached = 0
 
-                # Create progress bar
+                # Progress tracking (print every 10%)
                 import sys
-                cache_pbar = tqdm(
-                    total=total_images,
-                    desc="[LatentCache] Encoding images",
-                    unit="img",
-                    ncols=100,
-                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
-                    file=sys.stdout,
-                    dynamic_ncols=False,
-                    mininterval=0.1
-                )
-                sys.stdout.flush()
+                processed_images = 0
+                last_progress_percent = 0
+
+                print(f"[LatentCache] Encoding {total_images} images...")
 
                 for batch in batches:
                     for item in batch:
@@ -1867,8 +1865,8 @@ class LoRATrainer:
                         dataset_unique_id = item.get("dataset_unique_id")
 
                         if not dataset_unique_id or dataset_unique_id not in latent_caches:
-                            cache_pbar.write(f"[LatentCache] WARNING: No cache for image {image_path}")
-                            cache_pbar.update(1)
+                            print(f"[LatentCache] WARNING: No cache for image {image_path}")
+                            processed_images += 1
                             continue
 
                         # Get target dimensions
@@ -1889,8 +1887,8 @@ class LoRATrainer:
 
                         if cached_latent is None:
                             if not os.path.exists(image_path):
-                                cache_pbar.write(f"[LatentCache] WARNING: Image not found: {image_path}")
-                                cache_pbar.update(1)
+                                print(f"[LatentCache] WARNING: Image not found: {image_path}")
+                                processed_images += 1
                                 continue
 
                             try:
@@ -1906,15 +1904,23 @@ class LoRATrainer:
                                 )
                                 total_new_cached += 1
                             except Exception as e:
-                                cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+                                print(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
                         else:
                             total_existing_cached += 1
 
-                        cache_pbar.update(1)
-                        sys.stdout.flush()
+                        processed_images += 1
 
-                cache_pbar.close()
-                sys.stdout.flush()
+                        # Print progress every 10%
+                        current_progress_percent = (processed_images * 100) // total_images
+                        if current_progress_percent >= last_progress_percent + 10:
+                            print(f"[LatentCache] Progress: {current_progress_percent}% ({processed_images}/{total_images} images)")
+                            sys.stdout.flush()
+                            last_progress_percent = current_progress_percent
+
+                # Print 100% completion
+                if last_progress_percent < 100:
+                    print(f"[LatentCache] Progress: 100% ({processed_images}/{total_images} images)")
+                    sys.stdout.flush()
                 print(f"[LatentCache] Cache generation complete:")
                 print(f"[LatentCache]   Existing cache used: {total_existing_cached} images")
                 print(f"[LatentCache]   Newly cached: {total_new_cached} images")

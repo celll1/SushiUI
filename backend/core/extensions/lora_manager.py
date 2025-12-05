@@ -278,16 +278,77 @@ class LoRAManager:
 
                 print(f"[LoRAManager] Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
 
-                # Load LoRA weights
-                # diffusers automatically converts SD format (lora_unet_*, lora_te1_*, lora_te2_*)
-                # to diffusers format, so no manual conversion needed
+                # Detect LoRA format and convert if needed
+                from safetensors import safe_open
+                import tempfile
+                import os
+
                 adapter_name = f"lora_{i}"
-                print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
-                pipeline.load_lora_weights(
-                    str(lora_path.parent),
-                    weight_name=lora_path.name,
-                    adapter_name=adapter_name
-                )
+
+                # Check LoRA format
+                with safe_open(str(lora_path), framework="pt", device="cpu") as f:
+                    sample_keys = list(f.keys())[:5]
+                    print(f"[LoRAManager] Sample keys from LoRA: {sample_keys}")
+
+                    # Detect format: SD format uses underscores (lora_unet_*, lora_te1_*)
+                    # Diffusers format uses dots (unet.*, text_encoder.*)
+                    is_sd_format = any(k.startswith("lora_") for k in sample_keys)
+                    is_diffusers_format = any("." in k and not k.startswith("lora_") for k in sample_keys)
+
+                    print(f"[LoRAManager] LoRA format detected: SD={is_sd_format}, Diffusers={is_diffusers_format}")
+
+                # If LoRA is in diffusers format (dots), convert to SD format for load_lora_weights
+                if is_diffusers_format and not is_sd_format:
+                    print(f"[LoRAManager] Converting diffusers format to SD format...")
+                    converted_state_dict = {}
+
+                    with safe_open(str(lora_path), framework="pt", device="cpu") as f:
+                        for key in f.keys():
+                            tensor = f.get_tensor(key)
+
+                            # Convert key format:
+                            # unet.xxx.yyy -> lora_unet_xxx_yyy
+                            # text_encoder.xxx -> lora_te1_xxx
+                            # text_encoder_2.xxx -> lora_te2_xxx
+                            if key.startswith("unet."):
+                                new_key = "lora_" + key.replace(".", "_")
+                            elif key.startswith("text_encoder_2."):
+                                new_key = "lora_te2_" + key.replace("text_encoder_2.", "").replace(".", "_")
+                            elif key.startswith("text_encoder."):
+                                new_key = "lora_te1_" + key.replace("text_encoder.", "").replace(".", "_")
+                            else:
+                                new_key = key
+
+                            converted_state_dict[new_key] = tensor
+
+                    # Save converted LoRA to temporary file
+                    from safetensors.torch import save_file
+                    temp_dir = tempfile.gettempdir()
+                    temp_lora_path = os.path.join(temp_dir, f"converted_lora_{adapter_name}.safetensors")
+                    save_file(converted_state_dict, temp_lora_path)
+
+                    print(f"[LoRAManager] Converted LoRA saved to: {temp_lora_path}")
+                    print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
+
+                    # Load converted LoRA
+                    pipeline.load_lora_weights(
+                        temp_dir,
+                        weight_name=f"converted_lora_{adapter_name}.safetensors",
+                        adapter_name=adapter_name
+                    )
+
+                    # Clean up temporary file
+                    os.remove(temp_lora_path)
+                    print(f"[LoRAManager] Temporary file removed")
+                else:
+                    # SD format or already compatible - load directly
+                    print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
+                    pipeline.load_lora_weights(
+                        str(lora_path.parent),
+                        weight_name=lora_path.name,
+                        adapter_name=adapter_name
+                    )
+
                 print(f"[LoRAManager] Successfully loaded LoRA weights")
 
                 # Set adapter with strength

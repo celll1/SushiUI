@@ -3013,6 +3013,148 @@ async def update_item_caption(
 
     return {"status": "success", "caption": caption.to_dict()}
 
+@router.post("/datasets/items/{item_id}/save-to-txt")
+async def save_item_caption_to_txt(
+    item_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """Save caption from DB to TXT file"""
+    import os
+
+    # Get item
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Get tags caption
+    caption = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id == item_id,
+        DatasetCaption.caption_type == "tags"
+    ).first()
+
+    if not caption:
+        raise HTTPException(status_code=404, detail="No tags caption found for this item")
+
+    # Determine TXT file path
+    image_path = item.image_path
+    txt_path = os.path.splitext(image_path)[0] + ".txt"
+
+    try:
+        # Write to TXT file
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(caption.content)
+
+        print(f"[Dataset] Saved caption to TXT: {txt_path}")
+        return {"status": "success", "txt_path": txt_path}
+    except Exception as e:
+        print(f"[Dataset] Failed to save caption to TXT: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to write TXT file: {str(e)}")
+
+@router.post("/datasets/{dataset_id}/save-all-to-txt")
+async def save_all_captions_to_txt(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """Save all captions from DB to TXT files"""
+    import os
+
+    # Get dataset
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Get all items
+    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+
+    saved_count = 0
+    failed_count = 0
+    failed_items = []
+
+    for item in items:
+        # Get tags caption
+        caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == "tags"
+        ).first()
+
+        if not caption:
+            continue
+
+        # Determine TXT file path
+        image_path = item.image_path
+        txt_path = os.path.splitext(image_path)[0] + ".txt"
+
+        try:
+            # Write to TXT file
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption.content)
+            saved_count += 1
+        except Exception as e:
+            print(f"[Dataset] Failed to save caption to TXT {txt_path}: {e}")
+            failed_count += 1
+            failed_items.append({"item_id": item.id, "path": txt_path, "error": str(e)})
+
+    print(f"[Dataset] Saved {saved_count} captions to TXT files, {failed_count} failed")
+    return {
+        "status": "success",
+        "saved_count": saved_count,
+        "failed_count": failed_count,
+        "failed_items": failed_items
+    }
+
+@router.post("/datasets/items/{item_id}/restore-from-txt")
+async def restore_item_caption_from_txt(
+    item_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """Restore caption from TXT file to DB"""
+    import os
+
+    # Get item
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Determine TXT file path
+    image_path = item.image_path
+    txt_path = os.path.splitext(image_path)[0] + ".txt"
+
+    if not os.path.exists(txt_path):
+        raise HTTPException(status_code=404, detail=f"TXT file not found: {txt_path}")
+
+    try:
+        # Read from TXT file
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+
+        # Update or create caption
+        caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item_id,
+            DatasetCaption.caption_type == "tags"
+        ).first()
+
+        if caption:
+            caption.content = content
+            caption.source = "file"
+            caption.updated_at = datetime.utcnow()
+        else:
+            caption = DatasetCaption(
+                item_id=item_id,
+                caption_type="tags",
+                content=content,
+                source="file"
+            )
+            db.add(caption)
+
+        db.commit()
+        db.refresh(caption)
+
+        print(f"[Dataset] Restored caption from TXT: {txt_path}")
+        return {"status": "success", "caption": caption.to_dict()}
+    except Exception as e:
+        print(f"[Dataset] Failed to restore caption from TXT: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read TXT file: {str(e)}")
+
 # Tag Dictionary Search API was removed - frontend uses tagSuggestions.ts (JSON files) instead
 
 # ============================================================

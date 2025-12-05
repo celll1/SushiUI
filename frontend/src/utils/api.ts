@@ -968,6 +968,37 @@ export const updateCaptionProcessing = async (
 };
 
 // ============================================================
+// TXT File Synchronization API
+// ============================================================
+
+export interface SaveToTxtResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface BulkSaveToTxtResponse {
+  total: number;
+  saved: number;
+  skipped: number;
+  errors: number;
+}
+
+export const saveItemCaptionToTxt = async (itemId: number): Promise<SaveToTxtResponse> => {
+  const response = await api.post(`/datasets/items/${itemId}/save-to-txt`);
+  return response.data;
+};
+
+export const saveAllCaptionsToTxt = async (datasetId: number): Promise<BulkSaveToTxtResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/save-all-to-txt`);
+  return response.data;
+};
+
+export const restoreItemCaptionFromTxt = async (itemId: number): Promise<SaveToTxtResponse> => {
+  const response = await api.post(`/datasets/items/${itemId}/restore-from-txt`);
+  return response.data;
+};
+
+// ============================================================
 // Caption Processing Presets API
 // ============================================================
 

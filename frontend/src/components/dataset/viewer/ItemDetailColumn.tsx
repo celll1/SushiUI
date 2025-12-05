@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Undo2, Redo2, Copy, Clipboard } from "lucide-react";
+import { Undo2, Redo2, Copy, Clipboard, Save } from "lucide-react";
 import {
   getDatasetItem,
   DatasetItem,
   updateItemCaption,
+  saveItemCaptionToTxt,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
@@ -54,6 +55,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     future: [],
   });
   const [hasChanges, setHasChanges] = useState(false);
+  const [isSavingToTxt, setIsSavingToTxt] = useState(false);
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {
@@ -103,7 +105,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     }
   }, [item, loadItemDetails]);
 
-  const pushHistory = (newTags: string[]) => {
+  const pushHistory = async (newTags: string[]) => {
     setHistory({
       past: [...history.past, history.present],
       present: newTags,
@@ -111,9 +113,23 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     });
     setTags(newTags);
     setHasChanges(true);
+
+    // Immediately save to DB
+    if (item) {
+      try {
+        const content = newTags.join(", ");
+        await updateItemCaption(item.id, {
+          caption_type: "tags",
+          content,
+        });
+        console.log("[ItemDetailColumn] Tags saved to DB immediately");
+      } catch (err) {
+        console.error("[ItemDetailColumn] Failed to save tags to DB:", err);
+      }
+    }
   };
 
-  const handleUndo = () => {
+  const handleUndo = async () => {
     if (history.past.length === 0) return;
 
     const previous = history.past[history.past.length - 1];
@@ -126,9 +142,23 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     });
     setTags(previous);
     setHasChanges(newPast.length > 0 || history.future.length > 0);
+
+    // Immediately save to DB
+    if (item) {
+      try {
+        const content = previous.join(", ");
+        await updateItemCaption(item.id, {
+          caption_type: "tags",
+          content,
+        });
+        console.log("[ItemDetailColumn] Undo saved to DB immediately");
+      } catch (err) {
+        console.error("[ItemDetailColumn] Failed to save undo to DB:", err);
+      }
+    }
   };
 
-  const handleRedo = () => {
+  const handleRedo = async () => {
     if (history.future.length === 0) return;
 
     const next = history.future[0];
@@ -141,6 +171,20 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     });
     setTags(next);
     setHasChanges(true);
+
+    // Immediately save to DB
+    if (item) {
+      try {
+        const content = next.join(", ");
+        await updateItemCaption(item.id, {
+          caption_type: "tags",
+          content,
+        });
+        console.log("[ItemDetailColumn] Redo saved to DB immediately");
+      } catch (err) {
+        console.error("[ItemDetailColumn] Failed to save redo to DB:", err);
+      }
+    }
   };
 
 
@@ -163,25 +207,25 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     }
   };
 
-  const handleSave = async () => {
+  const handleSaveToTxt = async () => {
     if (!item) return;
 
+    setIsSavingToTxt(true);
     try {
-      const content = tags.join(", ");
-      await updateItemCaption(item.id, {
-        caption_type: "tags",
-        content,
-      });
-      setHasChanges(false);
-      console.log("Tags saved successfully");
+      const result = await saveItemCaptionToTxt(item.id);
+      if (result.success) {
+        console.log("[ItemDetailColumn] Saved to TXT:", result.message);
+        alert("Caption saved to TXT file successfully");
+      } else {
+        console.error("[ItemDetailColumn] Failed to save to TXT:", result.message);
+        alert(`Failed to save to TXT: ${result.message}`);
+      }
     } catch (err) {
-      console.error("Failed to save tags:", err);
-      alert("Failed to save tags. Please try again.");
+      console.error("[ItemDetailColumn] Error saving to TXT:", err);
+      alert("Failed to save to TXT file. Please try again.");
+    } finally {
+      setIsSavingToTxt(false);
     }
-  };
-
-  const handleRevert = () => {
-    loadItemDetails();
   };
 
   const handleTagAdd = (tag: string, category: string) => {
@@ -316,6 +360,19 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
               showSuggestionsAbove={true}
             />
           </div>
+
+          {/* Save to TXT Button */}
+          <div className="flex-shrink-0 mt-2">
+            <button
+              onClick={handleSaveToTxt}
+              disabled={isSavingToTxt}
+              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Save current tags to TXT file"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>{isSavingToTxt ? "Saving..." : "Save to TXT"}</span>
+            </button>
+          </div>
         </div>
 
         {/* Other Caption Types - Collapsible */}
@@ -341,23 +398,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
         )}
       </div>
 
-      {/* Footer Actions - Sticky */}
-      {hasChanges && (
-        <div className="flex-shrink-0 p-2 border-t border-gray-700 flex space-x-2">
-          <button
-            onClick={handleSave}
-            className="flex-1 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs transition-colors"
-          >
-            Save
-          </button>
-          <button
-            onClick={handleRevert}
-            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
-          >
-            Revert
-          </button>
-        </div>
-      )}
     </div>
   );
 }

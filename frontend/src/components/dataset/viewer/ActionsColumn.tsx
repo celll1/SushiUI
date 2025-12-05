@@ -33,8 +33,9 @@ const getCategoryColor = (category: string): string => {
     rating: "bg-red-600 dark:bg-red-700",
     ratingtag: "bg-red-600 dark:bg-red-700",
     model: "bg-indigo-600 dark:bg-indigo-700",
+    unknown: "bg-orange-600 dark:bg-orange-700",
   };
-  return colors[normalized] || "bg-green-600 dark:bg-green-700";
+  return colors[normalized] || "bg-orange-600 dark:bg-orange-700";
 };
 
 export default function ActionsColumn({

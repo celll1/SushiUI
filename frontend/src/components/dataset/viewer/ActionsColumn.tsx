@@ -1,6 +1,8 @@
 "use client";
 
-import { CheckSquare, Square, Tag, Trash2, Download } from "lucide-react";
+import { useState } from "react";
+import { CheckSquare, Square, Tag, Trash2, Download, Save, RotateCcw } from "lucide-react";
+import { saveAllCaptionsToTxt } from "@/utils/api";
 
 interface TagStatistic {
   category: string;
@@ -44,6 +46,8 @@ export default function ActionsColumn({
   onDeselectAll,
   onRefresh,
 }: ActionsColumnProps) {
+  const [isSavingToTxt, setIsSavingToTxt] = useState(false);
+
   // Sort tags by count (most common first)
   const sortedTags = tagStatistics
     ? Object.entries(tagStatistics)
@@ -65,6 +69,27 @@ export default function ActionsColumn({
   const handleExport = () => {
     console.log("Exporting dataset");
     // TODO: Implement export
+  };
+
+  const handleSaveAllToTxt = async () => {
+    if (!confirm("Save all captions to TXT files? This will overwrite existing TXT files.")) {
+      return;
+    }
+
+    setIsSavingToTxt(true);
+    try {
+      const result = await saveAllCaptionsToTxt(datasetId);
+      console.log("[ActionsColumn] Bulk save result:", result);
+      alert(`Saved ${result.saved} captions to TXT files\n` +
+            `Skipped: ${result.skipped} (no caption or no image file)\n` +
+            `Errors: ${result.errors}`);
+      onRefresh(); // Refresh dataset view
+    } catch (err) {
+      console.error("[ActionsColumn] Failed to save all to TXT:", err);
+      alert("Failed to save captions to TXT files. Please try again.");
+    } finally {
+      setIsSavingToTxt(false);
+    }
   };
 
   return (
@@ -131,6 +156,22 @@ export default function ActionsColumn({
             >
               <Download className="h-3.5 w-3.5" />
               <span>Export Dataset</span>
+            </button>
+          </div>
+        </div>
+
+        {/* TXT File Synchronization */}
+        <div className="bg-gray-800 rounded-lg p-3">
+          <h4 className="text-xs font-semibold mb-2">TXT File Sync</h4>
+          <div className="space-y-1.5">
+            <button
+              onClick={handleSaveAllToTxt}
+              disabled={isSavingToTxt}
+              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Save all DB captions to TXT files"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>{isSavingToTxt ? "Saving..." : "Save All to TXT"}</span>
             </button>
           </div>
         </div>

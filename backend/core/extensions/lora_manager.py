@@ -307,18 +307,45 @@ class LoRAManager:
                             tensor = f.get_tensor(key)
 
                             # Convert key format:
-                            # unet.xxx.yyy -> lora_unet_xxx_yyy
-                            # text_encoder.xxx -> lora_te1_xxx
-                            # text_encoder_2.xxx -> lora_te2_xxx
-                            if key.startswith("unet."):
-                                new_key = "lora_" + key.replace(".", "_")
-                            elif key.startswith("text_encoder_2."):
-                                new_key = "lora_te2_" + key.replace("text_encoder_2.", "").replace(".", "_")
-                            elif key.startswith("text_encoder."):
-                                new_key = "lora_te1_" + key.replace("text_encoder.", "").replace(".", "_")
-                            else:
-                                new_key = key
+                            # unet.down_blocks.0.xxx.lora_down.weight -> lora_unet_down_blocks_0_xxx.lora_down.weight
+                            # text_encoder.xxx.lora_down.weight -> lora_te1_xxx.lora_down.weight
+                            # text_encoder_2.xxx.lora_up.weight -> lora_te2_xxx.lora_up.weight
+                            # IMPORTANT: Keep .lora_down.weight, .lora_up.weight, .alpha as-is (dots)
 
+                            # Separate the suffix (.lora_down.weight, .lora_up.weight, .alpha)
+                            if ".lora_down.weight" in key:
+                                suffix = ".lora_down.weight"
+                                base_key = key.replace(suffix, "")
+                            elif ".lora_up.weight" in key:
+                                suffix = ".lora_up.weight"
+                                base_key = key.replace(suffix, "")
+                            elif ".alpha" in key:
+                                suffix = ".alpha"
+                                base_key = key.replace(suffix, "")
+                            else:
+                                # Unknown key format, keep as-is
+                                new_key = key
+                                converted_state_dict[new_key] = tensor
+                                continue
+
+                            # Convert the base key (module path) to SD format
+                            if base_key.startswith("unet."):
+                                # unet.down_blocks.0.xxx -> lora_unet_down_blocks_0_xxx
+                                new_base = "lora_" + base_key.replace(".", "_")
+                            elif base_key.startswith("text_encoder_2."):
+                                # text_encoder_2.text_model.xxx -> lora_te2_text_model_xxx
+                                new_base = "lora_te2_" + base_key.replace("text_encoder_2.", "").replace(".", "_")
+                            elif base_key.startswith("text_encoder."):
+                                # text_encoder.text_model.xxx -> lora_te1_text_model_xxx
+                                new_base = "lora_te1_" + base_key.replace("text_encoder.", "").replace(".", "_")
+                            else:
+                                # Unknown prefix, keep as-is
+                                new_key = key
+                                converted_state_dict[new_key] = tensor
+                                continue
+
+                            # Combine base + suffix
+                            new_key = new_base + suffix
                             converted_state_dict[new_key] = tensor
 
                     # Save converted LoRA to temporary file

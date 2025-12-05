@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add backend directory to path for imports (extensions, database, etc.)
+backend_dir = Path(__file__).parent.parent.parent  # backend/
+sys.path.insert(0, str(backend_dir))
 
 from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption

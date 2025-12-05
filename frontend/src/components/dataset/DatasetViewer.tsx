@@ -49,7 +49,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           for (const [tag, stats] of Object.entries(data.tag_statistics)) {
             // Use tagSuggestions to get category
             const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-            let category = "General"; // Default
+            let category = "Unknown"; // Default to Unknown if not found in any JSON
 
             if (results.length > 0) {
               const normalizedUserTag = normalizeTagForMatching(tag);

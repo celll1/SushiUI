@@ -39,8 +39,9 @@ const getCategoryColor = (category: string): string => {
     rating: "bg-red-600 dark:bg-red-700 hover:bg-red-500",
     ratingtag: "bg-red-600 dark:bg-red-700 hover:bg-red-500", // "Rating Tag"
     model: "bg-indigo-600 dark:bg-indigo-700 hover:bg-indigo-500",
+    unknown: "bg-orange-600 dark:bg-orange-700 hover:bg-orange-500",
   };
-  return colors[normalized] || "bg-green-600 dark:bg-green-700 hover:bg-green-500";
+  return colors[normalized] || "bg-orange-600 dark:bg-orange-700 hover:bg-orange-500";
 };
 
 export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: ItemDetailColumnProps) {

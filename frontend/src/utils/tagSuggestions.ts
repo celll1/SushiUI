@@ -49,6 +49,17 @@ export function getCategoriesLoadStatus(): Record<string, boolean> {
   };
 }
 
+// Category priority order (higher priority = more specific)
+// When a tag exists in multiple categories, the higher priority category is used
+const CATEGORY_PRIORITY: Record<string, number> = {
+  character: 6,  // Highest priority
+  copyright: 5,
+  artist: 4,
+  meta: 3,
+  model: 2,
+  general: 1,    // Lowest priority
+};
+
 const categories: Record<string, TagCategory> = {
   general: { name: "General", tags: {}, loaded: false },
   character: { name: "Character", tags: {}, loaded: false },
@@ -648,6 +659,9 @@ export async function searchTags(
   const searchPrefix = normalizedInput.substring(0, Math.min(2, normalizedInput.length));
   let totalScanned = 0;
 
+  // Track tags found in multiple categories to apply priority
+  const tagMap = new Map<string, { tag: string; count: number; category: string; categoryKey: string }>();
+
   // Search in categories using index (if allowed by filter)
   if (shouldIncludeCategoryTags) {
     for (const [categoryKey, category] of Object.entries(categories)) {
@@ -679,13 +693,39 @@ export async function searchTags(
 
         // Check if the normalized tag starts with the normalized input
         if (normalizedTag.startsWith(normalizedInput)) {
-          results.push({
-            tag,
-            count,
-            category: category.name,
-          });
+          // Check if tag already exists in results from a different category
+          const existing = tagMap.get(tag);
+
+          if (existing) {
+            // Tag exists in multiple categories - use priority
+            const existingPriority = CATEGORY_PRIORITY[existing.categoryKey] || 0;
+            const currentPriority = CATEGORY_PRIORITY[categoryKey] || 0;
+
+            // Replace with higher priority category
+            if (currentPriority > existingPriority) {
+              tagMap.set(tag, {
+                tag,
+                count,
+                category: category.name,
+                categoryKey,
+              });
+            }
+          } else {
+            // New tag - add to map
+            tagMap.set(tag, {
+              tag,
+              count,
+              category: category.name,
+              categoryKey,
+            });
+          }
         }
       }
+    }
+
+    // Add deduplicated tags to results
+    for (const { tag, count, category } of tagMap.values()) {
+      results.push({ tag, count, category });
     }
   }
 

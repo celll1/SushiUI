@@ -418,11 +418,15 @@ def custom_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
-        # Check for cancellation
-        from core.pipeline import pipeline_manager
-        if pipeline_manager.cancel_requested:
-            print("[CustomSampling] Generation cancelled by user")
-            raise RuntimeError("Generation cancelled by user")
+        # Check for cancellation (only in inference context, not training)
+        try:
+            from core.pipeline import pipeline_manager
+            if pipeline_manager.cancel_requested:
+                print("[CustomSampling] Generation cancelled by user")
+                raise RuntimeError("Generation cancelled by user")
+        except (ImportError, AttributeError):
+            # pipeline_manager not available (e.g., in training subprocess)
+            pass
 
         # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:
@@ -972,11 +976,15 @@ def custom_img2img_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
-        # Check for cancellation
-        from core.pipeline import pipeline_manager
-        if pipeline_manager.cancel_requested:
-            print("[CustomSampling] Generation cancelled by user")
-            raise RuntimeError("Generation cancelled by user")
+        # Check for cancellation (only in inference context, not training)
+        try:
+            from core.pipeline import pipeline_manager
+            if pipeline_manager.cancel_requested:
+                print("[CustomSampling] Generation cancelled by user")
+                raise RuntimeError("Generation cancelled by user")
+        except (ImportError, AttributeError):
+            # pipeline_manager not available (e.g., in training subprocess)
+            pass
 
         # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:
@@ -1566,11 +1574,15 @@ def custom_inpaint_sampling_loop(
     previous_snr = None
 
     for i, t in enumerate(timesteps):
-        # Check for cancellation
-        from core.pipeline import pipeline_manager
-        if pipeline_manager.cancel_requested:
-            print("[CustomSampling] Generation cancelled by user")
-            raise RuntimeError("Generation cancelled by user")
+        # Check for cancellation (only in inference context, not training)
+        try:
+            from core.pipeline import pipeline_manager
+            if pipeline_manager.cancel_requested:
+                print("[CustomSampling] Generation cancelled by user")
+                raise RuntimeError("Generation cancelled by user")
+        except (ImportError, AttributeError):
+            # pipeline_manager not available (e.g., in training subprocess)
+            pass
 
         # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:

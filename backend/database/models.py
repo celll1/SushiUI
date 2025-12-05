@@ -463,6 +463,9 @@ class TrainingRun(TrainingBase):
     samples = relationship("TrainingSample", back_populates="run", cascade="all, delete-orphan")
     
     def to_dict(self):
+        # Get checkpoints from DB (sorted by step descending = newest first)
+        checkpoint_paths = [ckpt.file_path for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)]
+
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
@@ -479,7 +482,7 @@ class TrainingRun(TrainingBase):
             "loss": self.loss,
             "learning_rate": self.learning_rate,
             "output_dir": self.output_dir,
-            "checkpoint_paths": self.checkpoint_paths,
+            "checkpoint_paths": checkpoint_paths,  # From DB, sorted newest first
             "log_file": self.log_file,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,

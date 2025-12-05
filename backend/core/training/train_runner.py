@@ -346,6 +346,8 @@ def main():
                 dataset_unique_ids=dataset_unique_ids,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
+                # DB tracking
+                run_id=run_id,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -490,6 +492,8 @@ def main():
                 dataset_unique_ids=dataset_unique_ids,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
+                # DB tracking
+                run_id=run_id,
             )
 
             print("[TrainRunner] Training completed successfully!")

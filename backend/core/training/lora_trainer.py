@@ -1233,7 +1233,7 @@ class LoRATrainer:
 
         return step
 
-    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
+    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100, run_id: Optional[int] = None, epoch: Optional[int] = None):
         """
         Save LoRA checkpoint as safetensors and optimizer state as .pt.
 
@@ -1243,6 +1243,8 @@ class LoRATrainer:
             save_optimizer: Whether to save optimizer state (default: True)
             max_to_keep: Maximum number of checkpoints to keep (None = keep all)
             save_every: Save interval (used to calculate which checkpoint to delete)
+            run_id: Training run ID (for DB registration)
+            epoch: Current epoch (for DB registration)
         """
         if save_path is None:
             # Extract short name from run_name
@@ -1308,6 +1310,9 @@ class LoRATrainer:
         save_file(state_dict, str(save_path), metadata=metadata)
         print(f"[LoRATrainer] Checkpoint saved: {save_path}")
 
+        # Get file size
+        file_size = save_path.stat().st_size
+
         # Save optimizer state separately as .pt
         if save_optimizer and hasattr(self, 'optimizer') and self.optimizer is not None:
             optimizer_path = save_path.with_suffix('.pt')
@@ -1317,6 +1322,34 @@ class LoRATrainer:
             }
             torch.save(optimizer_state, optimizer_path)
             print(f"[LoRATrainer] Optimizer state saved: {optimizer_path}")
+
+        # Register checkpoint in database
+        if run_id is not None:
+            try:
+                from database import get_training_db
+                from database.models import TrainingCheckpoint
+
+                db = next(get_training_db())
+                try:
+                    checkpoint_record = TrainingCheckpoint(
+                        run_id=run_id,
+                        checkpoint_name=save_path.name,
+                        step=step,
+                        epoch=epoch,
+                        file_path=str(save_path),
+                        file_size=file_size,
+                        loss=None  # Loss can be added if tracked
+                    )
+                    db.add(checkpoint_record)
+                    db.commit()
+                    print(f"[LoRATrainer] Checkpoint registered in DB: run_id={run_id}, step={step}")
+                except Exception as e:
+                    print(f"[LoRATrainer] WARNING: Failed to register checkpoint in DB: {e}")
+                    db.rollback()
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Failed to connect to DB for checkpoint registration: {e}")
 
         # Remove old checkpoints if max_to_keep is set
         if max_to_keep is not None and max_to_keep > 0:
@@ -1635,6 +1668,7 @@ class LoRATrainer:
         dataset_unique_ids: Optional[List[str]] = None,  # List of dataset unique IDs for cache management
         # Checkpoint management
         max_step_saves_to_keep: Optional[int] = None,  # Maximum number of checkpoints to keep (None = keep all)
+        run_id: Optional[int] = None,  # Training run ID for DB registration
     ):
         """
         Train LoRA on dataset.
@@ -2305,7 +2339,7 @@ class LoRATrainer:
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
                             print(f"[LoRATrainer] Checkpoint saved at step {global_step}")
-                            self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every)
+                            self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
@@ -2323,7 +2357,7 @@ class LoRATrainer:
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
                     print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
-                    self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every)
+                    self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
 
             print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
 
@@ -2337,7 +2371,7 @@ class LoRATrainer:
                 short_name = self.run_name  # Use full name
 
             final_path = self.output_dir / f"{short_name}_final.safetensors"
-            self.save_checkpoint(global_step, final_path, save_optimizer=True)
+            self.save_checkpoint(global_step, final_path, save_optimizer=True, run_id=run_id, epoch=num_epochs)
 
         except KeyboardInterrupt:
             print(f"\n[LoRATrainer] Training interrupted by user at step {global_step}")

@@ -3528,21 +3528,8 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    # Update checkpoint_paths by scanning output directory
-    from pathlib import Path
-    import glob
-    output_dir = Path(run.output_dir)
-    if output_dir.exists():
-        # Find all checkpoint files (*_step_*.safetensors)
-        # Pattern matches both old format (lora_step_*.safetensors) and new format ({run_name}_step_*.safetensors)
-        checkpoint_files = glob.glob(str(output_dir / "*_step_*.safetensors"))
-        # Convert to absolute paths and sort
-        checkpoint_paths = sorted([str(Path(p)) for p in checkpoint_files])
-
-        # Update database if changed
-        if checkpoint_paths != run.checkpoint_paths:
-            run.checkpoint_paths = checkpoint_paths
-            db.commit()
+    # Checkpoints are now tracked in DB via TrainingCheckpoint model
+    # No need to scan filesystem - checkpoints are loaded via to_dict()
 
     # Get process status if available
     process = training_process_manager.get_process(run_id)
@@ -3612,34 +3599,18 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    from pathlib import Path
-    import glob
-
-    output_dir = Path(run.output_dir)
-    if not output_dir.exists():
-        return {"checkpoints": []}
-
-    # Find all checkpoint files (lora_step_*.safetensors)
-    checkpoint_files = glob.glob(str(output_dir / "lora_step_*.safetensors"))
-
+    # Get checkpoints from DB (already sorted by step descending)
     checkpoints = []
-    for ckpt_path in sorted(checkpoint_files):
-        ckpt_file = Path(ckpt_path)
-        # Extract step number from filename
-        filename = ckpt_file.name  # e.g., "lora_step_100.safetensors"
-        step_str = filename.replace("lora_step_", "").replace(".safetensors", "")
-        try:
-            step = int(step_str)
-            checkpoints.append({
-                "step": step,
-                "filename": filename,
-                "path": str(ckpt_file)
-            })
-        except ValueError:
-            continue
-
-    # Sort by step number (descending)
-    checkpoints.sort(key=lambda x: x["step"], reverse=True)
+    for ckpt in sorted(run.checkpoints, key=lambda x: x.step, reverse=True):
+        from pathlib import Path
+        checkpoints.append({
+            "step": ckpt.step,
+            "epoch": ckpt.epoch,
+            "filename": Path(ckpt.file_path).name,
+            "path": ckpt.file_path,
+            "file_size": ckpt.file_size,
+            "created_at": ckpt.created_at.isoformat() if ckpt.created_at else None,
+        })
 
     return {"checkpoints": checkpoints}
 

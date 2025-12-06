@@ -73,6 +73,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [bucketStrategy, setBucketStrategy] = useState<"resize" | "crop" | "random_crop">("resize");
   const [multiResolutionMode, setMultiResolutionMode] = useState<"max" | "random">("max");
   const [cacheLatentsToDisk, setCacheLatentsToDisk] = useState(true);
+  const [forceRecache, setForceRecache] = useState(false);
 
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
@@ -270,6 +271,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       bucketStrategy,
       multiResolutionMode,
       cacheLatentsToDisk,
+      forceRecache,
       trainUnet,
       trainTextEncoder,
       unetLr,
@@ -344,6 +346,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
     if (config.multiResolutionMode !== undefined) setMultiResolutionMode(config.multiResolutionMode);
     if (config.cacheLatentsToDisk !== undefined) setCacheLatentsToDisk(config.cacheLatentsToDisk);
+    if (config.forceRecache !== undefined) setForceRecache(config.forceRecache);
     if (config.trainUnet !== undefined) setTrainUnet(config.trainUnet);
     if (config.trainTextEncoder !== undefined) setTrainTextEncoder(config.trainTextEncoder);
     if (config.unetLr !== undefined) setUnetLr(config.unetLr);
@@ -437,6 +440,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       bucket_strategy: enableBucketing ? bucketStrategy : undefined,
       multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
       cache_latents_to_disk: cacheLatentsToDisk,
+      force_recache: forceRecache,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
       unet_lr: unetLr ? parseFloat(unetLr) : null,
@@ -1463,6 +1467,25 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           </div>
           <p className="text-xs text-gray-500">
             Pre-encode images and text to disk cache. Significantly reduces VRAM during training (VAE/Text Encoders stay on CPU).
+          </p>
+        </div>
+
+        {/* Force Recache */}
+        <div className="space-y-2">
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="force-recache"
+              checked={forceRecache}
+              onChange={(e) => setForceRecache(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="force-recache" className="text-sm text-gray-400">
+              Force regenerate latent cache
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">
+            Force regenerate latent cache even if valid cache exists. Use this if you switched to a different VAE or if cache validation fails.
           </p>
         </div>
 

@@ -296,8 +296,10 @@ def main():
             # Get latent caching parameters
             # Check datasets config first, then fall back to train config
             cache_latents_to_disk = True  # Default
+            force_recache = False  # Default
             if 'datasets' in process_config and len(process_config['datasets']) > 0:
                 cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+                force_recache = process_config['datasets'][0].get('force_recache', False)
 
             # Create reload_dataset_callback for per-epoch caption processing
             def reload_dataset_for_epoch(epoch_num: int) -> list:
@@ -344,6 +346,7 @@ def main():
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
                 dataset_unique_ids=dataset_unique_ids,
+                force_recache=force_recache,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
                 # DB tracking
@@ -490,6 +493,7 @@ def main():
                 # Latent caching
                 cache_latents_to_disk=cache_latents_to_disk,
                 dataset_unique_ids=dataset_unique_ids,
+                force_recache=force_recache,
                 # Checkpoint management
                 max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
                 # DB tracking

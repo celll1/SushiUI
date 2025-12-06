@@ -1666,6 +1666,7 @@ class LoRATrainer:
         cache_latents_to_disk: bool = True,
         cache_text_embeds_to_disk: bool = False,  # Reserved for future use, not exposed in UI
         dataset_unique_ids: Optional[List[str]] = None,  # List of dataset unique IDs for cache management
+        force_recache: bool = False,  # Force regenerate cache even if valid cache exists
         # Checkpoint management
         max_step_saves_to_keep: Optional[int] = None,  # Maximum number of checkpoints to keep (None = keep all)
         run_id: Optional[int] = None,  # Training run ID for DB registration
@@ -1827,8 +1828,23 @@ class LoRATrainer:
             caches_to_generate = []
 
             for unique_id, cache in latent_caches.items():
-                if not cache.is_valid(self.model_path, model_type):
+                # Force recache if requested
+                if force_recache:
+                    print(f"[LatentCache] force_recache=True, invalidating cache for dataset {unique_id[:8]}...")
                     caches_to_generate.append((unique_id, cache))
+                    continue
+
+                # Check metadata validity (model path, model type)
+                if not cache.is_valid(self.model_path, model_type):
+                    print(f"[LatentCache] Cache metadata invalid for dataset {unique_id[:8]}...")
+                    caches_to_generate.append((unique_id, cache))
+                    continue
+
+                # Validate cache format by random sampling
+                if not cache.validate_cache_format(expected_channels=4, sample_count=5):
+                    print(f"[LatentCache] Cache format validation failed for dataset {unique_id[:8]}...")
+                    caches_to_generate.append((unique_id, cache))
+                    continue
 
             if len(caches_to_generate) > 0:
                 print(f"\n{'='*80}")

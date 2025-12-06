@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import {
   loadAllTags,
   searchTags as searchTagsOriginal,
+  getCategoriesForTags as getCategoriesForTagsOriginal,
   TagFilterMode,
   getNextFilterMode,
   getPreviousFilterMode,
@@ -21,6 +22,7 @@ interface TagSuggestionsContextValue {
     limit?: number,
     filterMode?: TagFilterMode
   ) => Promise<Array<{ tag: string; count: number; category: string; alias?: string }>>;
+  getCategoriesForTags: (tags: string[]) => Promise<Map<string, string>>;
   getNextFilterMode: (current: TagFilterMode) => TagFilterMode;
   getPreviousFilterMode: (current: TagFilterMode) => TagFilterMode;
   getFilterDisplayName: (mode: TagFilterMode) => string;
@@ -79,11 +81,19 @@ export function TagSuggestionsProvider({ children }: { children: React.ReactNode
     []
   );
 
+  const getCategoriesForTags = useCallback(
+    async (tags: string[]) => {
+      return getCategoriesForTagsOriginal(tags);
+    },
+    []
+  );
+
   const value: TagSuggestionsContextValue = {
     isLoading,
     isLoaded,
     loadStatus,
     searchTags,
+    getCategoriesForTags,
     getNextFilterMode,
     getPreviousFilterMode,
     getFilterDisplayName,

@@ -795,6 +795,80 @@ export async function searchTags(
 }
 
 /**
+ * Get categories for multiple tags efficiently (batch operation)
+ * This is much faster than calling searchTags multiple times
+ * @param tags - Array of tags to categorize
+ * @returns Map of tag -> category
+ */
+export async function getCategoriesForTags(tags: string[]): Promise<Map<string, string>> {
+  // Ensure tags are loaded
+  await loadAllTags();
+
+  const startTime = performance.now();
+  const result = new Map<string, string>();
+
+  // Normalize all input tags once
+  const normalizedInputTags = new Map<string, string>(); // normalized -> original
+  for (const tag of tags) {
+    normalizedInputTags.set(normalizeTag(tag), tag);
+  }
+
+  // Track which tags we've found with their priority
+  const foundTags = new Map<string, { category: string; priority: number }>();
+
+  // Check special tags first
+  const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
+  for (const specialTag of allSpecialTags) {
+    const normalizedTag = normalizeTag(specialTag.tag);
+    if (normalizedInputTags.has(normalizedTag)) {
+      const originalTag = normalizedInputTags.get(normalizedTag)!;
+      foundTags.set(originalTag, {
+        category: specialTag.category,
+        priority: 999, // Highest priority for special tags
+      });
+    }
+  }
+
+  // Search in all categories
+  for (const [categoryKey, category] of Object.entries(categories)) {
+    if (!category.loaded || !category.tags) {
+      continue;
+    }
+
+    const categoryPriority = CATEGORY_PRIORITY[categoryKey] || 0;
+
+    for (const [tag, _count] of Object.entries(category.tags)) {
+      const normalizedTag = normalizeTag(tag);
+
+      // Check if this tag matches any of our input tags
+      if (normalizedInputTags.has(normalizedTag)) {
+        const originalTag = normalizedInputTags.get(normalizedTag)!;
+        const existing = foundTags.get(originalTag);
+
+        // If not found yet, or if this category has higher priority
+        if (!existing || categoryPriority > existing.priority) {
+          foundTags.set(originalTag, {
+            category: category.name,
+            priority: categoryPriority,
+          });
+        }
+      }
+    }
+  }
+
+  // Build result map
+  for (const tag of tags) {
+    const found = foundTags.get(tag);
+    result.set(tag, found ? found.category : "Unknown");
+  }
+
+  const elapsed = (performance.now() - startTime).toFixed(2);
+  console.log(`[TagSuggestions] Categorized ${tags.length} tags in ${elapsed}ms (${foundTags.size} found in JSONs, ${tags.length - foundTags.size} unknown)`);
+
+  return result;
+}
+
+/**
  * Get the current tag being typed at cursor position
  * Handles tags separated by commas, newlines, or spaces between tags
  * Special handling: if user is inserting a new tag between existing tags (e.g., "whi red eyes"),

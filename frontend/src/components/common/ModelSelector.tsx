@@ -37,20 +37,15 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
 
   useEffect(() => {
     loadModels();
+    // Also load current model immediately when component mounts
+    loadCurrentModel();
   }, []);
 
   useEffect(() => {
-    // Load current model on startup
+    // Load current model when startup completes
     if (modelLoaded) {
       loadCurrentModel();
     }
-
-    // Also poll current model periodically (in case model was loaded to CPU)
-    const interval = setInterval(() => {
-      loadCurrentModel();
-    }, 5000); // Check every 5 seconds
-
-    return () => clearInterval(interval);
   }, [modelLoaded]);
 
   const loadModels = async () => {
@@ -99,7 +94,8 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
 
       const data = await response.json();
       if (data.success) {
-        setCurrentModel(data.model_info);
+        // Reload current model info to ensure UI is in sync
+        await loadCurrentModel();
         if (onModelLoad) {
           onModelLoad(data.model_info);
         }

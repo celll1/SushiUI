@@ -41,34 +41,29 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         const data = await getDataset(datasetId);
         setDataset(data);
 
-        // Build tag category cache using tagSuggestions
+        // Build tag category cache using tagSuggestions (batch operation)
         if (data.tag_statistics) {
-          const categoryMap: Record<string, string> = {};
+          const tags = Object.keys(data.tag_statistics);
+
+          // Batch categorize all tags at once (much faster than individual searches)
+          const categoryMap = await tagSuggestionsContext.getCategoriesForTags(tags);
+
+          // Convert Map to Record for state
+          const categoryRecord: Record<string, string> = {};
           const statsWithCategories: Record<string, { category: string; count: number }> = {};
 
           for (const [tag, stats] of Object.entries(data.tag_statistics)) {
-            // Use tagSuggestions to get category
-            const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-            let category = "Unknown"; // Default to Unknown if not found in any JSON
-
-            if (results.length > 0) {
-              const normalizedUserTag = normalizeTagForMatching(tag);
-              const normalizedResultTag = normalizeTagForMatching(results[0].tag);
-              if (normalizedUserTag === normalizedResultTag) {
-                category = results[0].category;
-              }
-            }
-
-            categoryMap[tag] = category;
+            const category = categoryMap.get(tag) || "Unknown";
+            categoryRecord[tag] = category;
             statsWithCategories[tag] = {
               category,
               count: stats.count
             };
           }
 
-          setTagCategoryCache(categoryMap);
+          setTagCategoryCache(categoryRecord);
           setTagStatistics(statsWithCategories);
-          console.log(`[DatasetViewer] Loaded ${Object.keys(categoryMap).length} tag categories using tagSuggestions`);
+          console.log(`[DatasetViewer] Loaded ${Object.keys(categoryRecord).length} tag categories using batch categorization`);
         }
       } catch (err) {
         console.error("[DatasetViewer] Failed to load dataset:", err);

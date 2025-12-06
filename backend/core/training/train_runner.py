@@ -218,6 +218,12 @@ def main():
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
 
+            # Get component-specific learning rates from train_config
+            unet_lr = train_config.get('unet_lr')
+            text_encoder_lr = train_config.get('text_encoder_lr')
+            text_encoder_1_lr = train_config.get('text_encoder_1_lr')
+            text_encoder_2_lr = train_config.get('text_encoder_2_lr')
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -234,6 +240,11 @@ def main():
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
                 min_snr_gamma=min_snr_gamma,
+                # Component-specific learning rates
+                unet_lr=unet_lr,
+                text_encoder_lr=text_encoder_lr,
+                text_encoder_1_lr=text_encoder_1_lr,
+                text_encoder_2_lr=text_encoder_2_lr,
             )
 
             # Setup optimizer

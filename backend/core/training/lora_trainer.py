@@ -265,6 +265,11 @@ class LoRATrainer:
         debug_vram: bool = False,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Component-specific learning rates
+        unet_lr: Optional[float] = None,
+        text_encoder_lr: Optional[float] = None,
+        text_encoder_1_lr: Optional[float] = None,
+        text_encoder_2_lr: Optional[float] = None,
     ):
         """
         Initialize LoRA trainer.
@@ -295,6 +300,12 @@ class LoRATrainer:
         self.lora_alpha = lora_alpha
         self.learning_rate = learning_rate
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+        # Component-specific learning rates (fallback to main learning_rate if not specified)
+        self.unet_lr = unet_lr if unet_lr is not None else learning_rate
+        self.text_encoder_lr = text_encoder_lr if text_encoder_lr is not None else learning_rate
+        self.text_encoder_1_lr = text_encoder_1_lr if text_encoder_1_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
+        self.text_encoder_2_lr = text_encoder_2_lr if text_encoder_2_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -699,19 +710,43 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Setting up optimizer: {optimizer_type}")
 
-        # Get trainable parameters (LoRA weights only, not original layer weights)
-        trainable_params = []
-        for lora in self.lora_layers.values():
+        # Group trainable parameters by component (U-Net, Text Encoder 1, Text Encoder 2)
+        unet_params = []
+        text_encoder_1_params = []
+        text_encoder_2_params = []
+
+        for key, lora in self.lora_layers.items():
             # Only add LoRA-specific parameters (lora_down and lora_up)
-            trainable_params.extend(lora.lora_down.parameters())
-            trainable_params.extend(lora.lora_up.parameters())
+            lora_params = list(lora.lora_down.parameters()) + list(lora.lora_up.parameters())
+
+            if key.startswith("unet."):
+                unet_params.extend(lora_params)
+            elif key.startswith("text_encoder_2."):
+                text_encoder_2_params.extend(lora_params)
+            elif key.startswith("text_encoder."):
+                text_encoder_1_params.extend(lora_params)
+
+        # Build param_groups with component-specific learning rates
+        param_groups = []
+        if len(unet_params) > 0:
+            param_groups.append({"params": unet_params, "lr": self.unet_lr})
+            print(f"[LoRATrainer]   U-Net: {len(unet_params)} params, lr={self.unet_lr}")
+        if len(text_encoder_1_params) > 0:
+            param_groups.append({"params": text_encoder_1_params, "lr": self.text_encoder_1_lr})
+            print(f"[LoRATrainer]   Text Encoder 1: {len(text_encoder_1_params)} params, lr={self.text_encoder_1_lr}")
+        if len(text_encoder_2_params) > 0:
+            param_groups.append({"params": text_encoder_2_params, "lr": self.text_encoder_2_lr})
+            print(f"[LoRATrainer]   Text Encoder 2: {len(text_encoder_2_params)} params, lr={self.text_encoder_2_lr}")
+
+        if len(param_groups) == 0:
+            raise RuntimeError("No trainable parameters found")
 
         # Create optimizer using factory
         try:
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,
-                params=trainable_params,
-                learning_rate=self.learning_rate,
+                params=param_groups,
+                learning_rate=self.learning_rate,  # This will be overridden by param_groups
                 weight_decay=0.01,
                 betas=(0.9, 0.999),
                 eps=1e-8,
@@ -720,8 +755,8 @@ class LoRATrainer:
             print(f"[LoRATrainer] ERROR: {e}")
             print("[LoRATrainer] Falling back to AdamW")
             self.optimizer = torch.optim.AdamW(
-                trainable_params,
-                lr=self.learning_rate,
+                param_groups,
+                lr=self.learning_rate,  # This will be overridden by param_groups
                 betas=(0.9, 0.999),
                 weight_decay=0.01,
                 eps=1e-8,

@@ -721,9 +721,9 @@ class LoRATrainer:
 
             if key.startswith("unet."):
                 unet_params.extend(lora_params)
-            elif key.startswith("text_encoder_2."):
+            elif key.startswith("te2.") or key.startswith("text_encoder_2."):
                 text_encoder_2_params.extend(lora_params)
-            elif key.startswith("text_encoder."):
+            elif key.startswith("te1.") or key.startswith("text_encoder."):
                 text_encoder_1_params.extend(lora_params)
 
         # Build param_groups with component-specific learning rates

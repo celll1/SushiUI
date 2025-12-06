@@ -282,29 +282,39 @@ class LatentCache:
         """
         info = self.load_cache_info()
         if info is None:
+            print(f"[LatentCache] Validation failed: No cache_info.json found")
             return False
 
         # Normalize paths for comparison (resolve to absolute, case-normalized)
         from pathlib import Path
         cached_model_path = info.get('model_path')
         if cached_model_path is None:
+            print(f"[LatentCache] Validation failed: model_path not in cache_info.json")
             return False
 
         try:
             cached_path_normalized = Path(cached_model_path).resolve()
             current_path_normalized = Path(model_path).resolve()
-        except Exception:
+        except Exception as e:
+            print(f"[LatentCache] Warning: Path resolution failed ({e}), using string comparison")
             # If path resolution fails, fall back to string comparison
             cached_path_normalized = cached_model_path
             current_path_normalized = model_path
 
         # Check model compatibility (compare normalized paths)
         if cached_path_normalized != current_path_normalized:
+            print(f"[LatentCache] Validation failed: Model path mismatch")
+            print(f"[LatentCache]   Cached: {cached_path_normalized}")
+            print(f"[LatentCache]   Current: {current_path_normalized}")
             return False
 
         if info.get('model_type') != model_type:
+            print(f"[LatentCache] Validation failed: Model type mismatch")
+            print(f"[LatentCache]   Cached: {info.get('model_type')}")
+            print(f"[LatentCache]   Current: {model_type}")
             return False
 
+        print(f"[LatentCache] Validation passed: Cache is valid for current model")
         return True
 
     def validate_cache_format(self, expected_channels: int = 4, sample_count: int = 5) -> bool:

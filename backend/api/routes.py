@@ -3551,8 +3551,15 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                     print(f"[Training {run_id}] Run not found in database")
                     return
 
-                # Negative step indicates failure
-                if step < 0:
+                # Negative step indicates failure or user stop
+                if step == -2:
+                    # User requested stop
+                    print(f"[Training {run_id}] Process stopped by user, updating status")
+                    current_run.status = "stopped"
+                    db_session.commit()
+                    return
+                elif step == -1:
+                    # Process failed with error
                     print(f"[Training {run_id}] Process failed, updating status")
                     current_run.status = "failed"
                     current_run.error_message = "Training process exited with error"

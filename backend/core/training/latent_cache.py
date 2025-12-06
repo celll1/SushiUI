@@ -345,7 +345,17 @@ class LatentCache:
 
         for latent_file in sampled_files:
             try:
-                latent = torch.load(latent_file, map_location='cpu')
+                data = torch.load(latent_file, map_location='cpu')
+
+                # Extract latent tensor from dict (cache format: {'latents': tensor, ...})
+                if isinstance(data, dict):
+                    latent = data.get('latents')
+                    if latent is None:
+                        print(f"[LatentCache] VALIDATION FAILED: 'latents' key not found in {latent_file.name}")
+                        return False
+                else:
+                    # Legacy format: tensor directly saved
+                    latent = data
 
                 # Check shape
                 if latent.dim() != 4:

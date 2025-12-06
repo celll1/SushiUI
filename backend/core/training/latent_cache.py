@@ -307,6 +307,56 @@ class LatentCache:
 
         return True
 
+    def validate_cache_format(self, expected_channels: int = 4, sample_count: int = 5) -> bool:
+        """
+        Validate cache format by randomly sampling cached latents.
+
+        Args:
+            expected_channels: Expected number of latent channels (4 for SD/SDXL)
+            sample_count: Number of random samples to check
+
+        Returns:
+            True if cache format is valid, False otherwise
+        """
+        import random
+
+        # Get all cached latent files
+        latent_files = list(self.latents_dir.glob("*.pt"))
+
+        if len(latent_files) == 0:
+            print(f"[LatentCache] No cached latents found in {self.latents_dir}")
+            return False
+
+        # Sample random files
+        sample_size = min(sample_count, len(latent_files))
+        sampled_files = random.sample(latent_files, sample_size)
+
+        print(f"[LatentCache] Validating cache format (sampling {sample_size}/{len(latent_files)} cached latents)...")
+
+        for latent_file in sampled_files:
+            try:
+                latent = torch.load(latent_file, map_location='cpu')
+
+                # Check shape
+                if latent.dim() != 4:
+                    print(f"[LatentCache] VALIDATION FAILED: Expected 4D tensor, got {latent.dim()}D")
+                    return False
+
+                # Check channels (B, C, H, W)
+                if latent.shape[1] != expected_channels:
+                    print(f"[LatentCache] VALIDATION FAILED: Expected {expected_channels} channels, got {latent.shape[1]}")
+                    return False
+
+                # Log sample info
+                print(f"[LatentCache]   Sample: shape={latent.shape}, dtype={latent.dtype}")
+
+            except Exception as e:
+                print(f"[LatentCache] VALIDATION FAILED: Error loading {latent_file.name}: {e}")
+                return False
+
+        print(f"[LatentCache] Cache format validation PASSED")
+        return True
+
     def clear(self):
         """Clear all cached data."""
         import shutil

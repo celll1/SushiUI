@@ -306,7 +306,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           </div>
 
           {/* Loss Chart */}
-          {(currentRun.status === "running" || currentRun.status === "completed") && (
+          {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed") && (
             <div className="bg-gray-800 rounded-lg p-3">
               <h3 className="font-semibold mb-2 text-sm">Loss</h3>
               <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
@@ -314,7 +314,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           )}
 
           {/* Checkpoint List */}
-          {(currentRun.status === "running" || currentRun.status === "completed") && (
+          {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed") && (
             <CheckpointList checkpoints={currentRun.checkpoint_paths} runId={currentRun.id} />
           )}
         </div>

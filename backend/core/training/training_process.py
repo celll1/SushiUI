@@ -39,6 +39,7 @@ class TrainingProcess:
 
         self.process: Optional[subprocess.Popen] = None
         self.is_running = False
+        self.is_user_stopped = False  # Track if user requested stop
         self.current_step = 0
         self.current_loss: Optional[float] = None
         self.current_lr: Optional[float] = None
@@ -158,13 +159,19 @@ class TrainingProcess:
             # Wait for process to complete (async)
             returncode = await self.process.wait()
 
-            # Check if process failed
+            # Check if process failed (but distinguish user stop from error)
             if returncode != 0:
                 print(f"[Training] Process exited with code {returncode}")
-                # Mark as failed in database via callback
-                if progress_callback:
-                    # Signal failure (negative step indicates error)
-                    progress_callback(-1, 0.0, 0.0)
+                if self.is_user_stopped:
+                    print(f"[Training] Process was stopped by user")
+                    # Signal stopped status (step=-2 indicates user stop)
+                    if progress_callback:
+                        progress_callback(-2, 0.0, 0.0)
+                else:
+                    print(f"[Training] Process failed")
+                    # Signal failure (step=-1 indicates error)
+                    if progress_callback:
+                        progress_callback(-1, 0.0, 0.0)
 
         except Exception as e:
             print(f"[Training] Error monitoring logs: {e}")
@@ -178,10 +185,13 @@ class TrainingProcess:
     async def stop(self) -> None:
         """Stop training process."""
         if self.process and self.is_running:
+            print(f"[Training] Stopping process (user requested)")
+            self.is_user_stopped = True  # Mark as user-requested stop
             self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=10)
             except asyncio.TimeoutError:
+                print(f"[Training] Process did not terminate gracefully, killing...")
                 self.process.kill()
                 await self.process.wait()
             self.is_running = False

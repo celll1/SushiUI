@@ -40,9 +40,17 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   }, []);
 
   useEffect(() => {
+    // Load current model on startup
     if (modelLoaded) {
       loadCurrentModel();
     }
+
+    // Also poll current model periodically (in case model was loaded to CPU)
+    const interval = setInterval(() => {
+      loadCurrentModel();
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(interval);
   }, [modelLoaded]);
 
   const loadModels = async () => {
@@ -61,6 +69,13 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
       const data = await response.json();
       if (data.loaded) {
         setCurrentModel(data.model_info);
+        // Sync selectedModelPath with current model
+        if (data.model_info.source) {
+          setSelectedModelPath(data.model_info.source);
+        }
+      } else {
+        setCurrentModel(null);
+        setSelectedModelPath("");
       }
     } catch (error) {
       console.error("Failed to load current model:", error);

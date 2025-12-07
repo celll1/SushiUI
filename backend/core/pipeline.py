@@ -417,10 +417,11 @@ class DiffusionPipelineManager:
                         for item in self.iterable:
                             yield item
                             self.current_step += 1
-                            # Call SushiUI callbacks
+                            # Call SushiUI callbacks with correct signature
+                            # progress_callback expects: (step, total_steps, latents, cfg_metrics=None)
+                            # We don't have access to latents here, so pass None
                             if progress_callback:
-                                progress = self.current_step / self.total if self.total > 0 else 0
-                                progress_callback(progress)
+                                progress_callback(self.current_step, self.total, None)
                             if step_callback:
                                 step_callback(self.current_step, self.total)
 

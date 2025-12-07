@@ -267,7 +267,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -347,7 +347,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("sampler", paramsWithImages.sampler || "euler");
@@ -438,7 +438,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("mask_blur", String(paramsWithImages.mask_blur || 4));

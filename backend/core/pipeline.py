@@ -168,6 +168,19 @@ class DiffusionPipelineManager:
                 self.is_zimage_model = True
                 self.current_model = model_id
 
+                # Initialize VRAM optimization: Move all components to CPU
+                print("[VRAM] Initializing sequential loading strategy for Z-Image...")
+                from core.vram_optimization import (
+                    move_zimage_text_encoder_to_cpu,
+                    move_zimage_transformer_to_cpu,
+                    move_zimage_vae_to_cpu
+                )
+                move_zimage_text_encoder_to_cpu(self.zimage_components["text_encoder"])
+                move_zimage_transformer_to_cpu(self.zimage_components["transformer"])
+                move_zimage_vae_to_cpu(self.zimage_components["vae"])
+                torch.cuda.empty_cache()
+                print("[VRAM] All Z-Image components moved to CPU. Will load to GPU as needed.")
+
                 # Z-Image info
                 model_type = "zimage"
                 is_v_prediction = False

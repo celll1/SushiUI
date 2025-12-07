@@ -157,6 +157,81 @@ class ModelLoader:
         return "sd15"
 
     @staticmethod
+    def _convert_comfy_to_official_state_dict(
+        comfy_state_dict: dict,
+        n_heads: int,
+        n_kv_heads: int,
+        dim: int
+    ) -> dict:
+        """Convert ComfyUI's fused QKV state dict to official split Q/K/V format
+
+        ComfyUI format:
+            - attention.qkv.weight: [n_heads*head_dim + 2*n_kv_heads*head_dim, dim]
+            - attention.out.weight: [dim, n_heads*head_dim]
+            - attention.q_norm.weight / k_norm.weight
+
+        Official format:
+            - attention.to_q.weight: [n_heads*head_dim, dim]
+            - attention.to_k.weight: [n_kv_heads*head_dim, dim]
+            - attention.to_v.weight: [n_kv_heads*head_dim, dim]
+            - attention.to_out.0.weight: [dim, n_heads*head_dim]
+            - attention.norm_q.weight / norm_k.weight
+
+        Args:
+            comfy_state_dict: State dict from Comfy-format safetensors
+            n_heads: Number of attention heads
+            n_kv_heads: Number of key/value heads
+            dim: Model dimension
+
+        Returns:
+            Converted state dict in official format
+        """
+        head_dim = dim // n_heads
+        official_state_dict = {}
+
+        print(f"[ModelLoader] Converting attention layers: n_heads={n_heads}, n_kv_heads={n_kv_heads}, dim={dim}, head_dim={head_dim}")
+
+        for key, value in comfy_state_dict.items():
+            # Split fused QKV weights
+            if ".qkv.weight" in key:
+                # QKV is fused as [Q, K, V] along dim 0
+                # Shapes: Q=[n_heads*head_dim, dim], K=[n_kv_heads*head_dim, dim], V=[n_kv_heads*head_dim, dim]
+                q_dim = n_heads * head_dim
+                kv_dim = n_kv_heads * head_dim
+
+                q_weight = value[:q_dim, :]
+                k_weight = value[q_dim:q_dim + kv_dim, :]
+                v_weight = value[q_dim + kv_dim:q_dim + 2*kv_dim, :]
+
+                base_key = key.replace(".qkv.weight", "")
+                official_state_dict[f"{base_key}.to_q.weight"] = q_weight
+                official_state_dict[f"{base_key}.to_k.weight"] = k_weight
+                official_state_dict[f"{base_key}.to_v.weight"] = v_weight
+
+                print(f"  Split {key} -> to_q/to_k/to_v (shapes: {q_weight.shape}, {k_weight.shape}, {v_weight.shape})")
+
+            # Rename output projection
+            elif ".out.weight" in key:
+                new_key = key.replace(".out.weight", ".to_out.0.weight")
+                official_state_dict[new_key] = value
+                print(f"  Renamed {key} -> {new_key}")
+
+            # Rename norm layers
+            elif ".q_norm.weight" in key:
+                new_key = key.replace(".q_norm.weight", ".norm_q.weight")
+                official_state_dict[new_key] = value
+            elif ".k_norm.weight" in key:
+                new_key = key.replace(".k_norm.weight", ".norm_k.weight")
+                official_state_dict[new_key] = value
+
+            # Copy all other keys as-is
+            else:
+                official_state_dict[key] = value
+
+        print(f"[ModelLoader] Conversion complete: {len(comfy_state_dict)} keys -> {len(official_state_dict)} keys")
+        return official_state_dict
+
+    @staticmethod
     def load_zimage_from_comfy_safetensors(
         file_path: str,
         device: str = "cuda",
@@ -288,7 +363,18 @@ class ModelLoader:
 
             # Step 4: Load Comfy safetensors weights into transformer
             print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
-            state_dict = load_file(file_path, device="cpu")
+            comfy_state_dict = load_file(file_path, device="cpu")
+
+            # Convert Comfy format (fused QKV) to official format (separate Q/K/V)
+            print("[ModelLoader] Converting Comfy format to official format...")
+            state_dict = ModelLoader._convert_comfy_to_official_state_dict(
+                comfy_state_dict,
+                transformer_config["n_heads"],
+                transformer_config["n_kv_heads"],
+                transformer_config["dim"]
+            )
+            del comfy_state_dict
+
             transformer.load_state_dict(state_dict, strict=True, assign=True)
             del state_dict
 

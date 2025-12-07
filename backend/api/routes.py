@@ -129,6 +129,8 @@ class GenerationParams(BaseModel):
     attention_type: str = "normal"  # "normal", "sage", "flash"
     # U-Net Quantization
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
+    # Text Encoder Quantization (Z-Image only)
+    text_encoder_quantization: Optional[str] = None  # None, "fp8_e4m3fn", "fp8_e5m2", "uint8", "uint4"
     # torch.compile optimization
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
     # TIPO (prompt upsampling)
@@ -175,6 +177,7 @@ async def generate_txt2img(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
@@ -280,6 +283,7 @@ async def generate_txt2img(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
         }
 
@@ -566,6 +570,7 @@ async def generate_img2img(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
         }
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
@@ -856,6 +861,7 @@ async def generate_inpaint(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")

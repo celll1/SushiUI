@@ -560,15 +560,44 @@ def move_vae_to_cpu(pipeline):
 # Z-Image VRAM Optimization
 # ============================================================
 
-def move_zimage_text_encoder_to_gpu(text_encoder):
-    """Move Z-Image text encoder to GPU for encoding
+def move_zimage_text_encoder_to_gpu(text_encoder, quantization=None):
+    """Move Z-Image text encoder to GPU for encoding (with optional quantization)
 
     Args:
         text_encoder: Z-Image text encoder model
+        quantization: Optional quantization type (fp8_e4m3fn, fp8_e5m2, uint2-uint8, etc.)
+
+    Returns:
+        text_encoder (potentially quantized copy if quantization is enabled)
     """
-    print("[VRAM] Moving Z-Image Text Encoder to GPU for encoding...")
-    if text_encoder is not None:
+    if text_encoder is None:
+        return None
+
+    # Fast path: No quantization
+    if not quantization or quantization == "none":
+        print("[VRAM] Moving Z-Image Text Encoder to GPU for encoding...")
         text_encoder.to('cuda:0', non_blocking=False)
+        return text_encoder
+
+    # Quantization path: Create quantized copy and move to GPU
+    print(f"[VRAM] Moving Z-Image Text Encoder to GPU with {quantization} quantization...")
+    print(f"[Quantization] Creating quantized Text Encoder ({quantization})...")
+
+    # Text Encoder must be on CPU for quantization
+    if next(text_encoder.parameters()).device.type != 'cpu':
+        print(f"[Quantization] Moving Text Encoder to CPU for quantization...")
+        text_encoder.to('cpu')
+
+    # Quantize (creates a copy)
+    quantized_text_encoder = _quantize_text_encoder(text_encoder, quantization)
+
+    # Move quantized copy to GPU
+    print(f"[Quantization] Moving quantized Text Encoder to GPU...")
+    quantized_text_encoder.to('cuda:0', non_blocking=False)
+
+    print(f"[Quantization] Text Encoder quantization complete ({quantization})")
+
+    return quantized_text_encoder
 
 
 def move_zimage_text_encoder_to_cpu(text_encoder):
@@ -677,3 +706,23 @@ def _quantize_transformer(transformer, quantization: str):
     # Reuse U-Net quantization logic
     # Z-Image transformer has similar Linear layers as U-Net
     return _quantize_unet(transformer, quantization)
+
+
+def _quantize_text_encoder(text_encoder, quantization: str):
+    """Create a quantized copy of Z-Image text encoder
+
+    This uses the same quantization logic as U-Net/Transformer quantization.
+    Z-Image text encoder (Qwen 3.4B) is large, so quantization can significantly reduce VRAM.
+
+    Args:
+        text_encoder: Original Z-Image text encoder model (Qwen)
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+
+    Returns:
+        Quantized text encoder model
+    """
+    print(f"[Quantization] Applying {quantization} to Z-Image Text Encoder (Qwen)...")
+
+    # Reuse U-Net quantization logic
+    # Text encoder has similar Linear/Attention layers
+    return _quantize_unet(text_encoder, quantization)

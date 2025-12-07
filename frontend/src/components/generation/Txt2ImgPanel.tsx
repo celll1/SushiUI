@@ -17,7 +17,7 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
@@ -54,6 +54,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   unet_quantization: null,
+  text_encoder_quantization: null,
   use_torch_compile: false,
   use_tipo: false,
 };
@@ -84,6 +85,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
@@ -185,6 +187,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     console.clear();
     console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
+
+    // Load current model info
+    getCurrentModel().then((modelInfo) => {
+      setCurrentModelInfo(modelInfo);
+      console.log("[Txt2Img] Current model info:", modelInfo);
+    }).catch((error) => {
+      console.error("Failed to load model info:", error);
+    });
 
     // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -1745,6 +1755,36 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
               </p>
             </div>
+          )}
+
+          {/* Text Encoder Quantization (Z-Image only) */}
+          {currentModelInfo?.type === "zimage" && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                <Select
+                  label="Text Encoder Quantization (Z-Image)"
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint4", label: "UINT4" },
+                  ]}
+                />
+              </div>
+              {params.text_encoder_quantization && params.text_encoder_quantization !== "none" && (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Z-Image text encoder (Qwen 3.4B) is large. Quantization can reduce VRAM significantly.
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           {developerMode && (

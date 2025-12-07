@@ -8,6 +8,7 @@ Can be run as: python -m core.train_runner config.yaml run_id
 import sys
 import yaml
 import os
+import signal
 from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
@@ -132,6 +133,16 @@ def main():
     print(f"[TrainRunner] Starting training")
     print(f"[TrainRunner] Config: {config_path}")
     print(f"[TrainRunner] Run ID: {run_id}")
+
+    # Set up signal handlers to convert SIGTERM to KeyboardInterrupt
+    # This allows graceful shutdown with checkpoint saving when user stops training
+    def signal_handler(signum, frame):
+        print(f"\n[TrainRunner] Received signal {signum}, converting to KeyboardInterrupt for graceful shutdown...")
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)  # Also handle Ctrl+C explicitly
+    print(f"[TrainRunner] Signal handlers registered (SIGTERM, SIGINT)")
 
     # Load config
     config = load_config(config_path)

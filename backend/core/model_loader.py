@@ -1,11 +1,14 @@
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, Union
 import os
+import sys
+import json
 import torch
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
 from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
+ModelType = Literal["sd15", "sdxl", "zimage"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -94,13 +97,26 @@ class ModelLoader:
             return False
 
     @staticmethod
-    def detect_model_type(model_path: str) -> str:
-        """Detect if model is SD1.5 or SDXL based on config or structure"""
-        # Check for SDXL indicators
+    def detect_model_type(model_path: str) -> ModelType:
+        """Detect if model is SD1.5, SDXL, or Z-Image based on config or structure"""
+        # Check for Z-Image indicators
         if os.path.isdir(model_path):
+            # Z-Image has transformer/ directory with unique config
+            transformer_config = os.path.join(model_path, "transformer", "config.json")
+            if os.path.exists(transformer_config):
+                try:
+                    with open(transformer_config, 'r') as f:
+                        config = json.load(f)
+                        # Z-Image has unique structure with axes_dims, rope_theta
+                        if "axes_dims" in config and "rope_theta" in config:
+                            print(f"[ModelLoader] Detected Z-Image model from transformer config: {model_path}")
+                            return "zimage"
+                except Exception as e:
+                    print(f"[ModelLoader] Warning: Could not read transformer config: {e}")
+
+            # Check for SDXL indicators
             config_path = os.path.join(model_path, "model_index.json")
             if os.path.exists(config_path):
-                import json
                 with open(config_path, 'r') as f:
                     config = json.load(f)
                     # SDXL uses different UNet config
@@ -168,16 +184,81 @@ class ModelLoader:
         return pipeline
 
     @staticmethod
+    def load_zimage_from_diffusers(
+        model_path: str,
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.bfloat16
+    ) -> Dict[str, Any]:
+        """Load Z-Image from diffusers format directory
+
+        Returns:
+            Dict containing transformer, vae, text_encoder, tokenizer, scheduler
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Z-Image model directory not found: {model_path}")
+
+        print(f"[ModelLoader] Loading Z-Image from: {model_path}")
+
+        # Add Z-Image source to Python path
+        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
+        if not zimage_src_path.exists():
+            raise FileNotFoundError(
+                f"Z-Image source code not found at: {zimage_src_path}\n"
+                f"Please clone Z-Image repository to: {zimage_src_path.parent}"
+            )
+
+        sys.path.insert(0, str(zimage_src_path))
+
+        try:
+            from utils.loader import load_from_local_dir
+
+            components = load_from_local_dir(
+                model_path,
+                device=device,
+                dtype=torch_dtype,
+                verbose=True,
+                compile=False  # Disable compile for now
+            )
+
+            print(f"[ModelLoader] Z-Image components loaded successfully")
+            print(f"  - Transformer: {type(components['transformer']).__name__}")
+            print(f"  - VAE: {type(components['vae']).__name__}")
+            print(f"  - Text Encoder: {type(components['text_encoder']).__name__}")
+            print(f"  - Scheduler: {type(components['scheduler']).__name__}")
+
+            return components
+
+        except Exception as e:
+            print(f"[ModelLoader] Error loading Z-Image: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            # Remove Z-Image path from sys.path to avoid conflicts
+            if str(zimage_src_path) in sys.path:
+                sys.path.remove(str(zimage_src_path))
+
+    @staticmethod
     def load_from_diffusers(
         model_path: str,
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.float16
-    ) -> StableDiffusionPipeline:
-        """Load model from diffusers format directory"""
+    ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
+        """Load model from diffusers format directory
+
+        Returns:
+            - StableDiffusionPipeline for SD1.5/SDXL
+            - Dict of components for Z-Image
+        """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model directory not found: {model_path}")
 
         model_type = ModelLoader.detect_model_type(model_path)
+
+        # Z-Image uses component-based loading
+        if model_type == "zimage":
+            return ModelLoader.load_zimage_from_diffusers(model_path, device, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -237,8 +318,13 @@ class ModelLoader:
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.float16,
         **kwargs
-    ) -> StableDiffusionPipeline:
-        """Universal model loading method"""
+    ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
+        """Universal model loading method
+
+        Returns:
+            - StableDiffusionPipeline for SD1.5/SDXL
+            - Dict of components for Z-Image
+        """
         if source_type == "safetensors":
             return ModelLoader.load_from_safetensors(source, device, torch_dtype)
         elif source_type == "diffusers":

@@ -106,6 +106,14 @@ const loadControlNetImages = async (
   return loadedControlnets;
 };
 
+export interface ModelInfo {
+  source_type: string;
+  source: string;
+  type: "sd15" | "sdxl" | "zimage";
+  is_v_prediction: boolean;
+  model_hash: string;
+}
+
 export interface LoRAConfig {
   path: string;
   strength: number;
@@ -177,6 +185,8 @@ export interface GenerationParams {
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
+  // Z-Image specific
+  max_sequence_length?: number;
 }
 
 export interface Img2ImgParams extends GenerationParams {

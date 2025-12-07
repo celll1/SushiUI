@@ -163,19 +163,21 @@ class ModelLoader:
         n_kv_heads: int,
         dim: int
     ) -> dict:
-        """Convert ComfyUI's fused QKV state dict to official split Q/K/V format
+        """Convert ComfyUI's state dict to official Z-Image format
 
         ComfyUI format:
-            - attention.qkv.weight: [n_heads*head_dim + 2*n_kv_heads*head_dim, dim]
+            - attention.qkv.weight: [n_heads*head_dim + 2*n_kv_heads*head_dim, dim] (fused QKV)
             - attention.out.weight: [dim, n_heads*head_dim]
             - attention.q_norm.weight / k_norm.weight
+            - x_embedder.weight/bias: Single embedder
+            - final_layer.linear.weight/bias: Single final layer
 
         Official format:
-            - attention.to_q.weight: [n_heads*head_dim, dim]
-            - attention.to_k.weight: [n_kv_heads*head_dim, dim]
-            - attention.to_v.weight: [n_kv_heads*head_dim, dim]
-            - attention.to_out.0.weight: [dim, n_heads*head_dim]
-            - attention.norm_q.weight / norm_k.weight
+            - attention.to_q/to_k/to_v.weight: Split Q/K/V
+            - attention.to_out.0.weight: Output projection
+            - attention.norm_q/norm_k.weight: Norm layers
+            - all_x_embedder.{patch_size}-{aspect}.weight/bias: Multi-resolution embedders
+            - all_final_layer.{patch_size}-{aspect}.linear.weight/bias: Multi-resolution final layers
 
         Args:
             comfy_state_dict: State dict from Comfy-format safetensors
@@ -189,13 +191,16 @@ class ModelLoader:
         head_dim = dim // n_heads
         official_state_dict = {}
 
-        print(f"[ModelLoader] Converting attention layers: n_heads={n_heads}, n_kv_heads={n_kv_heads}, dim={dim}, head_dim={head_dim}")
+        # Default resolution key (patch_size=2, aspect_ratio=1:1)
+        default_resolution_key = "2-1"
+
+        print(f"[ModelLoader] Converting ComfyUI format to official Z-Image format")
+        print(f"  - Attention layers: n_heads={n_heads}, n_kv_heads={n_kv_heads}, dim={dim}, head_dim={head_dim}")
+        print(f"  - Using default resolution key: {default_resolution_key}")
 
         for key, value in comfy_state_dict.items():
             # Split fused QKV weights
             if ".qkv.weight" in key:
-                # QKV is fused as [Q, K, V] along dim 0
-                # Shapes: Q=[n_heads*head_dim, dim], K=[n_kv_heads*head_dim, dim], V=[n_kv_heads*head_dim, dim]
                 q_dim = n_heads * head_dim
                 kv_dim = n_kv_heads * head_dim
 
@@ -208,13 +213,10 @@ class ModelLoader:
                 official_state_dict[f"{base_key}.to_k.weight"] = k_weight
                 official_state_dict[f"{base_key}.to_v.weight"] = v_weight
 
-                print(f"  Split {key} -> to_q/to_k/to_v (shapes: {q_weight.shape}, {k_weight.shape}, {v_weight.shape})")
-
             # Rename output projection
             elif ".out.weight" in key:
                 new_key = key.replace(".out.weight", ".to_out.0.weight")
                 official_state_dict[new_key] = value
-                print(f"  Renamed {key} -> {new_key}")
 
             # Rename norm layers
             elif ".q_norm.weight" in key:
@@ -223,6 +225,20 @@ class ModelLoader:
             elif ".k_norm.weight" in key:
                 new_key = key.replace(".k_norm.weight", ".norm_k.weight")
                 official_state_dict[new_key] = value
+
+            # Map x_embedder to all_x_embedder with resolution key
+            elif key.startswith("x_embedder."):
+                param_name = key.replace("x_embedder.", "")
+                new_key = f"all_x_embedder.{default_resolution_key}.{param_name}"
+                official_state_dict[new_key] = value
+                print(f"  Mapped {key} -> {new_key}")
+
+            # Map final_layer to all_final_layer with resolution key
+            elif key.startswith("final_layer."):
+                param_name = key.replace("final_layer.", "")
+                new_key = f"all_final_layer.{default_resolution_key}.{param_name}"
+                official_state_dict[new_key] = value
+                print(f"  Mapped {key} -> {new_key}")
 
             # Copy all other keys as-is
             else:
@@ -238,17 +254,19 @@ class ModelLoader:
         torch_dtype: torch.dtype = torch.bfloat16,
         base_model_repo: str = "Tongyi-MAI/Z-Image-Turbo"
     ) -> Dict[str, Any]:
-        """Load Z-Image from Comfy safetensors format (transformer only)
+        """Load Z-Image from ComfyUI Lumina format with weight conversion
 
-        This loads the transformer weights from a single safetensors file and
-        downloads missing components (VAE, text_encoder, tokenizer, scheduler)
-        from the official HuggingFace repository.
+        This loads ComfyUI-format safetensors and converts the weights to match
+        the official Z-Image transformer structure by:
+        1. Splitting fused QKV weights into separate Q/K/V layers
+        2. Mapping single-resolution embedders to multi-resolution format
+        3. Converting key names to match official structure
 
         Args:
             file_path: Path to Comfy-format Z-Image safetensors
             device: Device to load models on
             torch_dtype: Data type for model weights (bfloat16 recommended)
-            base_model_repo: HuggingFace repo ID for base components
+            base_model_repo: HuggingFace repo ID for base components (VAE, text encoder, etc.)
 
         Returns:
             Dict containing transformer, vae, text_encoder, tokenizer, scheduler

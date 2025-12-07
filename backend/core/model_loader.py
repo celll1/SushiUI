@@ -198,11 +198,37 @@ class ModelLoader:
 
         try:
             from transformers import AutoModel, AutoTokenizer
-            # Import Z-Image modules with priority path
-            from zimage.transformer import ZImageTransformer2DModel
-            from zimage.autoencoder import AutoencoderKL
-            from zimage.scheduler import FlowMatchEulerDiscreteScheduler
             from safetensors.torch import load_file
+
+            # Import Z-Image classes directly from module files (avoid __init__.py)
+            import importlib.util
+
+            # Load transformer module
+            transformer_spec = importlib.util.spec_from_file_location(
+                "zimage_transformer",
+                zimage_src_path / "zimage" / "transformer.py"
+            )
+            transformer_module = importlib.util.module_from_spec(transformer_spec)
+            transformer_spec.loader.exec_module(transformer_module)
+            ZImageTransformer2DModel = transformer_module.ZImageTransformer2DModel
+
+            # Load autoencoder module
+            autoencoder_spec = importlib.util.spec_from_file_location(
+                "zimage_autoencoder",
+                zimage_src_path / "zimage" / "autoencoder.py"
+            )
+            autoencoder_module = importlib.util.module_from_spec(autoencoder_spec)
+            autoencoder_spec.loader.exec_module(autoencoder_module)
+            AutoencoderKL = autoencoder_module.AutoencoderKL
+
+            # Load scheduler module
+            scheduler_spec = importlib.util.spec_from_file_location(
+                "zimage_scheduler",
+                zimage_src_path / "zimage" / "scheduler.py"
+            )
+            scheduler_module = importlib.util.module_from_spec(scheduler_spec)
+            scheduler_spec.loader.exec_module(scheduler_module)
+            FlowMatchEulerDiscreteScheduler = scheduler_module.FlowMatchEulerDiscreteScheduler
 
             # Step 1: Download base components from HuggingFace
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")

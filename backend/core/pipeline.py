@@ -312,7 +312,16 @@ class DiffusionPipelineManager:
         sys.path = [str(zimage_src_path)] + sys.path
 
         try:
-            from zimage import generate
+            # Import generate function directly from pipeline module (avoid __init__.py)
+            import importlib.util
+
+            pipeline_spec = importlib.util.spec_from_file_location(
+                "zimage_pipeline",
+                zimage_src_path / "zimage" / "pipeline.py"
+            )
+            pipeline_module = importlib.util.module_from_spec(pipeline_spec)
+            pipeline_spec.loader.exec_module(pipeline_module)
+            generate = pipeline_module.generate
 
             # Extract components
             transformer = self.zimage_components["transformer"]

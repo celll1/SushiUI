@@ -306,7 +306,10 @@ class DiffusionPipelineManager:
 
         # Add Z-Image source to Python path
         zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
-        sys.path.insert(0, str(zimage_src_path))
+
+        # Temporarily replace sys.path to prioritize Z-Image modules
+        original_sys_path = sys.path.copy()
+        sys.path = [str(zimage_src_path)] + sys.path
 
         try:
             from zimage import generate
@@ -367,9 +370,8 @@ class DiffusionPipelineManager:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
         finally:
-            # Remove Z-Image path from sys.path
-            if str(zimage_src_path) in sys.path:
-                sys.path.remove(str(zimage_src_path))
+            # Restore original sys.path
+            sys.path = original_sys_path
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""

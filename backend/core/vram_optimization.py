@@ -519,3 +519,126 @@ def move_vae_to_cpu(pipeline):
         pipeline.vae.to('cpu', non_blocking=False)
 
     # Note: torch.cuda.empty_cache() removed to reduce VPN latency
+
+
+# ============================================================
+# Z-Image VRAM Optimization
+# ============================================================
+
+def move_zimage_text_encoder_to_gpu(text_encoder):
+    """Move Z-Image text encoder to GPU for encoding
+
+    Args:
+        text_encoder: Z-Image text encoder model
+    """
+    print("[VRAM] Moving Z-Image Text Encoder to GPU for encoding...")
+    if text_encoder is not None:
+        text_encoder.to('cuda:0', non_blocking=False)
+
+
+def move_zimage_text_encoder_to_cpu(text_encoder):
+    """Move Z-Image text encoder to CPU to free VRAM
+
+    Args:
+        text_encoder: Z-Image text encoder model
+    """
+    print("[VRAM] Moving Z-Image Text Encoder to CPU to free VRAM...")
+    if text_encoder is not None:
+        text_encoder.to('cpu', non_blocking=False)
+
+
+def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+    """Move Z-Image transformer to GPU for inference, optionally with quantization
+
+    Note: Z-Image transformer does not support torch.compile yet
+
+    Args:
+        transformer: Z-Image transformer model
+        quantization: Quantization type - None, 'none', 'fp8_e4m3fn', 'fp8_e5m2', etc.
+
+    Returns:
+        transformer: Transformer on GPU (may be quantized)
+    """
+    # Normalize quantization parameter
+    if quantization in [None, "", "none"]:
+        quantization = None
+
+    if transformer is None:
+        return transformer
+
+    # Fast path: No quantization (most common case)
+    if not quantization:
+        print("[VRAM] Moving Z-Image Transformer to GPU for inference...")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+    # Quantization path
+    print(f"[VRAM] Moving Z-Image Transformer to GPU with {quantization} quantization...")
+    print(f"[VRAM] Note: Quantization for Z-Image is experimental")
+
+    # Store original transformer reference if not already stored
+    if not hasattr(transformer, '_original_state'):
+        transformer._original_state = True
+
+    # Apply quantization (similar to U-Net quantization)
+    try:
+        quantized_transformer = _quantize_transformer(transformer, quantization)
+        quantized_transformer.to('cuda:0', non_blocking=False)
+        return quantized_transformer
+    except Exception as e:
+        print(f"[VRAM] Warning: Quantization failed: {e}")
+        print(f"[VRAM] Falling back to non-quantized transformer")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+
+def move_zimage_transformer_to_cpu(transformer):
+    """Move Z-Image transformer to CPU to free VRAM
+
+    Args:
+        transformer: Z-Image transformer model
+    """
+    print("[VRAM] Moving Z-Image Transformer to CPU to free VRAM...")
+    if transformer is not None:
+        transformer.to('cpu', non_blocking=False)
+
+
+def move_zimage_vae_to_gpu(vae):
+    """Move Z-Image VAE to GPU for decode
+
+    Args:
+        vae: Z-Image VAE model
+    """
+    print("[VRAM] Moving Z-Image VAE to GPU for decode...")
+    if vae is not None:
+        vae.to('cuda:0', non_blocking=False)
+
+
+def move_zimage_vae_to_cpu(vae):
+    """Move Z-Image VAE to CPU to free VRAM
+
+    Args:
+        vae: Z-Image VAE model
+    """
+    print("[VRAM] Moving Z-Image VAE to CPU to free VRAM...")
+    if vae is not None:
+        vae.to('cpu', non_blocking=False)
+
+
+def _quantize_transformer(transformer, quantization: str):
+    """Create a quantized copy of Z-Image transformer
+
+    This uses the same quantization logic as U-Net quantization.
+
+    Args:
+        transformer: Original Z-Image transformer model
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+
+    Returns:
+        Quantized transformer model
+    """
+    print(f"[Quantization] Applying {quantization} to Z-Image Transformer...")
+
+    # Reuse U-Net quantization logic
+    # Z-Image transformer has similar Linear layers as U-Net
+    return _quantize_unet(transformer, quantization)

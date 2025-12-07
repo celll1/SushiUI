@@ -400,6 +400,23 @@ class DiffusionPipelineManager:
             print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale} (forced for Turbo), Seed: {seed}")
             print(f"[Z-Image] Prompt: {prompt[:100]}...")
 
+            # VRAM Optimization: Sequential offloading
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # Get quantization parameter
+            quantization = params.get("unet_quantization")  # Use same param as SD/SDXL
+
+            # Step 1: Move Text Encoder to GPU for encoding (then back to CPU)
+            move_zimage_text_encoder_to_gpu(text_encoder)
+
             # Setup progress callback wrapper for tqdm
             # Z-Image uses tqdm for progress, so we intercept it to call our callbacks
             if progress_callback or step_callback:
@@ -435,7 +452,13 @@ class DiffusionPipelineManager:
                 sys.modules['tqdm'] = type(sys)('tqdm')
                 sys.modules['tqdm'].tqdm = TqdmCallbackWrapper
 
-            # Call Z-Image native generate
+            # Step 2: Move Transformer to GPU for inference (with optional quantization)
+            transformer = move_zimage_transformer_to_gpu(transformer, quantization)
+
+            # Step 3: Move VAE to GPU for decode
+            move_zimage_vae_to_gpu(vae)
+
+            # Call Z-Image native generate (all components on GPU)
             images = generate(
                 transformer=transformer,
                 vae=vae,
@@ -454,6 +477,12 @@ class DiffusionPipelineManager:
             )
 
             print("[Z-Image] Generation completed")
+
+            # Step 4: Move components back to CPU to free VRAM
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            move_zimage_transformer_to_cpu(transformer)
+            move_zimage_vae_to_cpu(vae)
+
             return images[0], seed
 
         except Exception as e:

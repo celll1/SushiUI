@@ -1574,7 +1574,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               />
               <Slider
                 label="CFG Scale"
-                min={1}
+                min={0}
                 max={30}
                 step={0.5}
                 value={params.cfg_scale}

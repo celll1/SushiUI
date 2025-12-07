@@ -1814,7 +1814,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               />
               <Slider
                 label="CFG Scale"
-                min={1}
+                min={0}
                 max={30}
                 step={0.5}
                 value={params.cfg_scale}

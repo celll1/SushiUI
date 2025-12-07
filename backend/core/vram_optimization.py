@@ -13,13 +13,14 @@ from typing import Optional, Literal
 import copy
 
 
-def log_device_status(stage: str, pipeline, show_details: bool = False):
+def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None):
     """Log device status of all pipeline components
 
     Args:
         stage: Description of current stage (e.g., "After moving to GPU")
-        pipeline: The diffusers pipeline
+        pipeline: The diffusers pipeline (or None for Z-Image)
         show_details: Show detailed submodule information
+        zimage_components: Dict with Z-Image components (text_encoder, transformer, vae)
     """
     print(f"\n{'='*60}")
     print(f"[VRAM] Device Status: {stage}")
@@ -136,13 +137,47 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
             print(f"  U-Net:          no parameters")
 
     # VAE
-    if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+    if pipeline and hasattr(pipeline, 'vae') and pipeline.vae is not None:
         try:
             device = next(pipeline.vae.parameters()).device
             dtype = get_dtype_info(pipeline.vae)
             print(f"  VAE:            {device} ({dtype})")
         except:
             print(f"  VAE:            no parameters")
+
+    # Z-Image components (if provided)
+    if zimage_components:
+        # Text Encoder
+        if 'text_encoder' in zimage_components and zimage_components['text_encoder'] is not None:
+            try:
+                device = next(zimage_components['text_encoder'].parameters()).device
+                dtype = get_dtype_info(zimage_components['text_encoder'])
+                print(f"  Text Encoder (Z-Image): {device} ({dtype})")
+            except:
+                print(f"  Text Encoder (Z-Image): no parameters")
+
+        # Transformer (equivalent to U-Net)
+        if 'transformer' in zimage_components and zimage_components['transformer'] is not None:
+            try:
+                device = next(zimage_components['transformer'].parameters()).device
+                dtype = get_dtype_info(zimage_components['transformer'])
+                quant_info = check_quantization(zimage_components['transformer'])
+
+                if quant_info:
+                    print(f"  Transformer (Z-Image):  {device} ({dtype}, {quant_info})")
+                else:
+                    print(f"  Transformer (Z-Image):  {device} ({dtype})")
+            except:
+                print(f"  Transformer (Z-Image):  no parameters")
+
+        # VAE
+        if 'vae' in zimage_components and zimage_components['vae'] is not None:
+            try:
+                device = next(zimage_components['vae'].parameters()).device
+                dtype = get_dtype_info(zimage_components['vae'])
+                print(f"  VAE (Z-Image):          {device} ({dtype})")
+            except:
+                print(f"  VAE (Z-Image):          no parameters")
 
     # VRAM usage
     if torch.cuda.is_available():

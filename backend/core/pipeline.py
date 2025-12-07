@@ -464,6 +464,11 @@ class DiffusionPipelineManager:
 
             # Offload VAE to CPU after decoding
             move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors from GPU memory
+            del prompt_embeds_list, negative_prompt_embeds_list, latents
+            torch.cuda.empty_cache()  # Release PyTorch's VRAM cache
+
             log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,

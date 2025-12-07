@@ -352,18 +352,6 @@ class DiffusionPipelineManager:
             sys.modules['utils.attention'] = utils_attention_module
             utils_attention_spec.loader.exec_module(utils_attention_module)
 
-            # 4. Load pipeline module
-            pipeline_spec = importlib.util.spec_from_file_location(
-                "zimage_pipeline",
-                zimage_src_path / "zimage" / "pipeline.py"
-            )
-            pipeline_module = importlib.util.module_from_spec(pipeline_spec)
-            pipeline_spec.loader.exec_module(pipeline_module)
-            generate = pipeline_module.generate
-
-            # Restore original modules after loading (but keep them in sys.modules for generation)
-            # We'll restore them in the finally block after generation completes
-
             # Extract components
             transformer = self.zimage_components["transformer"]
             vae = self.zimage_components["vae"]
@@ -400,9 +388,9 @@ class DiffusionPipelineManager:
             print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale} (forced for Turbo), Seed: {seed}")
             print(f"[Z-Image] Prompt: {prompt[:100]}...")
 
-            # VRAM Optimization: Sequential offloading
             # Import VRAM optimization functions
             from core.vram_optimization import (
+                log_device_status,
                 move_zimage_text_encoder_to_gpu,
                 move_zimage_text_encoder_to_cpu,
                 move_zimage_transformer_to_gpu,
@@ -414,74 +402,75 @@ class DiffusionPipelineManager:
             # Get quantization parameter
             quantization = params.get("unet_quantization")  # Use same param as SD/SDXL
 
-            # Step 1: Move Text Encoder to GPU for encoding (then back to CPU)
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
             move_zimage_text_encoder_to_gpu(text_encoder)
+            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
 
-            # Setup progress callback wrapper for tqdm
-            # Z-Image uses tqdm for progress, so we intercept it to call our callbacks
-            if progress_callback or step_callback:
-                import tqdm as original_tqdm
+            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
+                self._zimage_encode_prompt(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    guidance_scale, max_sequence_length
+                )
 
-                class TqdmCallbackWrapper:
-                    """Wrapper for tqdm to call SushiUI progress/step callbacks"""
-                    def __init__(self, iterable=None, desc=None, total=None, **kwargs):
-                        self.iterable = iterable
-                        self.total = total or (len(iterable) if iterable else 0)
-                        self.current_step = 0
-                        self.desc = desc or ""
+            # Offload Text Encoder to CPU to free VRAM
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
 
-                    def __iter__(self):
-                        for item in self.iterable:
-                            yield item
-                            self.current_step += 1
-                            # Call SushiUI callbacks with correct signature
-                            # progress_callback expects: (step, total_steps, latents, cfg_metrics=None)
-                            # We don't have access to latents here, so pass None
-                            if progress_callback:
-                                progress_callback(self.current_step, self.total, None)
-                            if step_callback:
-                                step_callback(self.current_step, self.total)
+            # ============================================================
+            # Stage 2: Denoising Loop
+            # ============================================================
+            move_zimage_transformer_to_gpu(transformer, quantization)
+            log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
 
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        pass
-
-                # Monkey-patch tqdm in the pipeline module
-                sys.modules['tqdm'] = type(sys)('tqdm')
-                sys.modules['tqdm'].tqdm = TqdmCallbackWrapper
-
-            # Step 2: Move Transformer to GPU for inference (with optional quantization)
-            transformer = move_zimage_transformer_to_gpu(transformer, quantization)
-
-            # Step 3: Move VAE to GPU for decode
-            move_zimage_vae_to_gpu(vae)
-
-            # Call Z-Image native generate (all components on GPU)
-            images = generate(
-                transformer=transformer,
-                vae=vae,
-                text_encoder=text_encoder,
-                tokenizer=tokenizer,
-                scheduler=scheduler,
-                prompt=prompt,
-                negative_prompt=negative_prompt if negative_prompt else None,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                max_sequence_length=max_sequence_length,
-                generator=generator,
-                output_type="pil"
+            latents = self._zimage_denoising_loop(
+                transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+                height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+                generator, progress_callback, step_callback, config_module
             )
 
-            print("[Z-Image] Generation completed")
-
-            # Step 4: Move components back to CPU to free VRAM
-            move_zimage_text_encoder_to_cpu(text_encoder)
+            # Offload Transformer to CPU to free VRAM for VAE
             move_zimage_transformer_to_cpu(transformer)
+            log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 3: VAE Decode
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            images = self._zimage_decode_latents(vae, latents)
+
+            # Offload VAE to CPU after decoding
             move_zimage_vae_to_cpu(vae)
+            log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            print("[Z-Image] Generation completed")
 
             return images[0], seed
 
@@ -513,6 +502,284 @@ class DiffusionPipelineManager:
             # Remove Z-Image specific modules
             sys.modules.pop('utils.attention', None)
             sys.modules.pop('zimage_pipeline', None)
+
+    def _zimage_encode_prompt(
+        self, text_encoder, tokenizer, prompt, negative_prompt,
+        guidance_scale, max_sequence_length
+    ):
+        """
+        Stage 1: Text Encoding for Z-Image
+        Encodes prompt and negative prompt using Qwen text encoder.
+        Text encoder is on GPU when this is called, and will be moved to CPU after.
+
+        Returns:
+            prompt_embeds_list: List of text embeddings (one per image)
+            negative_prompt_embeds_list: List of negative embeddings (if CFG enabled)
+            do_classifier_free_guidance: bool
+        """
+        device = next(text_encoder.parameters()).device
+
+        # Format prompts using Qwen chat template
+        if isinstance(prompt, str):
+            prompt = [prompt]
+
+        do_classifier_free_guidance = guidance_scale > 1.0
+
+        print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
+
+        formatted_prompts = []
+        for p in prompt:
+            messages = [{"role": "user", "content": p}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            formatted_prompts.append(formatted_prompt)
+
+        # Tokenize prompts
+        text_inputs = tokenizer(
+            formatted_prompts,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        text_input_ids = text_inputs.input_ids.to(device)
+        prompt_masks = text_inputs.attention_mask.to(device).bool()
+
+        # Encode prompts (use penultimate layer output)
+        with torch.no_grad():
+            prompt_embeds = text_encoder(
+                input_ids=text_input_ids,
+                attention_mask=prompt_masks,
+                output_hidden_states=True,
+            ).hidden_states[-2]
+
+        # Extract embeddings per prompt (masked by attention mask)
+        prompt_embeds_list = []
+        for i in range(len(prompt_embeds)):
+            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
+
+        # Encode negative prompts if CFG is enabled
+        negative_prompt_embeds_list = []
+        if do_classifier_free_guidance:
+            if negative_prompt is None:
+                negative_prompt = ["" for _ in prompt]
+            elif isinstance(negative_prompt, str):
+                negative_prompt = [negative_prompt]
+
+            neg_formatted = []
+            for p in negative_prompt:
+                messages = [{"role": "user", "content": p}]
+                formatted_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=True,
+                )
+                neg_formatted.append(formatted_prompt)
+
+            neg_inputs = tokenizer(
+                neg_formatted,
+                padding="max_length",
+                max_length=max_sequence_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            neg_input_ids = neg_inputs.input_ids.to(device)
+            neg_masks = neg_inputs.attention_mask.to(device).bool()
+
+            with torch.no_grad():
+                neg_embeds = text_encoder(
+                    input_ids=neg_input_ids,
+                    attention_mask=neg_masks,
+                    output_hidden_states=True,
+                ).hidden_states[-2]
+
+            for i in range(len(neg_embeds)):
+                negative_prompt_embeds_list.append(neg_embeds[i][neg_masks[i]])
+
+        print(f"[Z-Image] Text encoding complete: {len(prompt_embeds_list)} prompts encoded")
+
+        return prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance
+
+    def _zimage_denoising_loop(
+        self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+        height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+        generator, progress_callback, step_callback, config_module
+    ):
+        """
+        Stage 2: Denoising Loop for Z-Image
+        Runs the transformer denoising loop with flow matching.
+        Transformer is on GPU when this is called, and will be moved to CPU after.
+
+        Returns:
+            latents: Denoised latents (torch.Tensor)
+        """
+        device = next(transformer.parameters()).device
+
+        print(f"[Z-Image] Starting denoising loop on {device}")
+
+        # Calculate VAE scale factor
+        vae = self.zimage_components["vae"]
+        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+            vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        else:
+            vae_scale_factor = 8
+        vae_scale = vae_scale_factor * 2
+
+        # Calculate latent dimensions
+        height_latent = 2 * (int(height) // vae_scale)
+        width_latent = 2 * (int(width) // vae_scale)
+        batch_size = len(prompt_embeds_list)
+        shape = (batch_size, transformer.in_channels, height_latent, width_latent)
+
+        # Initialize random latents
+        latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+
+        # Calculate dynamic shift for flow matching
+        image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+
+        # Import calculate_shift from loaded config module
+        calculate_shift = getattr(config_module, 'calculate_shift', None)
+        if calculate_shift is None:
+            # Fallback implementation
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
+
+        mu = calculate_shift(
+            image_seq_len,
+            scheduler.config.get("base_image_seq_len", 256),
+            scheduler.config.get("max_image_seq_len", 4096),
+            scheduler.config.get("base_shift", 0.5),
+            scheduler.config.get("max_shift", 1.15),
+        )
+
+        # Set scheduler parameters
+        scheduler.sigma_min = 0.0
+        scheduler_kwargs = {"mu": mu}
+
+        # Prepare timesteps
+        scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+        timesteps = scheduler.timesteps
+
+        print(f"[Z-Image] Denoising loop: {num_inference_steps} steps, shift={mu:.3f}")
+
+        # Denoising loop with progress callback
+        for i, t in enumerate(timesteps):
+            # Skip last step if t=0 (flow matching termination)
+            if t == 0 and i == len(timesteps) - 1:
+                print(f"[Z-Image] Step {i+1}/{num_inference_steps} | t={t.item():.2f} | Skipping last step (flow matching termination)")
+                continue
+
+            # Call progress callbacks
+            if progress_callback:
+                progress_callback(i + 1, num_inference_steps, latents)
+            if step_callback:
+                step_callback(i + 1, num_inference_steps)
+
+            # Normalize timestep to [0, 1]
+            timestep = t.expand(latents.shape[0])
+            timestep = (1000 - timestep) / 1000
+            t_norm = timestep[0].item()
+
+            # CFG truncation logic (disable CFG after certain timestep)
+            current_guidance_scale = guidance_scale
+            cfg_truncation = config_module.DEFAULT_CFG_TRUNCATION if hasattr(config_module, 'DEFAULT_CFG_TRUNCATION') else 1.0
+            if do_classifier_free_guidance and cfg_truncation is not None and float(cfg_truncation) <= 1:
+                if t_norm > cfg_truncation:
+                    current_guidance_scale = 0.0
+
+            apply_cfg = do_classifier_free_guidance and current_guidance_scale > 0
+
+            # Prepare model input (concat positive + negative if CFG)
+            if apply_cfg:
+                latents_typed = latents.to(
+                    transformer.dtype if hasattr(transformer, "dtype") else next(transformer.parameters()).dtype
+                )
+                latent_model_input = latents_typed.repeat(2, 1, 1, 1)
+                prompt_embeds_model_input = prompt_embeds_list + negative_prompt_embeds_list
+                timestep_model_input = timestep.repeat(2)
+            else:
+                latent_model_input = latents.to(next(transformer.parameters()).dtype)
+                prompt_embeds_model_input = prompt_embeds_list
+                timestep_model_input = timestep
+
+            # Add channel dimension and split into list
+            latent_model_input = latent_model_input.unsqueeze(2)
+            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+
+            # Transformer forward pass
+            with torch.no_grad():
+                model_out_list = transformer(
+                    latent_model_input_list,
+                    timestep_model_input,
+                    prompt_embeds_model_input,
+                )[0]
+
+            # Apply CFG if enabled
+            if apply_cfg:
+                pos_out = model_out_list[:batch_size]
+                neg_out = model_out_list[batch_size:]
+                noise_pred = []
+                for j in range(batch_size):
+                    pos = pos_out[j].float()
+                    neg = neg_out[j].float()
+                    pred = pos + current_guidance_scale * (pos - neg)
+                    noise_pred.append(pred)
+                noise_pred = torch.stack(noise_pred, dim=0)
+            else:
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+
+            # Scheduler step (flow matching)
+            noise_pred = -noise_pred.squeeze(2)
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+
+            if i % 5 == 0 or i == num_inference_steps - 1:
+                print(f"[Z-Image] Step {i+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
+
+        print(f"[Z-Image] Denoising loop complete")
+
+        return latents
+
+    def _zimage_decode_latents(self, vae, latents):
+        """
+        Stage 3: VAE Decode for Z-Image
+        Decodes latents to images using VAE.
+        VAE is on GPU when this is called, and will be moved to CPU after.
+
+        Returns:
+            images: List of PIL images
+        """
+        device = next(vae.parameters()).device
+
+        print(f"[Z-Image] Decoding latents with VAE on {device}")
+
+        # Apply VAE scaling and shift
+        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+
+        # Decode latents
+        with torch.no_grad():
+            image = vae.decode(latents, return_dict=False)[0]
+
+        # Convert to PIL images
+        from PIL import Image
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = (image * 255).round().astype("uint8")
+        images = [Image.fromarray(img) for img in image]
+
+        print(f"[Z-Image] VAE decode complete: {len(images)} images generated")
+
+        return images
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""

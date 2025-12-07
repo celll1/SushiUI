@@ -180,6 +180,8 @@ export interface GenerationParams {
   nag_negative_prompt?: string;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // Text Encoder Quantization (Z-Image only)
+  text_encoder_quantization?: string | null;
   // torch.compile optimization
   use_torch_compile?: boolean;
   // TIPO prompt upsampling

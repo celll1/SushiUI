@@ -412,13 +412,14 @@ class DiffusionPipelineManager:
                 move_zimage_vae_to_cpu
             )
 
-            # Get quantization parameter
-            quantization = params.get("unet_quantization")  # Use same param as SD/SDXL
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
+            text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Z-Image only)
 
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
-            move_zimage_text_encoder_to_gpu(text_encoder)
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -442,7 +443,7 @@ class DiffusionPipelineManager:
             # ============================================================
             # Stage 2: Denoising Loop
             # ============================================================
-            move_zimage_transformer_to_gpu(transformer, quantization)
+            transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
             log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,

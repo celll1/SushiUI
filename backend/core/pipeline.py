@@ -315,6 +315,7 @@ class DiffusionPipelineManager:
         # Store original modules for restoration in finally block
         original_config = sys.modules.get('config')
         original_utils = sys.modules.get('utils')
+        original_tqdm = sys.modules.get('tqdm')
 
         try:
             import importlib.util
@@ -384,13 +385,54 @@ class DiffusionPipelineManager:
             negative_prompt = params.get("negative_prompt", "")
             height = params.get("height", 1024)
             width = params.get("width", 1024)
-            num_inference_steps = params.get("steps", 8)  # Turbo default
-            guidance_scale = params.get("cfg_scale", 0.0)  # Turbo uses CFG=0
+            num_inference_steps = params.get("steps", 8)  # Turbo default: 8 steps
             max_sequence_length = params.get("max_sequence_length", 512)
 
+            # CRITICAL: Z-Image Turbo REQUIRES guidance_scale=0.0
+            # Using CFG>0 will produce blurry/degraded images
+            # This is because Turbo is distilled with CFG augmentation baked in
+            guidance_scale = 0.0
+            user_cfg = params.get("cfg_scale", 0.0)
+            if user_cfg != 0.0:
+                print(f"[Z-Image] WARNING: Z-Image Turbo requires CFG=0.0 (user requested {user_cfg}, ignoring)")
+
             print(f"[Z-Image] Generating {width}x{height} image")
-            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale} (forced for Turbo), Seed: {seed}")
             print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Setup progress callback wrapper for tqdm
+            # Z-Image uses tqdm for progress, so we intercept it to call our callbacks
+            if progress_callback or step_callback:
+                import tqdm as original_tqdm
+
+                class TqdmCallbackWrapper:
+                    """Wrapper for tqdm to call SushiUI progress/step callbacks"""
+                    def __init__(self, iterable=None, desc=None, total=None, **kwargs):
+                        self.iterable = iterable
+                        self.total = total or (len(iterable) if iterable else 0)
+                        self.current_step = 0
+                        self.desc = desc or ""
+
+                    def __iter__(self):
+                        for item in self.iterable:
+                            yield item
+                            self.current_step += 1
+                            # Call SushiUI callbacks
+                            if progress_callback:
+                                progress = self.current_step / self.total if self.total > 0 else 0
+                                progress_callback(progress)
+                            if step_callback:
+                                step_callback(self.current_step, self.total)
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        pass
+
+                # Monkey-patch tqdm in the pipeline module
+                sys.modules['tqdm'] = type(sys)('tqdm')
+                sys.modules['tqdm'].tqdm = TqdmCallbackWrapper
 
             # Call Z-Image native generate
             images = generate(
@@ -432,6 +474,11 @@ class DiffusionPipelineManager:
                 sys.modules['utils'] = original_utils
             else:
                 sys.modules.pop('utils', None)
+
+            if original_tqdm is not None:
+                sys.modules['tqdm'] = original_tqdm
+            else:
+                sys.modules.pop('tqdm', None)
 
             # Remove Z-Image specific modules
             sys.modules.pop('utils.attention', None)

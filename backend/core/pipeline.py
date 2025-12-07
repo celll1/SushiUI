@@ -312,23 +312,46 @@ class DiffusionPipelineManager:
         original_sys_path = sys.path.copy()
         sys.path = [str(zimage_src_path)] + sys.path
 
+        # Store original modules for restoration in finally block
+        original_config = sys.modules.get('config')
+        original_utils = sys.modules.get('utils')
+
         try:
             import importlib.util
 
-            # CRITICAL: Load Z-Image's config module first and inject it into sys.modules
+            # CRITICAL: Load Z-Image modules and inject them into sys.modules
+            # This is required because transformer.py uses dynamic imports like:
+            #   from utils.attention import dispatch_attention
+            # These imports need the modules to be in sys.modules
+
+            # 1. Load config module
             config_spec = importlib.util.spec_from_file_location(
                 "config",
                 zimage_src_path / "config" / "__init__.py"
             )
             config_module = importlib.util.module_from_spec(config_spec)
-
-            # Temporarily inject Z-Image config into sys.modules
-            import sys as _sys
-            original_config = _sys.modules.get('config')
-            _sys.modules['config'] = config_module
+            sys.modules['config'] = config_module
             config_spec.loader.exec_module(config_module)
 
-            # Load pipeline module
+            # 2. Load utils module (required for transformer.py dynamic imports)
+            utils_spec = importlib.util.spec_from_file_location(
+                "utils",
+                zimage_src_path / "utils" / "__init__.py"
+            )
+            utils_module = importlib.util.module_from_spec(utils_spec)
+            sys.modules['utils'] = utils_module
+            utils_spec.loader.exec_module(utils_module)
+
+            # 3. Load utils.attention module
+            utils_attention_spec = importlib.util.spec_from_file_location(
+                "utils.attention",
+                zimage_src_path / "utils" / "attention.py"
+            )
+            utils_attention_module = importlib.util.module_from_spec(utils_attention_spec)
+            sys.modules['utils.attention'] = utils_attention_module
+            utils_attention_spec.loader.exec_module(utils_attention_module)
+
+            # 4. Load pipeline module
             pipeline_spec = importlib.util.spec_from_file_location(
                 "zimage_pipeline",
                 zimage_src_path / "zimage" / "pipeline.py"
@@ -337,11 +360,8 @@ class DiffusionPipelineManager:
             pipeline_spec.loader.exec_module(pipeline_module)
             generate = pipeline_module.generate
 
-            # Restore original config module
-            if original_config is not None:
-                _sys.modules['config'] = original_config
-            else:
-                del _sys.modules['config']
+            # Restore original modules after loading (but keep them in sys.modules for generation)
+            # We'll restore them in the finally block after generation completes
 
             # Extract components
             transformer = self.zimage_components["transformer"]
@@ -399,8 +419,23 @@ class DiffusionPipelineManager:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
         finally:
-            # Restore original sys.path
+            # Restore original sys.path and sys.modules
             sys.path = original_sys_path
+
+            # Restore original modules to avoid conflicts
+            if original_config is not None:
+                sys.modules['config'] = original_config
+            else:
+                sys.modules.pop('config', None)
+
+            if original_utils is not None:
+                sys.modules['utils'] = original_utils
+            else:
+                sys.modules.pop('utils', None)
+
+            # Remove Z-Image specific modules
+            sys.modules.pop('utils.attention', None)
+            sys.modules.pop('zimage_pipeline', None)
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""

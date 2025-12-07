@@ -38,6 +38,10 @@ class DiffusionPipelineManager:
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
 
+        # Z-Image components (component-based, not pipeline-based)
+        self.zimage_components: Optional[Dict[str, Any]] = None
+        self.is_zimage_model: bool = False
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -119,6 +123,16 @@ class DiffusionPipelineManager:
                 del self.inpaint_pipeline
                 self.inpaint_pipeline = None
 
+            # Clean up Z-Image components
+            if self.zimage_components is not None:
+                print("[Pipeline] Cleaning up Z-Image components...")
+                for comp_name, comp in self.zimage_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.zimage_components = None
+                self.is_zimage_model = False
+
             # Force garbage collection
             gc.collect()
 
@@ -135,15 +149,50 @@ class DiffusionPipelineManager:
             # Always use fp16 (default in ModelLoader)
             torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-            # Load base pipeline
+            # Load base pipeline or Z-Image components
             print("[Pipeline] Loading new model...")
-            base_pipeline = ModelLoader.load_model(
+            model_result = ModelLoader.load_model(
                 source_type=source_type,
                 source=source,
                 device=self.device,
                 torch_dtype=torch_dtype,
                 **kwargs
             )
+
+            # Check if Z-Image
+            if isinstance(model_result, dict) and "transformer" in model_result:
+                # Z-Image component-based model
+                print("[Pipeline] Z-Image model detected")
+                self.zimage_components = model_result
+                self.is_zimage_model = True
+                self.current_model = model_id
+
+                # Z-Image info
+                model_type = "zimage"
+                is_v_prediction = False
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] Z-Image model loaded successfully")
+                return
+
+            # Standard SD1.5/SDXL pipeline
+            base_pipeline = model_result
+            self.is_zimage_model = False
 
             # Log component devices after loading
             self._log_component_devices(base_pipeline, "After model loading")
@@ -238,6 +287,89 @@ class DiffusionPipelineManager:
             t_start = total_steps - actual_steps
 
         return total_steps, t_start, actual_steps
+
+    def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from text using Z-Image
+
+        Args:
+            params: Generation parameters
+            progress_callback: Legacy callback (not used for Z-Image)
+            step_callback: Step callback (not used for Z-Image)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.zimage_components:
+            raise RuntimeError("Z-Image components not loaded. Please load a Z-Image model first.")
+
+        print("[Z-Image] Starting txt2img generation")
+
+        # Add Z-Image source to Python path
+        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
+        sys.path.insert(0, str(zimage_src_path))
+
+        try:
+            from zimage import generate
+
+            # Extract components
+            transformer = self.zimage_components["transformer"]
+            vae = self.zimage_components["vae"]
+            text_encoder = self.zimage_components["text_encoder"]
+            tokenizer = self.zimage_components["tokenizer"]
+            scheduler = self.zimage_components["scheduler"]
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                import random
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Z-Image parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 8)  # Turbo default
+            guidance_scale = params.get("cfg_scale", 0.0)  # Turbo uses CFG=0
+            max_sequence_length = params.get("max_sequence_length", 512)
+
+            print(f"[Z-Image] Generating {width}x{height} image")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Call Z-Image native generate
+            images = generate(
+                transformer=transformer,
+                vae=vae,
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                scheduler=scheduler,
+                prompt=prompt,
+                negative_prompt=negative_prompt if negative_prompt else None,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                max_sequence_length=max_sequence_length,
+                generator=generator,
+                output_type="pil"
+            )
+
+            print("[Z-Image] Generation completed")
+            return images[0], seed
+
+        except Exception as e:
+            print(f"[Z-Image] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Z-Image generation failed: {str(e)}")
+        finally:
+            # Remove Z-Image path from sys.path
+            if str(zimage_src_path) in sys.path:
+                sys.path.remove(str(zimage_src_path))
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
@@ -942,6 +1074,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # Z-Image handling
+        if self.is_zimage_model:
+            return self._generate_txt2img_zimage(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -1342,6 +1478,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # Z-Image does not support img2img yet
+        if self.is_zimage_model:
+            raise RuntimeError("Z-Image does not support img2img generation yet. Please use txt2img instead.")
+
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
             if not self.txt2img_pipeline:
@@ -1781,6 +1921,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # Z-Image does not support inpaint yet (Z-Image-Edit not released)
+        if self.is_zimage_model:
+            raise RuntimeError("Z-Image does not support inpaint generation yet. Z-Image-Edit is not released. Please use txt2img instead.")
+
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
             if not self.txt2img_pipeline:

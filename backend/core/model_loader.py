@@ -98,8 +98,14 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, or Z-Image based on config or structure"""
-        # Check for Z-Image indicators
+        """Detect if model is SD1.5, SDXL, or Z-Image based on config or structure
+
+        Supports:
+        - Z-Image diffusers format (directory with transformer/, vae/, etc.)
+        - Z-Image Comfy format (single safetensors with transformer weights only)
+        - SD1.5/SDXL diffusers and safetensors
+        """
+        # Z-Image detection (diffusers format)
         if os.path.isdir(model_path):
             # Z-Image has transformer/ directory with unique config
             transformer_config = os.path.join(model_path, "transformer", "config.json")
@@ -109,7 +115,7 @@ class ModelLoader:
                         config = json.load(f)
                         # Z-Image has unique structure with axes_dims, rope_theta
                         if "axes_dims" in config and "rope_theta" in config:
-                            print(f"[ModelLoader] Detected Z-Image model from transformer config: {model_path}")
+                            print(f"[ModelLoader] Detected Z-Image model (diffusers format): {model_path}")
                             return "zimage"
                 except Exception as e:
                     print(f"[ModelLoader] Warning: Could not read transformer config: {e}")
@@ -123,25 +129,233 @@ class ModelLoader:
                     if "_class_name" in config and "XL" in config["_class_name"]:
                         return "sdxl"
 
-        # Check file size for safetensors (SDXL is typically >6GB)
+        # Check safetensors files
         if model_path.endswith('.safetensors'):
-            file_size = os.path.getsize(model_path) / (1024**3)  # GB
-            if file_size > 6:
-                return "sdxl"
+            try:
+                from safetensors import safe_open
+                with safe_open(model_path, framework="pt", device="cpu") as f:
+                    keys = list(f.keys())
+
+                    # Z-Image Comfy format detection
+                    # Z-Image transformer has unique keys: cap_embedder, t_embedder, x_embedder, layers, context_refiner
+                    zimage_indicators = ['cap_embedder', 't_embedder', 'x_embedder', 'context_refiner']
+                    if all(any(k.startswith(indicator) for k in keys) for indicator in zimage_indicators):
+                        print(f"[ModelLoader] Detected Z-Image model (Comfy safetensors format): {model_path}")
+                        return "zimage"
+
+                    # SDXL detection by file size (>6GB)
+                    file_size = os.path.getsize(model_path) / (1024**3)  # GB
+                    if file_size > 6:
+                        return "sdxl"
+            except Exception as e:
+                print(f"[ModelLoader] Warning: Could not read safetensors: {e}")
+                # Fallback to file size check
+                file_size = os.path.getsize(model_path) / (1024**3)  # GB
+                if file_size > 6:
+                    return "sdxl"
 
         return "sd15"
+
+    @staticmethod
+    def load_zimage_from_comfy_safetensors(
+        file_path: str,
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.bfloat16,
+        base_model_repo: str = "Tongyi-MAI/Z-Image-Turbo"
+    ) -> Dict[str, Any]:
+        """Load Z-Image from Comfy safetensors format (transformer only)
+
+        This loads the transformer weights from a single safetensors file and
+        downloads missing components (VAE, text_encoder, tokenizer, scheduler)
+        from the official HuggingFace repository.
+
+        Args:
+            file_path: Path to Comfy-format Z-Image safetensors
+            device: Device to load models on
+            torch_dtype: Data type for model weights (bfloat16 recommended)
+            base_model_repo: HuggingFace repo ID for base components
+
+        Returns:
+            Dict containing transformer, vae, text_encoder, tokenizer, scheduler
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Z-Image Comfy safetensors not found: {file_path}")
+
+        print(f"[ModelLoader] Loading Z-Image from Comfy safetensors: {file_path}")
+        print(f"[ModelLoader] Base components will be downloaded from: {base_model_repo}")
+
+        # Add Z-Image source to Python path
+        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
+        if not zimage_src_path.exists():
+            raise FileNotFoundError(
+                f"Z-Image source code not found at: {zimage_src_path}\n"
+                f"Please clone Z-Image repository to: {zimage_src_path.parent}"
+            )
+
+        sys.path.insert(0, str(zimage_src_path))
+
+        try:
+            from transformers import AutoModel, AutoTokenizer
+            from zimage.transformer import ZImageTransformer2DModel
+            from zimage.autoencoder import AutoencoderKL
+            from zimage.scheduler import FlowMatchEulerDiscreteScheduler
+            from safetensors.torch import load_file
+
+            # Step 1: Download base components from HuggingFace
+            print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
+            from huggingface_hub import snapshot_download
+            cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+            base_model_path = snapshot_download(
+                base_model_repo,
+                cache_dir=cache_dir,
+                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json"]
+            )
+            print(f"[ModelLoader] Base components downloaded to: {base_model_path}")
+
+            # Step 2: Load transformer config from base model
+            transformer_config_path = os.path.join(base_model_path, "transformer", "config.json")
+            with open(transformer_config_path, 'r') as f:
+                transformer_config = json.load(f)
+
+            # Step 3: Create transformer model
+            print("[ModelLoader] Creating Z-Image transformer...")
+            with torch.device("meta"):
+                transformer = ZImageTransformer2DModel(
+                    all_patch_size=tuple(transformer_config["all_patch_size"]),
+                    all_f_patch_size=tuple(transformer_config["all_f_patch_size"]),
+                    in_channels=transformer_config["in_channels"],
+                    dim=transformer_config["dim"],
+                    n_layers=transformer_config["n_layers"],
+                    n_refiner_layers=transformer_config["n_refiner_layers"],
+                    n_heads=transformer_config["n_heads"],
+                    n_kv_heads=transformer_config["n_kv_heads"],
+                    norm_eps=transformer_config["norm_eps"],
+                    qk_norm=transformer_config["qk_norm"],
+                    cap_feat_dim=transformer_config["cap_feat_dim"],
+                    rope_theta=transformer_config["rope_theta"],
+                    t_scale=transformer_config["t_scale"],
+                    axes_dims=transformer_config["axes_dims"],
+                    axes_lens=transformer_config["axes_lens"],
+                ).to(torch_dtype)
+
+            # Step 4: Load Comfy safetensors weights into transformer
+            print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
+            state_dict = load_file(file_path, device="cpu")
+            transformer.load_state_dict(state_dict, strict=True, assign=True)
+            del state_dict
+
+            print("[ModelLoader] Moving transformer to GPU...")
+            transformer = transformer.to(device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            transformer.eval()
+
+            # Step 5: Load other components from base model
+            print("[ModelLoader] Loading VAE...")
+            vae_path = os.path.join(base_model_path, "vae")
+            vae_config_path = os.path.join(vae_path, "config.json")
+            with open(vae_config_path, 'r') as f:
+                vae_config = json.load(f)
+
+            vae = AutoencoderKL(
+                in_channels=vae_config["in_channels"],
+                out_channels=vae_config["out_channels"],
+                down_block_types=tuple(vae_config["down_block_types"]),
+                up_block_types=tuple(vae_config["up_block_types"]),
+                block_out_channels=tuple(vae_config["block_out_channels"]),
+                layers_per_block=vae_config["layers_per_block"],
+                latent_channels=vae_config["latent_channels"],
+                norm_num_groups=vae_config["norm_num_groups"],
+                scaling_factor=vae_config["scaling_factor"],
+                shift_factor=vae_config.get("shift_factor"),
+                use_quant_conv=vae_config.get("use_quant_conv", True),
+                use_post_quant_conv=vae_config.get("use_post_quant_conv", True),
+                mid_block_add_attention=vae_config.get("mid_block_add_attention", True),
+            )
+
+            vae_weights_path = os.path.join(vae_path, "diffusion_pytorch_model.safetensors")
+            vae_state_dict = load_file(vae_weights_path, device="cpu")
+            vae.load_state_dict(vae_state_dict, strict=False)
+            del vae_state_dict
+            vae.to(device=device, dtype=torch.float32)  # VAE uses fp32
+            vae.eval()
+            torch.cuda.empty_cache()
+
+            print("[ModelLoader] Loading text encoder...")
+            text_encoder_path = os.path.join(base_model_path, "text_encoder")
+            text_encoder = AutoModel.from_pretrained(
+                text_encoder_path,
+                dtype=torch_dtype,
+                trust_remote_code=True,
+            )
+            text_encoder.to(device)
+            text_encoder.eval()
+
+            print("[ModelLoader] Loading tokenizer...")
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
+            tokenizer_path = os.path.join(base_model_path, "tokenizer")
+            if not os.path.exists(tokenizer_path):
+                tokenizer_path = text_encoder_path
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_path,
+                trust_remote_code=True,
+            )
+
+            print("[ModelLoader] Loading scheduler...")
+            scheduler_path = os.path.join(base_model_path, "scheduler")
+            scheduler_config_path = os.path.join(scheduler_path, "scheduler_config.json")
+            with open(scheduler_config_path, 'r') as f:
+                scheduler_config = json.load(f)
+
+            scheduler = FlowMatchEulerDiscreteScheduler(
+                num_train_timesteps=scheduler_config.get("num_train_timesteps", 1000),
+                shift=scheduler_config.get("shift", 1.0),
+                use_dynamic_shifting=scheduler_config.get("use_dynamic_shifting", False),
+            )
+
+            print("[ModelLoader] Z-Image Comfy format loaded successfully")
+            print(f"  - Transformer: Loaded from {file_path}")
+            print(f"  - VAE, Text Encoder, Tokenizer, Scheduler: Loaded from {base_model_repo}")
+
+            return {
+                "transformer": transformer,
+                "vae": vae,
+                "text_encoder": text_encoder,
+                "tokenizer": tokenizer,
+                "scheduler": scheduler,
+            }
+
+        except Exception as e:
+            print(f"[ModelLoader] Error loading Z-Image Comfy format: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            # Remove Z-Image path from sys.path
+            if str(zimage_src_path) in sys.path:
+                sys.path.remove(str(zimage_src_path))
 
     @staticmethod
     def load_from_safetensors(
         file_path: str,
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.float16
-    ) -> StableDiffusionPipeline:
-        """Load model from .safetensors file"""
+    ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
+        """Load model from .safetensors file
+
+        Returns:
+            - StableDiffusionPipeline for SD1.5/SDXL
+            - Dict of components for Z-Image
+        """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file not found: {file_path}")
 
         model_type = ModelLoader.detect_model_type(file_path)
+
+        # Z-Image Comfy format
+        if model_type == "zimage":
+            return ModelLoader.load_zimage_from_comfy_safetensors(file_path, device, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Use single_file loading which is the standard way to load safetensors

@@ -312,9 +312,22 @@ class DiffusionPipelineManager:
         sys.path = [str(zimage_src_path)] + sys.path
 
         try:
-            # Import generate function directly from pipeline module (avoid __init__.py)
             import importlib.util
 
+            # CRITICAL: Load Z-Image's config module first and inject it into sys.modules
+            config_spec = importlib.util.spec_from_file_location(
+                "config",
+                zimage_src_path / "config" / "__init__.py"
+            )
+            config_module = importlib.util.module_from_spec(config_spec)
+
+            # Temporarily inject Z-Image config into sys.modules
+            import sys as _sys
+            original_config = _sys.modules.get('config')
+            _sys.modules['config'] = config_module
+            config_spec.loader.exec_module(config_module)
+
+            # Load pipeline module
             pipeline_spec = importlib.util.spec_from_file_location(
                 "zimage_pipeline",
                 zimage_src_path / "zimage" / "pipeline.py"
@@ -322,6 +335,12 @@ class DiffusionPipelineManager:
             pipeline_module = importlib.util.module_from_spec(pipeline_spec)
             pipeline_spec.loader.exec_module(pipeline_module)
             generate = pipeline_module.generate
+
+            # Restore original config module
+            if original_config is not None:
+                _sys.modules['config'] = original_config
+            else:
+                del _sys.modules['config']
 
             # Extract components
             transformer = self.zimage_components["transformer"]

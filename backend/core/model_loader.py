@@ -199,10 +199,23 @@ class ModelLoader:
         try:
             from transformers import AutoModel, AutoTokenizer
             from safetensors.torch import load_file
-
-            # Import Z-Image classes directly from module files (avoid __init__.py)
             import importlib.util
 
+            # CRITICAL: Load Z-Image's config module first and inject it into sys.modules
+            # This prevents transformer.py from importing SushiUI's config
+            config_spec = importlib.util.spec_from_file_location(
+                "config",
+                zimage_src_path / "config" / "__init__.py"
+            )
+            config_module = importlib.util.module_from_spec(config_spec)
+
+            # Temporarily inject Z-Image config into sys.modules
+            import sys as _sys
+            original_config = _sys.modules.get('config')
+            _sys.modules['config'] = config_module
+            config_spec.loader.exec_module(config_module)
+
+            # Now load Z-Image modules (they will import the correct config)
             # Load transformer module
             transformer_spec = importlib.util.spec_from_file_location(
                 "zimage_transformer",
@@ -229,6 +242,12 @@ class ModelLoader:
             scheduler_module = importlib.util.module_from_spec(scheduler_spec)
             scheduler_spec.loader.exec_module(scheduler_module)
             FlowMatchEulerDiscreteScheduler = scheduler_module.FlowMatchEulerDiscreteScheduler
+
+            # Restore original config module
+            if original_config is not None:
+                _sys.modules['config'] = original_config
+            else:
+                del _sys.modules['config']
 
             # Step 1: Download base components from HuggingFace
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")

@@ -192,10 +192,13 @@ class ModelLoader:
                 f"Please clone Z-Image repository to: {zimage_src_path.parent}"
             )
 
-        sys.path.insert(0, str(zimage_src_path))
+        # Temporarily replace sys.path to prioritize Z-Image modules
+        original_sys_path = sys.path.copy()
+        sys.path = [str(zimage_src_path)] + sys.path
 
         try:
             from transformers import AutoModel, AutoTokenizer
+            # Import Z-Image modules with priority path
             from zimage.transformer import ZImageTransformer2DModel
             from zimage.autoencoder import AutoencoderKL
             from zimage.scheduler import FlowMatchEulerDiscreteScheduler
@@ -331,9 +334,8 @@ class ModelLoader:
             traceback.print_exc()
             raise
         finally:
-            # Remove Z-Image path from sys.path
-            if str(zimage_src_path) in sys.path:
-                sys.path.remove(str(zimage_src_path))
+            # Restore original sys.path
+            sys.path = original_sys_path
 
     @staticmethod
     def load_from_safetensors(
@@ -421,7 +423,9 @@ class ModelLoader:
                 f"Please clone Z-Image repository to: {zimage_src_path.parent}"
             )
 
-        sys.path.insert(0, str(zimage_src_path))
+        # Temporarily replace sys.path to prioritize Z-Image modules
+        original_sys_path = sys.path.copy()
+        sys.path = [str(zimage_src_path)] + sys.path
 
         try:
             from utils.loader import load_from_local_dir
@@ -448,9 +452,8 @@ class ModelLoader:
             traceback.print_exc()
             raise
         finally:
-            # Remove Z-Image path from sys.path to avoid conflicts
-            if str(zimage_src_path) in sys.path:
-                sys.path.remove(str(zimage_src_path))
+            # Restore original sys.path
+            sys.path = original_sys_path
 
     @staticmethod
     def load_from_diffusers(

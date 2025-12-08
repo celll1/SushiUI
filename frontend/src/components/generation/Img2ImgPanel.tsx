@@ -1409,7 +1409,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
-        <ModelSelector />
+        <ModelSelector onModelLoad={async () => {
+          // Reload model info when model changes
+          const modelInfo = await getCurrentModel();
+          setCurrentModelInfo(modelInfo);
+          console.log("[Img2Img] Model changed, updated currentModelInfo:", modelInfo);
+        }} />
 
         <Card
           title="Input Image"
@@ -1985,50 +1990,26 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Select
-                label={currentModelInfo?.model_info?.type === "zimage" ? "Transformer Quantization (Z-Image)" : "U-Net Quantization"}
-                value={params.unet_quantization || "none"}
-                onChange={(e) => setParams({
-                  ...params,
-                  unet_quantization: e.target.value === "none" ? null : e.target.value
-                })}
-                options={
-                  currentModelInfo?.model_info?.type === "zimage"
-                    ? [
-                        { value: "none", label: "None" },
-                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                        { value: "fp8_e5m2", label: "FP8 E5M2" },
-                        { value: "uint8", label: "UINT8" },
-                        { value: "uint4", label: "UINT4" },
-                      ]
-                    : [
-                        { value: "none", label: "None" },
-                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                        { value: "fp8_e5m2", label: "FP8 E5M2" },
-                        { value: "uint8", label: "UINT8" },
-                        { value: "uint7", label: "UINT7" },
-                        { value: "uint6", label: "UINT6" },
-                        { value: "uint5", label: "UINT5" },
-                        { value: "uint4", label: "UINT4" },
-                        { value: "uint3", label: "UINT3" },
-                        { value: "uint2", label: "UINT2" },
-                      ]
-                }
-              />
-            </div>
-            {params.unet_quantization && params.unet_quantization !== "none" && (
-              <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                <p className="text-xs text-yellow-200">
-                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
-                </p>
-              </div>
-            )}
-
-            {/* Text Encoder Quantization (Z-Image only) */}
-            {currentModelInfo?.model_info?.type === "zimage" && (
+            {/* Quantization: Z-Image uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+            {currentModelInfo?.model_info?.type === "zimage" ? (
               <>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                {/* Z-Image: 2-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label="Transformer Quantization (Z-Image)"
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint4", label: "UINT4" },
+                    ]}
+                  />
                   <Select
                     label="Text Encoder Quantization (Z-Image)"
                     value={params.text_encoder_quantization || "none"}
@@ -2045,10 +2026,43 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     ]}
                   />
                 </div>
-                {params.text_encoder_quantization && params.text_encoder_quantization !== "none" && (
+                {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
                   <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
                     <p className="text-xs text-blue-200">
-                      💡 Z-Image text encoder (Qwen 3.4B) is large. Quantization can reduce VRAM significantly.
+                      💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {/* SD/SDXL: 1-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label="U-Net Quantization"
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint7", label: "UINT7" },
+                      { value: "uint6", label: "UINT6" },
+                      { value: "uint5", label: "UINT5" },
+                      { value: "uint4", label: "UINT4" },
+                      { value: "uint3", label: "UINT3" },
+                      { value: "uint2", label: "UINT2" },
+                    ]}
+                  />
+                </div>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                    <p className="text-xs text-yellow-200">
+                      ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
                     </p>
                   </div>
                 )}

@@ -57,6 +57,9 @@ const DEFAULT_PARAMS: GenerationParams = {
   text_encoder_quantization: null,
   use_torch_compile: false,
   use_tipo: false,
+  enable_block_swap: false,
+  blocks_to_swap: 20,
+  use_pinned_memory: false,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -1800,14 +1803,29 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     { value: "uint2", label: "UINT2" },
                   ]}
                 />
+                <Select
+                  label="Text Encoder Quantization (Z-Image)"
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint4", label: "UINT4" },
+                  ]}
+                />
               </div>
-              {params.unet_quantization && params.unet_quantization !== "none" && (
-                <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                  <p className="text-xs text-yellow-200">
-                    ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
                   </p>
                 </div>
-              )}
+              ) : null}
             </>
           )}
 
@@ -1831,6 +1849,52 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
                     Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
                   </p>
+                </div>
+              )}
+
+              {/* Block Swap (Z-Image only) */}
+              <div className="flex items-center gap-2 mt-4">
+                <input
+                  type="checkbox"
+                  id="enable_block_swap"
+                  checked={params.enable_block_swap || false}
+                  onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
+                  className="rounded"
+                />
+                <label htmlFor="enable_block_swap" className="text-sm text-gray-300">
+                  Block Swap (Z-Image Transformer offloading)
+                </label>
+              </div>
+              {params.enable_block_swap && (
+                <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
+                  <Slider
+                    label="Blocks to Swap"
+                    min={1}
+                    max={29}
+                    step={1}
+                    value={params.blocks_to_swap || 20}
+                    onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="use_pinned_memory"
+                      checked={params.use_pinned_memory || false}
+                      onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="use_pinned_memory" className="text-xs text-gray-300">
+                      Use Pinned Memory (faster transfer, more RAM)
+                    </label>
+                  </div>
+                  <div className="text-xs text-blue-200">
+                    <p>
+                      <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                    </p>
+                    <p className="mt-1">
+                      <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
+                    </p>
+                  </div>
                 </div>
               )}
             </>

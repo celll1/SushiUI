@@ -189,6 +189,10 @@ export interface GenerationParams {
   tipo_config?: any;  // TIPO configuration object
   // Z-Image specific
   max_sequence_length?: number;
+  // Block Swap (Z-Image Transformer offloading)
+  enable_block_swap?: boolean;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {

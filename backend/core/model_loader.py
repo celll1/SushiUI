@@ -309,14 +309,17 @@ class ModelLoader:
             config_spec.loader.exec_module(config_module)
 
             # Now load Z-Image modules (they will import the correct config)
-            # Load transformer module
+            # CRITICAL: Load SushiUI's custom transformer module (Block Swap integrated)
+            # This replaces the original Z-Image transformer.py with our modified version
+            sushiui_transformer_path = Path(__file__).parent / "models" / "zimage_transformer.py"
             transformer_spec = importlib.util.spec_from_file_location(
                 "zimage_transformer",
-                zimage_src_path / "zimage" / "transformer.py"
+                sushiui_transformer_path
             )
             transformer_module = importlib.util.module_from_spec(transformer_spec)
             transformer_spec.loader.exec_module(transformer_module)
             ZImageTransformer2DModel = transformer_module.ZImageTransformer2DModel
+            print(f"[ModelLoader] Loaded SushiUI Z-Image Transformer (Block Swap integrated) from: {sushiui_transformer_path}")
 
             # Load autoencoder module
             autoencoder_spec = importlib.util.spec_from_file_location(
@@ -577,6 +580,31 @@ class ModelLoader:
         sys.path = [str(zimage_src_path)] + sys.path
 
         try:
+            import importlib.util
+
+            # CRITICAL: Load Z-Image's config module and inject into sys.modules
+            config_spec = importlib.util.spec_from_file_location(
+                "config",
+                zimage_src_path / "config" / "__init__.py"
+            )
+            config_module = importlib.util.module_from_spec(config_spec)
+            original_config = sys.modules.get('config')
+            sys.modules['config'] = config_module
+            config_spec.loader.exec_module(config_module)
+
+            # CRITICAL: Load SushiUI's custom transformer module and inject as zimage.transformer
+            # This ensures load_from_local_dir() uses our Block Swap integrated version
+            sushiui_transformer_path = Path(__file__).parent / "models" / "zimage_transformer.py"
+            transformer_spec = importlib.util.spec_from_file_location(
+                "zimage.transformer",
+                sushiui_transformer_path
+            )
+            transformer_module = importlib.util.module_from_spec(transformer_spec)
+            sys.modules['zimage.transformer'] = transformer_module
+            transformer_spec.loader.exec_module(transformer_module)
+            print(f"[ModelLoader] Injected SushiUI Z-Image Transformer (Block Swap integrated) into sys.modules")
+
+            # Now load Z-Image components (will use our custom transformer)
             from utils.loader import load_from_local_dir
 
             components = load_from_local_dir(
@@ -586,6 +614,13 @@ class ModelLoader:
                 verbose=True,
                 compile=False  # Disable compile for now
             )
+
+            # Restore original config module
+            if original_config is not None:
+                sys.modules['config'] = original_config
+            else:
+                if 'config' in sys.modules:
+                    del sys.modules['config']
 
             print(f"[ModelLoader] Z-Image components loaded successfully")
             print(f"  - Transformer: {type(components['transformer']).__name__}")

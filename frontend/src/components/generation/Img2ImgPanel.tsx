@@ -19,7 +19,7 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -63,6 +63,8 @@ interface Img2ImgParams {
   nag_negative_prompt?: string;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // Text Encoder Quantization (Z-Image only)
+  text_encoder_quantization?: string | null;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -93,6 +95,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   dynamic_threshold_mimic_scale: 7.0,
   nag_enable: false,
   unet_quantization: null,
+  text_encoder_quantization: null,
   nag_scale: 5.0,
   nag_tau: 3.5,
   nag_alpha: 0.25,
@@ -130,6 +133,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -214,6 +218,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setIsMounted(true);
 
     const loadInitialData = async () => {
+      // Load current model info
+      try {
+        const modelInfo = await getCurrentModel();
+        setCurrentModelInfo(modelInfo);
+        console.log("[Img2Img] Current model info:", modelInfo);
+      } catch (error) {
+        console.error("Failed to load model info:", error);
+      }
+
       // Load params
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -1974,24 +1987,34 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
-                label="U-Net Quantization"
+                label={currentModelInfo?.type === "zimage" ? "Transformer Quantization (Z-Image)" : "U-Net Quantization"}
                 value={params.unet_quantization || "none"}
                 onChange={(e) => setParams({
                   ...params,
                   unet_quantization: e.target.value === "none" ? null : e.target.value
                 })}
-                options={[
-                  { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  { value: "uint8", label: "UINT8" },
-                  { value: "uint7", label: "UINT7" },
-                  { value: "uint6", label: "UINT6" },
-                  { value: "uint5", label: "UINT5" },
-                  { value: "uint4", label: "UINT4" },
-                  { value: "uint3", label: "UINT3" },
-                  { value: "uint2", label: "UINT2" },
-                ]}
+                options={
+                  currentModelInfo?.type === "zimage"
+                    ? [
+                        { value: "none", label: "None" },
+                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                        { value: "fp8_e5m2", label: "FP8 E5M2" },
+                        { value: "uint8", label: "UINT8" },
+                        { value: "uint4", label: "UINT4" },
+                      ]
+                    : [
+                        { value: "none", label: "None" },
+                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                        { value: "fp8_e5m2", label: "FP8 E5M2" },
+                        { value: "uint8", label: "UINT8" },
+                        { value: "uint7", label: "UINT7" },
+                        { value: "uint6", label: "UINT6" },
+                        { value: "uint5", label: "UINT5" },
+                        { value: "uint4", label: "UINT4" },
+                        { value: "uint3", label: "UINT3" },
+                        { value: "uint2", label: "UINT2" },
+                      ]
+                }
               />
             </div>
             {params.unet_quantization && params.unet_quantization !== "none" && (
@@ -2000,6 +2023,36 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
                 </p>
               </div>
+            )}
+
+            {/* Text Encoder Quantization (Z-Image only) */}
+            {currentModelInfo?.type === "zimage" && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                  <Select
+                    label="Text Encoder Quantization (Z-Image)"
+                    value={params.text_encoder_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint4", label: "UINT4" },
+                    ]}
+                  />
+                </div>
+                {params.text_encoder_quantization && params.text_encoder_quantization !== "none" && (
+                  <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                    <p className="text-xs text-blue-200">
+                      💡 Z-Image text encoder (Qwen 3.4B) is large. Quantization can reduce VRAM significantly.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
             {developerMode && (

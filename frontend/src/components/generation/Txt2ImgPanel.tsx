@@ -1729,24 +1729,34 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Select
-              label="U-Net Quantization"
+              label={currentModelInfo?.type === "zimage" ? "Transformer Quantization (Z-Image)" : "U-Net Quantization"}
               value={params.unet_quantization || "none"}
               onChange={(e) => setParams({
                 ...params,
                 unet_quantization: e.target.value === "none" ? null : e.target.value
               })}
-              options={[
-                { value: "none", label: "None" },
-                { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                { value: "fp8_e5m2", label: "FP8 E5M2" },
-                { value: "uint8", label: "UINT8" },
-                { value: "uint7", label: "UINT7" },
-                { value: "uint6", label: "UINT6" },
-                { value: "uint5", label: "UINT5" },
-                { value: "uint4", label: "UINT4" },
-                { value: "uint3", label: "UINT3" },
-                { value: "uint2", label: "UINT2" },
-              ]}
+              options={
+                currentModelInfo?.type === "zimage"
+                  ? [
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint4", label: "UINT4" },
+                    ]
+                  : [
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint7", label: "UINT7" },
+                      { value: "uint6", label: "UINT6" },
+                      { value: "uint5", label: "UINT5" },
+                      { value: "uint4", label: "UINT4" },
+                      { value: "uint3", label: "UINT3" },
+                      { value: "uint2", label: "UINT2" },
+                    ]
+              }
             />
           </div>
           {params.unet_quantization && params.unet_quantization !== "none" && (

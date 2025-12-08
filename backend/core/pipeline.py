@@ -466,7 +466,7 @@ class DiffusionPipelineManager:
                 block_offloader = create_block_offloader_for_model(
                     transformer=transformer,
                     blocks_to_swap=blocks_to_swap,
-                    device=self.device,
+                    device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
                     use_pinned_memory=use_pinned_memory
                 )

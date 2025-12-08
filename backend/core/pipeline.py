@@ -704,17 +704,20 @@ class DiffusionPipelineManager:
             print(f"[Z-Image] Transformer not quantized (BF16 inference)")
 
         # Denoising loop with progress callback
+        actual_step = 0  # Track actual executed steps (excluding skipped last step)
         for i, t in enumerate(timesteps):
             # Skip last step if t=0 (flow matching termination)
             if t == 0 and i == len(timesteps) - 1:
-                print(f"[Z-Image] Step {i+1}/{num_inference_steps} | t={t.item():.2f} | Skipping last step (flow matching termination)")
+                print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")
                 continue
 
-            # Call progress callbacks
+            actual_step += 1
+
+            # Call progress callbacks with actual step count
             if progress_callback:
-                progress_callback(i + 1, num_inference_steps, latents)
+                progress_callback(actual_step, num_inference_steps, latents)
             if step_callback:
-                step_callback(i + 1, num_inference_steps)
+                step_callback(actual_step, num_inference_steps)
 
             # Normalize timestep to [0, 1]
             timestep = t.expand(latents.shape[0])
@@ -790,8 +793,8 @@ class DiffusionPipelineManager:
             noise_pred = -noise_pred.squeeze(2)
             latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
-            if i % 5 == 0 or i == num_inference_steps - 1:
-                print(f"[Z-Image] Step {i+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
+            if actual_step % 5 == 1 or actual_step == num_inference_steps:
+                print(f"[Z-Image] Step {actual_step}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
 
         print(f"[Z-Image] Denoising loop complete")
 

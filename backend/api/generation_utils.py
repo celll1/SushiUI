@@ -71,6 +71,7 @@ def create_progress_callback_factory(
     taesd_manager,
     websocket_manager,
     is_sdxl: bool,
+    is_zimage: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None
 ) -> Callable:
@@ -83,6 +84,7 @@ def create_progress_callback_factory(
         taesd_manager: TAESD preview生成マネージャー
         websocket_manager: WebSocketマネージャー
         is_sdxl: SDXLモデルかどうか
+        is_zimage: Z-Imageモデルかどうか
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
 
@@ -102,7 +104,7 @@ def create_progress_callback_factory(
 
         if step % 5 == 0 or step == total_steps - 1:
             try:
-                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
+                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage)
                 if preview_pil:
                     buffered = BytesIO()
                     preview_pil.save(buffered, format="JPEG", quality=85)

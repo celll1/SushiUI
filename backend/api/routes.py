@@ -327,15 +327,18 @@ async def generate_txt2img(
         params["controlnet_images"] = processed_controlnet_images
         params["controlnets"] = controlnet_configs
 
-        # Detect if SDXL
+        # Detect model type
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl
+            is_sdxl,
+            is_zimage
         )
 
         # Create step callback for LoRA step range if needed

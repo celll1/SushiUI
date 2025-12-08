@@ -689,7 +689,7 @@ class DiffusionPipelineManager:
         scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
         timesteps = scheduler.timesteps
 
-        print(f"[Z-Image] Denoising loop: {num_inference_steps} steps, shift={mu:.3f}")
+        print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(timesteps)} timesteps generated, shift={mu:.3f}")
 
         # Detect FP8 quantization (check once before loop)
         has_fp8_weights = False
@@ -713,11 +713,11 @@ class DiffusionPipelineManager:
 
             actual_step += 1
 
-            # Call progress callbacks with actual step count
+            # Call progress callbacks (pass 0-indexed step for consistency with SD/SDXL)
             if progress_callback:
-                progress_callback(actual_step, num_inference_steps, latents)
+                progress_callback(actual_step - 1, num_inference_steps, latents)
             if step_callback:
-                step_callback(actual_step, num_inference_steps)
+                step_callback(actual_step - 1, num_inference_steps)
 
             # Normalize timestep to [0, 1]
             timestep = t.expand(latents.shape[0])

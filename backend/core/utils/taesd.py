@@ -74,8 +74,15 @@ class TAESDManager:
 
             # Decode latent
             with torch.no_grad():
-                # Move latent to correct device
-                latent = latent.to(self.device)
+                # Move latent to correct device and dtype
+                # TAEF1 uses BF16, TAESD/TAESD-XL use FP16 or FP32
+                if is_zimage:
+                    # TAEF1 expects BF16
+                    latent = latent.to(device=self.device, dtype=torch.bfloat16)
+                else:
+                    # TAESD/TAESD-XL expect FP16 on GPU, FP32 on CPU
+                    target_dtype = torch.float16 if self.device == "cuda" else torch.float32
+                    latent = latent.to(device=self.device, dtype=target_dtype)
 
                 # TAESD expects latents to be scaled
                 if is_zimage:

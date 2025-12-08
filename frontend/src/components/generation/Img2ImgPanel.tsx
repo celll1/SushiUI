@@ -1987,14 +1987,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
-                label={currentModelInfo?.type === "zimage" ? "Transformer Quantization (Z-Image)" : "U-Net Quantization"}
+                label={currentModelInfo?.model_info?.type === "zimage" ? "Transformer Quantization (Z-Image)" : "U-Net Quantization"}
                 value={params.unet_quantization || "none"}
                 onChange={(e) => setParams({
                   ...params,
                   unet_quantization: e.target.value === "none" ? null : e.target.value
                 })}
                 options={
-                  currentModelInfo?.type === "zimage"
+                  currentModelInfo?.model_info?.type === "zimage"
                     ? [
                         { value: "none", label: "None" },
                         { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
@@ -2026,7 +2026,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             )}
 
             {/* Text Encoder Quantization (Z-Image only) */}
-            {currentModelInfo?.type === "zimage" && (
+            {currentModelInfo?.model_info?.type === "zimage" && (
               <>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
                   <Select

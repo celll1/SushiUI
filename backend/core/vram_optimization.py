@@ -609,6 +609,7 @@ def move_zimage_text_encoder_to_cpu(text_encoder):
     print("[VRAM] Moving Z-Image Text Encoder to CPU to free VRAM...")
     if text_encoder is not None:
         text_encoder.to('cpu', non_blocking=False)
+        torch.cuda.empty_cache()
 
 
 def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = None):

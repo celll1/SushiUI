@@ -923,6 +923,59 @@ class LoRATrainer:
 
                 return text_embeddings
 
+    def encode_prompt_zimage(
+        self,
+        prompt: str,
+        max_sequence_length: int = 512
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode prompt using Qwen3 text encoder with chat template (Z-Image).
+
+        Args:
+            prompt: Text prompt
+            max_sequence_length: Maximum sequence length (default: 512)
+
+        Returns:
+            Tuple of (prompt_embeds, attention_mask)
+            - prompt_embeds: [valid_seq_len, 2560] (variable length)
+            - attention_mask: [max_sequence_length] (bool)
+        """
+        # Format with Qwen chat template
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,  # Qwen-specific feature
+        )
+
+        # Tokenize
+        text_inputs = self.tokenizer(
+            formatted_prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        input_ids = text_inputs.input_ids.to(self.device)
+        attention_mask = text_inputs.attention_mask.to(self.device).bool()
+
+        # Encode with penultimate layer (similar to SDXL text_encoder_2)
+        # Text Encoder is ALWAYS frozen for Z-Image, so always use no_grad
+        with torch.no_grad():
+            encoder_output = self.text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            prompt_embeds = encoder_output.hidden_states[-2]  # [1, seq_len, 2560]
+
+        # Extract valid embeddings (masked by attention_mask)
+        valid_embeds = prompt_embeds[0][attention_mask[0]]  # [valid_seq_len, 2560]
+
+        return valid_embeds, attention_mask[0]
+
     def encode_image(
         self,
         image: Image.Image,
@@ -2190,6 +2243,74 @@ class LoRATrainer:
                 torch.cuda.empty_cache()
                 if self.debug_vram:
                     print_vram_usage("After moving VAE to CPU")
+
+        # Z-Image: Caption pre-encoding (MANDATORY since Text Encoder is frozen)
+        if self.is_zimage:
+            print(f"[LoRATrainer] Z-Image detected: Pre-encoding captions...")
+
+            # Collect unique captions from all datasets
+            unique_captions = set()
+            for batch in batches:
+                for item in batch:
+                    caption = item.get("caption", "")
+                    if caption:
+                        unique_captions.add(caption)
+
+            print(f"[LoRATrainer] Found {len(unique_captions)} unique caption(s)")
+
+            # Pre-encode all captions
+            caption_cache = {}  # Map: caption_text -> {"embeddings": Tensor, "mask": Tensor}
+
+            import sys
+            caption_pbar = tqdm(
+                total=len(unique_captions),
+                desc="[CaptionCache] Encoding captions",
+                unit="caption",
+                ncols=100,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                file=sys.stdout,
+                dynamic_ncols=False,
+                mininterval=0.1
+            )
+            sys.stdout.flush()
+
+            for caption in unique_captions:
+                try:
+                    embeds, mask = self.encode_prompt_zimage(caption)
+                    # Store on CPU to save VRAM
+                    caption_cache[caption] = {
+                        "embeddings": embeds.cpu(),
+                        "mask": mask.cpu(),
+                    }
+                except Exception as e:
+                    caption_pbar.write(f"[CaptionCache] ERROR: Failed to encode caption '{caption[:50]}...': {e}")
+                    # Store empty embeddings as fallback
+                    caption_cache[caption] = {
+                        "embeddings": torch.zeros((1, 2560), dtype=self.weight_dtype),
+                        "mask": torch.zeros(512, dtype=torch.bool),
+                    }
+
+                caption_pbar.update(1)
+                sys.stdout.flush()
+
+            caption_pbar.close()
+            sys.stdout.flush()
+            print(f"[CaptionCache] Caption encoding complete: {len(caption_cache)} caption(s)")
+
+            # Attach cached embeddings to dataset items
+            for batch in batches:
+                for item in batch:
+                    caption = item.get("caption", "")
+                    if caption and caption in caption_cache:
+                        item["cached_caption_embeds"] = caption_cache[caption]["embeddings"]
+                        item["cached_caption_mask"] = caption_cache[caption]["mask"]
+
+            # Move Text Encoder to CPU to free VRAM (it's frozen, won't be used during training)
+            print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
+            self.text_encoder.to('cpu')
+            torch.cuda.empty_cache()
+            if self.debug_vram:
+                print_vram_usage("After moving Text Encoder to CPU")
 
         if self.optimizer is None:
             self.setup_optimizer(total_steps=total_steps)

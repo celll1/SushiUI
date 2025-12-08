@@ -443,12 +443,45 @@ class DiffusionPipelineManager:
             # ============================================================
             # Stage 2: Denoising Loop
             # ============================================================
-            transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
-            log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": transformer,
-                "vae": vae
-            })
+            # Block Swap parameters
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 20)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+
+            if not enable_block_swap:
+                # Normal mode: move entire Transformer to GPU
+                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+            else:
+                # Block Swap mode: keep Transformer on CPU for Block Swap initialization
+                print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
+
+                # Create block offloader
+                from core.memory_management import create_block_offloader_for_model
+
+                block_offloader = create_block_offloader_for_model(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=self.device,
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory
+                )
+
+                # Attach block offloader to transformer
+                transformer._block_offloader = block_offloader
+
+                # Prepare block devices (this moves blocks to GPU/CPU according to strategy)
+                block_offloader.prepare_block_devices_before_forward()
+
+                log_device_status("Ready for Z-Image denoising loop (Block Swap enabled)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
 
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,

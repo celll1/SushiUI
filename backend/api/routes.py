@@ -181,6 +181,9 @@ async def generate_txt2img(
     use_torch_compile: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(20),
+    use_pinned_memory: bool = Form(False),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -285,6 +288,9 @@ async def generate_txt2img(
             "unet_quantization": unet_quantization,
             "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
 
         # Log params without large base64 data
@@ -575,6 +581,9 @@ async def generate_img2img(
             "unet_quantization": unet_quantization,
             "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
@@ -866,6 +875,9 @@ async def generate_inpaint(
             "unet_quantization": unet_quantization,
             "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 

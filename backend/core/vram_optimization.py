@@ -768,7 +768,7 @@ def _quantize_transformer(transformer, quantization: str):
 def _quantize_text_encoder(text_encoder, quantization: str):
     """Create a quantized copy of Z-Image text encoder
 
-    This uses the same quantization logic as U-Net/Transformer quantization.
+    Uses same weight-only FP8/UINT quantization as Transformer.
     Z-Image text encoder (Qwen 3.4B) is large, so quantization can significantly reduce VRAM.
 
     Args:
@@ -780,6 +780,58 @@ def _quantize_text_encoder(text_encoder, quantization: str):
     """
     print(f"[Quantization] Applying {quantization} to Z-Image Text Encoder (Qwen)...")
 
-    # Reuse U-Net quantization logic
-    # Text encoder has similar Linear/Attention layers
-    return _quantize_unet(text_encoder, quantization)
+    # FP8 quantization: weight-only conversion (same as Transformer)
+    if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
+        # Determine FP8 dtype
+        if quantization == 'fp8_e4m3fn':
+            fp8_dtype = torch.float8_e4m3fn
+            dtype_name = "FP8 E4M3FN"
+        else:
+            fp8_dtype = torch.float8_e5m2
+            dtype_name = "FP8 E5M2"
+
+        print(f"[Quantization] Applying {dtype_name} quantization (weight-only)...")
+
+        # Check PyTorch version
+        if not hasattr(torch, 'float8_e4m3fn'):
+            print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
+            print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(text_encoder)
+
+        try:
+            # Clone the model
+            quantized_text_encoder = copy.deepcopy(text_encoder)
+
+            # Convert only Linear layer weights to FP8 (leave buffers/embeddings in BF16)
+            converted_count = 0
+            for name, module in quantized_text_encoder.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Convert weight parameter only
+                    if hasattr(module, 'weight') and module.weight is not None:
+                        module.weight.data = module.weight.data.to(fp8_dtype)
+                        converted_count += 1
+                    # Keep bias in original dtype (if exists)
+
+            print(f"[Quantization] Successfully converted {converted_count} Linear layers to {dtype_name}")
+            print(f"[Quantization] Embeddings and buffers kept in BF16")
+            print(f"[Quantization] Note: Compute will use mixed precision automatically (autocast)")
+
+            return quantized_text_encoder
+
+        except Exception as e:
+            print(f"[Quantization] ERROR during {dtype_name} conversion: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(text_encoder)
+
+    # UINT quantization
+    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
+        # Reuse U-Net quantization logic for UINT
+        return _quantize_unet(text_encoder, quantization)
+
+    # Unknown quantization type
+    print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Falling back to non-quantized text encoder")
+    return copy.deepcopy(text_encoder)

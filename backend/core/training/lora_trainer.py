@@ -341,176 +341,254 @@ class LoRATrainer:
         print(f"[LoRATrainer] Tensorboard logs: {tensorboard_dir}")
         print(f"[LoRATrainer] Loading model from {model_path}")
 
-        # Detect if model is safetensors file or diffusers directory
-        is_safetensors = model_path.endswith('.safetensors')
+        # Detect model type (SD1.5, SDXL, Z-Image)
+        from core.model_loader import ModelLoader
+        model_type = ModelLoader.detect_model_type(model_path)
+        self.is_zimage = (model_type == "zimage")
+        self.is_sdxl = False  # Will be set later for SD/SDXL
 
-        if is_safetensors:
-            print(f"[LoRATrainer] Loading from safetensors file")
-            # Load pipeline from single safetensors file, then extract components
-            # Try SDXL first, fall back to SD1.5
-            try:
-                print(f"[LoRATrainer] Trying SDXL pipeline...")
-                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
-                    model_path,
-                    torch_dtype=self.dtype,
-                    use_safetensors=True,
-                )
-                is_sdxl_model = True
-            except Exception as e:
-                print(f"[LoRATrainer] Not SDXL, trying SD1.5 pipeline...")
-                temp_pipeline = StableDiffusionPipeline.from_single_file(
-                    model_path,
-                    torch_dtype=self.dtype,
-                    use_safetensors=True,
-                )
-                is_sdxl_model = False
+        # Z-Image model loading
+        if self.is_zimage:
+            print(f"[LoRATrainer] Detected Z-Image model")
+            print(f"[LoRATrainer] Loading Z-Image components from {model_path}")
 
-            # Extract components from pipeline
-            self.vae = temp_pipeline.vae
-            self.text_encoder = temp_pipeline.text_encoder
-            self.tokenizer = temp_pipeline.tokenizer
-            self.unet = temp_pipeline.unet
-
-            # IMPORTANT: Always use DDPMScheduler for training (not the inference scheduler from model)
-            # The model may contain EulerDiscreteScheduler or other inference schedulers,
-            # but training requires DDPMScheduler with specific settings (sd-scripts approach)
-            self.noise_scheduler = DDPMScheduler(
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                num_train_timesteps=1000,
-                clip_sample=False,
-                prediction_type="epsilon"
+            # Load Z-Image components using ModelLoader
+            components = ModelLoader.load_zimage_from_diffusers(
+                model_path=model_path,
+                device="cpu",  # Load on CPU first, move to GPU later
+                torch_dtype=self.weight_dtype
             )
 
-            # SDXL-specific components
-            if is_sdxl_model:
-                self.text_encoder_2 = temp_pipeline.text_encoder_2
-                self.tokenizer_2 = temp_pipeline.tokenizer_2
-            else:
-                self.text_encoder_2 = None
-                self.tokenizer_2 = None
+            self.transformer = components["transformer"]
+            self.vae = components["vae"]
+            self.text_encoder = components["text_encoder"]
+            self.tokenizer = components["tokenizer"]
+            self.scheduler = components["scheduler"]
 
-            # Clean up pipeline reference (we only need components)
-            del temp_pipeline
+            # Z-Image specific: no text_encoder_2, no unet
+            self.text_encoder_2 = None
+            self.tokenizer_2 = None
+            self.unet = None
+            self.noise_scheduler = self.scheduler  # Alias for compatibility
 
-            # Convert VAE to vae_dtype (SDXL VAE works fine with fp16)
+            # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
-        else:
-            print(f"[LoRATrainer] Loading from diffusers directory")
-            # Load model components from diffusers directory (SushiUI style)
-            self.vae = AutoencoderKL.from_pretrained(
-                model_path,
-                subfolder="vae",
-                torch_dtype=self.vae_dtype  # Use vae_dtype for VAE (SDXL VAE works with fp16)
-            )
 
-            self.text_encoder = CLIPTextModel.from_pretrained(
-                model_path,
-                subfolder="text_encoder",
-                torch_dtype=self.dtype
-            )
+            print(f"[LoRATrainer] Z-Image model loaded successfully")
+            print(f"[LoRATrainer] Scheduler type: {self.scheduler.__class__.__name__}")
+            print(f"[LoRATrainer] VAE latent channels: {self.vae.config.latent_channels}")
 
-            self.tokenizer = CLIPTokenizer.from_pretrained(
-                model_path,
-                subfolder="tokenizer"
-            )
+        # SD/SDXL model loading (existing logic)
+        elif not self.is_zimage:
+            # Detect if model is safetensors file or diffusers directory
+            is_safetensors = model_path.endswith('.safetensors')
 
-            self.unet = UNet2DConditionModel.from_pretrained(
-                model_path,
-                subfolder="unet",
-                torch_dtype=self.dtype
-            )
+            if is_safetensors:
+                print(f"[LoRATrainer] Loading from safetensors file")
+                # Load pipeline from single safetensors file, then extract components
+                # Try SDXL first, fall back to SD1.5
+                try:
+                    print(f"[LoRATrainer] Trying SDXL pipeline...")
+                    temp_pipeline = StableDiffusionXLPipeline.from_single_file(
+                        model_path,
+                        torch_dtype=self.dtype,
+                        use_safetensors=True,
+                    )
+                    is_sdxl_model = True
+                except Exception as e:
+                    print(f"[LoRATrainer] Not SDXL, trying SD1.5 pipeline...")
+                    temp_pipeline = StableDiffusionPipeline.from_single_file(
+                        model_path,
+                        torch_dtype=self.dtype,
+                        use_safetensors=True,
+                    )
+                    is_sdxl_model = False
 
-            # Load noise scheduler
-            self.noise_scheduler = DDPMScheduler.from_pretrained(
-                model_path,
-                subfolder="scheduler"
-            )
+                # Extract components from pipeline
+                self.vae = temp_pipeline.vae
+                self.text_encoder = temp_pipeline.text_encoder
+                self.tokenizer = temp_pipeline.tokenizer
+                self.unet = temp_pipeline.unet
 
-            # Try to load SDXL-specific components (text_encoder_2, tokenizer_2)
-            try:
-                self.text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                # IMPORTANT: Always use DDPMScheduler for training (not the inference scheduler from model)
+                # The model may contain EulerDiscreteScheduler or other inference schedulers,
+                # but training requires DDPMScheduler with specific settings (sd-scripts approach)
+                self.noise_scheduler = DDPMScheduler(
+                    beta_start=0.00085,
+                    beta_end=0.012,
+                    beta_schedule="scaled_linear",
+                    num_train_timesteps=1000,
+                    clip_sample=False,
+                    prediction_type="epsilon"
+                )
+
+                # SDXL-specific components
+                if is_sdxl_model:
+                    self.text_encoder_2 = temp_pipeline.text_encoder_2
+                    self.tokenizer_2 = temp_pipeline.tokenizer_2
+                else:
+                    self.text_encoder_2 = None
+                    self.tokenizer_2 = None
+
+                # Clean up pipeline reference (we only need components)
+                del temp_pipeline
+
+                # Convert VAE to vae_dtype (SDXL VAE works fine with fp16)
+                self.vae = self.vae.to(dtype=self.vae_dtype)
+            else:
+                print(f"[LoRATrainer] Loading from diffusers directory")
+                # Load model components from diffusers directory (SushiUI style)
+                self.vae = AutoencoderKL.from_pretrained(
                     model_path,
-                    subfolder="text_encoder_2",
+                    subfolder="vae",
+                    torch_dtype=self.vae_dtype  # Use vae_dtype for VAE (SDXL VAE works with fp16)
+                )
+
+                self.text_encoder = CLIPTextModel.from_pretrained(
+                    model_path,
+                    subfolder="text_encoder",
                     torch_dtype=self.dtype
                 )
-                self.tokenizer_2 = CLIPTokenizer.from_pretrained(
+
+                self.tokenizer = CLIPTokenizer.from_pretrained(
                     model_path,
-                    subfolder="tokenizer_2"
+                    subfolder="tokenizer"
                 )
-                print(f"[LoRATrainer] Loaded SDXL text_encoder_2 and tokenizer_2")
-            except Exception:
-                # SD1.5 models don't have these
-                self.text_encoder_2 = None
-                self.tokenizer_2 = None
 
-        # Detect model type (SD1.5 vs SDXL)
-        self.is_sdxl = hasattr(self.unet.config, "addition_embed_type")
-        print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
-        print(f"[LoRATrainer] Prediction type: {self.noise_scheduler.config.prediction_type}")
-        print(f"[LoRATrainer] VAE scaling factor: {self.vae.config.scaling_factor}")
+                self.unet = UNet2DConditionModel.from_pretrained(
+                    model_path,
+                    subfolder="unet",
+                    torch_dtype=self.dtype
+                )
 
-        # Enable Flash Attention BEFORE gradient checkpointing
-        # Gradient checkpointing must be enabled after setting attention processors
-        if self.use_flash_attention:
-            try:
-                from core.inference.attention_processors import FlashAttnProcessor
-                print(f"[LoRATrainer] Setting Flash Attention processors...")
-                processor = FlashAttnProcessor()
-                new_processors = {name: processor for name in self.unet.attn_processors.keys()}
-                self.unet.set_attn_processor(new_processors)
-                num_processors = len(new_processors)
-                print(f"[LoRATrainer] [OK] Flash Attention enabled for {num_processors} attention layers")
-            except ImportError:
-                print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
-            except Exception as e:
-                print(f"[LoRATrainer] WARNING: Failed to enable Flash Attention: {e}")
+                # Load noise scheduler
+                self.noise_scheduler = DDPMScheduler.from_pretrained(
+                    model_path,
+                    subfolder="scheduler"
+                )
 
-        # Enable gradient checkpointing AFTER Flash Attention setup
-        # This must be done before LoRA application to avoid breaking gradients
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+                # Try to load SDXL-specific components (text_encoder_2, tokenizer_2)
+                try:
+                    self.text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                        model_path,
+                        subfolder="text_encoder_2",
+                        torch_dtype=self.dtype
+                    )
+                    self.tokenizer_2 = CLIPTokenizer.from_pretrained(
+                        model_path,
+                        subfolder="tokenizer_2"
+                    )
+                    print(f"[LoRATrainer] Loaded SDXL text_encoder_2 and tokenizer_2")
+                except Exception:
+                    # SD1.5 models don't have these
+                    self.text_encoder_2 = None
+                    self.tokenizer_2 = None
+
+            # Detect model type (SD1.5 vs SDXL) - only for SD/SDXL
+            self.is_sdxl = hasattr(self.unet.config, "addition_embed_type") if hasattr(self, 'unet') and self.unet is not None else False
+            print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
+            print(f"[LoRATrainer] Prediction type: {self.noise_scheduler.config.prediction_type}")
+            print(f"[LoRATrainer] VAE scaling factor: {self.vae.config.scaling_factor}")
+
+        # Z-Image: Different setup from SD/SDXL
+        if self.is_zimage:
+            # Enable gradient checkpointing for Transformer (Z-Image)
+            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+                self.transformer.enable_gradient_checkpointing()
+                print(f"[LoRATrainer] Gradient checkpointing enabled for Z-Image Transformer")
+            else:
+                print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for Z-Image Transformer")
+
+            # Text Encoder (Qwen3) gradient checkpointing
+            # NOTE: Text Encoder is frozen, but gradient checkpointing is enabled for potential future use
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder (Qwen3)")
+
+            # Freeze all base weights
+            self.vae.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)  # Text Encoder is ALWAYS frozen for Z-Image
+            self.transformer.requires_grad_(False)
+
+            # Move to device
+            self.vae.to(self.device)
+            self.text_encoder.to(self.device)
+            self.transformer.to(self.device)
+
+            if self.debug_vram:
+                print_vram_usage("After loading Z-Image models to GPU")
+
+            # Set VAE to eval mode (never trained)
+            self.vae.eval()
+
+            # Transformer must be in train mode for gradient checkpointing to work
+            # Text Encoder remains in eval mode (frozen)
+            self.transformer.train()
+            self.text_encoder.eval()
+            print(f"[LoRATrainer] Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
+
+        # SD/SDXL: Existing setup
         else:
-            print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
+            # Enable Flash Attention BEFORE gradient checkpointing
+            # Gradient checkpointing must be enabled after setting attention processors
+            if self.use_flash_attention:
+                try:
+                    from core.inference.attention_processors import FlashAttnProcessor
+                    print(f"[LoRATrainer] Setting Flash Attention processors...")
+                    processor = FlashAttnProcessor()
+                    new_processors = {name: processor for name in self.unet.attn_processors.keys()}
+                    self.unet.set_attn_processor(new_processors)
+                    num_processors = len(new_processors)
+                    print(f"[LoRATrainer] [OK] Flash Attention enabled for {num_processors} attention layers")
+                except ImportError:
+                    print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
+                except Exception as e:
+                    print(f"[LoRATrainer] WARNING: Failed to enable Flash Attention: {e}")
 
-        # Enable gradient checkpointing for Text Encoders (sd-scripts/ai-toolkit approach)
-        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 1")
+            # Enable gradient checkpointing AFTER Flash Attention setup
+            # This must be done before LoRA application to avoid breaking gradients
+            if hasattr(self.unet, 'enable_gradient_checkpointing'):
+                self.unet.enable_gradient_checkpointing()
+                print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+            else:
+                print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
 
-        if self.text_encoder_2 is not None and hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
-            self.text_encoder_2.gradient_checkpointing_enable()
-            print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 2")
+            # Enable gradient checkpointing for Text Encoders (sd-scripts/ai-toolkit approach)
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 1")
 
-        # Freeze all base weights
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.unet.requires_grad_(False)
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.requires_grad_(False)
+            if self.text_encoder_2 is not None and hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+                self.text_encoder_2.gradient_checkpointing_enable()
+                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 2")
 
-        # Move to device
-        self.vae.to(self.device)
-        self.text_encoder.to(self.device)
-        self.unet.to(self.device)
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.to(self.device)
+            # Freeze all base weights
+            self.vae.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)
+            self.unet.requires_grad_(False)
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.requires_grad_(False)
 
-        if self.debug_vram:
-            print_vram_usage("After loading models to GPU")
+            # Move to device
+            self.vae.to(self.device)
+            self.text_encoder.to(self.device)
+            self.unet.to(self.device)
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.to(self.device)
 
-        # Set VAE to eval mode (never trained)
-        self.vae.eval()
+            if self.debug_vram:
+                print_vram_usage("After loading models to GPU")
 
-        # U-Net and Text Encoders must be in train mode for gradient checkpointing to work (sd-scripts approach)
-        # This is required according to Diffusers TI example
-        self.unet.train()
-        self.text_encoder.train()
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.train()
-        print(f"[LoRATrainer] U-Net and Text Encoders set to train mode for gradient checkpointing")
+            # Set VAE to eval mode (never trained)
+            self.vae.eval()
+
+            # U-Net and Text Encoders must be in train mode for gradient checkpointing to work (sd-scripts approach)
+            # This is required according to Diffusers TI example
+            self.unet.train()
+            self.text_encoder.train()
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.train()
+            print(f"[LoRATrainer] U-Net and Text Encoders set to train mode for gradient checkpointing")
 
         # LoRA layers storage
         self.lora_layers = {}

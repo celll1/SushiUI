@@ -301,13 +301,12 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
 
-  // Debug log for quantization
-  console.log('[API] txt2img unet_quantization:', paramsWithImages.unet_quantization);
+  // Quantization
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
-    console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
-  } else {
-    console.log('[API] No quantization or "none" selected');
+  }
+  if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
+    formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
   }
 
   // torch.compile optimization
@@ -316,6 +315,11 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // Block Swap (Z-Image Transformer offloading)
+  formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
+  formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
+  formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
 
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },

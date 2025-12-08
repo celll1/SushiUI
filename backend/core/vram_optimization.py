@@ -692,20 +692,36 @@ def move_zimage_vae_to_cpu(vae):
 def _quantize_transformer(transformer, quantization: str):
     """Create a quantized copy of Z-Image transformer
 
-    This uses the same quantization logic as U-Net quantization.
+    Z-Image transformer has special requirements:
+    - FP8 quantization is NOT supported (conflicts with internal buffers like x_pad_token)
+    - Only UINT quantization (uint2-uint8) is supported via torchao
 
     Args:
         transformer: Original Z-Image transformer model
-        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+        quantization: Quantization type - 'uint2'-'uint8' only
 
     Returns:
         Quantized transformer model
     """
     print(f"[Quantization] Applying {quantization} to Z-Image Transformer...")
 
-    # Reuse U-Net quantization logic
-    # Z-Image transformer has similar Linear layers as U-Net
-    return _quantize_unet(transformer, quantization)
+    # FP8 quantization is not compatible with Z-Image transformer
+    if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
+        print(f"[Quantization] ERROR: FP8 quantization is not supported for Z-Image Transformer")
+        print(f"[Quantization] Reason: FP8 .to() converts internal buffers (x_pad_token), causing dtype mismatch")
+        print(f"[Quantization] Recommendation: Use UINT quantization (uint4, uint8) instead")
+        print(f"[Quantization] Falling back to non-quantized transformer")
+        return copy.deepcopy(transformer)
+
+    # UINT quantization is supported (weight-only, doesn't affect buffers)
+    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
+        # Reuse U-Net quantization logic for UINT
+        return _quantize_unet(transformer, quantization)
+
+    # Unknown quantization type
+    print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Falling back to non-quantized transformer")
+    return copy.deepcopy(transformer)
 
 
 def _quantize_text_encoder(text_encoder, quantization: str):

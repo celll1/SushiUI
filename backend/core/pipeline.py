@@ -719,15 +719,21 @@ class DiffusionPipelineManager:
             apply_cfg = do_classifier_free_guidance and current_guidance_scale > 0
 
             # Prepare model input (concat positive + negative if CFG)
+            # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
+            transformer_dtype = next(transformer.parameters()).dtype
+            if transformer_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                # FP8 quantized: use BF16 input (autocast will handle conversion)
+                input_dtype = torch.bfloat16
+            else:
+                # Normal case: use transformer's dtype
+                input_dtype = transformer_dtype
+
             if apply_cfg:
-                latents_typed = latents.to(
-                    transformer.dtype if hasattr(transformer, "dtype") else next(transformer.parameters()).dtype
-                )
-                latent_model_input = latents_typed.repeat(2, 1, 1, 1)
+                latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
                 prompt_embeds_model_input = prompt_embeds_list + negative_prompt_embeds_list
                 timestep_model_input = timestep.repeat(2)
             else:
-                latent_model_input = latents.to(next(transformer.parameters()).dtype)
+                latent_model_input = latents.to(input_dtype)
                 prompt_embeds_model_input = prompt_embeds_list
                 timestep_model_input = timestep
 
@@ -736,12 +742,23 @@ class DiffusionPipelineManager:
             latent_model_input_list = list(latent_model_input.unbind(dim=0))
 
             # Transformer forward pass
+            # For FP8 quantized models, use autocast to handle mixed precision
             with torch.no_grad():
-                model_out_list = transformer(
-                    latent_model_input_list,
-                    timestep_model_input,
-                    prompt_embeds_model_input,
-                )[0]
+                if transformer_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                    # FP8: use autocast for automatic mixed precision
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        model_out_list = transformer(
+                            latent_model_input_list,
+                            timestep_model_input,
+                            prompt_embeds_model_input,
+                        )[0]
+                else:
+                    # Normal: no autocast needed
+                    model_out_list = transformer(
+                        latent_model_input_list,
+                        timestep_model_input,
+                        prompt_embeds_model_input,
+                    )[0]
 
             # Apply CFG if enabled
             if apply_cfg:

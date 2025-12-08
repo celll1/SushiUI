@@ -156,11 +156,23 @@ class TransformerBlockOffloader:
                     module._apply(lambda t: t.to(self.device) if isinstance(t, torch.Tensor) else t)
                     print(f"[BlockOffloader]   - Moved {module_name} to {self.device}")
 
+        # Move transformer-level buffers/parameters (x_pad_token, etc.)
+        for name, param in parent.named_parameters(recurse=False):
+            if param.device != self.device:
+                param.data = param.data.to(self.device)
+                print(f"[BlockOffloader]   - Moved parameter {name} to {self.device}")
+
+        for name, buffer in parent.named_buffers(recurse=False):
+            if buffer.device != self.device:
+                buffer.data = buffer.data.to(self.device)
+                print(f"[BlockOffloader]   - Moved buffer {name} to {self.device}")
+
         print(f"[BlockOffloader] Auxiliary modules moved to GPU")
 
     def wait_for_block(self, block_idx: int):
         """
         Wait for block transfer to complete
+        If block is on CPU and not being transferred, move it to GPU synchronously
 
         Args:
             block_idx: Block index to wait for
@@ -168,16 +180,30 @@ class TransformerBlockOffloader:
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
-        if block_idx not in self.futures:
+        num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
+
+        # First N blocks stay on GPU permanently, no wait needed
+        if block_idx < num_blocks_on_gpu:
             return
 
-        future = self.futures.pop(block_idx)
-        _, bidx_to_cuda, sync_event = future.result()
+        # If block has a pending transfer, wait for it
+        if block_idx in self.futures:
+            future = self.futures.pop(block_idx)
+            _, bidx_to_cuda, sync_event = future.result()
 
-        assert block_idx == bidx_to_cuda, f"Block index mismatch: {block_idx} != {bidx_to_cuda}"
+            assert block_idx == bidx_to_cuda, f"Block index mismatch: {block_idx} != {bidx_to_cuda}"
 
-        if self.cuda_available and sync_event is not None:
-            torch.cuda.current_stream().wait_event(sync_event)
+            if self.cuda_available and sync_event is not None:
+                torch.cuda.current_stream().wait_event(sync_event)
+        else:
+            # No pending transfer - check if block weights are on CPU and move them synchronously
+            block = self.blocks[block_idx]
+            first_param = next(block.parameters(), None)
+            if first_param is not None and first_param.device.type == "cpu":
+                # Block weights are on CPU - move to GPU synchronously
+                weighs_to_device(block, self.device)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
 
     def submit_move_blocks_forward(self, block_idx: int):
         """

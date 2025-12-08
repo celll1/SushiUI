@@ -691,6 +691,18 @@ class DiffusionPipelineManager:
 
         print(f"[Z-Image] Denoising loop: {num_inference_steps} steps, shift={mu:.3f}")
 
+        # Detect FP8 quantization (check once before loop)
+        has_fp8_weights = False
+        for module in transformer.modules():
+            if isinstance(module, torch.nn.Linear):
+                if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                    has_fp8_weights = True
+                    print(f"[Z-Image] Detected FP8 quantized Transformer (dtype: {module.weight.dtype})")
+                    print(f"[Z-Image] Will use autocast for mixed precision inference")
+                    break
+        if not has_fp8_weights:
+            print(f"[Z-Image] Transformer not quantized (BF16 inference)")
+
         # Denoising loop with progress callback
         for i, t in enumerate(timesteps):
             # Skip last step if t=0 (flow matching termination)
@@ -720,12 +732,12 @@ class DiffusionPipelineManager:
 
             # Prepare model input (concat positive + negative if CFG)
             # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
-            transformer_dtype = next(transformer.parameters()).dtype
-            if transformer_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+            if has_fp8_weights:
                 # FP8 quantized: use BF16 input (autocast will handle conversion)
                 input_dtype = torch.bfloat16
             else:
                 # Normal case: use transformer's dtype
+                transformer_dtype = next(transformer.parameters()).dtype
                 input_dtype = transformer_dtype
 
             if apply_cfg:
@@ -744,7 +756,7 @@ class DiffusionPipelineManager:
             # Transformer forward pass
             # For FP8 quantized models, use autocast to handle mixed precision
             with torch.no_grad():
-                if transformer_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                if has_fp8_weights:
                     # FP8: use autocast for automatic mixed precision
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                         model_out_list = transformer(

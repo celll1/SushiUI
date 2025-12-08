@@ -672,7 +672,8 @@ class DiffusionPipelineManager:
         Returns:
             latents: Denoised latents (torch.Tensor)
         """
-        device = next(transformer.parameters()).device
+        # Use self.device instead of transformer device (Block Swap may have weights on CPU)
+        device = torch.device(self.device)
 
         print(f"[Z-Image] Starting denoising loop on {device}")
 

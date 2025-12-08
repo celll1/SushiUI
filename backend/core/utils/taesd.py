@@ -101,7 +101,11 @@ class TAESDManager:
 
                 # Convert to PIL Image
                 image = (image / 2 + 0.5).clamp(0, 1)
-                image = image.cpu().permute(0, 2, 3, 1).numpy()
+                # NumPy doesn't support BFloat16, convert to FP32 first for Z-Image
+                if is_zimage:
+                    image = image.cpu().to(torch.float32).permute(0, 2, 3, 1).numpy()
+                else:
+                    image = image.cpu().permute(0, 2, 3, 1).numpy()
                 image = (image[0] * 255).astype(np.uint8)
                 return Image.fromarray(image)
 

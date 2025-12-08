@@ -429,7 +429,7 @@ class DiffusionPipelineManager:
             prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
                 self._zimage_encode_prompt(
                     text_encoder, tokenizer, prompt, negative_prompt,
-                    guidance_scale, max_sequence_length
+                    guidance_scale, max_sequence_length, text_encoder_quantization
                 )
 
             # Offload Text Encoder to CPU to free VRAM
@@ -557,7 +557,7 @@ class DiffusionPipelineManager:
 
     def _zimage_encode_prompt(
         self, text_encoder, tokenizer, prompt, negative_prompt,
-        guidance_scale, max_sequence_length
+        guidance_scale, max_sequence_length, text_encoder_quantization=None
     ):
         """
         Stage 1: Text Encoding for Z-Image
@@ -570,6 +570,15 @@ class DiffusionPipelineManager:
             do_classifier_free_guidance: bool
         """
         device = next(text_encoder.parameters()).device
+
+        # Check if Text Encoder has FP8 weights
+        has_fp8_weights = False
+        if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
+            for module in text_encoder.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        has_fp8_weights = True
+                        break
 
         # Format prompts using Qwen chat template
         if isinstance(prompt, str):
@@ -603,12 +612,21 @@ class DiffusionPipelineManager:
         prompt_masks = text_inputs.attention_mask.to(device).bool()
 
         # Encode prompts (use penultimate layer output)
+        # For FP8 quantized Text Encoder, use autocast for mixed precision
         with torch.no_grad():
-            prompt_embeds = text_encoder(
-                input_ids=text_input_ids,
-                attention_mask=prompt_masks,
-                output_hidden_states=True,
-            ).hidden_states[-2]
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    prompt_embeds = text_encoder(
+                        input_ids=text_input_ids,
+                        attention_mask=prompt_masks,
+                        output_hidden_states=True,
+                    ).hidden_states[-2]
+            else:
+                prompt_embeds = text_encoder(
+                    input_ids=text_input_ids,
+                    attention_mask=prompt_masks,
+                    output_hidden_states=True,
+                ).hidden_states[-2]
 
         # Extract embeddings per prompt (masked by attention mask)
         prompt_embeds_list = []
@@ -646,11 +664,19 @@ class DiffusionPipelineManager:
             neg_masks = neg_inputs.attention_mask.to(device).bool()
 
             with torch.no_grad():
-                neg_embeds = text_encoder(
-                    input_ids=neg_input_ids,
-                    attention_mask=neg_masks,
-                    output_hidden_states=True,
-                ).hidden_states[-2]
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        neg_embeds = text_encoder(
+                            input_ids=neg_input_ids,
+                            attention_mask=neg_masks,
+                            output_hidden_states=True,
+                        ).hidden_states[-2]
+                else:
+                    neg_embeds = text_encoder(
+                        input_ids=neg_input_ids,
+                        attention_mask=neg_masks,
+                        output_hidden_states=True,
+                    ).hidden_states[-2]
 
             for i in range(len(neg_embeds)):
                 negative_prompt_embeds_list.append(neg_embeds[i][neg_masks[i]])

@@ -2567,6 +2567,20 @@ class LoRATrainer:
             self.text_encoder.to(self.device)
             if self.debug_vram:
                 print_vram_usage("After moving Text Encoder to GPU")
+            torch.cuda.empty_cache()
+
+            # Log VRAM status after moving Text Encoder to GPU
+            from core.vram_optimization import log_device_status
+            log_device_status(
+                "After moving Text Encoder to GPU (before caption encoding)",
+                pipeline=None,
+                show_details=False,
+                zimage_components={
+                    "text_encoder": self.text_encoder,
+                    "transformer": self.transformer,
+                    "vae": self.vae
+                }
+            )
 
             # Collect unique captions from all datasets
             unique_captions = set()
@@ -2689,16 +2703,18 @@ class LoRATrainer:
             self.text_encoder.to('cpu')
             torch.cuda.empty_cache()
 
-            # Log device placement after caption encoding
-            def get_device(model):
-                """Get device of first parameter"""
-                return next(model.parameters()).device
-
-            print(f"\n[LoRATrainer] Component device placement after caption encoding:")
-            print(f"  Transformer: {get_device(self.transformer)}")
-            print(f"  Text Encoder: {get_device(self.text_encoder)}")
-            print(f"  VAE: {get_device(self.vae)}")
-            print()
+            # Log device placement and VRAM usage after caption encoding
+            from core.vram_optimization import log_device_status
+            log_device_status(
+                "After caption encoding (Text Encoder moved to CPU)",
+                pipeline=None,
+                show_details=False,
+                zimage_components={
+                    "text_encoder": self.text_encoder,
+                    "transformer": self.transformer,
+                    "vae": self.vae
+                }
+            )
 
             if self.debug_vram:
                 print_vram_usage("After moving Text Encoder to CPU")
@@ -2841,6 +2857,19 @@ class LoRATrainer:
                     try:
                         # Debug: Log batch entry (first batch only to avoid spam)
                         if batch_idx == start_batch_idx:
+                            # Log VRAM status before starting training loop
+                            from core.vram_optimization import log_device_status
+                            log_device_status(
+                                "Before training loop (ready to train)",
+                                pipeline=None,
+                                show_details=False,
+                                zimage_components={
+                                    "text_encoder": self.text_encoder,
+                                    "transformer": self.transformer,
+                                    "vae": self.vae
+                                } if self.is_zimage else None
+                            )
+
                             print(f"[LoRATrainer] Processing first batch {batch_idx}, batch size: {len(batch)}")
                             if len(batch) > 0:
                                 first_item = batch[0]

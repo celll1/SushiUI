@@ -1457,6 +1457,23 @@ class LoRATrainer:
             print(f"  - Transformer.gradient_checkpointing: {self.transformer.gradient_checkpointing}")
             allocated_before = torch.cuda.memory_allocated() / 1024**3
             print(f"  - VRAM before forward pass: {allocated_before:.2f} GB")
+            print(f"[DEBUG] Input data verification:")
+            print(f"  - latents dtype: {latents.dtype}, device: {latents.device}")
+            print(f"  - latents contains NaN: {torch.isnan(latents).any().item()}")
+            print(f"  - noisy_latents dtype: {noisy_latents.dtype}, device: {noisy_latents.device}")
+            print(f"  - noisy_latents contains NaN: {torch.isnan(noisy_latents).any().item()}")
+            print(f"  - timesteps dtype: {timesteps.dtype}, range: [{timesteps.min().item():.4f}, {timesteps.max().item():.4f}]")
+            print(f"  - caption_embeds dtype: {caption_embeds.dtype}, device: {caption_embeds.device}")
+            print(f"  - caption_embeds contains NaN: {torch.isnan(caption_embeds).any().item()}")
+            # Check Transformer weights for NaN
+            has_nan_weights = False
+            for name, param in self.transformer.named_parameters():
+                if torch.isnan(param).any():
+                    print(f"  - WARNING: Transformer weight '{name}' contains NaN!")
+                    has_nan_weights = True
+                    break
+            if not has_nan_weights:
+                print(f"  - Transformer weights: OK (no NaN)")
             self._debug_logged_gc_status = True
 
         if self.mixed_precision:
@@ -1509,6 +1526,13 @@ class LoRATrainer:
             print(f"  - Latents mean: {latents.mean().item():.6f}, std: {latents.std().item():.6f}")
             print(f"  - Noise mean: {noise.mean().item():.6f}, std: {noise.std().item():.6f}")
             print(f"  - Velocity mean: {target.mean().item():.6f}, std: {target.std().item():.6f}")
+            print(f"[DEBUG] Model prediction verification:")
+            print(f"  - model_pred shape: {model_pred.shape}")
+            print(f"  - model_pred dtype: {model_pred.dtype}")
+            print(f"  - model_pred mean: {model_pred.mean().item():.6f}, std: {model_pred.std().item():.6f}")
+            print(f"  - model_pred contains NaN: {torch.isnan(model_pred).any().item()}")
+            print(f"  - model_pred contains Inf: {torch.isinf(model_pred).any().item()}")
+            print(f"  - model_pred min: {model_pred.min().item():.6f}, max: {model_pred.max().item():.6f}")
             self._debug_logged_zimage_target = True
 
         # Calculate loss (always in fp32 for numerical stability)

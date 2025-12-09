@@ -1566,8 +1566,20 @@ class LoRATrainer:
         if profile_vram:
             print_vram_usage("[train_step_zimage] Before backward")
 
+        # Debug: Log VRAM before backward pass (first step only)
+        if not hasattr(self, '_debug_logged_gc_vram_before_backward'):
+            allocated_before_backward = torch.cuda.memory_allocated() / 1024**3
+            print(f"  - VRAM before backward pass: {allocated_before_backward:.2f} GB")
+            self._debug_logged_gc_vram_before_backward = True
+
         self.optimizer.zero_grad()
         loss.backward()
+
+        # Debug: Log VRAM after backward pass (first step only)
+        if not hasattr(self, '_debug_logged_gc_vram_after_backward'):
+            allocated_after_backward = torch.cuda.memory_allocated() / 1024**3
+            print(f"  - VRAM after backward pass: {allocated_after_backward:.2f} GB")
+            self._debug_logged_gc_vram_after_backward = True
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After backward")
@@ -1587,6 +1599,12 @@ class LoRATrainer:
 
         # Clear gradients to free VRAM (set_to_none=True for memory efficiency)
         self.optimizer.zero_grad(set_to_none=True)
+
+        # Debug: Log VRAM after optimizer step and zero_grad (first step only)
+        if not hasattr(self, '_debug_logged_gc_vram_after_optim'):
+            allocated_after_optim = torch.cuda.memory_allocated() / 1024**3
+            print(f"  - VRAM after optimizer.step() + zero_grad(): {allocated_after_optim:.2f} GB")
+            self._debug_logged_gc_vram_after_optim = True
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After optimizer step")

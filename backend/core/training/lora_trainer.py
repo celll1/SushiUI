@@ -1108,8 +1108,22 @@ class LoRATrainer:
 
         # Encode to latents
         with torch.no_grad():
-            latents = self.vae.encode(image_tensor).latent_dist.sample()
-            latents = latents * self.vae.config.scaling_factor
+            if self.is_zimage:
+                # Z-Image VAE: Use encoder directly (no .encode() method)
+                h = self.vae.encoder(image_tensor)
+                if self.vae.quant_conv is not None:
+                    h = self.vae.quant_conv(h)
+                # Split to mean and logvar, sample
+                mean, logvar = torch.chunk(h, 2, dim=1)
+                latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
+                # Apply scaling and shift
+                latents = latents * self.vae.config.scaling_factor
+                if self.vae.config.shift_factor is not None:
+                    latents = latents + self.vae.config.shift_factor
+            else:
+                # SD/SDXL VAE: Use standard .encode() method
+                latents = self.vae.encode(image_tensor).latent_dist.sample()
+                latents = latents * self.vae.config.scaling_factor
 
         return latents
 

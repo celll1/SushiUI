@@ -2575,44 +2575,95 @@ class LoRATrainer:
             # Pre-encode all captions
             caption_cache = {}  # Map: caption_text -> {"embeddings": Tensor, "mask": Tensor}
 
-            import sys
-            caption_pbar = tqdm(
-                total=len(unique_captions),
-                desc="[CaptionCache] Encoding captions",
-                unit="caption",
-                ncols=100,
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
-                file=sys.stdout,
-                dynamic_ncols=False,
-                mininterval=0.1
-            )
-            sys.stdout.flush()
 
-            for caption in unique_captions:
-                try:
-                    embeds, mask = self.encode_prompt_zimage(caption)
-                    # Store on CPU to save VRAM
-                    caption_cache[caption] = {
-                        "embeddings": embeds.cpu(),
-                        "mask": mask.cpu(),
-                    }
-                except Exception as e:
-                    caption_pbar.write(f"[CaptionCache] ERROR: Failed to encode caption '{caption[:50]}...': {e}")
-                    import traceback
-                    caption_pbar.write(traceback.format_exc())
-                    # Store empty embeddings as fallback
-                    caption_cache[caption] = {
-                        "embeddings": torch.zeros((1, 2560), dtype=self.weight_dtype),
-                        "mask": torch.zeros(512, dtype=torch.bool),
-                    }
+            # Try to load from disk cache (Z-Image caption embeddings)
+            import hashlib
+            from pathlib import Path
+            caption_cache_loaded = 0
+            if dataset_unique_ids and len(dataset_unique_ids) > 0:
+                # Use first dataset_unique_id for caption cache directory
+                cache_base_dir = Path("backend/cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                if cache_base_dir.exists():
+                    print(f"[CaptionCache] Loading cached caption embeddings from {cache_base_dir}...")
+                    for caption in unique_captions:
+                        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                        embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
+                        mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
+                        if embeds_path.exists() and mask_path.exists():
+                            try:
+                                embeds = torch.load(embeds_path, map_location="cpu")
+                                mask = torch.load(mask_path, map_location="cpu")
+                                caption_cache[caption] = {"embeddings": embeds, "mask": mask}
+                                caption_cache_loaded += 1
+                            except Exception as e:
+                                print(f"[CaptionCache] WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
+                    if caption_cache_loaded > 0:
+                        print(f"[CaptionCache] Loaded {caption_cache_loaded}/{len(unique_captions)} cached caption embeddings from disk")
 
-                caption_pbar.update(1)
+            # Encode captions that are not cached
+            captions_to_encode = [c for c in unique_captions if c not in caption_cache]
+            if len(captions_to_encode) == 0:
+                print(f"[CaptionCache] All {len(unique_captions)} captions already cached, skipping encoding")
+            else:
+                print(f"[CaptionCache] Encoding {len(captions_to_encode)}/{len(unique_captions)} captions...")
+            if len(captions_to_encode) > 0:
+                import sys
+                caption_pbar = tqdm(
+                    total=len(captions_to_encode),
+                    desc="[CaptionCache] Encoding captions",
+                    unit="caption",
+                    ncols=100,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                    file=sys.stdout,
+                    dynamic_ncols=False,
+                    mininterval=0.1
+                )
                 sys.stdout.flush()
 
-            caption_pbar.close()
-            sys.stdout.flush()
-            print(f"[CaptionCache] Caption encoding complete: {len(caption_cache)} caption(s)")
+                for caption in captions_to_encode:
+                    try:
+                        embeds, mask = self.encode_prompt_zimage(caption)
+                        # Store on CPU to save VRAM
+                        caption_cache[caption] = {
+                            "embeddings": embeds.cpu(),
+                            "mask": mask.cpu(),
+                        }
+                    except Exception as e:
+                        caption_pbar.write(f"[CaptionCache] ERROR: Failed to encode caption '{caption[:50]}...': {e}")
+                        import traceback
+                        caption_pbar.write(traceback.format_exc())
+                        # Store empty embeddings as fallback
+                        caption_cache[caption] = {
+                            "embeddings": torch.zeros((1, 2560), dtype=self.weight_dtype),
+                            "mask": torch.zeros(512, dtype=torch.bool),
+                        }
 
+                    caption_pbar.update(1)
+                    sys.stdout.flush()
+
+                caption_pbar.close()
+                sys.stdout.flush()
+                print(f"[CaptionCache] Caption encoding complete: {len(caption_cache)} caption(s)")
+
+
+            # Save newly encoded captions to disk
+            if len(captions_to_encode) > 0 and dataset_unique_ids and len(dataset_unique_ids) > 0:
+                cache_base_dir = Path("backend/cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                cache_base_dir.mkdir(parents=True, exist_ok=True)
+                print(f"[CaptionCache] Saving {len(captions_to_encode)} newly encoded caption embeddings to {cache_base_dir}...")
+                saved_count = 0
+                for caption in captions_to_encode:
+                    if caption in caption_cache:
+                        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                        embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
+                        mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
+                        try:
+                            torch.save(caption_cache[caption]["embeddings"], embeds_path)
+                            torch.save(caption_cache[caption]["mask"], mask_path)
+                            saved_count += 1
+                        except Exception as e:
+                            print(f"[CaptionCache] WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
+                print(f"[CaptionCache] Saved {saved_count} caption embeddings to disk")
             # Attach cached embeddings to dataset items
             # IMPORTANT: Create individual copies for each item to avoid reference sharing
             for batch in batches:

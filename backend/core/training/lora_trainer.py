@@ -1370,6 +1370,9 @@ class LoRATrainer:
         self.optimizer.step()
         self.lr_scheduler.step()
 
+        # Clear gradients to free VRAM (set_to_none=True for memory efficiency)
+        self.optimizer.zero_grad(set_to_none=True)
+
         if profile_vram:
             print_vram_usage("[train_step] After optimizer step")
 
@@ -1566,6 +1569,9 @@ class LoRATrainer:
         # Optimizer step
         self.optimizer.step()
         self.lr_scheduler.step()
+
+        # Clear gradients to free VRAM (set_to_none=True for memory efficiency)
+        self.optimizer.zero_grad(set_to_none=True)
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After optimizer step")
@@ -2582,7 +2588,7 @@ class LoRATrainer:
             caption_cache_loaded = 0
             if dataset_unique_ids and len(dataset_unique_ids) > 0:
                 # Use first dataset_unique_id for caption cache directory
-                cache_base_dir = Path("backend/cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
                 if cache_base_dir.exists():
                     print(f"[CaptionCache] Loading cached caption embeddings from {cache_base_dir}...")
                     for caption in unique_captions:
@@ -2648,7 +2654,7 @@ class LoRATrainer:
 
             # Save newly encoded captions to disk
             if len(captions_to_encode) > 0 and dataset_unique_ids and len(dataset_unique_ids) > 0:
-                cache_base_dir = Path("backend/cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
                 cache_base_dir.mkdir(parents=True, exist_ok=True)
                 print(f"[CaptionCache] Saving {len(captions_to_encode)} newly encoded caption embeddings to {cache_base_dir}...")
                 saved_count = 0

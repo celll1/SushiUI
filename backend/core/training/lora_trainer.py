@@ -2623,10 +2623,10 @@ class LoRATrainer:
                         item["cached_caption_embeds"] = caption_cache[caption]["embeddings"].clone()
                         item["cached_caption_mask"] = caption_cache[caption]["mask"].clone()
 
-            # Delete caption_cache to free CPU memory
-            del caption_cache
-            torch.cuda.empty_cache()
-
+            # Save caption_cache for reuse in subsequent epochs
+            # (Needed when dataset is reloaded with new captions)
+            self.caption_cache = caption_cache
+            print(f"[CaptionCache] Saved {len(self.caption_cache)} caption embeddings for reuse in subsequent epochs")
             # Move Text Encoder to CPU to free VRAM (it's frozen, won't be used during training)
             print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
             self.text_encoder.to('cpu')
@@ -2741,6 +2741,19 @@ class LoRATrainer:
                             for start_idx in range(0, len(dataset_items), batch_size):
                                 end_idx = min(start_idx + batch_size, len(dataset_items))
                                 batches.append(dataset_items[start_idx:end_idx])
+
+                        # Re-attach caption cache to reloaded items (Z-Image only)
+                        if self.is_zimage and hasattr(self, "caption_cache"):
+                            print(f"[CaptionCache] Re-attaching {len(self.caption_cache)} cached caption embeddings to reloaded items...")
+                            reattached_count = 0
+                            for batch in batches:
+                                for item in batch:
+                                    caption = item.get("caption", "")
+                                    if caption and caption in self.caption_cache:
+                                        item["cached_caption_embeds"] = self.caption_cache[caption]["embeddings"].clone()
+                                        item["cached_caption_mask"] = self.caption_cache[caption]["mask"].clone()
+                                        reattached_count += 1
+                            print(f"[CaptionCache] Re-attached embeddings to {reattached_count} items")
                     except Exception as reload_err:
                         print(f"[LoRATrainer] ERROR: Failed to reload dataset for epoch {epoch + 1}: {reload_err}")
                         import traceback

@@ -2544,8 +2544,44 @@ class LoRATrainer:
                 # Generate cache for missing images
                 if len(missing_images) > 0:
                     print(f"[LoRATrainer] Generating cache for {len(missing_images)} missing image(s)...")
+
+                    # Log device status before VAE move
+                    from core.vram_optimization import log_device_status
+                    log_device_status(
+                        "Before moving VAE to GPU for cache generation",
+                        pipeline=None,
+                        show_details=False,
+                        zimage_components={
+                            "text_encoder": self.text_encoder,
+                            "transformer": self.transformer if self.is_zimage else self.unet,
+                            "vae": self.vae
+                        } if self.is_zimage else None
+                    )
+
+                    # Move Transformer/UNet to CPU to free VRAM for VAE
+                    if self.is_zimage:
+                        print(f"[LoRATrainer] Moving Transformer to CPU temporarily for VAE cache generation...")
+                        self.transformer.to('cpu')
+                    else:
+                        if hasattr(self, 'unet') and self.unet is not None:
+                            print(f"[LoRATrainer] Moving U-Net to CPU temporarily for VAE cache generation...")
+                            self.unet.to('cpu')
+                    torch.cuda.empty_cache()
+
                     print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
                     self.vae.to(self.device)
+                    torch.cuda.empty_cache()
+
+                    log_device_status(
+                        "After moving VAE to GPU for cache generation",
+                        pipeline=None,
+                        show_details=False,
+                        zimage_components={
+                            "text_encoder": self.text_encoder,
+                            "transformer": self.transformer,
+                            "vae": self.vae
+                        } if self.is_zimage else None
+                    )
 
                     import sys
                     cache_pbar = tqdm(
@@ -2609,8 +2645,19 @@ class LoRATrainer:
                 print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
+
+                # Move Transformer/UNet back to GPU after VAE cache generation
+                if self.is_zimage:
+                    print(f"[LoRATrainer] Moving Transformer back to GPU...")
+                    self.transformer.to(self.device)
+                else:
+                    if hasattr(self, 'unet') and self.unet is not None:
+                        print(f"[LoRATrainer] Moving U-Net back to GPU...")
+                        self.unet.to(self.device)
+                torch.cuda.empty_cache()
+
                 if self.debug_vram:
-                    print_vram_usage("After moving VAE to CPU")
+                    print_vram_usage("After moving Transformer/UNet back to GPU")
 
         # Z-Image: Caption pre-encoding (MANDATORY since Text Encoder is frozen)
         if self.is_zimage:

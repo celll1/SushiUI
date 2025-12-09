@@ -1281,6 +1281,180 @@ class LoRATrainer:
 
         return loss_value
 
+    def train_step_zimage(
+        self,
+        latents: torch.Tensor,
+        caption_embeds: torch.Tensor,
+        caption_mask: torch.Tensor,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        profile_vram: bool = False,
+    ) -> float:
+        """
+        Perform single training step for Z-Image (Flow Matching).
+
+        Args:
+            latents: Image latents [B, 16, H, W] (Z-Image uses 16 latent channels)
+            caption_embeds: Pre-encoded caption embeddings [B, seq_len, 2560]
+            caption_mask: Attention mask [B, seq_len] (bool)
+            debug_save_path: If provided, save latents for debugging
+            debug_captions: Captions for debug output (optional)
+            profile_vram: If True, print VRAM usage at each step
+
+        Returns:
+            Loss value
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] Start")
+
+        # Flow Matching: Sample random timesteps from [0, 1]
+        batch_size = latents.shape[0]
+        # Sample timesteps uniformly from [0, 1]
+        timesteps = torch.rand(batch_size, device=self.device)
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After timestep sampling")
+
+        # Flow Matching: Sample noise (standard normal distribution)
+        noise = torch.randn_like(latents)
+
+        # Flow Matching: Interpolate between noise and data
+        # x_t = (1 - t) * noise + t * data
+        # Reshape timesteps for broadcasting: [B] -> [B, 1, 1, 1]
+        t = timesteps[:, None, None, None]
+        noisy_latents = (1.0 - t) * noise + t * latents
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After noise interpolation")
+
+        # Enable gradients on inputs for gradient checkpointing
+        noisy_latents.requires_grad_(True)
+        caption_embeds.requires_grad_(True)
+
+        # Predict velocity using Z-Image Transformer (LoRA is already integrated)
+        # Velocity target: v = data - noise
+        if self.mixed_precision:
+            # Autocast to training_dtype for forward pass
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                model_pred = self.transformer(
+                    hidden_states=noisy_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=caption_embeds,
+                    encoder_attention_mask=caption_mask,
+                    return_dict=False,
+                )[0]
+        else:
+            # No mixed precision: use weight_dtype throughout
+            model_pred = self.transformer(
+                hidden_states=noisy_latents,
+                timestep=timesteps,
+                encoder_hidden_states=caption_embeds,
+                encoder_attention_mask=caption_mask,
+                return_dict=False,
+            )[0]
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After Transformer forward")
+
+        # Flow Matching target: velocity = data - noise
+        target = latents - noise
+
+        # Debug: Verify target correctness on first step
+        if not hasattr(self, '_debug_logged_zimage_target'):
+            print(f"[LoRATrainer] Z-Image Flow Matching Target verification:")
+            print(f"  - Target formula: velocity = data - noise")
+            print(f"  - Target shape: {target.shape}")
+            print(f"  - Target dtype: {target.dtype}")
+            print(f"  - Latents mean: {latents.mean().item():.6f}, std: {latents.std().item():.6f}")
+            print(f"  - Noise mean: {noise.mean().item():.6f}, std: {noise.std().item():.6f}")
+            print(f"  - Velocity mean: {target.mean().item():.6f}, std: {target.std().item():.6f}")
+            self._debug_logged_zimage_target = True
+
+        # Calculate loss (always in fp32 for numerical stability)
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+
+        # Take mean across spatial and channel dimensions first (keep batch dimension)
+        # Shape: [B, 16, H, W] -> [B]
+        loss_per_sample = loss_per_element.mean([1, 2, 3])
+
+        # Flow Matching does not use Min-SNR weighting (continuous time formulation already handles weighting)
+        # Take mean across batch dimension
+        loss = loss_per_sample.mean()
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After loss calculation")
+
+        # Debug: Save latents if requested
+        if debug_save_path is not None:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+
+            # Save as .pt files with detailed info (save first item in batch)
+            timestep_value = timesteps[0].item()
+
+            # Calculate predicted_latent (denoised latent at t=0)
+            # Flow Matching: x_0 = x_t - (1 - t) * v
+            with torch.no_grad():
+                predicted_latent = noisy_latents - (1.0 - t) * model_pred
+
+            # Prepare debug data
+            debug_data = {
+                'latents': latents[0:1].detach().cpu(),
+                'noisy_latents': noisy_latents[0:1].detach().cpu(),
+                'predicted_velocity': model_pred[0:1].detach().cpu(),
+                'actual_velocity': target[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent[0:1].detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss_per_sample[0].item(),
+                'loss_batch_mean': loss.item(),
+                'batch_size': batch_size,
+                'scheduler_type': 'FlowMatching',
+            }
+
+            # Add caption if available
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                debug_data['all_captions'] = debug_captions
+
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+
+            del predicted_latent
+            caption_info = f" (caption: {debug_captions[0][:50]}...)" if debug_captions and len(debug_captions) > 0 else ""
+            print(f"[Debug] Saved Z-Image latents to {debug_save_path} (timestep={timestep_value:.4f}){caption_info}")
+
+        # Backward pass
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] Before backward")
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After backward")
+
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(
+            [p for lora in self.lora_layers.values() for p in lora.parameters()],
+            max_norm=1.0
+        )
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After gradient clipping")
+
+        # Optimizer step
+        self.optimizer.step()
+        self.lr_scheduler.step()
+
+        if profile_vram:
+            print_vram_usage("[train_step_zimage] After optimizer step")
+
+        # Get loss value before cleanup
+        loss_value = loss.detach().item()
+
+        # Free intermediate tensors explicitly to reduce VRAM usage
+        del noise, noisy_latents, model_pred, target, loss
+
+        return loss_value
+
     def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
         """
         Find the latest checkpoint in output directory.
@@ -2453,6 +2627,8 @@ class LoRATrainer:
                         batch_latents = []
                         batch_text_embeddings = []
                         batch_pooled_embeddings = [] if self.is_sdxl else None
+                        batch_caption_embeds = [] if self.is_zimage else None  # Z-Image: pre-encoded caption embeddings
+                        batch_caption_masks = [] if self.is_zimage else None  # Z-Image: attention masks
                         batch_captions = []  # Store captions for debug output
 
                         # Get bucket dimensions (all items in batch have same resolution)
@@ -2513,17 +2689,34 @@ class LoRATrainer:
 
                                 batch_latents.append(latents)
 
-                                # Encode caption (with gradient for text encoder training)
+                                # Encode caption
                                 caption = item.get("caption", "")
                                 batch_captions.append(caption)  # Store for debug output
-                                prompt_output = self.encode_prompt(caption, requires_grad=True)
 
-                                if self.is_sdxl:
-                                    text_emb, pooled_emb = prompt_output
-                                    batch_text_embeddings.append(text_emb)
-                                    batch_pooled_embeddings.append(pooled_emb)
+                                if self.is_zimage:
+                                    # Z-Image: Use pre-encoded caption embeddings (Text Encoder is frozen)
+                                    if "cached_caption_embeds" in item and "cached_caption_mask" in item:
+                                        caption_embeds = item["cached_caption_embeds"].to(self.device)
+                                        caption_mask = item["cached_caption_mask"].to(self.device)
+                                    else:
+                                        # Fallback: encode on-the-fly (should not happen if pre-encoding worked)
+                                        print(f"[LoRATrainer] WARNING: No cached caption embeddings for item, encoding on-the-fly")
+                                        caption_embeds, caption_mask = self.encode_prompt_zimage(caption)
+                                        caption_embeds = caption_embeds.to(self.device)
+                                        caption_mask = caption_mask.to(self.device)
+
+                                    batch_caption_embeds.append(caption_embeds)
+                                    batch_caption_masks.append(caption_mask)
                                 else:
-                                    batch_text_embeddings.append(prompt_output)
+                                    # SD/SDXL: Encode caption with gradient for text encoder training
+                                    prompt_output = self.encode_prompt(caption, requires_grad=True)
+
+                                    if self.is_sdxl:
+                                        text_emb, pooled_emb = prompt_output
+                                        batch_text_embeddings.append(text_emb)
+                                        batch_pooled_embeddings.append(pooled_emb)
+                                    else:
+                                        batch_text_embeddings.append(prompt_output)
                             except Exception as item_err:
                                 print(f"[LoRATrainer] ERROR: Failed to process item {item_idx} in batch {batch_idx}: {item_err}")
                                 import traceback
@@ -2541,12 +2734,45 @@ class LoRATrainer:
                         batched_latents = torch.cat(batch_latents, dim=0)
                         del batch_latents  # Free memory immediately after concat
 
-                        batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
-                        del batch_text_embeddings  # Free memory immediately after concat
+                        if self.is_zimage:
+                            # Z-Image: Pad caption embeddings to max length in batch for batching
+                            # Find max sequence length in batch
+                            max_seq_len = max(emb.shape[0] for emb in batch_caption_embeds)
 
-                        if self.is_sdxl:
-                            batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
-                            del batch_pooled_embeddings  # Free memory immediately after concat
+                            # Pad embeddings and masks
+                            padded_embeds = []
+                            padded_masks = []
+                            for emb, mask in zip(batch_caption_embeds, batch_caption_masks):
+                                seq_len = emb.shape[0]
+                                if seq_len < max_seq_len:
+                                    # Pad embeddings with zeros
+                                    pad_size = max_seq_len - seq_len
+                                    padded_emb = torch.cat([
+                                        emb,
+                                        torch.zeros((pad_size, emb.shape[1]), dtype=emb.dtype, device=emb.device)
+                                    ], dim=0)
+                                    # Pad mask with False
+                                    padded_mask = torch.cat([
+                                        mask,
+                                        torch.zeros(pad_size, dtype=torch.bool, device=mask.device)
+                                    ], dim=0)
+                                else:
+                                    padded_emb = emb
+                                    padded_mask = mask
+
+                                padded_embeds.append(padded_emb.unsqueeze(0))  # Add batch dimension
+                                padded_masks.append(padded_mask.unsqueeze(0))  # Add batch dimension
+
+                            batched_caption_embeds = torch.cat(padded_embeds, dim=0)  # [B, max_seq_len, 2560]
+                            batched_caption_masks = torch.cat(padded_masks, dim=0)  # [B, max_seq_len]
+                            del batch_caption_embeds, batch_caption_masks  # Free memory
+                        else:
+                            batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
+                            del batch_text_embeddings  # Free memory immediately after concat
+
+                            if self.is_sdxl:
+                                batched_pooled_embeddings = torch.cat(batch_pooled_embeddings, dim=0)
+                                del batch_pooled_embeddings  # Free memory immediately after concat
 
                         if profile_vram:
                             print_vram_usage("After concat (before train_step)")
@@ -2558,18 +2784,42 @@ class LoRATrainer:
                             debug_save_path = debug_dir / f"step_{global_step:06d}"
                             debug_captions = batch_captions  # Pass captions for debug output
 
-                        # Handle SD1.5 vs SDXL output
-                        if self.is_sdxl:
-                            loss = self.train_step(batched_latents, batched_text_embeddings, batched_pooled_embeddings,
-                                                 debug_save_path=debug_save_path, debug_captions=debug_captions, profile_vram=profile_vram)
+                        # Call appropriate train_step based on model type
+                        if self.is_zimage:
+                            loss = self.train_step_zimage(
+                                batched_latents,
+                                batched_caption_embeds,
+                                batched_caption_masks,
+                                debug_save_path=debug_save_path,
+                                debug_captions=debug_captions,
+                                profile_vram=profile_vram
+                            )
+                        elif self.is_sdxl:
+                            loss = self.train_step(
+                                batched_latents,
+                                batched_text_embeddings,
+                                batched_pooled_embeddings,
+                                debug_save_path=debug_save_path,
+                                debug_captions=debug_captions,
+                                profile_vram=profile_vram
+                            )
                         else:
-                            loss = self.train_step(batched_latents, batched_text_embeddings,
-                                                 debug_save_path=debug_save_path, debug_captions=debug_captions, profile_vram=profile_vram)
+                            loss = self.train_step(
+                                batched_latents,
+                                batched_text_embeddings,
+                                debug_save_path=debug_save_path,
+                                debug_captions=debug_captions,
+                                profile_vram=profile_vram
+                            )
 
                         # Free batch tensors after training step to reduce VRAM usage
-                        del batched_latents, batched_text_embeddings
-                        if self.is_sdxl:
-                            del batched_pooled_embeddings
+                        del batched_latents
+                        if self.is_zimage:
+                            del batched_caption_embeds, batched_caption_masks
+                        else:
+                            del batched_text_embeddings
+                            if self.is_sdxl:
+                                del batched_pooled_embeddings
 
                         if profile_vram:
                             print_vram_usage("After train_step and cleanup")

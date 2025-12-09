@@ -1422,8 +1422,15 @@ class LoRATrainer:
         # Predict velocity using Z-Image Transformer (LoRA is already integrated)
         # Velocity target: v = data - noise
         # Note: Z-Image Transformer expects List[Tensor] for x and cap_feats
-        # Convert batched tensors to list format
-        x_list = [noisy_latents[i] for i in range(batch_size)]
+        # Also expects 4D latents [C, F, H, W] where F is frame dimension (use F=1 for static images)
+        # Convert batched tensors to list format and add frame dimension
+        x_list = []
+        for i in range(batch_size):
+            latent = noisy_latents[i]  # [C, H, W]
+            # Add frame dimension: [C, H, W] -> [C, 1, H, W]
+            latent_4d = latent.unsqueeze(1)
+            x_list.append(latent_4d)
+
         cap_feats_list = [caption_embeds[i] for i in range(batch_size)]
 
         if self.mixed_precision:
@@ -1443,8 +1450,13 @@ class LoRATrainer:
             )
 
         # Z-Image Transformer returns List[Tensor], convert back to batched tensor
+        # Output will be [C, 1, H, W] per item, need to remove frame dimension
         if isinstance(model_pred, list):
-            model_pred = torch.stack(model_pred, dim=0)
+            # Each item is [C, 1, H, W], squeeze to [C, H, W] then stack
+            model_pred = torch.stack([pred.squeeze(1) for pred in model_pred], dim=0)
+        else:
+            # If already batched [B, C, 1, H, W], squeeze frame dimension
+            model_pred = model_pred.squeeze(2)
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")

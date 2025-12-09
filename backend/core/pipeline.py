@@ -163,7 +163,7 @@ class DiffusionPipelineManager:
             # Check if Z-Image
             if isinstance(model_result, dict) and "transformer" in model_result:
                 # Z-Image component-based model
-                print("[Pipeline] Z-Image model detected")
+                print("[Pipeline] Z-Image model detected (component-based dict returned)")
                 self.zimage_components = model_result
                 self.is_zimage_model = True
                 self.current_model = model_id
@@ -208,11 +208,13 @@ class DiffusionPipelineManager:
             base_pipeline = model_result
             self.is_zimage_model = False
 
-            # Log component devices after loading
-            self._log_component_devices(base_pipeline, "After model loading")
-
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
+            model_arch = "SDXL" if is_sdxl else "SD1.5"
+            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image)")
+
+            # Log component devices after loading
+            self._log_component_devices(base_pipeline, "After model loading")
 
             # === Step 3: Create all pipeline variants from base ===
             print("[Pipeline] Creating pipeline variants...")

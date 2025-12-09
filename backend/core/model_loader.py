@@ -136,14 +136,27 @@ class ModelLoader:
                 with safe_open(model_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
 
+                    # SD/SDXL detection (priority check)
+                    # SD/SDXL models have U-Net keys starting with "model.diffusion_model."
+                    has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
+
+                    if has_unet_keys:
+                        # This is SD or SDXL, not Z-Image
+                        # SDXL detection by file size (>6GB) or specific keys
+                        file_size = os.path.getsize(model_path) / (1024**3)  # GB
+                        if file_size > 6:
+                            return "sdxl"
+                        else:
+                            return "sd15"
+
                     # Z-Image Comfy format detection
-                    # Z-Image transformer has unique keys: cap_embedder, t_embedder, x_embedder, layers, context_refiner
+                    # Z-Image transformer has unique keys WITHOUT U-Net structure
                     zimage_indicators = ['cap_embedder', 't_embedder', 'x_embedder', 'context_refiner']
                     if all(any(k.startswith(indicator) for k in keys) for indicator in zimage_indicators):
                         print(f"[ModelLoader] Detected Z-Image model (Comfy safetensors format): {model_path}")
                         return "zimage"
 
-                    # SDXL detection by file size (>6GB)
+                    # Fallback: SDXL detection by file size
                     file_size = os.path.getsize(model_path) / (1024**3)  # GB
                     if file_size > 6:
                         return "sdxl"
@@ -508,14 +521,17 @@ class ModelLoader:
             raise FileNotFoundError(f"Model file not found: {file_path}")
 
         model_type = ModelLoader.detect_model_type(file_path)
+        print(f"[ModelLoader] Detected model type: {model_type}")
 
         # Z-Image Comfy format
         if model_type == "zimage":
+            print(f"[ModelLoader] Loading as Z-Image (Comfy safetensors format)")
             return ModelLoader.load_zimage_from_comfy_safetensors(file_path, device, torch.bfloat16)
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Use single_file loading which is the standard way to load safetensors
+        print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
             if model_type == "sdxl":
                 pipeline = StableDiffusionXLPipeline.from_single_file(

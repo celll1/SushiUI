@@ -104,6 +104,9 @@ def create_progress_callback_factory(
 
         if step % 5 == 0 or step == total_steps - 1:
             try:
+                # Debug: Log model type being used for preview
+                if step == 0:
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}")
                 preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage)
                 if preview_pil:
                     buffered = BytesIO()

@@ -2253,7 +2253,13 @@ class LoRATrainer:
             print(f"[LoRATrainer] Mapped {len(image_to_cache_id)} images to {len(latent_caches)} cache(s)")
 
             # Check cache validity and generate if needed for each dataset
-            model_type = "sdxl" if self.is_sdxl else "sd15"
+            # Determine model type for cache validation
+            if self.is_zimage:
+                model_type = "zimage"
+            elif self.is_sdxl:
+                model_type = "sdxl"
+            else:
+                model_type = "sd15"
             caches_to_generate = []
 
             for unique_id, cache in latent_caches.items():
@@ -2270,7 +2276,9 @@ class LoRATrainer:
                     continue
 
                 # Validate cache format by random sampling
-                if not cache.validate_cache_format(expected_channels=4, sample_count=5):
+                # Z-Image uses 16 channels, SD/SDXL use 4 channels
+                expected_channels = 16 if self.is_zimage else 4
+                if not cache.validate_cache_format(expected_channels=expected_channels, sample_count=5):
                     print(f"[LatentCache] Cache format validation failed for dataset {unique_id[:8]}...")
                     caches_to_generate.append((unique_id, cache))
                     continue

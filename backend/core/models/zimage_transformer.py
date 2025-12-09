@@ -512,7 +512,7 @@ class ZImageTransformer2DModel(nn.Module):
         x = self.all_x_embedder[f"{patch_size}-{f_patch_size}"](x)
 
         adaln_input = t.type_as(x)
-        x[torch.cat(x_inner_pad_mask)] = self.x_pad_token
+        x[torch.cat(x_inner_pad_mask)] = self.x_pad_token.type_as(x)
         x = list(x.split(x_item_seqlens, dim=0))
         x_freqs_cis = list(self.rope_embedder(torch.cat(x_pos_ids, dim=0)).split([len(_) for _ in x_pos_ids], dim=0))
 
@@ -534,7 +534,7 @@ class ZImageTransformer2DModel(nn.Module):
 
         cap_feats = torch.cat(cap_feats, dim=0)
         cap_feats = self.cap_embedder(cap_feats)
-        cap_feats[torch.cat(cap_inner_pad_mask)] = self.cap_pad_token
+        cap_feats[torch.cat(cap_inner_pad_mask)] = self.cap_pad_token.type_as(cap_feats)
         cap_feats = list(cap_feats.split(cap_item_seqlens, dim=0))
         cap_freqs_cis = list(
             self.rope_embedder(torch.cat(cap_pos_ids, dim=0)).split([len(_) for _ in cap_pos_ids], dim=0)

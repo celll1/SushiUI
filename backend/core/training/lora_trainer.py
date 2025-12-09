@@ -511,9 +511,10 @@ class LoRATrainer:
             self.transformer.requires_grad_(False)
 
             # Move to device
-            # IMPORTANT: Keep Text Encoder on CPU initially (will be moved to GPU only during caption pre-encoding)
-            print(f"[LoRATrainer] Moving VAE to {self.device}...")
-            self.vae.to(self.device)
+            # IMPORTANT: VAE stays on CPU (only used for latent cache generation)
+            # IMPORTANT: Text Encoder stays on CPU initially (will be moved to GPU only during caption pre-encoding)
+            print(f"[LoRATrainer] VAE will stay on CPU (used only for latent cache generation)")
+            # self.vae stays on CPU (loaded on CPU by ModelLoader)
             # self.text_encoder stays on CPU (loaded on CPU by ModelLoader)
             print(f"[LoRATrainer] Moving Transformer to {self.device}...")
             self.transformer.to(self.device)
@@ -2588,9 +2589,14 @@ class LoRATrainer:
                             self.unet.to('cpu')
                     torch.cuda.empty_cache()
 
-                    print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
-                    self.vae.to(self.device)
-                    torch.cuda.empty_cache()
+                    # Check if VAE is already on GPU (avoid redundant .to() call)
+                    vae_device = next(self.vae.parameters()).device
+                    if vae_device.type != 'cuda':
+                        print(f"[LoRATrainer] Moving VAE from {vae_device} to GPU for cache generation...")
+                        self.vae.to(self.device)
+                        torch.cuda.empty_cache()
+                    else:
+                        print(f"[LoRATrainer] VAE already on GPU, skipping move")
 
                     log_device_status(
                         "After moving VAE to GPU for cache generation",

@@ -224,6 +224,13 @@ def main():
             training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
             output_dtype = train_config.get('output_dtype', 'fp32')
             vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
+
+            # Z-Image requires BFloat16 for numerical stability (trained with bf16)
+            if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
+                print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
@@ -391,6 +398,13 @@ def main():
             training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
             output_dtype = train_config.get('output_dtype', 'fp32')
             vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
+
+            # Z-Image requires BFloat16 for numerical stability (trained with bf16)
+            if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
+                print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)

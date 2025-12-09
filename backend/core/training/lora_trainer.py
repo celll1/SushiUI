@@ -511,8 +511,9 @@ class LoRATrainer:
             self.transformer.requires_grad_(False)
 
             # Move to device
+            # IMPORTANT: Keep Text Encoder on CPU initially (will be moved to GPU only during caption pre-encoding)
             self.vae.to(self.device)
-            self.text_encoder.to(self.device)
+            # self.text_encoder stays on CPU (loaded on CPU by ModelLoader)
             self.transformer.to(self.device)
 
             if self.debug_vram:

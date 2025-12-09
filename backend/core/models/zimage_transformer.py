@@ -342,6 +342,13 @@ class ZImageTransformer2DModel(nn.Module):
 
         self.rope_embedder = RopeEmbedder(theta=rope_theta, axes_dims=axes_dims, axes_lens=axes_lens)
 
+        # Gradient checkpointing flag
+        self.gradient_checkpointing = False
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for memory-efficient training."""
+        self.gradient_checkpointing = True
+
     def unpatchify(self, x: List[torch.Tensor], size: List[Tuple], patch_size, f_patch_size) -> List[torch.Tensor]:
         pH = pW = patch_size
         pF = f_patch_size
@@ -566,7 +573,18 @@ class ZImageTransformer2DModel(nn.Module):
             if hasattr(self, '_block_offloader') and self._block_offloader is not None:
                 self._block_offloader.wait_for_block(layer_idx)
 
-            unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+            if self.gradient_checkpointing and self.training:
+                # Use gradient checkpointing: recompute activations during backward pass
+                unified = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    unified,
+                    unified_attn_mask,
+                    unified_freqs_cis,
+                    adaln_input,
+                    use_reentrant=False
+                )
+            else:
+                unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
 
             # Block Swap integration: submit next block transfer after execution
             if hasattr(self, '_block_offloader') and self._block_offloader is not None:

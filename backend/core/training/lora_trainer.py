@@ -1463,6 +1463,10 @@ class LoRATrainer:
                 cap_feats=cap_feats_list,
             )
 
+        # Z-Image Transformer returns (x, {}) tuple - unpack it
+        if isinstance(model_pred, tuple):
+            model_pred = model_pred[0]
+
         # Z-Image Transformer returns List[Tensor], convert back to batched tensor
         # Output will be [C, 1, H, W] per item, need to remove frame dimension
         if isinstance(model_pred, list):

@@ -2517,7 +2517,16 @@ class LoRATrainer:
 
         # Z-Image: Caption pre-encoding (MANDATORY since Text Encoder is frozen)
         if self.is_zimage:
+            print(f"\n{'='*80}")
             print(f"[LoRATrainer] Z-Image detected: Pre-encoding captions...")
+            print(f"[LoRATrainer] is_zimage flag: {self.is_zimage}")
+            print(f"{'='*80}\n")
+
+            # Move Text Encoder to GPU for encoding
+            print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to GPU for caption encoding...")
+            self.text_encoder.to(self.device)
+            if self.debug_vram:
+                print_vram_usage("After moving Text Encoder to GPU")
 
             # Collect unique captions from all datasets
             unique_captions = set()
@@ -2555,6 +2564,8 @@ class LoRATrainer:
                     }
                 except Exception as e:
                     caption_pbar.write(f"[CaptionCache] ERROR: Failed to encode caption '{caption[:50]}...': {e}")
+                    import traceback
+                    caption_pbar.write(traceback.format_exc())
                     # Store empty embeddings as fallback
                     caption_cache[caption] = {
                         "embeddings": torch.zeros((1, 2560), dtype=self.weight_dtype),
@@ -2797,10 +2808,17 @@ class LoRATrainer:
                                         caption_mask = item["cached_caption_mask"].to(self.device)
                                     else:
                                         # Fallback: encode on-the-fly (should not happen if pre-encoding worked)
-                                        print(f"[LoRATrainer] WARNING: No cached caption embeddings for item, encoding on-the-fly")
+                                        print(f"[LoRATrainer] WARNING: No cached caption embeddings for item {item_idx}, encoding on-the-fly")
+                                        print(f"[LoRATrainer] Item keys: {list(item.keys())}")
+                                        print(f"[LoRATrainer] Caption: {caption[:50]}...")
+
+                                        # Move Text Encoder to GPU temporarily
+                                        self.text_encoder.to(self.device)
                                         caption_embeds, caption_mask = self.encode_prompt_zimage(caption)
                                         caption_embeds = caption_embeds.to(self.device)
                                         caption_mask = caption_mask.to(self.device)
+                                        # Move back to CPU
+                                        self.text_encoder.to('cpu')
 
                                     batch_caption_embeds.append(caption_embeds)
                                     batch_caption_masks.append(caption_mask)

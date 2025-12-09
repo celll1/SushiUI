@@ -1450,6 +1450,15 @@ class LoRATrainer:
 
         cap_feats_list = [caption_embeds[i] for i in range(batch_size)]
 
+        # Debug: Verify gradient checkpointing is active (first step only)
+        if not hasattr(self, '_debug_logged_gc_status'):
+            print(f"[DEBUG] Gradient Checkpointing Status:")
+            print(f"  - Transformer.training: {self.transformer.training}")
+            print(f"  - Transformer.gradient_checkpointing: {self.transformer.gradient_checkpointing}")
+            allocated_before = torch.cuda.memory_allocated() / 1024**3
+            print(f"  - VRAM before forward pass: {allocated_before:.2f} GB")
+            self._debug_logged_gc_status = True
+
         if self.mixed_precision:
             # Autocast to training_dtype for forward pass
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
@@ -1478,6 +1487,12 @@ class LoRATrainer:
         else:
             # If already batched [B, C, 1, H, W], squeeze frame dimension
             model_pred = model_pred.squeeze(2)
+
+        # Debug: Log VRAM after forward pass (first step only)
+        if not hasattr(self, '_debug_logged_gc_vram_after'):
+            allocated_after = torch.cuda.memory_allocated() / 1024**3
+            print(f"  - VRAM after forward pass: {allocated_after:.2f} GB")
+            self._debug_logged_gc_vram_after = True
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")

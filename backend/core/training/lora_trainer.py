@@ -512,9 +512,22 @@ class LoRATrainer:
 
             # Move to device
             # IMPORTANT: Keep Text Encoder on CPU initially (will be moved to GPU only during caption pre-encoding)
+            print(f"[LoRATrainer] Moving VAE to {self.device}...")
             self.vae.to(self.device)
             # self.text_encoder stays on CPU (loaded on CPU by ModelLoader)
+            print(f"[LoRATrainer] Moving Transformer to {self.device}...")
             self.transformer.to(self.device)
+
+            # Log actual device placement
+            def get_device(model):
+                """Get device of first parameter"""
+                return next(model.parameters()).device
+
+            print(f"\n[LoRATrainer] Component device placement:")
+            print(f"  Transformer: {get_device(self.transformer)}")
+            print(f"  Text Encoder: {get_device(self.text_encoder)}")
+            print(f"  VAE: {get_device(self.vae)}")
+            print()
 
             if self.debug_vram:
                 print_vram_usage("After loading Z-Image models to GPU")
@@ -2614,6 +2627,18 @@ class LoRATrainer:
             print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
             self.text_encoder.to('cpu')
             torch.cuda.empty_cache()
+
+            # Log device placement after caption encoding
+            def get_device(model):
+                """Get device of first parameter"""
+                return next(model.parameters()).device
+
+            print(f"\n[LoRATrainer] Component device placement after caption encoding:")
+            print(f"  Transformer: {get_device(self.transformer)}")
+            print(f"  Text Encoder: {get_device(self.text_encoder)}")
+            print(f"  VAE: {get_device(self.vae)}")
+            print()
+
             if self.debug_vram:
                 print_vram_usage("After moving Text Encoder to CPU")
 

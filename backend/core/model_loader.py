@@ -605,15 +605,29 @@ class ModelLoader:
             print(f"[ModelLoader] Injected SushiUI Z-Image Transformer (Block Swap integrated) into sys.modules")
 
             # Now load Z-Image components (will use our custom transformer)
-            from utils.loader import load_from_local_dir
+            from utils.loader import load_from_local_dir, load_from_single_file
 
-            components = load_from_local_dir(
-                model_path,
-                device=device,
-                dtype=torch_dtype,
-                verbose=True,
-                compile=False  # Disable compile for now
-            )
+            # Check if model_path is a single safetensors file (Comfy format) or directory (diffusers format)
+            is_single_file = os.path.isfile(model_path) and model_path.endswith('.safetensors')
+
+            if is_single_file:
+                print(f"[ModelLoader] Loading from single safetensors file (Comfy format)")
+                components = load_from_single_file(
+                    model_path,
+                    device=device,
+                    dtype=torch_dtype,
+                    verbose=True,
+                    compile=False  # Disable compile for now
+                )
+            else:
+                print(f"[ModelLoader] Loading from diffusers directory")
+                components = load_from_local_dir(
+                    model_path,
+                    device=device,
+                    dtype=torch_dtype,
+                    verbose=True,
+                    compile=False  # Disable compile for now
+                )
 
             # Restore original config module
             if original_config is not None:

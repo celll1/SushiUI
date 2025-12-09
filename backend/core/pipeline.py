@@ -242,6 +242,7 @@ class DiffusionPipelineManager:
             move_text_encoders_to_cpu(self.txt2img_pipeline)
             move_unet_to_cpu(self.txt2img_pipeline)
             move_vae_to_cpu(self.txt2img_pipeline)
+            torch.cuda.empty_cache()
             log_device_status("Initial load complete, all components on CPU", self.txt2img_pipeline)
 
             self.current_model = model_id

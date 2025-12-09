@@ -602,29 +602,96 @@ class LoRATrainer:
         self.lr_scheduler = None
 
     def _apply_lora(self):
-        """Apply LoRA layers to U-Net and Text Encoder modules."""
+        """Apply LoRA layers to model modules."""
         print(f"[LoRATrainer] Applying LoRA (rank={self.lora_rank}, alpha={self.lora_alpha})")
 
-        # Apply LoRA to U-Net (Transformer2DModel approach, compatible with sd-scripts)
-        unet_lora_count = self._apply_lora_to_unet_transformers()
-        print(f"[LoRATrainer] Injected {unet_lora_count} LoRA layers into U-Net")
+        if self.is_zimage:
+            # Z-Image: Apply LoRA to Transformer only (Text Encoder is frozen)
+            self._apply_lora_zimage()
+        else:
+            # SD/SDXL: Apply LoRA to U-Net and Text Encoder
+            # Apply LoRA to U-Net (Transformer2DModel approach, compatible with sd-scripts)
+            unet_lora_count = self._apply_lora_to_unet_transformers()
+            print(f"[LoRATrainer] Injected {unet_lora_count} LoRA layers into U-Net")
 
-        # Apply LoRA to Text Encoder 1
-        te1_lora_count = self._apply_lora_to_module(
-            self.text_encoder,
-            prefix="te1",
-            target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
-        )
-        print(f"[LoRATrainer] Injected {te1_lora_count} LoRA layers into Text Encoder 1")
-
-        # Apply LoRA to Text Encoder 2 (SDXL)
-        if self.text_encoder_2 is not None:
-            te2_lora_count = self._apply_lora_to_module(
-                self.text_encoder_2,
-                prefix="te2",
-                target_modules=["mlp.fc1", "mlp.fc2"]
+            # Apply LoRA to Text Encoder 1
+            te1_lora_count = self._apply_lora_to_module(
+                self.text_encoder,
+                prefix="te1",
+                target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
             )
-            print(f"[LoRATrainer] Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+            print(f"[LoRATrainer] Injected {te1_lora_count} LoRA layers into Text Encoder 1")
+
+            # Apply LoRA to Text Encoder 2 (SDXL)
+            if self.text_encoder_2 is not None:
+                te2_lora_count = self._apply_lora_to_module(
+                    self.text_encoder_2,
+                    prefix="te2",
+                    target_modules=["mlp.fc1", "mlp.fc2"]
+                )
+                print(f"[LoRATrainer] Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+
+    def _apply_lora_zimage(self):
+        """
+        Apply LoRA to Z-Image Transformer attention layers.
+
+        Targets ZImageAttention modules: to_q, to_k, to_v, to_out[0] (ModuleList)
+
+        Based on musubi-tuner's lora_zimage.py implementation:
+        - ZIMAGE_TARGET_REPLACE_MODULES = ["ZImageTransformerBlock"]
+        - Attention layers: qkv_proj, out_proj (musubi splits into to_q/k/v internally)
+        """
+        lora_count = 0
+
+        print(f"[LoRATrainer] Applying LoRA to Z-Image Transformer (ZImageAttention modules)")
+
+        # Find all ZImageAttention modules in the Transformer
+        attention_modules = []
+        for name, module in self.transformer.named_modules():
+            if module.__class__.__name__ == "ZImageAttention":
+                attention_modules.append((name, module))
+
+        print(f"[LoRATrainer] Found {len(attention_modules)} ZImageAttention modules")
+
+        # Target layers: to_q, to_k, to_v, to_out[0]
+        target_attrs = ["to_q", "to_k", "to_v"]
+
+        for attn_name, attn_module in attention_modules:
+            # Handle to_q, to_k, to_v
+            for attr_name in target_attrs:
+                if hasattr(attn_module, attr_name):
+                    original_linear = getattr(attn_module, attr_name)
+
+                    if isinstance(original_linear, torch.nn.Linear):
+                        # Create LoRA layer
+                        lora_module = inject_lora_into_linear(original_linear, self.lora_rank, self.lora_alpha)
+
+                        # Replace in attention module
+                        setattr(attn_module, attr_name, lora_module)
+
+                        # Store reference
+                        storage_key = f"transformer.{attn_name}.{attr_name}"
+                        self.lora_layers[storage_key] = lora_module
+                        lora_count += 1
+
+            # Handle to_out (ModuleList in Z-Image, first element is Linear projection)
+            if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
+                if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], torch.nn.Linear):
+                    original_linear = attn_module.to_out[0]
+
+                    # Create LoRA layer
+                    lora_module = inject_lora_into_linear(original_linear, self.lora_rank, self.lora_alpha)
+
+                    # Replace in ModuleList
+                    attn_module.to_out[0] = lora_module
+
+                    # Store reference
+                    storage_key = f"transformer.{attn_name}.to_out.0"
+                    self.lora_layers[storage_key] = lora_module
+                    lora_count += 1
+
+        print(f"[LoRATrainer] Injected {lora_count} LoRA layers into Z-Image Transformer")
+        print(f"[LoRATrainer] Text Encoder (Qwen3) is frozen (no LoRA)")
 
     def _convert_diffusers_to_sd_key(self, diffusers_name: str) -> str:
         """
@@ -788,8 +855,9 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Setting up optimizer: {optimizer_type}")
 
-        # Group trainable parameters by component (U-Net, Text Encoder 1, Text Encoder 2)
-        unet_params = []
+        # Group trainable parameters by component
+        unet_params = []  # SD/SDXL U-Net
+        transformer_params = []  # Z-Image Transformer
         text_encoder_1_params = []
         text_encoder_2_params = []
 
@@ -799,6 +867,9 @@ class LoRATrainer:
 
             if key.startswith("unet."):
                 unet_params.extend(lora_params)
+            elif key.startswith("transformer."):
+                # Z-Image Transformer
+                transformer_params.extend(lora_params)
             elif key.startswith("te2.") or key.startswith("text_encoder_2."):
                 text_encoder_2_params.extend(lora_params)
             elif key.startswith("te1.") or key.startswith("text_encoder."):
@@ -809,6 +880,10 @@ class LoRATrainer:
         if len(unet_params) > 0:
             param_groups.append({"params": unet_params, "lr": self.unet_lr})
             print(f"[LoRATrainer]   U-Net: {len(unet_params)} params, lr={self.unet_lr}")
+        if len(transformer_params) > 0:
+            # Z-Image Transformer uses unet_lr (same role as U-Net in SD/SDXL)
+            param_groups.append({"params": transformer_params, "lr": self.unet_lr})
+            print(f"[LoRATrainer]   Z-Image Transformer: {len(transformer_params)} params, lr={self.unet_lr}")
         if len(text_encoder_1_params) > 0:
             param_groups.append({"params": text_encoder_1_params, "lr": self.text_encoder_1_lr})
             print(f"[LoRATrainer]   Text Encoder 1: {len(text_encoder_1_params)} params, lr={self.text_encoder_1_lr}")

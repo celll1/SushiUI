@@ -461,7 +461,11 @@ async def generate_img2img(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(22),
+    use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
@@ -736,7 +740,11 @@ async def generate_inpaint(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(22),
+    use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),

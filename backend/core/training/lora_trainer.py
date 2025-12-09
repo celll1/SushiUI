@@ -1096,6 +1096,11 @@ class LoRATrainer:
         # Resize with aspect ratio preservation + center crop
         # This matches ai-toolkit's approach
         img_width, img_height = image.size
+
+        # Debug: Log large image resize
+        if img_width * img_height > 5000 * 5000:
+            print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
+
         scale = max(width / img_width, height / img_height)
         new_width = int(img_width * scale)
         new_height = int(img_height * scale)
@@ -1108,6 +1113,10 @@ class LoRATrainer:
         top = (new_height - height) // 2
         image = image.crop((left, top, left + width, top + height))
 
+        # Debug: Verify final size
+        if image.size != (width, height):
+            print(f"[encode_image] ERROR: Final image size {image.size} != target {(width, height)}")
+
         # Convert to tensor and normalize to [-1, 1]
         image_array = np.array(image).astype(np.float32) / 255.0
         image_array = (image_array - 0.5) * 2.0
@@ -1118,6 +1127,11 @@ class LoRATrainer:
         # Get VAE device (it might be on CPU if latent caching is enabled)
         vae_device = next(self.vae.parameters()).device
         image_tensor = image_tensor.to(device=vae_device, dtype=self.vae.dtype)
+
+        # Debug: Log VRAM before VAE encode for large images
+        if vae_device.type == 'cuda' and img_width * img_height > 5000 * 5000:
+            vram_before = torch.cuda.memory_allocated(vae_device) / 1024**3
+            print(f"[encode_image] VRAM before VAE encode: {vram_before:.2f} GB")
 
         # Encode to latents
         with torch.no_grad():
@@ -1137,6 +1151,12 @@ class LoRATrainer:
                 # SD/SDXL VAE: Use standard .encode() method
                 latents = self.vae.encode(image_tensor).latent_dist.sample()
                 latents = latents * self.vae.config.scaling_factor
+
+        # Debug: Log VRAM after VAE encode for large images
+        if vae_device.type == 'cuda' and img_width * img_height > 5000 * 5000:
+            vram_after = torch.cuda.memory_allocated(vae_device) / 1024**3
+            print(f"[encode_image] VRAM after VAE encode: {vram_after:.2f} GB")
+            print(f"[encode_image] Latent shape: {latents.shape}")
 
         return latents
 
@@ -2625,9 +2645,18 @@ class LoRATrainer:
                             image.verify()
                             image = Image.open(image_path)
 
+                            # Debug: Log large images
+                            if image.size[0] * image.size[1] > 5000 * 5000:
+                                cache_pbar.write(f"[LatentCache] WARNING: Large image {image.size[0]}x{image.size[1]} -> bucketed to {target_width}x{target_height}: {os.path.basename(image_path)}")
+
                             latents = self.encode_image(
                                 image, target_width=target_width, target_height=target_height
                             )
+
+                            # Debug: Verify latent size
+                            if latents.shape[2] * 8 != target_height or latents.shape[3] * 8 != target_width:
+                                cache_pbar.write(f"[LatentCache] ERROR: Latent size mismatch! Expected {target_height//8}x{target_width//8}, got {latents.shape[2]}x{latents.shape[3]}")
+
                             cache.save_latent(
                                 image_path, target_width, target_height, latents
                             )

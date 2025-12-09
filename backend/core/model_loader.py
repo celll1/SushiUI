@@ -399,7 +399,7 @@ class ModelLoader:
             transformer.load_state_dict(state_dict, strict=True, assign=True)
             del state_dict
 
-            print("[ModelLoader] Moving transformer to GPU...")
+            print(f"[ModelLoader] Moving transformer to {device}...")
             transformer = transformer.to(device)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -436,15 +436,18 @@ class ModelLoader:
             vae.eval()
             torch.cuda.empty_cache()
 
-            print("[ModelLoader] Loading text encoder...")
+            print(f"[ModelLoader] Loading text encoder...")
             text_encoder_path = os.path.join(base_model_path, "text_encoder")
             text_encoder = AutoModel.from_pretrained(
                 text_encoder_path,
                 dtype=torch_dtype,
                 trust_remote_code=True,
             )
+            print(f"[ModelLoader] Moving text encoder to {device}...")
             text_encoder.to(device)
             text_encoder.eval()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             print("[ModelLoader] Loading tokenizer...")
             os.environ["TOKENIZERS_PARALLELISM"] = "false"

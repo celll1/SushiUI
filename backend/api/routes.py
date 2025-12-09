@@ -609,12 +609,15 @@ async def generate_img2img(
         # Detect if SDXL
         is_sdxl = pipeline_manager.img2img_pipeline is not None and \
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
             is_sdxl,
+            is_zimage,
             img2img_fix_steps,
             steps
         )
@@ -907,12 +910,15 @@ async def generate_inpaint(
         # Detect if SDXL
         is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
             is_sdxl,
+            is_zimage,
             img2img_fix_steps,
             steps
         )

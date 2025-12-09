@@ -238,11 +238,11 @@ class DiffusionPipelineManager:
 
             # Initialize VRAM optimization: Move all components to CPU except what's immediately needed
             print("[VRAM] Initializing sequential loading strategy...")
-            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu, log_device_status
             move_text_encoders_to_cpu(self.txt2img_pipeline)
             move_unet_to_cpu(self.txt2img_pipeline)
             move_vae_to_cpu(self.txt2img_pipeline)
-            print("[VRAM] All components moved to CPU. Will load to GPU as needed.")
+            log_device_status("Initial load complete, all components on CPU", self.txt2img_pipeline)
 
             self.current_model = model_id
 
@@ -1984,6 +1984,13 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Offload all components to CPU to free VRAM
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            move_text_encoders_to_cpu(pipeline_to_use)
+            move_unet_to_cpu(pipeline_to_use)
+            move_vae_to_cpu(pipeline_to_use)
+            print("[VRAM] All components offloaded to CPU after txt2img generation")
+
             # Clear intermediate tensors
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()
@@ -2424,6 +2431,17 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Offload all components to CPU to free VRAM
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            move_text_encoders_to_cpu(pipeline_to_use)
+            move_unet_to_cpu(pipeline_to_use)
+            move_vae_to_cpu(pipeline_to_use)
+            print("[VRAM] All components offloaded to CPU after img2img generation")
+
+            # Clear intermediate tensors
+            if hasattr(self, 'device') and self.device == "cuda":
+                torch.cuda.empty_cache()
+
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
@@ -2710,6 +2728,17 @@ class DiffusionPipelineManager:
             from core.inference.attention_processors import restore_processors
             restore_processors(pipeline_to_use.unet, self.original_processors)
             self.original_processors = None
+
+        # Offload all components to CPU to free VRAM
+        from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+        move_text_encoders_to_cpu(pipeline_to_use)
+        move_unet_to_cpu(pipeline_to_use)
+        move_vae_to_cpu(pipeline_to_use)
+        print("[VRAM] All components offloaded to CPU after inpaint generation")
+
+        # Clear intermediate tensors
+        if hasattr(self, 'device') and self.device == "cuda":
+            torch.cuda.empty_cache()
 
         # Apply extensions after generation
         for ext in self.extensions:

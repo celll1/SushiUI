@@ -1046,10 +1046,9 @@ class LoRATrainer:
             )
             prompt_embeds = encoder_output.hidden_states[-2]  # [1, seq_len, 2560]
 
-        # Extract valid embeddings (masked by attention_mask)
-        valid_embeds = prompt_embeds[0][attention_mask[0]]  # [valid_seq_len, 2560]
-
-        return valid_embeds, attention_mask[0]
+        # Return full padded embeddings and mask (for easier batching during training)
+        # The mask will be used to attend only to valid tokens
+        return prompt_embeds[0], attention_mask[0]  # [max_seq_len, 2560], [max_seq_len]
 
     def encode_image(
         self,
@@ -1422,25 +1421,30 @@ class LoRATrainer:
 
         # Predict velocity using Z-Image Transformer (LoRA is already integrated)
         # Velocity target: v = data - noise
+        # Note: Z-Image Transformer expects List[Tensor] for x and cap_feats
+        # Convert batched tensors to list format
+        x_list = [noisy_latents[i] for i in range(batch_size)]
+        cap_feats_list = [caption_embeds[i] for i in range(batch_size)]
+
         if self.mixed_precision:
             # Autocast to training_dtype for forward pass
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
                 model_pred = self.transformer(
-                    hidden_states=noisy_latents,
-                    timestep=timesteps,
-                    encoder_hidden_states=caption_embeds,
-                    encoder_attention_mask=caption_mask,
-                    return_dict=False,
-                )[0]
+                    x=x_list,
+                    t=timesteps,
+                    cap_feats=cap_feats_list,
+                )
         else:
             # No mixed precision: use weight_dtype throughout
             model_pred = self.transformer(
-                hidden_states=noisy_latents,
-                timestep=timesteps,
-                encoder_hidden_states=caption_embeds,
-                encoder_attention_mask=caption_mask,
-                return_dict=False,
-            )[0]
+                x=x_list,
+                t=timesteps,
+                cap_feats=cap_feats_list,
+            )
+
+        # Z-Image Transformer returns List[Tensor], convert back to batched tensor
+        if isinstance(model_pred, list):
+            model_pred = torch.stack(model_pred, dim=0)
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")

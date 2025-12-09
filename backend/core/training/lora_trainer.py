@@ -2596,12 +2596,18 @@ class LoRATrainer:
             print(f"[CaptionCache] Caption encoding complete: {len(caption_cache)} caption(s)")
 
             # Attach cached embeddings to dataset items
+            # IMPORTANT: Create individual copies for each item to avoid reference sharing
             for batch in batches:
                 for item in batch:
                     caption = item.get("caption", "")
                     if caption and caption in caption_cache:
-                        item["cached_caption_embeds"] = caption_cache[caption]["embeddings"]
-                        item["cached_caption_mask"] = caption_cache[caption]["mask"]
+                        # Clone tensors to create independent copies (避免共享引用)
+                        item["cached_caption_embeds"] = caption_cache[caption]["embeddings"].clone()
+                        item["cached_caption_mask"] = caption_cache[caption]["mask"].clone()
+
+            # Delete caption_cache to free CPU memory
+            del caption_cache
+            torch.cuda.empty_cache()
 
             # Move Text Encoder to CPU to free VRAM (it's frozen, won't be used during training)
             print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
@@ -2896,7 +2902,8 @@ class LoRATrainer:
 
                             batched_caption_embeds = torch.cat(padded_embeds, dim=0)  # [B, max_seq_len, 2560]
                             batched_caption_masks = torch.cat(padded_masks, dim=0)  # [B, max_seq_len]
-                            del batch_caption_embeds, batch_caption_masks  # Free memory
+                            # Free intermediate tensors
+                            del batch_caption_embeds, batch_caption_masks, padded_embeds, padded_masks
                         else:
                             batched_text_embeddings = torch.cat(batch_text_embeddings, dim=0)
                             del batch_text_embeddings  # Free memory immediately after concat
@@ -2951,6 +2958,9 @@ class LoRATrainer:
                             del batched_text_embeddings
                             if self.is_sdxl:
                                 del batched_pooled_embeddings
+
+                        # Clear CUDA cache to free GPU memory
+                        torch.cuda.empty_cache()
 
                         if profile_vram:
                             print_vram_usage("After train_step and cleanup")

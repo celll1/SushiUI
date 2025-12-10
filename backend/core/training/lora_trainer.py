@@ -2263,9 +2263,9 @@ class LoRATrainer:
                 self.vae.to(self.device)
                 torch.cuda.empty_cache()
 
-                # Use PipelineManager to generate image (reuse existing Z-Image generation code)
-                from core.pipeline import PipelineManager
-                pipeline_manager = PipelineManager()
+                # Use DiffusionPipelineManager to generate image (reuse existing Z-Image generation code)
+                from core.pipeline import DiffusionPipelineManager
+                pipeline_manager = DiffusionPipelineManager()
 
                 # Generate image using Z-Image pipeline
                 with torch.no_grad():

@@ -379,12 +379,17 @@ class DiffusionPipelineManager:
                                     lora_down_weight = lora_state_dict[lora_down_key]
                                     lora_up_weight = lora_state_dict[lora_up_key]
 
+                                    # Load alpha if present
+                                    lora_alpha_key = f"{lora_key_prefix}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
                                     # Apply LoRA using inference-time implementation
                                     self._apply_lora_to_linear(
                                         original_linear,
                                         lora_down_weight,
                                         lora_up_weight,
-                                        lora_strength
+                                        lora_strength,
+                                        lora_alpha
                                     )
                                     applied_count += 1
 
@@ -401,11 +406,16 @@ class DiffusionPipelineManager:
                                 lora_down_weight = lora_state_dict[lora_down_key]
                                 lora_up_weight = lora_state_dict[lora_up_key]
 
+                                # Load alpha if present
+                                lora_alpha_key = f"{lora_key_prefix}.alpha"
+                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
                                 self._apply_lora_to_linear(
                                     original_linear,
                                     lora_down_weight,
                                     lora_up_weight,
-                                    lora_strength
+                                    lora_strength,
+                                    lora_alpha
                                 )
                                 applied_count += 1
 
@@ -416,7 +426,7 @@ class DiffusionPipelineManager:
                 import traceback
                 traceback.print_exc()
 
-    def _apply_lora_to_linear(self, linear_module: torch.nn.Linear, lora_down_weight: torch.Tensor, lora_up_weight: torch.Tensor, strength: float = 1.0):
+    def _apply_lora_to_linear(self, linear_module: torch.nn.Linear, lora_down_weight: torch.Tensor, lora_up_weight: torch.Tensor, strength: float = 1.0, alpha: torch.Tensor = None):
         """Apply LoRA weights to a linear layer (inference-time merging)
 
         Args:
@@ -424,25 +434,50 @@ class DiffusionPipelineManager:
             lora_down_weight: LoRA down projection weight [rank, in_features]
             lora_up_weight: LoRA up projection weight [out_features, rank]
             strength: LoRA strength multiplier
+            alpha: LoRA alpha parameter (scaling factor)
 
         Note:
             This merges LoRA weights directly into the linear layer for inference.
-            Formula: W' = W + strength * (lora_up @ lora_down)
+            Formula: W' = W + (alpha / rank) * strength * (lora_up @ lora_down)
         """
-        # Move LoRA weights to same device/dtype as original
+        # Move LoRA weights to same device as original
         device = linear_module.weight.device
-        dtype = linear_module.weight.dtype
+        original_dtype = linear_module.weight.dtype
 
-        lora_down = lora_down_weight.to(device=device, dtype=dtype)
-        lora_up = lora_up_weight.to(device=device, dtype=dtype)
+        # Convert to FP32 for computation (to avoid precision loss)
+        lora_down = lora_down_weight.to(device=device, dtype=torch.float32)
+        lora_up = lora_up_weight.to(device=device, dtype=torch.float32)
 
-        # Compute LoRA delta: lora_up @ lora_down
+        # Compute LoRA scaling: (alpha / rank) * strength
+        rank = lora_down.shape[0]
+        if alpha is not None:
+            alpha_value = alpha.item() if alpha.numel() == 1 else alpha[0].item()
+            scaling = (alpha_value / rank) * strength
+        else:
+            # Default: assume alpha = rank (no scaling)
+            scaling = strength
+
+        # Compute LoRA delta in FP32
         # Shape: [out_features, rank] @ [rank, in_features] = [out_features, in_features]
-        lora_delta = torch.mm(lora_up, lora_down) * strength
+        lora_delta = torch.mm(lora_up, lora_down) * scaling
 
-        # Merge into original weight: W' = W + delta
+        # DEBUG: Check weight before merge
+        weight_before_norm = linear_module.weight.data.norm().item()
+
+        # Merge into original weight in FP32, then convert back
         with torch.no_grad():
-            linear_module.weight.add_(lora_delta)
+            # Convert weight to FP32
+            weight_fp32 = linear_module.weight.data.to(torch.float32)
+            # Add delta
+            weight_fp32.add_(lora_delta)
+            # Convert back to original dtype and update
+            linear_module.weight.data = weight_fp32.to(original_dtype)
+
+        # DEBUG: Verify weight changed
+        weight_after_norm = linear_module.weight.data.norm().item()
+        delta_norm = lora_delta.norm().item()
+        alpha_str = f"{alpha_value:.1f}" if alpha is not None else "None"
+        print(f"[Z-Image LoRA DEBUG] Weight norm: {weight_before_norm:.4f} -> {weight_after_norm:.4f} (delta norm: {delta_norm:.4f}, alpha: {alpha_str}, rank: {rank}, scaling: {scaling:.4f})")
 
     def _unload_lora_zimage(self):
         """Unload LoRAs from Z-Image Transformer
@@ -611,6 +646,16 @@ class DiffusionPipelineManager:
             if not enable_block_swap:
                 # Normal mode: move entire Transformer to GPU
                 transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+
+                # DEBUG: Verify LoRA is still applied after GPU move
+                if lora_configs:
+                    for attn_name, attn_module in transformer.named_modules():
+                        if "ZImageAttention" in attn_module.__class__.__name__:
+                            if hasattr(attn_module, "to_q"):
+                                weight_norm = attn_module.to_q.weight.data.norm().item()
+                                print(f"[Z-Image LoRA DEBUG] After GPU move, first attention to_q weight norm: {weight_norm:.4f}")
+                            break
+
                 log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,

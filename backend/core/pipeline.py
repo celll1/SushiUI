@@ -1088,7 +1088,8 @@ class DiffusionPipelineManager:
 
             if apply_cfg:
                 latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
-                prompt_embeds_model_input = prompt_embeds_list + negative_prompt_embeds_list
+                # CFG input order: [negative, positive] (consistent with SD/SDXL)
+                prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
                 timestep_model_input = timestep.repeat(2)
             else:
                 latent_model_input = latents.to(input_dtype)
@@ -1120,12 +1121,13 @@ class DiffusionPipelineManager:
 
             # Apply CFG if enabled
             if apply_cfg:
-                pos_out = model_out_list[:batch_size]
-                neg_out = model_out_list[batch_size:]
+                # CFG output order matches input: [negative, positive]
+                neg_out = model_out_list[:batch_size]  # negative (uncond)
+                pos_out = model_out_list[batch_size:]  # positive (cond)
                 noise_pred = []
                 for j in range(batch_size):
-                    pos = pos_out[j].float()
                     neg = neg_out[j].float()
+                    pos = pos_out[j].float()
                     # Standard CFG formula (consistent with SD/SDXL)
                     # pred = uncond + guidance_scale * (cond - uncond)
                     pred = neg + current_guidance_scale * (pos - neg)

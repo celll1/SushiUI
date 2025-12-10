@@ -305,6 +305,156 @@ class DiffusionPipelineManager:
 
         return total_steps, t_start, actual_steps
 
+    def _load_lora_zimage(self, lora_configs: List[Dict]):
+        """Load LoRAs for Z-Image Transformer
+
+        Args:
+            lora_configs: List of LoRA configurations
+
+        Note:
+            Z-Image uses component-based architecture (not pipeline-based).
+            LoRAs are applied directly to transformer's attention modules.
+            Based on training implementation in lora_trainer.py:674-708
+        """
+        if not lora_configs:
+            return
+
+        if not self.zimage_components:
+            print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
+            return
+
+        transformer = self.zimage_components["transformer"]
+
+        # Resolve lora_manager
+        from core.extensions.lora_manager import LoRAManager
+        lora_manager = LoRAManager()
+
+        print(f"[Z-Image LoRA] Loading {len(lora_configs)} LoRA(s)...")
+
+        for i, lora_config in enumerate(lora_configs):
+            lora_path = lora_config.get("path", "")
+            lora_strength = lora_config.get("strength", 1.0)
+
+            # Resolve path
+            from pathlib import Path
+            lora_dir = Path(settings.lora_dir)
+            resolved_path = lora_dir / lora_path
+
+            if not resolved_path.exists():
+                print(f"[Z-Image LoRA] WARNING: LoRA file not found: {resolved_path}")
+                continue
+
+            print(f"[Z-Image LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+
+            # Load LoRA weights
+            from safetensors import safe_open
+
+            try:
+                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
+
+                print(f"[Z-Image LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+
+                # Apply LoRA to transformer attention modules
+                # Target modules: to_q, to_k, to_v, to_out.0 in ZImageAttention
+                applied_count = 0
+
+                # Find all attention modules
+                for attn_name, attn_module in transformer.named_modules():
+                    if "ZImageAttention" not in attn_module.__class__.__name__:
+                        continue
+
+                    # Apply to to_q, to_k, to_v
+                    for attr_name in ["to_q", "to_k", "to_v"]:
+                        if hasattr(attn_module, attr_name):
+                            original_linear = getattr(attn_module, attr_name)
+
+                            if isinstance(original_linear, torch.nn.Linear):
+                                # Build LoRA key prefix
+                                lora_key_prefix = f"transformer.{attn_name}.{attr_name}"
+                                lora_down_key = f"{lora_key_prefix}.lora_down.weight"
+                                lora_up_key = f"{lora_key_prefix}.lora_up.weight"
+
+                                # Check if LoRA weights exist for this module
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+
+                                    # Apply LoRA using inference-time implementation
+                                    self._apply_lora_to_linear(
+                                        original_linear,
+                                        lora_down_weight,
+                                        lora_up_weight,
+                                        lora_strength
+                                    )
+                                    applied_count += 1
+
+                    # Apply to to_out.0 (ModuleList)
+                    if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
+                        if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], torch.nn.Linear):
+                            original_linear = attn_module.to_out[0]
+
+                            lora_key_prefix = f"transformer.{attn_name}.to_out.0"
+                            lora_down_key = f"{lora_key_prefix}.lora_down.weight"
+                            lora_up_key = f"{lora_key_prefix}.lora_up.weight"
+
+                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                lora_down_weight = lora_state_dict[lora_down_key]
+                                lora_up_weight = lora_state_dict[lora_up_key]
+
+                                self._apply_lora_to_linear(
+                                    original_linear,
+                                    lora_down_weight,
+                                    lora_up_weight,
+                                    lora_strength
+                                )
+                                applied_count += 1
+
+                print(f"[Z-Image LoRA] Applied LoRA to {applied_count} modules")
+
+            except Exception as e:
+                print(f"[Z-Image LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _apply_lora_to_linear(self, linear_module: torch.nn.Linear, lora_down_weight: torch.Tensor, lora_up_weight: torch.Tensor, strength: float = 1.0):
+        """Apply LoRA weights to a linear layer (inference-time merging)
+
+        Args:
+            linear_module: Original linear layer
+            lora_down_weight: LoRA down projection weight [rank, in_features]
+            lora_up_weight: LoRA up projection weight [out_features, rank]
+            strength: LoRA strength multiplier
+
+        Note:
+            This merges LoRA weights directly into the linear layer for inference.
+            Formula: W' = W + strength * (lora_up @ lora_down)
+        """
+        # Move LoRA weights to same device/dtype as original
+        device = linear_module.weight.device
+        dtype = linear_module.weight.dtype
+
+        lora_down = lora_down_weight.to(device=device, dtype=dtype)
+        lora_up = lora_up_weight.to(device=device, dtype=dtype)
+
+        # Compute LoRA delta: lora_up @ lora_down
+        # Shape: [out_features, rank] @ [rank, in_features] = [out_features, in_features]
+        lora_delta = torch.mm(lora_up, lora_down) * strength
+
+        # Merge into original weight: W' = W + delta
+        with torch.no_grad():
+            linear_module.weight.add_(lora_delta)
+
+    def _unload_lora_zimage(self):
+        """Unload LoRAs from Z-Image Transformer
+
+        Note:
+            Since we merge LoRA weights directly into the linear layers,
+            we need to reload the original transformer to unload LoRAs.
+            For now, this is a no-op (LoRAs persist until model reload).
+        """
+        print("[Z-Image LoRA] Unload not implemented (LoRAs merged into weights, reload model to remove)")
+
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
 
@@ -374,6 +524,11 @@ class DiffusionPipelineManager:
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
             scheduler = self.zimage_components["scheduler"]
+
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                self._load_lora_zimage(lora_configs)
 
             # Prepare generator
             seed = params.get("seed", -1)

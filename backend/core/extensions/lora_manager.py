@@ -146,10 +146,15 @@ class LoRAManager:
                     has_lora_unet = any('lora_unet' in key for key in keys)
                     has_lora_te = any('lora_te' in key for key in keys)
 
+                    # Z-Image LoRA format (transformer-based)
+                    # Keys: transformer.layers.0.attn1.to_q.lora_down.weight
+                    has_lora_transformer = any('transformer.' in key and ('lora_down' in key or 'lora_up' in key) for key in keys)
+
                     # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
                     is_lora = (has_lora_down and has_lora_up) or \
                               (has_lora_A and has_lora_B) or \
-                              (has_lora_unet or has_lora_te)
+                              (has_lora_unet or has_lora_te) or \
+                              has_lora_transformer
 
                     if not is_lora:
                         print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")

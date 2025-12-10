@@ -463,20 +463,30 @@ class DiffusionPipelineManager:
         from core.training.lora_trainer import LoRALinearLayer
         import numpy as np
 
+        # Get true original module (unwrap if it's already a LoRA wrapper)
+        from core.training.lora_trainer import LoRALinearLayer as LoRALinearLayerClass
+
+        if isinstance(original_linear, LoRALinearLayerClass):
+            # Already wrapped - extract the original module
+            true_original = original_linear.original_module
+            print(f"[Z-Image LoRA DEBUG] Detected existing LoRA wrapper, extracting original module")
+        else:
+            true_original = original_linear
+
         # Save original module (first time only)
         if module_key not in self._zimage_lora_original_modules:
-            self._zimage_lora_original_modules[module_key] = original_linear
+            self._zimage_lora_original_modules[module_key] = true_original
 
         # Compute rank and alpha value
         rank = lora_down_weight.shape[0]
         alpha_value = alpha.item() if alpha is not None else rank
 
-        # Create LoRA wrapper
-        lora_wrapper = LoRALinearLayer(original_linear, rank=rank, alpha=alpha_value)
+        # Create LoRA wrapper using the true original module
+        lora_wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value)
 
         # Load pretrained LoRA weights
-        device = original_linear.weight.device
-        dtype = original_linear.weight.dtype
+        device = true_original.weight.device
+        dtype = true_original.weight.dtype
 
         with torch.no_grad():
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
@@ -539,11 +549,11 @@ class DiffusionPipelineManager:
                     attn_module.to_out[0] = original_module
                     unloaded_count += 1
 
-        # Clear tracking
-        self._zimage_lora_original_modules.clear()
+        # Clear wrapped modules tracking (but keep original modules for future loads)
         self._zimage_lora_wrapped_modules.clear()
 
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
+        print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image

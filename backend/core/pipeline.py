@@ -325,9 +325,8 @@ class DiffusionPipelineManager:
 
         transformer = self.zimage_components["transformer"]
 
-        # Resolve lora_manager
-        from core.extensions.lora_manager import LoRAManager
-        lora_manager = LoRAManager()
+        # Use global lora_manager instance (has user-configured additional_dirs)
+        from core.extensions.lora_manager import lora_manager
 
         print(f"[Z-Image LoRA] Loading {len(lora_configs)} LoRA(s)...")
 
@@ -335,13 +334,13 @@ class DiffusionPipelineManager:
             lora_path = lora_config.get("path", "")
             lora_strength = lora_config.get("strength", 1.0)
 
-            # Resolve path
-            from pathlib import Path
-            lora_dir = Path(settings.lora_dir)
-            resolved_path = lora_dir / lora_path
+            # Resolve path using LoRAManager (checks lora_dir + additional_dirs)
+            resolved_path = lora_manager._resolve_lora_path(lora_path)
 
-            if not resolved_path.exists():
-                print(f"[Z-Image LoRA] WARNING: LoRA file not found: {resolved_path}")
+            if resolved_path is None:
+                print(f"[Z-Image LoRA] WARNING: LoRA file not found: {lora_path}")
+                print(f"[Z-Image LoRA]   Searched in: {lora_manager.lora_dir}")
+                print(f"[Z-Image LoRA]   Additional dirs: {lora_manager.additional_dirs}")
                 continue
 
             print(f"[Z-Image LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")

@@ -1964,6 +1964,10 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Generating {len(sample_prompts)} samples at step {step}...")
 
+        # Z-Image uses different sample generation pipeline
+        if self.is_zimage:
+            return self._generate_sample_zimage(step, sample_prompts, config, vae_on_cpu)
+
         # Extract config parameters
         width = config.get("width", 1024)
         height = config.get("height", 1024)
@@ -2186,6 +2190,148 @@ class LoRATrainer:
 
         # Set back to train mode
         self.unet.train()
+
+    def _generate_sample_zimage(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
+        """
+        Generate sample images during Z-Image training.
+
+        Args:
+            step: Current training step
+            sample_prompts: List of prompt dicts with 'positive' and 'negative' keys
+            config: Generation configuration (width, height, steps, cfg_scale, sampler, etc.)
+        """
+        samples_dir = self.output_dir / "samples"
+        samples_dir.mkdir(exist_ok=True)
+
+        # Extract config parameters
+        width = config.get("width", 1024)
+        height = config.get("height", 1024)
+        num_steps = config.get("steps", 28)
+        cfg_scale = config.get("cfg_scale", 3.5)
+        sampler = config.get("sampler", "euler")
+        schedule_type = config.get("schedule_type", "sgm_uniform")
+        seed = config.get("seed", -1)
+
+        # Set components to eval mode
+        self.transformer.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+
+        print(f"[LoRATrainer] Z-Image sample generation: {width}x{height}, steps={num_steps}, cfg={cfg_scale}")
+
+        try:
+            for i, prompt_pair in enumerate(sample_prompts):
+                positive_prompt = prompt_pair.get("positive", "")
+                negative_prompt = prompt_pair.get("negative", "")
+
+                # Generate seed
+                if seed == -1:
+                    gen_seed = torch.randint(0, 2**32 - 1, (1,)).item()
+                else:
+                    gen_seed = seed + i
+
+                print(f"[LoRATrainer] Generating Z-Image sample {i} (seed={gen_seed})...")
+
+                # Move Text Encoder to GPU for encoding
+                self.text_encoder.to(self.device)
+                torch.cuda.empty_cache()
+
+                # Encode prompts using Z-Image text encoder
+                print(f"[LoRATrainer] Encoding prompts...")
+                prompt_embeds_list = []
+                negative_prompt_embeds_list = []
+
+                # Encode positive prompt
+                embeds, mask = self.encode_prompt_zimage(positive_prompt)
+                prompt_embeds_list.append(embeds)
+
+                # Encode negative prompt if CFG is enabled
+                if abs(cfg_scale - 1.0) > 1e-5:
+                    if negative_prompt:
+                        neg_embeds, neg_mask = self.encode_prompt_zimage(negative_prompt)
+                    else:
+                        neg_embeds, neg_mask = self.encode_prompt_zimage("")
+                    negative_prompt_embeds_list.append(neg_embeds)
+
+                # Move Text Encoder back to CPU
+                self.text_encoder.to('cpu')
+                torch.cuda.empty_cache()
+
+                # Move Transformer and VAE to GPU for inference
+                print(f"[LoRATrainer] Moving Transformer and VAE to GPU...")
+                self.transformer.to(self.device)
+                self.vae.to(self.device)
+                torch.cuda.empty_cache()
+
+                # Use PipelineManager to generate image (reuse existing Z-Image generation code)
+                from core.pipeline import PipelineManager
+                pipeline_manager = PipelineManager()
+
+                # Generate image using Z-Image pipeline
+                with torch.no_grad():
+                    result = pipeline_manager._generate_zimage_txt2img(
+                        transformer=self.transformer,
+                        vae=self.vae,
+                        text_encoder=self.text_encoder,  # On CPU
+                        tokenizer=self.tokenizer,
+                        prompt=positive_prompt,
+                        negative_prompt=negative_prompt if negative_prompt else None,
+                        width=width,
+                        height=height,
+                        num_inference_steps=num_steps,
+                        guidance_scale=cfg_scale,
+                        seed=gen_seed,
+                        sampler=sampler,
+                        schedule_type=schedule_type,
+                        progress_callback=None,
+                        step_callback=None,
+                    )
+
+                image = result["image"]
+
+                # Move components back to CPU to save VRAM
+                self.transformer.to('cpu')
+                self.vae.to('cpu')
+                torch.cuda.empty_cache()
+
+                # Save image
+                sample_filename = f"step_{step:06d}_sample_{i}.png"
+                sample_path = samples_dir / sample_filename
+                image.save(sample_path)
+
+                # Log to TensorBoard
+                import torchvision
+                image_tensor = torchvision.transforms.ToTensor()(image)
+                self.writer.add_image(f"samples/sample_{i}", image_tensor, global_step=step)
+
+                print(f"[LoRATrainer] Sample {i} saved: {sample_path}")
+
+        except Exception as e:
+            print(f"[LoRATrainer] ERROR generating Z-Image sample: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Restore components for training
+            print(f"[LoRATrainer] Restoring Z-Image components for training")
+
+            # Text Encoder: Keep on CPU (frozen for Z-Image)
+            self.text_encoder.to('cpu')
+
+            # Transformer: Always on GPU for training
+            self.transformer.to(self.device)
+
+            # VAE: Keep on CPU if latent caching is enabled
+            if vae_on_cpu:
+                print(f"[LoRATrainer] Keeping VAE on CPU (latent caching enabled)")
+                self.vae.to('cpu')
+            else:
+                self.vae.to(self.device)
+
+            torch.cuda.empty_cache()
+            print(f"[LoRATrainer] Z-Image components restored for training")
+
+        # Set back to train mode
+        self.transformer.train()
 
     def train(
         self,

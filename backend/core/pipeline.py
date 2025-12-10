@@ -313,7 +313,8 @@ class DiffusionPipelineManager:
 
         Note:
             Z-Image uses component-based architecture (not pipeline-based).
-            LoRAs are applied directly to transformer's attention modules.
+            LoRAs wrap original linear layers (forward-time addition, not weight merging).
+            This allows LoRAs to be unloaded by restoring original modules.
             Based on training implementation in lora_trainer.py:674-708
         """
         if not lora_configs:
@@ -324,6 +325,11 @@ class DiffusionPipelineManager:
             return
 
         transformer = self.zimage_components["transformer"]
+
+        # Store original modules for unloading (first time only)
+        if not hasattr(self, '_zimage_lora_original_modules'):
+            self._zimage_lora_original_modules = {}
+            self._zimage_lora_wrapped_modules = set()  # Track which modules have LoRA
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
@@ -383,15 +389,20 @@ class DiffusionPipelineManager:
                                     lora_alpha_key = f"{lora_key_prefix}.alpha"
                                     lora_alpha = lora_state_dict.get(lora_alpha_key, None)
 
-                                    # Apply LoRA using inference-time implementation
-                                    self._apply_lora_to_linear(
+                                    # Wrap with LoRA layer
+                                    module_key = f"{attn_name}.{attr_name}"
+                                    wrapped_module = self._wrap_with_lora(
+                                        attn_module,
+                                        attr_name,
                                         original_linear,
                                         lora_down_weight,
                                         lora_up_weight,
                                         lora_strength,
-                                        lora_alpha
+                                        lora_alpha,
+                                        module_key
                                     )
-                                    applied_count += 1
+                                    if wrapped_module is not None:
+                                        applied_count += 1
 
                     # Apply to to_out.0 (ModuleList)
                     if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
@@ -410,14 +421,20 @@ class DiffusionPipelineManager:
                                 lora_alpha_key = f"{lora_key_prefix}.alpha"
                                 lora_alpha = lora_state_dict.get(lora_alpha_key, None)
 
-                                self._apply_lora_to_linear(
+                                # Wrap with LoRA layer (to_out is ModuleList, replace [0])
+                                module_key = f"{attn_name}.to_out.0"
+                                wrapped_module = self._wrap_with_lora(
+                                    attn_module.to_out,
+                                    0,  # ModuleList index
                                     original_linear,
                                     lora_down_weight,
                                     lora_up_weight,
                                     lora_strength,
-                                    lora_alpha
+                                    lora_alpha,
+                                    module_key
                                 )
-                                applied_count += 1
+                                if wrapped_module is not None:
+                                    applied_count += 1
 
                 print(f"[Z-Image LoRA] Applied LoRA to {applied_count} modules")
 
@@ -426,68 +443,107 @@ class DiffusionPipelineManager:
                 import traceback
                 traceback.print_exc()
 
-    def _apply_lora_to_linear(self, linear_module: torch.nn.Linear, lora_down_weight: torch.Tensor, lora_up_weight: torch.Tensor, strength: float = 1.0, alpha: torch.Tensor = None):
-        """Apply LoRA weights to a linear layer (inference-time merging)
+    def _wrap_with_lora(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
+        """Wrap a linear layer with LoRA
 
         Args:
-            linear_module: Original linear layer
+            parent_module: Parent module containing the linear layer
+            attr_name: Attribute name or index (for ModuleList)
+            original_linear: Original linear layer
             lora_down_weight: LoRA down projection weight [rank, in_features]
             lora_up_weight: LoRA up projection weight [out_features, rank]
             strength: LoRA strength multiplier
-            alpha: LoRA alpha parameter (scaling factor)
+            alpha: LoRA alpha parameter
+            module_key: Unique key for this module (for tracking)
 
-        Note:
-            This merges LoRA weights directly into the linear layer for inference.
-            Formula: W' = W + (alpha / rank) * strength * (lora_up @ lora_down)
+        Returns:
+            Wrapped LoRA module or None if failed
         """
-        # Move LoRA weights to same device as original
-        device = linear_module.weight.device
-        original_dtype = linear_module.weight.dtype
+        # Import LoRALinearLayer from training code
+        from core.training.lora_trainer import LoRALinearLayer
+        import numpy as np
 
-        # Convert to FP32 for computation (to avoid precision loss)
-        lora_down = lora_down_weight.to(device=device, dtype=torch.float32)
-        lora_up = lora_up_weight.to(device=device, dtype=torch.float32)
+        # Save original module (first time only)
+        if module_key not in self._zimage_lora_original_modules:
+            self._zimage_lora_original_modules[module_key] = original_linear
 
-        # Compute LoRA scaling: (alpha / rank) * strength
-        rank = lora_down.shape[0]
-        if alpha is not None:
-            alpha_value = alpha.item() if alpha.numel() == 1 else alpha[0].item()
-            scaling = (alpha_value / rank) * strength
-        else:
-            # Default: assume alpha = rank (no scaling)
-            scaling = strength
+        # Compute rank and alpha value
+        rank = lora_down_weight.shape[0]
+        alpha_value = alpha.item() if alpha is not None else rank
 
-        # Compute LoRA delta in FP32
-        # Shape: [out_features, rank] @ [rank, in_features] = [out_features, in_features]
-        lora_delta = torch.mm(lora_up, lora_down) * scaling
+        # Create LoRA wrapper
+        lora_wrapper = LoRALinearLayer(original_linear, rank=rank, alpha=alpha_value)
 
-        # DEBUG: Check weight before merge
-        weight_before_norm = linear_module.weight.data.norm().item()
+        # Load pretrained LoRA weights
+        device = original_linear.weight.device
+        dtype = original_linear.weight.dtype
 
-        # Merge into original weight in FP32, then convert back
         with torch.no_grad():
-            # Convert weight to FP32
-            weight_fp32 = linear_module.weight.data.to(torch.float32)
-            # Add delta
-            weight_fp32.add_(lora_delta)
-            # Convert back to original dtype and update
-            linear_module.weight.data = weight_fp32.to(original_dtype)
+            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
 
-        # DEBUG: Verify weight changed
-        weight_after_norm = linear_module.weight.data.norm().item()
-        delta_norm = lora_delta.norm().item()
-        alpha_str = f"{alpha_value:.1f}" if alpha is not None else "None"
-        print(f"[Z-Image LoRA DEBUG] Weight norm: {weight_before_norm:.4f} -> {weight_after_norm:.4f} (delta norm: {delta_norm:.4f}, alpha: {alpha_str}, rank: {rank}, scaling: {scaling:.4f})")
+        # Apply strength by adjusting scaling
+        lora_wrapper.scaling = (alpha_value / rank) * strength
+
+        # Replace in parent module
+        if isinstance(attr_name, int):
+            # ModuleList index
+            parent_module[attr_name] = lora_wrapper
+        else:
+            # Attribute name
+            setattr(parent_module, attr_name, lora_wrapper)
+
+        # Track wrapped modules
+        self._zimage_lora_wrapped_modules.add(module_key)
+
+        print(f"[Z-Image LoRA DEBUG] Wrapped {module_key}: alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, scaling={lora_wrapper.scaling:.4f}")
+
+        return lora_wrapper
 
     def _unload_lora_zimage(self):
         """Unload LoRAs from Z-Image Transformer
 
-        Note:
-            Since we merge LoRA weights directly into the linear layers,
-            we need to reload the original transformer to unload LoRAs.
-            For now, this is a no-op (LoRAs persist until model reload).
+        Restores original linear layers by removing LoRA wrappers.
         """
-        print("[Z-Image LoRA] Unload not implemented (LoRAs merged into weights, reload model to remove)")
+        if not hasattr(self, '_zimage_lora_original_modules'):
+            print("[Z-Image LoRA] No LoRAs loaded")
+            return
+
+        if not self.zimage_components:
+            print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
+            return
+
+        transformer = self.zimage_components["transformer"]
+        unloaded_count = 0
+
+        print(f"[Z-Image LoRA] Unloading LoRAs ({len(self._zimage_lora_wrapped_modules)} modules)...")
+
+        # Restore original modules
+        for attn_name, attn_module in transformer.named_modules():
+            if "ZImageAttention" not in attn_module.__class__.__name__:
+                continue
+
+            # Restore to_q, to_k, to_v
+            for attr_name in ["to_q", "to_k", "to_v"]:
+                module_key = f"{attn_name}.{attr_name}"
+                if module_key in self._zimage_lora_original_modules:
+                    original_module = self._zimage_lora_original_modules[module_key]
+                    setattr(attn_module, attr_name, original_module)
+                    unloaded_count += 1
+
+            # Restore to_out.0 (ModuleList)
+            if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
+                module_key = f"{attn_name}.to_out.0"
+                if module_key in self._zimage_lora_original_modules:
+                    original_module = self._zimage_lora_original_modules[module_key]
+                    attn_module.to_out[0] = original_module
+                    unloaded_count += 1
+
+        # Clear tracking
+        self._zimage_lora_original_modules.clear()
+        self._zimage_lora_wrapped_modules.clear()
+
+        print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
@@ -559,13 +615,22 @@ class DiffusionPipelineManager:
             tokenizer = self.zimage_components["tokenizer"]
             scheduler = self.zimage_components["scheduler"]
 
-            # Load LoRAs if specified
+            # Load or unload LoRAs
             lora_configs = params.get("loras", [])
             print(f"[Z-Image] DEBUG: lora_configs received: {lora_configs}")
             print(f"[Z-Image] DEBUG: lora_configs type: {type(lora_configs)}")
             print(f"[Z-Image] DEBUG: lora_configs length: {len(lora_configs) if lora_configs else 0}")
+
             if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
+                # Load new LoRAs
                 self._load_lora_zimage(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
 
             # Prepare generator
             seed = params.get("seed", -1)

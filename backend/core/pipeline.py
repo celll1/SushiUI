@@ -864,7 +864,9 @@ class DiffusionPipelineManager:
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        do_classifier_free_guidance = guidance_scale > 1.0
+        # CFG is enabled when guidance_scale is not 1.0 (consistent with SD/SDXL)
+        # CFG=1.0: no CFG (positive only), CFG!=1.0: CFG enabled
+        do_classifier_free_guidance = abs(guidance_scale - 1.0) > 1e-5
 
         print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
 
@@ -1069,9 +1071,10 @@ class DiffusionPipelineManager:
             cfg_truncation = config_module.DEFAULT_CFG_TRUNCATION if hasattr(config_module, 'DEFAULT_CFG_TRUNCATION') else 1.0
             if do_classifier_free_guidance and cfg_truncation is not None and float(cfg_truncation) <= 1:
                 if t_norm > cfg_truncation:
-                    current_guidance_scale = 0.0
+                    current_guidance_scale = 1.0  # Set to 1.0 (no CFG) instead of 0.0
 
-            apply_cfg = do_classifier_free_guidance and current_guidance_scale > 0
+            # Apply CFG when guidance_scale is not 1.0 (consistent with SD/SDXL)
+            apply_cfg = do_classifier_free_guidance and abs(current_guidance_scale - 1.0) > 1e-5
 
             # Prepare model input (concat positive + negative if CFG)
             # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
@@ -1123,7 +1126,9 @@ class DiffusionPipelineManager:
                 for j in range(batch_size):
                     pos = pos_out[j].float()
                     neg = neg_out[j].float()
-                    pred = pos + current_guidance_scale * (pos - neg)
+                    # Standard CFG formula (consistent with SD/SDXL)
+                    # pred = uncond + guidance_scale * (cond - uncond)
+                    pred = neg + current_guidance_scale * (pos - neg)
                     noise_pred.append(pred)
                 noise_pred = torch.stack(noise_pred, dim=0)
             else:

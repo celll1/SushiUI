@@ -2954,9 +2954,99 @@ class LoRATrainer:
                                 end_idx = min(start_idx + batch_size, len(dataset_items))
                                 batches.append(dataset_items[start_idx:end_idx])
 
-                        # Re-attach caption cache to reloaded items (Z-Image only)
+                        # Rebuild caption cache for Z-Image (handle shuffle/dropout per epoch)
                         if self.is_zimage and hasattr(self, "caption_cache"):
-                            print(f"[CaptionCache] Re-attaching {len(self.caption_cache)} cached caption embeddings to reloaded items...")
+                            print(f"[CaptionCache] Checking for new captions in epoch {epoch + 1}...")
+
+                            # Collect unique captions from reloaded dataset
+                            new_unique_captions = set()
+                            for batch in batches:
+                                for item in batch:
+                                    caption = item.get("caption", "")
+                                    if caption:
+                                        new_unique_captions.add(caption)
+
+                            # Find captions that need encoding (not in cache)
+                            captions_to_encode = [c for c in new_unique_captions if c not in self.caption_cache]
+
+                            if len(captions_to_encode) > 0:
+                                print(f"[CaptionCache] Found {len(captions_to_encode)} new caption(s), encoding...")
+
+                                # Move Text Encoder to GPU temporarily
+                                print(f"[CaptionCache] Moving Text Encoder to GPU for encoding...")
+                                self.text_encoder.to(self.device)
+                                torch.cuda.empty_cache()
+
+                                # Encode new captions
+                                import sys
+                                caption_pbar = tqdm(
+                                    total=len(captions_to_encode),
+                                    desc=f"[CaptionCache] Encoding new captions (Epoch {epoch + 1})",
+                                    unit="caption",
+                                    ncols=100,
+                                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                                    file=sys.stdout,
+                                    dynamic_ncols=False,
+                                    mininterval=0.1
+                                )
+                                sys.stdout.flush()
+
+                                for caption in captions_to_encode:
+                                    try:
+                                        embeds, mask = self.encode_prompt_zimage(caption)
+                                        # Store on CPU to save VRAM
+                                        self.caption_cache[caption] = {
+                                            "embeddings": embeds.cpu(),
+                                            "mask": mask.cpu(),
+                                        }
+                                    except Exception as e:
+                                        caption_pbar.write(f"[CaptionCache] ERROR: Failed to encode caption '{caption[:50]}...': {e}")
+                                        import traceback
+                                        caption_pbar.write(traceback.format_exc())
+                                        # Store empty embeddings as fallback
+                                        self.caption_cache[caption] = {
+                                            "embeddings": torch.zeros((1, 2560), dtype=self.weight_dtype),
+                                            "mask": torch.zeros(512, dtype=torch.bool),
+                                        }
+
+                                    caption_pbar.update(1)
+                                    sys.stdout.flush()
+
+                                caption_pbar.close()
+                                sys.stdout.flush()
+
+                                # Save newly encoded captions to disk
+                                if dataset_unique_ids and len(dataset_unique_ids) > 0:
+                                    import hashlib
+                                    from pathlib import Path
+                                    cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                                    cache_base_dir.mkdir(parents=True, exist_ok=True)
+                                    print(f"[CaptionCache] Saving {len(captions_to_encode)} newly encoded captions to {cache_base_dir}...")
+                                    saved_count = 0
+                                    for caption in captions_to_encode:
+                                        if caption in self.caption_cache:
+                                            caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                                            embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
+                                            mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
+                                            try:
+                                                torch.save(self.caption_cache[caption]["embeddings"], embeds_path)
+                                                torch.save(self.caption_cache[caption]["mask"], mask_path)
+                                                saved_count += 1
+                                            except Exception as e:
+                                                print(f"[CaptionCache] WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
+                                    print(f"[CaptionCache] Saved {saved_count} caption embeddings to disk")
+
+                                # Move Text Encoder back to CPU
+                                print(f"[CaptionCache] Moving Text Encoder back to CPU...")
+                                self.text_encoder.to('cpu')
+                                torch.cuda.empty_cache()
+
+                                print(f"[CaptionCache] Caption cache updated: {len(self.caption_cache)} total captions")
+                            else:
+                                print(f"[CaptionCache] All {len(new_unique_captions)} captions already cached, no encoding needed")
+
+                            # Attach cached embeddings to reloaded items
+                            print(f"[CaptionCache] Attaching cached embeddings to {len(new_unique_captions)} unique caption(s)...")
                             reattached_count = 0
                             for batch in batches:
                                 for item in batch:
@@ -2965,7 +3055,7 @@ class LoRATrainer:
                                         item["cached_caption_embeds"] = self.caption_cache[caption]["embeddings"].clone()
                                         item["cached_caption_mask"] = self.caption_cache[caption]["mask"].clone()
                                         reattached_count += 1
-                            print(f"[CaptionCache] Re-attached embeddings to {reattached_count} items")
+                            print(f"[CaptionCache] Attached embeddings to {reattached_count} items")
                     except Exception as reload_err:
                         print(f"[LoRATrainer] ERROR: Failed to reload dataset for epoch {epoch + 1}: {reload_err}")
                         import traceback

@@ -637,20 +637,55 @@ class LoRAManager:
                             block_num = int(match.group(1))
                             blocks.add(f"OUT{block_num:02d}")
 
+                    # Check for Z-Image transformer structure
+                    elif 'noise_refiner' in key:
+                        # noise_refiner.0, noise_refiner.1 → NRef0, NRef1
+                        match = re.search(r'noise_refiner[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"NRef{block_num}")
+
+                    elif 'context_refiner' in key:
+                        # context_refiner.0, context_refiner.1 → CRef0, CRef1
+                        match = re.search(r'context_refiner[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"CRef{block_num}")
+
+                    elif 'transformer.layers.' in key:
+                        # transformer.layers.0 ~ layers.29 → FDiT00-FDiT29
+                        match = re.search(r'layers[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"FDiT{block_num:02d}")
+
                 # If no blocks found, add BASE
                 if not blocks:
                     blocks.add("BASE")
 
-            # Sort blocks: BASE, IN00-IN11, MID, OUT00-OUT11
+            # Sort blocks: BASE, IN00-IN11, MID/MID00-MID01, OUT00-OUT29 (SD/SDXL), NRef0-1, CRef0-1, FDiT00-29 (Z-Image)
             def sort_key(block):
                 if block == "BASE":
                     return (0, 0)
                 elif block == "MID":
                     return (2, 0)
+                elif block.startswith("MID"):
+                    # MID00, MID01, etc.
+                    return (2, int(block[3:]) if len(block) > 3 else 0)
                 elif block.startswith("IN"):
                     return (1, int(block[2:]))
                 elif block.startswith("OUT"):
                     return (3, int(block[3:]))
+                # Z-Image specific blocks
+                elif block.startswith("NRef"):
+                    # NRef0, NRef1
+                    return (1, int(block[4:]))
+                elif block.startswith("CRef"):
+                    # CRef0, CRef1
+                    return (2, int(block[4:]))
+                elif block.startswith("FDiT"):
+                    # FDiT00-FDiT29
+                    return (3, int(block[4:]))
                 return (9, 0)
 
             sorted_blocks = sorted(list(blocks), key=sort_key)

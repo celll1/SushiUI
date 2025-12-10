@@ -271,6 +271,7 @@ async def generate_txt2img(
             "width": width,
             "height": height,
             "batch_size": batch_size,
+            "loras": lora_configs,  # Add LoRA configs
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,

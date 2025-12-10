@@ -527,6 +527,9 @@ class DiffusionPipelineManager:
 
             # Load LoRAs if specified
             lora_configs = params.get("loras", [])
+            print(f"[Z-Image] DEBUG: lora_configs received: {lora_configs}")
+            print(f"[Z-Image] DEBUG: lora_configs type: {type(lora_configs)}")
+            print(f"[Z-Image] DEBUG: lora_configs length: {len(lora_configs) if lora_configs else 0}")
             if lora_configs:
                 self._load_lora_zimage(lora_configs)
 

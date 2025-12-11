@@ -375,11 +375,14 @@ class LoRATrainer:
             # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
-            # Wrap transformer with BatchedZImageWrapper for memory-efficient training
-            from core.models.batched_zimage_wrapper import BatchedZImageWrapper
-            print(f"[LoRATrainer] Wrapping Z-Image Transformer with BatchedZImageWrapper for memory optimization")
-            self.transformer = BatchedZImageWrapper(self.transformer_original)
-            print(f"[LoRATrainer] BatchedZImageWrapper enabled: Batched tensor input/output (reduces VRAM usage)")
+            # Wrap transformer with BatchedZImageWrapperOptimized for complete batched processing
+            from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
+            print(f"[LoRATrainer] Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")
+            self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
+            print(f"[LoRATrainer] Phase 2 optimization: Complete batched processing (NO List[Tensor] operations)")
+            print(f"[LoRATrainer] - Batched patchify/unpatchify (no loops)")
+            print(f"[LoRATrainer] - Direct batched tensor processing throughout")
+            print(f"[LoRATrainer] - Expected VRAM reduction: significant (eliminates all List overhead)")
 
             print(f"[LoRATrainer] Z-Image model loaded successfully")
             print(f"[LoRATrainer] Scheduler type: {self.scheduler.__class__.__name__}")

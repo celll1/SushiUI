@@ -62,19 +62,14 @@ class BatchedZImageWrapper(nn.Module):
         """Expose gradient_checkpointing attribute from wrapped transformer."""
         return self.transformer.gradient_checkpointing
 
-    @property
-    def training(self):
-        """Expose training attribute from wrapped transformer."""
-        return self.transformer.training
-
     def train(self, mode=True):
-        """Set training mode."""
+        """Set training mode for both wrapper and wrapped transformer."""
         super().train(mode)
         self.transformer.train(mode)
         return self
 
     def eval(self):
-        """Set evaluation mode."""
+        """Set evaluation mode for both wrapper and wrapped transformer."""
         super().eval()
         self.transformer.eval()
         return self

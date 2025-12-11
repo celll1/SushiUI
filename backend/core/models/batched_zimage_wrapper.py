@@ -400,11 +400,20 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
         # Create attention mask for image patches
         x_attn_mask = torch.ones((B, x_padded_len), dtype=torch.bool, device=device)
-        # Mark padding positions as False (no need for loop if all batch items have same length)
 
         # Step 5: Apply noise_refiner layers (image processing)
         for layer in self.transformer.noise_refiner:
-            x_embedded = layer(x_embedded, x_attn_mask, x_freqs_cis, adaln_input)
+            if self.transformer.gradient_checkpointing and self.training:
+                x_embedded = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    x_embedded,
+                    x_attn_mask,
+                    x_freqs_cis,
+                    adaln_input,
+                    use_reentrant=False
+                )
+            else:
+                x_embedded = layer(x_embedded, x_attn_mask, x_freqs_cis, adaln_input)
 
         # Step 6: Caption embedding
         cap_embedded = self.transformer.cap_embedder(cap_feats_padded)
@@ -426,7 +435,16 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
         # Step 8: Apply context_refiner layers (caption processing)
         for layer in self.transformer.context_refiner:
-            cap_embedded = layer(cap_embedded, cap_attn_mask, cap_freqs_cis)
+            if self.transformer.gradient_checkpointing and self.training:
+                cap_embedded = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    cap_embedded,
+                    cap_attn_mask,
+                    cap_freqs_cis,
+                    use_reentrant=False
+                )
+            else:
+                cap_embedded = layer(cap_embedded, cap_attn_mask, cap_freqs_cis)
 
         # Step 9: Unify image and caption sequences (BATCHED, NO LOOPS)
         # Concatenate along sequence dimension
@@ -454,17 +472,15 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
             # Block Swap integration
             if hasattr(self.transformer, '_block_offloader') and self.transformer._block_offloader is not None:
-                self.transformer._block_offloader.submit_move_blocks_forward(layer_idx)
+                self.transformer._block_offloader.submit_move_blocks(layer_idx)
 
         # Step 11: Final layer
         unified = self.transformer.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
-        # unified: [B, x_padded_len + cap_padded_len, dim]
 
         # Step 12: Extract image patches (discard caption part)
         x_output = unified[:, :x_padded_len, :]  # [B, x_padded_len, patch_dim]
 
         # Step 13: Batched unpatchify (NO LOOPS)
         output = self.batched_unpatchify(x_output, sizes, patch_size, f_patch_size)
-        # output: [B, C, F, H, W]
 
         return output, {}

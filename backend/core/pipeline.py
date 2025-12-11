@@ -659,16 +659,13 @@ class DiffusionPipelineManager:
             num_inference_steps = params.get("steps", 8)  # Turbo default: 8 steps
             max_sequence_length = params.get("max_sequence_length", 512)
 
-            # CRITICAL: Z-Image Turbo REQUIRES guidance_scale=0.0
-            # Using CFG>0 will produce blurry/degraded images
-            # This is because Turbo is distilled with CFG augmentation baked in
-            guidance_scale = 0.0
-            user_cfg = params.get("cfg_scale", 0.0)
-            if user_cfg != 0.0:
-                print(f"[Z-Image] WARNING: Z-Image Turbo requires CFG=0.0 (user requested {user_cfg}, ignoring)")
+            # Z-Image supports CFG (guidance_scale)
+            # CFG=1.0: no CFG (positive only)
+            # CFG!=1.0: CFG enabled
+            guidance_scale = params.get("cfg_scale", 3.5)
 
             print(f"[Z-Image] Generating {width}x{height} image")
-            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale} (forced for Turbo), Seed: {seed}")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
             print(f"[Z-Image] Prompt: {prompt[:100]}...")
 
             # Import VRAM optimization functions
@@ -865,8 +862,10 @@ class DiffusionPipelineManager:
             prompt = [prompt]
 
         # CFG is enabled when guidance_scale is not 1.0 (consistent with SD/SDXL)
-        # CFG=1.0: no CFG (positive only), CFG!=1.0: CFG enabled
-        do_classifier_free_guidance = abs(guidance_scale - 1.0) > 1e-5
+        # CFG=1.0 or CFG=0.0: no CFG (positive only)
+        # CFG!=1.0 and CFG!=0.0: CFG enabled
+        # Note: CFG=0.0 is treated as "positive only" (same as CFG=1.0)
+        do_classifier_free_guidance = abs(guidance_scale - 1.0) > 1e-5 and abs(guidance_scale) > 1e-5
 
         print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
 

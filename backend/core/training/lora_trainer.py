@@ -2268,31 +2268,38 @@ class LoRATrainer:
                 self.vae.to(self.device)
                 torch.cuda.empty_cache()
 
+                # Create params dict for pipeline generation
+                gen_params = {
+                    "prompt": positive_prompt,
+                    "negative_prompt": negative_prompt if negative_prompt else "",
+                    "width": width,
+                    "height": height,
+                    "num_inference_steps": num_steps,
+                    "guidance_scale": cfg_scale,
+                    "seed": gen_seed,
+                    "sampler": sampler,
+                    "schedule_type": schedule_type,
+                }
+
                 # Use DiffusionPipelineManager to generate image (reuse existing Z-Image generation code)
                 from core.pipeline import DiffusionPipelineManager
                 pipeline_manager = DiffusionPipelineManager()
 
+                # Temporarily set Z-Image components in pipeline manager
+                pipeline_manager.is_zimage_model = True
+                pipeline_manager.zimage_transformer = self.transformer
+                pipeline_manager.zimage_vae = self.vae
+                pipeline_manager.zimage_text_encoder = self.text_encoder
+                pipeline_manager.zimage_tokenizer = self.tokenizer
+                pipeline_manager.zimage_scheduler = self.noise_scheduler  # Use training scheduler
+
                 # Generate image using Z-Image pipeline
                 with torch.no_grad():
-                    result = pipeline_manager._generate_zimage_txt2img(
-                        transformer=self.transformer,
-                        vae=self.vae,
-                        text_encoder=self.text_encoder,  # On CPU
-                        tokenizer=self.tokenizer,
-                        prompt=positive_prompt,
-                        negative_prompt=negative_prompt if negative_prompt else None,
-                        width=width,
-                        height=height,
-                        num_inference_steps=num_steps,
-                        guidance_scale=cfg_scale,
-                        seed=gen_seed,
-                        sampler=sampler,
-                        schedule_type=schedule_type,
+                    image, actual_seed = pipeline_manager._generate_txt2img_zimage(
+                        params=gen_params,
                         progress_callback=None,
                         step_callback=None,
                     )
-
-                image = result["image"]
 
                 # Move components back to CPU to save VRAM
                 self.transformer.to('cpu')

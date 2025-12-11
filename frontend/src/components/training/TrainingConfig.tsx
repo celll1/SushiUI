@@ -15,10 +15,24 @@ interface DatasetConfig {
   filters: Record<string, any>;
 }
 
+interface ModelInfo {
+  name: string;
+  path: string;
+  type: string;
+  architecture: string;
+  size_gb?: number;
+  source_dir: string;
+}
+
 export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfigProps) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
+
+  // Model architecture filters
+  const [showSD15, setShowSD15] = useState(true);
+  const [showSDXL, setShowSDXL] = useState(true);
+  const [showZImage, setShowZImage] = useState(true);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -106,11 +120,19 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
-  // Helper: Detect if model is Z-Image
+  // Helper: Detect if model is Z-Image (path-based, fallback if architecture missing)
   const isZImageModel = (modelPath: string): boolean => {
     const lowerPath = modelPath.toLowerCase();
     return lowerPath.includes('z-image') || lowerPath.includes('zimage') || lowerPath.includes('z_image');
   };
+
+  // Filter models by architecture
+  const filteredModels = availableModels.filter((model) => {
+    if (model.architecture === "sd15" && !showSD15) return false;
+    if (model.architecture === "sdxl" && !showSDXL) return false;
+    if (model.architecture === "zimage" && !showZImage) return false;
+    return true;
+  });
 
   useEffect(() => {
     loadDatasets();
@@ -163,11 +185,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     try {
       const response = await getModels();
       const models = response.models || [];
-      // Extract paths from model objects
-      const modelPaths = models.map((m: any) => m.path);
-      setAvailableModels(modelPaths);
-      if (modelPaths.length > 0) {
-        setBaseModelPath(modelPaths[0]);
+      setAvailableModels(models);
+      if (models.length > 0) {
+        setBaseModelPath(models[0].path);
       }
     } catch (err) {
       console.error("Failed to load models:", err);
@@ -689,6 +709,39 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           <label className="block text-sm font-medium mb-2">
             Base Model <span className="text-red-400">*</span>
           </label>
+
+          {/* Model Architecture Filter */}
+          <div className="flex items-center gap-4 mb-2 text-xs">
+            <span className="text-gray-400">Filter:</span>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSD15}
+                onChange={(e) => setShowSD15(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">SD 1.5</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSDXL}
+                onChange={(e) => setShowSDXL(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">SDXL</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showZImage}
+                onChange={(e) => setShowZImage(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">Z-Image</span>
+            </label>
+          </div>
+
           <select
             value={baseModelPath}
             onChange={(e) => setBaseModelPath(e.target.value)}
@@ -696,14 +749,17 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             required
           >
             <option value="">Select a model...</option>
-            {availableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
+            {filteredModels.map((model) => (
+              <option key={model.path} value={model.path}>
+                {model.name} ({model.architecture.toUpperCase()})
               </option>
             ))}
           </select>
           {availableModels.length === 0 && (
             <p className="text-xs text-gray-500 mt-1">No models available. Please add models to the models directory.</p>
+          )}
+          {filteredModels.length === 0 && availableModels.length > 0 && (
+            <p className="text-xs text-gray-500 mt-1">No models match the selected filters.</p>
           )}
         </div>
 

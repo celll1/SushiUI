@@ -61,15 +61,15 @@ class BatchedZImageWrapper(nn.Module):
 
         This allows the wrapper to transparently expose attributes from the
         wrapped transformer, such as `gradient_checkpointing`, `training`, etc.
-        """
-        # Avoid infinite recursion by checking __dict__ first
-        if name in ['transformer', 'in_channels', 'out_channels', 'dim', 'all_patch_size', 'all_f_patch_size']:
-            # These are set in __init__, should never reach here
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+        Note: This method is only called when the attribute is NOT found in
+        the instance's __dict__, so we don't need to check for 'transformer' here.
+        """
         # Delegate to wrapped transformer
+        # We need to use object.__getattribute__ to avoid infinite recursion
         try:
-            return getattr(self.transformer, name)
+            transformer = object.__getattribute__(self, 'transformer')
+            return getattr(transformer, name)
         except AttributeError:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 

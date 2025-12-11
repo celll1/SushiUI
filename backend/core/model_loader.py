@@ -151,8 +151,13 @@ class ModelLoader:
 
                     # Z-Image Comfy format detection
                     # Z-Image transformer has unique keys WITHOUT U-Net structure
-                    zimage_indicators = ['cap_embedder', 't_embedder', 'x_embedder', 'context_refiner']
-                    if all(any(k.startswith(indicator) for k in keys) for indicator in zimage_indicators):
+                    # Check for required indicators (cap_embedder, t_embedder, context_refiner)
+                    # Note: x_embedder may be "x_embedder" or "all_x_embedder" depending on architecture
+                    required_indicators = ['cap_embedder', 't_embedder', 'context_refiner']
+                    has_required = all(any(k.startswith(indicator) for k in keys) for indicator in required_indicators)
+                    has_x_embedder = any(k.startswith('x_embedder') or k.startswith('all_x_embedder') for k in keys)
+
+                    if has_required and has_x_embedder:
                         print(f"[ModelLoader] Detected Z-Image model (Comfy safetensors format): {model_path}")
                         return "zimage"
 

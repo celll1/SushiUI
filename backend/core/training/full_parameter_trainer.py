@@ -340,7 +340,9 @@ class FullParameterTrainer(LoRATrainer):
         if self.is_zimage:
             # Z-Image: Save transformer state in Comfy format (no prefix)
             # This allows checkpoints to be used directly for inference
-            checkpoint_data = self.transformer.state_dict()
+            # IMPORTANT: Use transformer_original if wrapped (avoid "transformer." prefix from wrapper)
+            transformer_to_save = getattr(self, 'transformer_original', self.transformer)
+            checkpoint_data = transformer_to_save.state_dict()
         else:
             # SD/SDXL: Save U-Net state
             for key, value in self.unet.state_dict().items():
@@ -423,10 +425,12 @@ class FullParameterTrainer(LoRATrainer):
         # Convert to float32 for saving (compatibility)
         if self.is_zimage:
             # Z-Image: Save transformer in Comfy format (no prefix, flat keys)
-            original_dtype = next(self.transformer.parameters()).dtype
-            self.transformer.to(dtype=torch.float32)
+            # IMPORTANT: Use transformer_original if wrapped (avoid "transformer." prefix from wrapper)
+            transformer_to_save = getattr(self, 'transformer_original', self.transformer)
+            original_dtype = next(transformer_to_save.parameters()).dtype
+            transformer_to_save.to(dtype=torch.float32)
             # Save without "transformer." prefix (Comfy format for compatibility with inference)
-            checkpoint_data = self.transformer.state_dict()
+            checkpoint_data = transformer_to_save.state_dict()
         else:
             # SD/SDXL: Save U-Net
             original_dtype = next(self.unet.parameters()).dtype
@@ -448,7 +452,7 @@ class FullParameterTrainer(LoRATrainer):
 
         # Restore original dtype
         if self.is_zimage:
-            self.transformer.to(dtype=original_dtype)
+            transformer_to_save.to(dtype=original_dtype)
         else:
             self.unet.to(dtype=original_dtype)
 

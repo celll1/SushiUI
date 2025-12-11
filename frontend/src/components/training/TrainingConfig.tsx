@@ -106,6 +106,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
+  // Helper: Detect if model is Z-Image
+  const isZImageModel = (modelPath: string): boolean => {
+    const lowerPath = modelPath.toLowerCase();
+    return lowerPath.includes('z-image') || lowerPath.includes('zimage') || lowerPath.includes('z_image');
+  };
+
   useEffect(() => {
     loadDatasets();
     loadModels();
@@ -113,6 +119,29 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     loadScheduleTypes();
     loadPresets();
   }, []);
+
+  // Auto-configure precision settings when model changes
+  useEffect(() => {
+    if (!baseModelPath) return;
+
+    const isZImage = isZImageModel(baseModelPath);
+
+    if (isZImage) {
+      // Z-Image defaults: bf16 for weights/training/output, fp32 for VAE
+      setWeightDtype("bf16");
+      setTrainingDtype("bf16");
+      setOutputDtype("bf16");
+      setVaeDtype("fp32");
+      // Z-Image: Cannot train text encoder (frozen)
+      setTrainTextEncoder(false);
+    } else {
+      // SD/SDXL defaults: fp16 for all
+      setWeightDtype("fp16");
+      setTrainingDtype("fp16");
+      setOutputDtype("fp16");
+      setVaeDtype("fp16");
+    }
+  }, [baseModelPath]);
 
   const loadDatasets = async () => {
     try {
@@ -424,7 +453,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
-      sample_prompts: samplePrompts.filter(p => p.positive.trim() !== ""),
+      sample_prompts: samplePrompts,  // Allow empty prompts (SD/SDXL/Z-Image can generate with empty prompts)
       sample_width: sampleWidth,
       sample_height: sampleHeight,
       sample_steps: sampleSteps,
@@ -745,7 +774,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   type="number"
                   value={totalSteps}
                   onChange={(e) => setTotalSteps(parseInt(e.target.value))}
-                  min="100"
+                  min="1"
                   max="50000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -858,10 +887,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                  className="w-4 h-4"
+                  disabled={isZImageModel(baseModelPath)}
+                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
-                  Train Text Encoder
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                  Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                 </label>
               </div>
             </div>
@@ -1226,7 +1256,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 min="512"
                 max="2048"
-                step="64"
+                step="8"
                 value={sampleWidth}
                 onChange={(e) => setSampleWidth(parseInt(e.target.value))}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1238,7 +1268,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 min="512"
                 max="2048"
-                step="64"
+                step="8"
                 value={sampleHeight}
                 onChange={(e) => setSampleHeight(parseInt(e.target.value))}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"

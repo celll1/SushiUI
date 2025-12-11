@@ -3870,10 +3870,11 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
             latent_files = sorted(step_dir.glob("latents_t*.pt"))
 
             for latent_file in latent_files:
-                # Extract timestep from filename (latents_tXXXX.pt)
+                # Extract timestep from filename (latents_tXXXX.pt or latents_t0.XXXX.pt)
                 timestep_str = latent_file.stem.replace("latents_t", "")
                 try:
-                    timestep = int(timestep_str)
+                    # Try float first (Z-Image), then int (SD/SDXL)
+                    timestep = float(timestep_str)
                     debug_latents.append({
                         "step": step,
                         "timestep": timestep,
@@ -3920,9 +3921,13 @@ async def visualize_debug_latent(
 
     # Find the latent file (use timestep if provided, otherwise use first one)
     if timestep is not None:
-        latent_file = debug_dir / f"latents_t{timestep:04d}.pt"
+        # Try both float format (Z-Image) and int format (SD/SDXL)
+        latent_file = debug_dir / f"latents_t{timestep}.pt"
         if not latent_file.exists():
-            raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
+            # Try integer format as fallback
+            latent_file = debug_dir / f"latents_t{int(timestep):04d}.pt"
+            if not latent_file.exists():
+                raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
     else:
         latent_files = sorted(debug_dir.glob("latents_t*.pt"))
         if not latent_files:

@@ -2453,6 +2453,10 @@ class LoRATrainer:
             # Predict noise residual
             latent_model_input = latents.repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1)
 
+            # Add frames dimension for Z-Image (same as inference pipeline)
+            # Z-Image expects [batch, channels, frames, height, width]
+            latent_model_input = latent_model_input.unsqueeze(2)
+
             # Call transformer
             noise_pred_list, _ = transformer(
                 x=list(torch.unbind(latent_model_input, dim=0)),

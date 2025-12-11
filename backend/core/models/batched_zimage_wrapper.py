@@ -42,9 +42,9 @@ class BatchedZImageWrapper(nn.Module):
             transformer: ZImageTransformer2DModel instance
         """
         super().__init__()
-        # Register the wrapped transformer as a submodule
-        # This is important for nn.Module to properly track it
-        self.add_module('transformer', transformer)
+        # Store wrapped transformer - use direct assignment, not add_module()
+        # nn.Module will automatically register it in _modules
+        self.transformer = transformer
 
         # Copy attributes from transformer for easy access
         self.in_channels = transformer.in_channels
@@ -64,22 +64,21 @@ class BatchedZImageWrapper(nn.Module):
         This allows the wrapper to transparently expose attributes from the
         wrapped transformer, such as `gradient_checkpointing`, `training`, etc.
 
-        Note: This method is only called when the attribute is NOT found in
-        the instance's __dict__, so we don't need to check for 'transformer' here.
+        Note: This method is only called when the attribute is NOT found.
+        Since we use direct assignment for self.transformer, it will be found
+        in _modules (via nn.Module's __getattribute__), so this only handles
+        delegation of other attributes.
         """
-        # Delegate to wrapped transformer
-        # We need to use object.__getattribute__ to avoid infinite recursion
-        try:
-            transformer = object.__getattribute__(self, 'transformer')
-        except AttributeError:
-            # transformer not yet initialized (during __init__)
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        # Check if we have a transformer (handles both __dict__ and _modules)
+        if 'transformer' in self._modules:
+            transformer = self._modules['transformer']
+            try:
+                return getattr(transformer, name)
+            except AttributeError:
+                pass
 
-        # Try to get attribute from wrapped transformer
-        try:
-            return getattr(transformer, name)
-        except AttributeError:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        # Attribute not found
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def batched_to_list(
         self,

@@ -2498,9 +2498,13 @@ class LoRATrainer:
 
     def _decode_zimage_latents(self, latents, vae):
         """Decode Z-Image latents to PIL Image."""
+        # Apply VAE scaling and shift (must match inference pipeline)
+        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+
         # VAE decode
-        latents = latents.to(dtype=vae.dtype)
-        image = vae.decode(latents).sample
+        with torch.no_grad():
+            image = vae.decode(latents, return_dict=False)[0]
 
         # Post-process
         image = (image / 2 + 0.5).clamp(0, 1)

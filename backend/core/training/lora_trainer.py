@@ -2285,13 +2285,15 @@ class LoRATrainer:
                 from core.pipeline import DiffusionPipelineManager
                 pipeline_manager = DiffusionPipelineManager()
 
-                # Temporarily set Z-Image components in pipeline manager
+                # Temporarily set Z-Image components in pipeline manager (dict format)
                 pipeline_manager.is_zimage_model = True
-                pipeline_manager.zimage_transformer = self.transformer
-                pipeline_manager.zimage_vae = self.vae
-                pipeline_manager.zimage_text_encoder = self.text_encoder
-                pipeline_manager.zimage_tokenizer = self.tokenizer
-                pipeline_manager.zimage_scheduler = self.noise_scheduler  # Use training scheduler
+                pipeline_manager.zimage_components = {
+                    "transformer": self.transformer,
+                    "vae": self.vae,
+                    "text_encoder": self.text_encoder,
+                    "tokenizer": self.tokenizer,
+                    "scheduler": self.noise_scheduler  # Use training scheduler
+                }
 
                 # Generate image using Z-Image pipeline
                 with torch.no_grad():

@@ -1103,6 +1103,8 @@ async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
 @router.get("/models")
 async def get_models(db: Session = Depends(get_gallery_db)):
     """Get list of available models from default and user-configured directories"""
+    from core.model_loader import ModelLoader
+
     models = []
 
     # Get user-configured directories
@@ -1120,6 +1122,10 @@ async def get_models(db: Session = Depends(get_gallery_db)):
         print(f"[Models] Scanning directory: {models_dir}")
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
+
+            # Detect model architecture (sd15, sdxl, zimage)
+            architecture = ModelLoader.detect_model_type(item_path)
+
             if os.path.isdir(item_path):
                 # Diffusers format directory
                 models.append({
@@ -1127,7 +1133,8 @@ async def get_models(db: Session = Depends(get_gallery_db)):
                     "path": item_path,
                     "type": "diffusers",
                     "source_type": "diffusers",
-                    "source_dir": models_dir
+                    "source_dir": models_dir,
+                    "architecture": architecture
                 })
             elif item.endswith('.safetensors'):
                 # Safetensors file
@@ -1138,7 +1145,8 @@ async def get_models(db: Session = Depends(get_gallery_db)):
                     "type": "safetensors",
                     "source_type": "safetensors",
                     "size_gb": round(file_size, 2),
-                    "source_dir": models_dir
+                    "source_dir": models_dir,
+                    "architecture": architecture
                 })
 
     print(f"[Models] Found {len(models)} models total")

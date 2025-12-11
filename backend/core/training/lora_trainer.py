@@ -2453,6 +2453,10 @@ class LoRATrainer:
             # Predict noise residual
             latent_model_input = latents.repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1)
 
+            # Convert to transformer's dtype (bfloat16) - same as inference pipeline
+            transformer_dtype = next(transformer.parameters()).dtype
+            latent_model_input = latent_model_input.to(transformer_dtype)
+
             # Add frames dimension for Z-Image (same as inference pipeline)
             # Z-Image expects [batch, channels, frames, height, width]
             latent_model_input = latent_model_input.unsqueeze(2)

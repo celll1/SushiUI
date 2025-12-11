@@ -312,6 +312,15 @@ def main():
                 'seed': process_config['sample'].get('seed', -1),
             }
 
+            # Debug: Log sample generation settings
+            print(f"[TrainRunner] Sample generation settings:")
+            print(f"  sample_every: {process_config['sample'].get('sample_every', 100)}")
+            print(f"  sample_prompts: {len(sample_prompts) if sample_prompts else 0} prompts")
+            if sample_prompts:
+                for i, prompt in enumerate(sample_prompts):
+                    print(f"    Prompt {i}: positive={prompt.get('positive', '')[:50]}..., negative={prompt.get('negative', '')[:50]}...")
+            print(f"  sample_config: {sample_config}")
+
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
@@ -468,6 +477,15 @@ def main():
                 'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
                 'seed': process_config['sample'].get('seed', -1),
             }
+
+            # Debug: Log sample generation settings
+            print(f"[TrainRunner] Sample generation settings:")
+            print(f"  sample_every: {process_config['sample'].get('sample_every', 100)}")
+            print(f"  sample_prompts: {len(sample_prompts) if sample_prompts else 0} prompts")
+            if sample_prompts:
+                for i, prompt in enumerate(sample_prompts):
+                    print(f"    Prompt {i}: positive={prompt.get('positive', '')[:50]}..., negative={prompt.get('negative', '')[:50]}...")
+            print(f"  sample_config: {sample_config}")
 
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)

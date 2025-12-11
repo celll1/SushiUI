@@ -3501,10 +3501,14 @@ class LoRATrainer:
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
-                        if sample_prompts and sample_config and (global_step == 0 or global_step % sample_every == 0):
-                            print(f"[LoRATrainer] Generating samples at step {global_step}")
-                            vae_on_cpu = len(latent_caches) > 0
-                            self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
+                        should_generate_sample = (global_step == 0 or global_step % sample_every == 0)
+                        if should_generate_sample:
+                            if sample_prompts and sample_config:
+                                print(f"[LoRATrainer] Generating samples at step {global_step}")
+                                vae_on_cpu = len(latent_caches) > 0
+                                self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
+                            else:
+                                print(f"[LoRATrainer] Skipping sample generation at step {global_step}: sample_prompts={sample_prompts is not None and len(sample_prompts) > 0}, sample_config={sample_config is not None}")
 
                     except Exception as e:
                         print(f"[LoRATrainer] ERROR processing batch: {e}")

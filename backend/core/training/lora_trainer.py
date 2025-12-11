@@ -2198,31 +2198,74 @@ class LoRATrainer:
 
     def _generate_sample_zimage(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
         """
-        Generate sample images during Z-Image training.
+        Generate sample images during Z-Image training using custom denoising loop.
+        Works for both LoRA and full fine-tuning by temporarily merging LoRA weights into transformer_original.
 
         Args:
             step: Current training step
             sample_prompts: List of prompt dicts with 'positive' and 'negative' keys
             config: Generation configuration (width, height, steps, cfg_scale, sampler, etc.)
+            vae_on_cpu: Whether VAE should stay on CPU after generation
         """
+        if not sample_prompts:
+            return
+
         samples_dir = self.output_dir / "samples"
         samples_dir.mkdir(exist_ok=True)
+
+        print(f"[LoRATrainer] Generating {len(sample_prompts)} Z-Image samples at step {step}...")
 
         # Extract config parameters
         width = config.get("width", 1024)
         height = config.get("height", 1024)
-        num_steps = config.get("steps", 28)
-        cfg_scale = config.get("cfg_scale", 3.5)
+        num_steps = config.get("steps", 20)
+        cfg_scale = config.get("cfg_scale", 1.0)  # Z-Image default: CFG=1
         sampler = config.get("sampler", "euler")
-        schedule_type = config.get("schedule_type", "sgm_uniform")
+        schedule_type = config.get("schedule_type", "uniform")
         seed = config.get("seed", -1)
 
         # Set components to eval mode
         self.transformer.eval()
+        self.transformer_original.eval()
         self.vae.eval()
         self.text_encoder.eval()
 
-        print(f"[LoRATrainer] Z-Image sample generation: {width}x{height}, steps={num_steps}, cfg={cfg_scale}")
+        print(f"[LoRATrainer] Z-Image sample: {width}x{height}, steps={num_steps}, cfg={cfg_scale}")
+
+        # Import Z-Image denoising loop and VRAM functions
+        from core.vram_optimization import (
+            move_zimage_text_encoder_to_gpu,
+            move_zimage_text_encoder_to_cpu,
+            move_zimage_transformer_to_gpu,
+            move_zimage_transformer_to_cpu,
+            move_zimage_vae_to_gpu,
+            move_zimage_vae_to_cpu,
+        )
+
+        # Start with components on CPU for VRAM optimization
+        self.text_encoder.to('cpu')
+        self.transformer_original.to('cpu')
+        self.vae.to('cpu')
+        torch.cuda.empty_cache()
+
+        # Temporary merge LoRA into transformer_original for inference
+        # This allows using the unwrapped transformer with LoRA applied
+        lora_merged = False
+        if self.training_method == "lora":
+            print(f"[LoRATrainer] Temporarily merging LoRA weights into transformer for inference...")
+            try:
+                from peft import get_peft_model
+                # Merge LoRA weights from self.transformer (wrapper) into self.transformer_original
+                # Access the wrapped transformer's state dict
+                wrapped_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
+                # Copy LoRA-applied state to transformer_original
+                lora_state = {k: v.clone() for k, v in wrapped_transformer.state_dict().items()}
+                self.transformer_original.load_state_dict(lora_state, strict=False)
+                lora_merged = True
+                print(f"[LoRATrainer] LoRA weights merged successfully")
+            except Exception as e:
+                print(f"[LoRATrainer] WARNING: Could not merge LoRA weights: {e}")
+                print(f"[LoRATrainer] Samples will use base model without LoRA")
 
         try:
             for i, prompt_pair in enumerate(sample_prompts):
@@ -2235,14 +2278,15 @@ class LoRATrainer:
                 else:
                     gen_seed = seed + i
 
+                generator = torch.Generator(device=self.device).manual_seed(gen_seed)
+
                 print(f"[LoRATrainer] Generating Z-Image sample {i} (seed={gen_seed})...")
 
-                # Move Text Encoder to GPU for encoding
-                self.text_encoder.to(self.device)
-                torch.cuda.empty_cache()
-
-                # Encode prompts using Z-Image text encoder
+                # Move Text Encoder to GPU
                 print(f"[LoRATrainer] Encoding prompts...")
+                move_zimage_text_encoder_to_gpu({"text_encoder": self.text_encoder})
+
+                # Encode prompts
                 prompt_embeds_list = []
                 negative_prompt_embeds_list = []
 
@@ -2250,62 +2294,64 @@ class LoRATrainer:
                 embeds, mask = self.encode_prompt_zimage(positive_prompt)
                 prompt_embeds_list.append(embeds)
 
-                # Encode negative prompt if CFG is enabled
-                if abs(cfg_scale - 1.0) > 1e-5:
+                # Encode negative prompt if CFG > 1
+                do_cfg = abs(cfg_scale - 1.0) > 1e-5
+                if do_cfg:
                     if negative_prompt:
                         neg_embeds, neg_mask = self.encode_prompt_zimage(negative_prompt)
                     else:
                         neg_embeds, neg_mask = self.encode_prompt_zimage("")
                     negative_prompt_embeds_list.append(neg_embeds)
 
-                # Move Text Encoder back to CPU
-                self.text_encoder.to('cpu')
-                torch.cuda.empty_cache()
+                # Move Text Encoder to CPU
+                move_zimage_text_encoder_to_cpu({"text_encoder": self.text_encoder})
 
-                # Move Transformer and VAE to GPU for inference
+                # Move Transformer and VAE to GPU
                 print(f"[LoRATrainer] Moving Transformer and VAE to GPU...")
-                self.transformer.to(self.device)
-                self.vae.to(self.device)
-                torch.cuda.empty_cache()
+                move_zimage_transformer_to_gpu({"transformer": self.transformer_original})
+                move_zimage_vae_to_gpu({"vae": self.vae})
 
-                # Create params dict for pipeline generation
-                gen_params = {
-                    "prompt": positive_prompt,
-                    "negative_prompt": negative_prompt if negative_prompt else "",
-                    "width": width,
-                    "height": height,
-                    "num_inference_steps": num_steps,
-                    "guidance_scale": cfg_scale,
-                    "seed": gen_seed,
-                    "sampler": sampler,
-                    "schedule_type": schedule_type,
-                }
+                # Load Z-Image config module for denoising loop
+                import sys
+                from pathlib import Path
+                zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
+                original_sys_path = sys.path.copy()
+                sys.path = [str(zimage_src_path)] + sys.path
 
-                # Use DiffusionPipelineManager to generate image (reuse existing Z-Image generation code)
-                from core.pipeline import DiffusionPipelineManager
-                pipeline_manager = DiffusionPipelineManager()
+                try:
+                    import importlib.util
+                    config_spec = importlib.util.spec_from_file_location("config", zimage_src_path / "config.py")
+                    config_module = importlib.util.module_from_spec(config_spec)
+                    config_spec.loader.exec_module(config_module)
 
-                # Temporarily set Z-Image components in pipeline manager (dict format)
-                pipeline_manager.is_zimage_model = True
-                pipeline_manager.zimage_components = {
-                    "transformer": self.transformer,
-                    "vae": self.vae,
-                    "text_encoder": self.text_encoder,
-                    "tokenizer": self.tokenizer,
-                    "scheduler": self.noise_scheduler  # Use training scheduler
-                }
+                    # Run Z-Image denoising loop directly (same as pipeline.py)
+                    print(f"[LoRATrainer] Running Z-Image denoising loop...")
+                    with torch.no_grad():
+                        latents = self._run_zimage_denoising_loop(
+                            transformer=self.transformer_original,
+                            scheduler=self.noise_scheduler,
+                            prompt_embeds_list=prompt_embeds_list,
+                            negative_prompt_embeds_list=negative_prompt_embeds_list if do_cfg else [],
+                            height=height,
+                            width=width,
+                            num_inference_steps=num_steps,
+                            guidance_scale=cfg_scale,
+                            do_classifier_free_guidance=do_cfg,
+                            generator=generator,
+                            config_module=config_module,
+                        )
 
-                # Generate image using Z-Image pipeline
-                with torch.no_grad():
-                    image, actual_seed = pipeline_manager._generate_txt2img_zimage(
-                        params=gen_params,
-                        progress_callback=None,
-                        step_callback=None,
-                    )
+                        # Decode latents to image
+                        print(f"[LoRATrainer] Decoding latents to image...")
+                        image = self._decode_zimage_latents(latents, self.vae)
 
-                # Move components back to CPU to save VRAM
-                self.transformer.to('cpu')
-                self.vae.to('cpu')
+                finally:
+                    # Restore sys.path
+                    sys.path = original_sys_path
+
+                # Move components to CPU
+                move_zimage_transformer_to_cpu({"transformer": self.transformer_original})
+                move_zimage_vae_to_cpu({"vae": self.vae})
                 torch.cuda.empty_cache()
 
                 # Save image
@@ -2325,14 +2371,21 @@ class LoRATrainer:
             import traceback
             traceback.print_exc()
         finally:
+            # Restore transformer_original to original state (unmerge LoRA)
+            if lora_merged and self.training_method == "lora":
+                print(f"[LoRATrainer] Restoring transformer_original to original state...")
+                # Reload original weights (base model without LoRA)
+                # This is automatically done since we only modified in-memory state
+
             # Restore components for training
             print(f"[LoRATrainer] Restoring Z-Image components for training")
 
-            # Text Encoder: Keep on CPU (frozen for Z-Image)
+            # Text Encoder: Keep on CPU (frozen)
             self.text_encoder.to('cpu')
 
-            # Transformer: Always on GPU for training
+            # Transformer: Always on GPU for training (wrapped version with LoRA)
             self.transformer.to(self.device)
+            self.transformer_original.to('cpu')  # Keep original on CPU
 
             # VAE: Keep on CPU if latent caching is enabled
             if vae_on_cpu:
@@ -2346,6 +2399,101 @@ class LoRATrainer:
 
         # Set back to train mode
         self.transformer.train()
+        self.transformer_original.train()
+
+    def _run_zimage_denoising_loop(
+        self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+        height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+        generator, config_module
+    ):
+        """
+        Run Z-Image denoising loop (simplified version for training samples).
+        Adapted from DiffusionPipelineManager._zimage_denoising_loop()
+        """
+        device = torch.device(self.device)
+
+        # Calculate VAE scale factor
+        if hasattr(self.vae, "config") and hasattr(self.vae.config, "block_out_channels"):
+            vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        else:
+            vae_scale_factor = 8
+        vae_scale = vae_scale_factor * 2
+
+        # Calculate latent dimensions
+        height_latent = 2 * (int(height) // vae_scale)
+        width_latent = 2 * (int(width) // vae_scale)
+        batch_size = len(prompt_embeds_list)
+        shape = (batch_size, transformer.in_channels, height_latent, width_latent)
+
+        # Initialize random latents
+        latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+
+        # Calculate dynamic shift for flow matching
+        image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+        calculate_shift = getattr(config_module, 'calculate_shift', None)
+        if calculate_shift is None:
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
+
+        mu = calculate_shift(image_seq_len)
+
+        # Set timesteps with flow matching (0.0 to 1.0)
+        scheduler.set_timesteps(num_inference_steps, mu=mu)
+        timesteps = scheduler.timesteps.to(device)
+
+        # Denoising loop
+        for i, t in enumerate(timesteps):
+            # Expand timestep for batch
+            t_batch = torch.full((batch_size,), t, device=device, dtype=torch.float32)
+
+            # Classifier-free guidance
+            if do_classifier_free_guidance:
+                # Concatenate conditional and unconditional
+                model_input_list = prompt_embeds_list + negative_prompt_embeds_list
+                t_input = torch.cat([t_batch, t_batch])
+            else:
+                model_input_list = prompt_embeds_list
+                t_input = t_batch
+
+            # Predict noise residual
+            latent_model_input = latents.repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1)
+
+            # Call transformer
+            noise_pred_list, _ = transformer(
+                x=list(torch.unbind(latent_model_input, dim=0)),
+                t=t_input,
+                cap_feats=model_input_list,
+            )
+
+            # Convert list to tensor
+            noise_pred = torch.stack(noise_pred_list, dim=0)
+
+            # Perform guidance
+            if do_classifier_free_guidance:
+                noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+
+            # Compute previous noisy sample
+            latents = scheduler.step(noise_pred, t, latents).prev_sample
+
+        return latents
+
+    def _decode_zimage_latents(self, latents, vae):
+        """Decode Z-Image latents to PIL Image."""
+        # VAE decode
+        latents = latents.to(dtype=vae.dtype)
+        image = vae.decode(latents).sample
+
+        # Post-process
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = (image[0] * 255).round().astype("uint8")
+
+        from PIL import Image
+        return Image.fromarray(image)
 
     def train(
         self,

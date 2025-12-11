@@ -395,8 +395,8 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         x_pos_ids = x_pos_ids.unsqueeze(0).expand(B, -1, -1)
 
         # Apply RoPE
-        x_freqs_cis = self.transformer.rope_embedder(x_pos_ids.view(B * x_padded_len, 3))
-        x_freqs_cis = x_freqs_cis.view(B, x_padded_len, -1)  # [B, x_padded_len, rope_dim]
+        x_freqs_cis = self.transformer.rope_embedder(x_pos_ids.reshape(B * x_padded_len, 3))
+        x_freqs_cis = x_freqs_cis.reshape(B, x_padded_len, -1)  # [B, x_padded_len, rope_dim]
 
         # Create attention mask for image patches
         x_attn_mask = torch.ones((B, x_padded_len), dtype=torch.bool, device=device)
@@ -418,8 +418,8 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         ).flatten(0, 2)  # [cap_padded_len, 3]
         cap_pos_ids = cap_pos_ids.unsqueeze(0).expand(B, -1, -1)  # [B, cap_padded_len, 3]
 
-        cap_freqs_cis = self.transformer.rope_embedder(cap_pos_ids.view(B * cap_padded_len, 3))
-        cap_freqs_cis = cap_freqs_cis.view(B, cap_padded_len, -1)
+        cap_freqs_cis = self.transformer.rope_embedder(cap_pos_ids.reshape(B * cap_padded_len, 3))
+        cap_freqs_cis = cap_freqs_cis.reshape(B, cap_padded_len, -1)
 
         # Create attention mask for captions (based on cap_mask)
         cap_attn_mask = cap_mask[:, :cap_padded_len]  # [B, cap_padded_len]

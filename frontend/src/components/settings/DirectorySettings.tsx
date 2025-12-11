@@ -7,12 +7,14 @@ interface DirectorySettingsData {
   model_dirs: string[];
   lora_dirs: string[];
   controlnet_dirs: string[];
+  cache_dir: string | null;
 }
 
 export default function DirectorySettings() {
   const [modelDirs, setModelDirs] = useState("");
   const [loraDirs, setLoraDirs] = useState("");
   const [controlnetDirs, setControlnetDirs] = useState("");
+  const [cacheDir, setCacheDir] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -34,6 +36,7 @@ export default function DirectorySettings() {
       setModelDirs((data.model_dirs || []).join("\n"));
       setLoraDirs((data.lora_dirs || []).join("\n"));
       setControlnetDirs((data.controlnet_dirs || []).join("\n"));
+      setCacheDir(data.cache_dir || "");
     } catch (error) {
       console.error("Error loading directory settings:", error);
       setMessage({ type: "error", text: "Failed to load directory settings" });
@@ -59,6 +62,7 @@ export default function DirectorySettings() {
           model_dirs: modelDirsArray,
           lora_dirs: loraDirsArray,
           controlnet_dirs: controlnetDirsArray,
+          cache_dir: cacheDir.trim() || null,
         }),
       });
 
@@ -148,6 +152,22 @@ export default function DirectorySettings() {
           />
           <p className="text-xs text-gray-500 mt-1">
             Directories containing ControlNet model files (.safetensors, .pth, .pt, .bin)
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Cache Directory
+          </label>
+          <input
+            type="text"
+            value={cacheDir}
+            onChange={(e) => setCacheDir(e.target.value)}
+            placeholder="D:\cache (leave empty for default: backend/cache)"
+            className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm font-mono"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Custom directory for training caches (latents, text embeddings). Leave empty to use default (backend/cache).
           </p>
         </div>
       </div>

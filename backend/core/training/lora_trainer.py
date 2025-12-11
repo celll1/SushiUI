@@ -2284,7 +2284,7 @@ class LoRATrainer:
 
                 # Move Text Encoder to GPU
                 print(f"[LoRATrainer] Encoding prompts...")
-                move_zimage_text_encoder_to_gpu({"text_encoder": self.text_encoder})
+                move_zimage_text_encoder_to_gpu(self.text_encoder)
 
                 # Encode prompts
                 prompt_embeds_list = []
@@ -2304,12 +2304,12 @@ class LoRATrainer:
                     negative_prompt_embeds_list.append(neg_embeds)
 
                 # Move Text Encoder to CPU
-                move_zimage_text_encoder_to_cpu({"text_encoder": self.text_encoder})
+                move_zimage_text_encoder_to_cpu(self.text_encoder)
 
                 # Move Transformer and VAE to GPU
                 print(f"[LoRATrainer] Moving Transformer and VAE to GPU...")
-                move_zimage_transformer_to_gpu({"transformer": self.transformer_original})
-                move_zimage_vae_to_gpu({"vae": self.vae})
+                move_zimage_transformer_to_gpu(self.transformer_original)
+                move_zimage_vae_to_gpu(self.vae)
 
                 # Load Z-Image config module for denoising loop
                 import sys
@@ -2350,8 +2350,8 @@ class LoRATrainer:
                     sys.path = original_sys_path
 
                 # Move components to CPU
-                move_zimage_transformer_to_cpu({"transformer": self.transformer_original})
-                move_zimage_vae_to_cpu({"vae": self.vae})
+                move_zimage_transformer_to_cpu(self.transformer_original)
+                move_zimage_vae_to_cpu(self.vae)
                 torch.cuda.empty_cache()
 
                 # Save image

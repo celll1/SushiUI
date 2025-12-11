@@ -2315,44 +2315,25 @@ class LoRATrainer:
                 move_zimage_transformer_to_gpu(self.transformer_original)
                 move_zimage_vae_to_gpu(self.vae)
 
-                # Load Z-Image config module for denoising loop
-                import sys
-                from pathlib import Path
-                # lora_trainer.py is in backend/core/training/, so go up 4 levels to reach project root
-                zimage_src_path = Path(__file__).parent.parent.parent.parent.parent / "Z-Image" / "src"
-                original_sys_path = sys.path.copy()
-                sys.path = [str(zimage_src_path)] + sys.path
+                # Run Z-Image denoising loop (using local zimage_utils, no external dependencies)
+                print(f"{self.log_prefix} Running Z-Image denoising loop...")
+                with torch.no_grad():
+                    latents = self._run_zimage_denoising_loop(
+                        transformer=self.transformer_original,
+                        scheduler=self.noise_scheduler,
+                        prompt_embeds_list=prompt_embeds_list,
+                        negative_prompt_embeds_list=negative_prompt_embeds_list if do_cfg else [],
+                        height=height,
+                        width=width,
+                        num_inference_steps=num_steps,
+                        guidance_scale=cfg_scale,
+                        do_classifier_free_guidance=do_cfg,
+                        generator=generator,
+                    )
 
-                try:
-                    import importlib.util
-                    config_spec = importlib.util.spec_from_file_location("config", zimage_src_path / "config.py")
-                    config_module = importlib.util.module_from_spec(config_spec)
-                    config_spec.loader.exec_module(config_module)
-
-                    # Run Z-Image denoising loop directly (same as pipeline.py)
-                    print(f"{self.log_prefix} Running Z-Image denoising loop...")
-                    with torch.no_grad():
-                        latents = self._run_zimage_denoising_loop(
-                            transformer=self.transformer_original,
-                            scheduler=self.noise_scheduler,
-                            prompt_embeds_list=prompt_embeds_list,
-                            negative_prompt_embeds_list=negative_prompt_embeds_list if do_cfg else [],
-                            height=height,
-                            width=width,
-                            num_inference_steps=num_steps,
-                            guidance_scale=cfg_scale,
-                            do_classifier_free_guidance=do_cfg,
-                            generator=generator,
-                            config_module=config_module,
-                        )
-
-                        # Decode latents to image
-                        print(f"{self.log_prefix} Decoding latents to image...")
-                        image = self._decode_zimage_latents(latents, self.vae)
-
-                finally:
-                    # Restore sys.path
-                    sys.path = original_sys_path
+                    # Decode latents to image
+                    print(f"{self.log_prefix} Decoding latents to image...")
+                    image = self._decode_zimage_latents(latents, self.vae)
 
                 # Move components to CPU
                 move_zimage_transformer_to_cpu(self.transformer_original)
@@ -2411,12 +2392,24 @@ class LoRATrainer:
     def _run_zimage_denoising_loop(
         self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-        generator, config_module
+        generator
     ):
         """
         Run Z-Image denoising loop (simplified version for training samples).
         Adapted from DiffusionPipelineManager._zimage_denoising_loop()
+        Uses local zimage_utils (no external dependencies).
         """
+        # Import calculate_shift from local zimage_utils (with fallback)
+        try:
+            from core.zimage_utils import calculate_shift
+        except ImportError:
+            # Fallback implementation if zimage_utils is not available
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
+
         device = torch.device(self.device)
 
         # Calculate VAE scale factor
@@ -2435,16 +2428,8 @@ class LoRATrainer:
         # Initialize random latents
         latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
 
-        # Calculate dynamic shift for flow matching
+        # Calculate dynamic shift for flow matching (using local implementation or fallback)
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
-        calculate_shift = getattr(config_module, 'calculate_shift', None)
-        if calculate_shift is None:
-            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
-                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
-                b = base_shift - m * base_seq_len
-                mu = image_seq_len * m + b
-                return mu
-
         mu = calculate_shift(image_seq_len)
 
         # Set timesteps with flow matching (0.0 to 1.0)

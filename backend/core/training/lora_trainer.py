@@ -2314,7 +2314,8 @@ class LoRATrainer:
                 # Load Z-Image config module for denoising loop
                 import sys
                 from pathlib import Path
-                zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
+                # lora_trainer.py is in backend/core/training/, so go up 4 levels to reach project root
+                zimage_src_path = Path(__file__).parent.parent.parent.parent.parent / "Z-Image" / "src"
                 original_sys_path = sys.path.copy()
                 sys.path = [str(zimage_src_path)] + sys.path
 

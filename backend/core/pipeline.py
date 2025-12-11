@@ -571,17 +571,6 @@ class DiffusionPipelineManager:
 
         print("[Z-Image] Starting txt2img generation")
 
-        # Import Z-Image utilities (local implementation, no external dependencies, with fallback)
-        try:
-            from core.zimage_utils import calculate_shift
-        except ImportError:
-            # Fallback implementation if zimage_utils is not available
-            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
-                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
-                b = base_shift - m * base_seq_len
-                mu = image_seq_len * m + b
-                return mu
-
         try:
 
             # Extract components
@@ -922,6 +911,17 @@ class DiffusionPipelineManager:
         Returns:
             latents: Denoised latents (torch.Tensor)
         """
+        # Import calculate_shift from local zimage_utils (with fallback)
+        try:
+            from core.zimage_utils import calculate_shift
+        except ImportError:
+            # Fallback implementation if zimage_utils is not available
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
+
         # Use self.device instead of transformer device (Block Swap may have weights on CPU)
         device = torch.device(self.device)
 
@@ -947,7 +947,7 @@ class DiffusionPipelineManager:
         # Calculate dynamic shift for flow matching
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
-        # Use local calculate_shift implementation (from zimage_utils.py)
+        # Use local calculate_shift implementation (from zimage_utils.py or fallback)
         mu = calculate_shift(
             image_seq_len,
             scheduler.config.get("base_image_seq_len", 256),

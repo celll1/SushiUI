@@ -1723,18 +1723,19 @@ class LoRATrainer:
                 module_name = name
 
             # Generate key prefix based on module type (same as save_checkpoint)
-            # Use diffusers format (compatible with diffusers library)
-            converted_name = module_name.replace(".", "_")
-
+            # Use diffusers format (compatible with save_checkpoint format)
             if prefix == "unet":
-                key_prefix = f"lora_unet_{converted_name}"
+                key_prefix = f"unet.{module_name}"
+            elif prefix == "transformer":
+                # Z-Image transformer (FlowDiT)
+                key_prefix = f"transformer.{module_name}"
             elif prefix == "te1":
-                key_prefix = f"lora_te1_{converted_name}"
+                key_prefix = f"text_encoder.{module_name}"
             elif prefix == "te2":
-                key_prefix = f"lora_te2_{converted_name}"
+                key_prefix = f"text_encoder_2.{module_name}"
             else:
                 # Unknown prefix, use as-is
-                key_prefix = f"lora_{prefix}_{converted_name}"
+                key_prefix = f"{prefix}.{module_name}"
 
             down_key = f"{key_prefix}.lora_down.weight"
             up_key = f"{key_prefix}.lora_up.weight"
@@ -1824,10 +1825,14 @@ class LoRATrainer:
 
             # Generate key in diffusers format (compatible with diffusers library's load_lora_weights)
             # diffusers expects keys like: "unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_k"
+            # Z-Image: "transformer.layers.0.self_attn_qkv.to_q"
             # NOT SD format like: "lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_k"
 
             if prefix == "unet":
                 key_prefix = f"unet.{module_name}"
+            elif prefix == "transformer":
+                # Z-Image transformer (FlowDiT)
+                key_prefix = f"transformer.{module_name}"
             elif prefix == "te1":
                 key_prefix = f"text_encoder.{module_name}"
             elif prefix == "te2":

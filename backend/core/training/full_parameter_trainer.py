@@ -73,19 +73,22 @@ class FullParameterTrainer(LoRATrainer):
         self.text_encoder_1_lr = None
         self.text_encoder_2_lr = None
 
-        print("[FullParameterTrainer] Initialized for full parameter fine-tuning")
+        # Override log prefix for Full Parameter Trainer
+        self.specific_log_prefix = "[FullParameterTrainer]"
+
+        print(f"{self.specific_log_prefix} Initialized for full parameter fine-tuning")
 
         # Get trainable parameter count (U-Net for SD/SDXL, Transformer for Z-Image)
         if self.is_zimage:
             trainable_params = sum(p.numel() for p in self.transformer.parameters() if p.requires_grad)
-            print(f"[FullParameterTrainer] Trainable parameters (Transformer): {trainable_params:,}")
+            print(f"{self.specific_log_prefix} Trainable parameters (Transformer): {trainable_params:,}")
         else:
             trainable_params = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
-            print(f"[FullParameterTrainer] Trainable parameters (U-Net): {trainable_params:,}")
+            print(f"{self.specific_log_prefix} Trainable parameters (U-Net): {trainable_params:,}")
 
     def _apply_lora(self):
         """Override: No LoRA application for full parameter training."""
-        print("[FullParameterTrainer] Skipping LoRA application (full parameter mode)")
+        print(f"{self.specific_log_prefix} Skipping LoRA application (full parameter mode)")
 
         # Enable gradients for all model parameters (U-Net/Transformer)
         if self.is_zimage:
@@ -93,13 +96,13 @@ class FullParameterTrainer(LoRATrainer):
             for param in self.transformer.parameters():
                 param.requires_grad = True
             trainable_count = sum(p.numel() for p in self.transformer.parameters() if p.requires_grad)
-            print(f"[FullParameterTrainer] Enabled gradients for {trainable_count:,} Transformer parameters")
+            print(f"{self.specific_log_prefix} Enabled gradients for {trainable_count:,} Transformer parameters")
         else:
             # SD/SDXL: Enable gradients for U-Net
             for param in self.unet.parameters():
                 param.requires_grad = True
             trainable_count = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
-            print(f"[FullParameterTrainer] Enabled gradients for {trainable_count:,} U-Net parameters")
+            print(f"{self.specific_log_prefix} Enabled gradients for {trainable_count:,} U-Net parameters")
 
     def setup_lora(self):
         """Override: No LoRA setup needed for full parameter training."""
@@ -113,7 +116,7 @@ class FullParameterTrainer(LoRATrainer):
             optimizer_type: Optimizer type ("adamw8bit", "adamw", "sgd", "adafactor")
             lr_scheduler_type: LR scheduler type ("constant", "cosine", "polynomial")
         """
-        print(f"[FullParameterTrainer] Setting up optimizer: {optimizer_type}, scheduler: {lr_scheduler_type}")
+        print(f"{self.specific_log_prefix} Setting up optimizer: {optimizer_type}, scheduler: {lr_scheduler_type}")
 
         # Collect all trainable parameters from U-Net/Transformer (and optionally text encoders)
         trainable_params = []
@@ -127,7 +130,7 @@ class FullParameterTrainer(LoRATrainer):
                     "params": model_params,
                     "lr": self.unet_lr if self.unet_lr is not None else self.learning_rate
                 })
-                print(f"[FullParameterTrainer] Transformer trainable parameters: {sum(p.numel() for p in model_params):,}")
+                print(f"{self.specific_log_prefix} Transformer trainable parameters: {sum(p.numel() for p in model_params):,}")
             else:
                 # SD/SDXL: Collect U-Net parameters
                 unet_params = [p for p in self.unet.parameters() if p.requires_grad]
@@ -135,7 +138,7 @@ class FullParameterTrainer(LoRATrainer):
                     "params": unet_params,
                     "lr": self.unet_lr if self.unet_lr is not None else self.learning_rate
                 })
-                print(f"[FullParameterTrainer] U-Net trainable parameters: {sum(p.numel() for p in unet_params):,}")
+                print(f"{self.specific_log_prefix} U-Net trainable parameters: {sum(p.numel() for p in unet_params):,}")
 
         # Text encoder parameters (optional, SD/SDXL only)
         if self.train_text_encoder and not self.is_zimage:
@@ -147,7 +150,7 @@ class FullParameterTrainer(LoRATrainer):
                         self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
                     )
                     trainable_params.append({"params": te1_params, "lr": te1_lr})
-                    print(f"[FullParameterTrainer] Text Encoder 1 trainable parameters: {sum(p.numel() for p in te1_params):,}")
+                    print(f"{self.specific_log_prefix} Text Encoder 1 trainable parameters: {sum(p.numel() for p in te1_params):,}")
 
                 if self.text_encoder_2:
                     te2_params = [p for p in self.text_encoder_2.parameters() if p.requires_grad]
@@ -155,14 +158,14 @@ class FullParameterTrainer(LoRATrainer):
                         self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
                     )
                     trainable_params.append({"params": te2_params, "lr": te2_lr})
-                    print(f"[FullParameterTrainer] Text Encoder 2 trainable parameters: {sum(p.numel() for p in te2_params):,}")
+                    print(f"{self.specific_log_prefix} Text Encoder 2 trainable parameters: {sum(p.numel() for p in te2_params):,}")
             else:
                 # SD1.5: Single text encoder
                 if self.text_encoder:
                     te_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
                     te_lr = self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
                     trainable_params.append({"params": te_params, "lr": te_lr})
-                    print(f"[FullParameterTrainer] Text Encoder trainable parameters: {sum(p.numel() for p in te_params):,}")
+                    print(f"{self.specific_log_prefix} Text Encoder trainable parameters: {sum(p.numel() for p in te_params):,}")
 
         if len(trainable_params) == 0:
             raise ValueError("No trainable parameters found. Enable train_unet or train_text_encoder.")
@@ -178,9 +181,9 @@ class FullParameterTrainer(LoRATrainer):
                     weight_decay=0.01,
                     eps=1e-8,
                 )
-                print("[FullParameterTrainer] Using AdamW8bit optimizer")
+                print(f"{self.specific_log_prefix} Using AdamW8bit optimizer")
             except ImportError:
-                print("[FullParameterTrainer] bitsandbytes not available, falling back to AdamW")
+                print(f"{self.specific_log_prefix} bitsandbytes not available, falling back to AdamW")
                 self.optimizer = torch.optim.AdamW(
                     trainable_params,
                     lr=self.learning_rate,
@@ -208,7 +211,7 @@ class FullParameterTrainer(LoRATrainer):
             num_training_steps=1000,  # Placeholder, will be updated in train()
         )
 
-        print(f"[FullParameterTrainer] Optimizer setup complete: {optimizer_type}, scheduler: {lr_scheduler_type}")
+        print(f"{self.specific_log_prefix} Optimizer setup complete: {optimizer_type}, scheduler: {lr_scheduler_type}")
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """
@@ -222,7 +225,7 @@ class FullParameterTrainer(LoRATrainer):
         """
         from safetensors.torch import load_file
 
-        print(f"[FullParameterTrainer] Loading checkpoint from {checkpoint_path}")
+        print(f"{self.specific_log_prefix} Loading checkpoint from {checkpoint_path}")
 
         state_dict = load_file(checkpoint_path)
 
@@ -239,17 +242,17 @@ class FullParameterTrainer(LoRATrainer):
                     if key.startswith("transformer."):
                         new_key = key[len("transformer."):]
                         transformer_state[new_key] = value
-                print(f"[FullParameterTrainer] Loading transformer weights (old format with prefix)")
+                print(f"{self.specific_log_prefix} Loading transformer weights (old format with prefix)")
             else:
                 # New Comfy format: Use directly
                 transformer_state = state_dict
-                print(f"[FullParameterTrainer] Loading transformer weights (Comfy format without prefix)")
+                print(f"{self.specific_log_prefix} Loading transformer weights (Comfy format without prefix)")
 
             if len(transformer_state) > 0:
                 self.transformer.load_state_dict(transformer_state)
-                print(f"[FullParameterTrainer] Loaded {len(transformer_state)} transformer parameters")
+                print(f"{self.specific_log_prefix} Loaded {len(transformer_state)} transformer parameters")
             else:
-                print(f"[FullParameterTrainer] WARNING: No transformer weights found in checkpoint")
+                print(f"{self.specific_log_prefix} WARNING: No transformer weights found in checkpoint")
         else:
             # SD/SDXL: Load U-Net weights
             unet_state = {}
@@ -261,9 +264,9 @@ class FullParameterTrainer(LoRATrainer):
 
             if len(unet_state) > 0:
                 self.unet.load_state_dict(unet_state)
-                print(f"[FullParameterTrainer] Loaded {len(unet_state)} U-Net parameters")
+                print(f"{self.specific_log_prefix} Loaded {len(unet_state)} U-Net parameters")
             else:
-                print(f"[FullParameterTrainer] WARNING: No U-Net weights found in checkpoint")
+                print(f"{self.specific_log_prefix} WARNING: No U-Net weights found in checkpoint")
 
         # Load text encoder weights (SD/SDXL only)
         if self.train_text_encoder and not self.is_zimage:
@@ -275,7 +278,7 @@ class FullParameterTrainer(LoRATrainer):
                         te_state[new_key] = value
                 if len(te_state) > 0:
                     self.text_encoder.load_state_dict(te_state)
-                    print(f"[FullParameterTrainer] Loaded {len(te_state)} Text Encoder parameters")
+                    print(f"{self.specific_log_prefix} Loaded {len(te_state)} Text Encoder parameters")
 
             if self.is_sdxl and self.text_encoder_2:
                 te2_state = {}
@@ -285,7 +288,7 @@ class FullParameterTrainer(LoRATrainer):
                         te2_state[new_key] = value
                 if len(te2_state) > 0:
                     self.text_encoder_2.load_state_dict(te2_state)
-                    print(f"[FullParameterTrainer] Loaded {len(te2_state)} Text Encoder 2 parameters")
+                    print(f"{self.specific_log_prefix} Loaded {len(te2_state)} Text Encoder 2 parameters")
 
         # Extract step from filename (format: full_step_{step}.safetensors)
         step = 0
@@ -293,28 +296,28 @@ class FullParameterTrainer(LoRATrainer):
             step_str = Path(checkpoint_path).stem.split("_")[-1]
             step = int(step_str)
         except (ValueError, IndexError):
-            print(f"[FullParameterTrainer] WARNING: Could not extract step from filename, defaulting to 0")
+            print(f"{self.specific_log_prefix} WARNING: Could not extract step from filename, defaulting to 0")
 
         # Load optimizer state if it exists
         optimizer_path = Path(checkpoint_path).with_suffix('.pt')
         if optimizer_path.exists() and self.optimizer is not None:
             try:
-                print(f"[FullParameterTrainer] Loading optimizer state from {optimizer_path}")
+                print(f"{self.specific_log_prefix} Loading optimizer state from {optimizer_path}")
                 checkpoint_data = torch.load(optimizer_path, map_location=self.device)
                 self.optimizer.load_state_dict(checkpoint_data['optimizer'])
                 if self.lr_scheduler and 'lr_scheduler' in checkpoint_data and checkpoint_data['lr_scheduler'] is not None:
                     self.lr_scheduler.load_state_dict(checkpoint_data['lr_scheduler'])
-                    print(f"[FullParameterTrainer] Optimizer and LR scheduler states loaded")
+                    print(f"{self.specific_log_prefix} Optimizer and LR scheduler states loaded")
                 else:
-                    print(f"[FullParameterTrainer] Optimizer state loaded")
+                    print(f"{self.specific_log_prefix} Optimizer state loaded")
             except Exception as e:
-                print(f"[FullParameterTrainer] WARNING: Failed to load optimizer state: {e}")
-                print(f"[FullParameterTrainer] Training will continue with fresh optimizer state")
+                print(f"{self.specific_log_prefix} WARNING: Failed to load optimizer state: {e}")
+                print(f"{self.specific_log_prefix} Training will continue with fresh optimizer state")
         else:
             if not optimizer_path.exists():
-                print(f"[FullParameterTrainer] No optimizer state found at {optimizer_path}")
+                print(f"{self.specific_log_prefix} No optimizer state found at {optimizer_path}")
 
-        print(f"[FullParameterTrainer] Checkpoint loaded (step {step})")
+        print(f"{self.specific_log_prefix} Checkpoint loaded (step {step})")
         return step
 
     def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
@@ -333,7 +336,7 @@ class FullParameterTrainer(LoRATrainer):
         else:
             save_path = Path(save_path)
 
-        print(f"[FullParameterTrainer] Saving checkpoint to {save_path}")
+        print(f"{self.specific_log_prefix} Saving checkpoint to {save_path}")
 
         # Flatten model state dict (safetensors requires flat dict of tensors)
         checkpoint_data = {}
@@ -370,9 +373,9 @@ class FullParameterTrainer(LoRATrainer):
                 "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
                 "step": step,
             }, optimizer_path)
-            print(f"[FullParameterTrainer] Optimizer state saved: {optimizer_path}")
+            print(f"{self.specific_log_prefix} Optimizer state saved: {optimizer_path}")
 
-        print(f"[FullParameterTrainer] Checkpoint saved: {save_path}")
+        print(f"{self.specific_log_prefix} Checkpoint saved: {save_path}")
 
         # Cleanup old checkpoints if max_to_keep is set
         if max_to_keep is not None and max_to_keep > 0:
@@ -401,16 +404,16 @@ class FullParameterTrainer(LoRATrainer):
         if checkpoint_path.exists():
             try:
                 checkpoint_path.unlink()
-                print(f"[FullParameterTrainer] Removed old checkpoint: {checkpoint_path}")
+                print(f"{self.specific_log_prefix} Removed old checkpoint: {checkpoint_path}")
             except Exception as e:
-                print(f"[FullParameterTrainer] WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
+                print(f"{self.specific_log_prefix} WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
 
         if optimizer_path.exists():
             try:
                 optimizer_path.unlink()
-                print(f"[FullParameterTrainer] Removed old optimizer state: {optimizer_path}")
+                print(f"{self.specific_log_prefix} Removed old optimizer state: {optimizer_path}")
             except Exception as e:
-                print(f"[FullParameterTrainer] WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
+                print(f"{self.specific_log_prefix} WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
 
     def merge_and_save(self, output_path: str):
         """
@@ -419,7 +422,7 @@ class FullParameterTrainer(LoRATrainer):
         Args:
             output_path: Output safetensors path
         """
-        print(f"[FullParameterTrainer] Saving full model to {output_path}")
+        print(f"{self.specific_log_prefix} Saving full model to {output_path}")
 
         checkpoint_data = {}
 
@@ -463,4 +466,4 @@ class FullParameterTrainer(LoRATrainer):
             if self.is_sdxl and self.text_encoder_2:
                 self.text_encoder_2.to(dtype=original_dtype)
 
-        print(f"[FullParameterTrainer] Full model saved: {output_path}")
+        print(f"{self.specific_log_prefix} Full model saved: {output_path}")

@@ -25,8 +25,13 @@ limitations under the License.
 
 Modifications made by SushiUI:
 - Extracted calculate_shift function and constants for standalone use
+- Extracted dispatch_attention function (NATIVE backend only, using PyTorch SDPA)
 - Added type hints for clarity
 """
+
+from typing import Optional
+import torch
+import torch.nn.functional as F
 
 # Constants from Z-Image config/model.py
 BASE_IMAGE_SEQ_LEN = 256
@@ -71,3 +76,75 @@ def calculate_shift(
     b = base_shift - m * base_seq_len
     mu = image_seq_len * m + b
     return mu
+
+
+def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
+    """
+    Process attention mask for PyTorch SDPA.
+
+    Converts bool masks to float additive masks (-inf for masked positions).
+    Extracted from Z-Image utils/attention.py
+    """
+    if attn_mask is None:
+        return None
+
+    if attn_mask.ndim == 2:
+        attn_mask = attn_mask[:, None, None, :]
+
+    # Convert bool mask to float additive mask
+    if attn_mask.dtype == torch.bool:
+        new_mask = torch.zeros_like(attn_mask, dtype=dtype)
+        new_mask.masked_fill_(~attn_mask, float("-inf"))
+        return new_mask
+
+    return attn_mask
+
+
+def dispatch_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    backend: Optional[str] = None,
+) -> torch.Tensor:
+    """
+    Dispatch attention computation using PyTorch's scaled_dot_product_attention.
+
+    This is a simplified version that only supports the NATIVE backend (PyTorch SDPA).
+    Extracted from Z-Image utils/attention.py for standalone use.
+
+    Args:
+        query: Query tensor [batch, seq_len_q, num_heads, head_dim]
+        key: Key tensor [batch, seq_len_k, num_heads, head_dim]
+        value: Value tensor [batch, seq_len_v, num_heads, head_dim]
+        attn_mask: Optional attention mask
+        dropout_p: Dropout probability (default: 0.0)
+        is_causal: Whether to use causal masking (default: False)
+        scale: Optional scale factor for attention scores
+        backend: Attention backend (ignored, always uses NATIVE)
+
+    Returns:
+        Attention output tensor [batch, seq_len_q, num_heads, head_dim]
+    """
+    # Transpose to [batch, num_heads, seq_len, head_dim] for PyTorch SDPA
+    query = query.transpose(1, 2)
+    key = key.transpose(1, 2)
+    value = value.transpose(1, 2)
+
+    # Process attention mask
+    attn_mask = _process_mask(attn_mask, query.dtype)
+
+    # Use PyTorch's scaled_dot_product_attention (NATIVE backend)
+    out = F.scaled_dot_product_attention(
+        query, key, value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale
+    )
+
+    # Transpose back to [batch, seq_len, num_heads, head_dim]
+    return out.transpose(1, 2).contiguous()

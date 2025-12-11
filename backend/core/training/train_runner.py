@@ -481,8 +481,10 @@ def main():
 
             # Get latent caching parameters
             cache_latents_to_disk = True  # Default
+            force_recache = False  # Default
             if 'datasets' in process_config and len(process_config['datasets']) > 0:
                 cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+                force_recache = process_config['datasets'][0].get('force_recache', False)
 
             # Create reload_dataset_callback for per-epoch caption processing
             def reload_dataset_for_epoch(epoch_num: int) -> list:

@@ -55,6 +55,24 @@ class BatchedZImageWrapper(nn.Module):
         """Enable gradient checkpointing for memory-efficient training."""
         self.transformer.enable_gradient_checkpointing()
 
+    def __getattr__(self, name):
+        """
+        Delegate attribute access to the wrapped transformer.
+
+        This allows the wrapper to transparently expose attributes from the
+        wrapped transformer, such as `gradient_checkpointing`, `training`, etc.
+        """
+        # Avoid infinite recursion by checking __dict__ first
+        if name in ['transformer', 'in_channels', 'out_channels', 'dim', 'all_patch_size', 'all_f_patch_size']:
+            # These are set in __init__, should never reach here
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        # Delegate to wrapped transformer
+        try:
+            return getattr(self.transformer, name)
+        except AttributeError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     def batched_to_list(
         self,
         x: torch.Tensor,

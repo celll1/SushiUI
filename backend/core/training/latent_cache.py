@@ -17,6 +17,33 @@ import torch
 from PIL import Image
 
 
+def get_cache_base_dir() -> str:
+    """
+    Get the base cache directory from user settings.
+
+    Returns:
+        Base cache directory path (default: "cache/datasets")
+    """
+    try:
+        from database.gallery_db import get_gallery_db
+        from database.models import UserSettings
+
+        db = next(get_gallery_db())
+        try:
+            settings = db.query(UserSettings).first()
+            if settings and settings.cache_dir:
+                # User configured cache directory
+                return str(Path(settings.cache_dir) / "datasets")
+        finally:
+            db.close()
+    except Exception as e:
+        # Fallback to default if database query fails
+        print(f"[Cache] Warning: Failed to get cache_dir from settings: {e}")
+
+    # Default cache directory
+    return "cache/datasets"
+
+
 class LatentCache:
     """
     Manages disk cache for VAE latents and optionally text embeddings.
@@ -34,15 +61,17 @@ class LatentCache:
             └── cache_info.json
     """
 
-    def __init__(self, dataset_unique_id: str, base_cache_dir: str = "cache/datasets"):
+    def __init__(self, dataset_unique_id: str, base_cache_dir: str = None):
         """
         Initialize latent cache.
 
         Args:
             dataset_unique_id: Dataset unique ID (UUID)
-            base_cache_dir: Base directory for cache (relative to project root)
+            base_cache_dir: Base directory for cache (default: from user settings or "cache/datasets")
         """
         self.dataset_unique_id = dataset_unique_id
+        if base_cache_dir is None:
+            base_cache_dir = get_cache_base_dir()
         self.cache_dir = Path(base_cache_dir) / dataset_unique_id
         self.latents_dir = self.cache_dir / "latents"
         self.embeddings_dir = self.cache_dir / "text_embeddings"

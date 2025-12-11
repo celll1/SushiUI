@@ -1379,7 +1379,8 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
             settings_record = UserSettings(
                 model_dirs=[],
                 lora_dirs=[],
-                controlnet_dirs=[]
+                controlnet_dirs=[],
+                cache_dir=None
             )
             db.add(settings_record)
             db.commit()
@@ -1395,9 +1396,10 @@ async def save_directory_settings(
     model_dirs: List[str] = [],
     lora_dirs: List[str] = [],
     controlnet_dirs: List[str] = [],
+    cache_dir: str = None,
     db: Session = Depends(get_gallery_db)
 ):
-    """Save user-configured model directories"""
+    """Save user-configured model directories and cache directory"""
     try:
         # Get or create settings record
         settings_record = db.query(UserSettings).first()
@@ -1409,6 +1411,7 @@ async def save_directory_settings(
         settings_record.model_dirs = [d.strip() for d in model_dirs if d.strip()]
         settings_record.lora_dirs = [d.strip() for d in lora_dirs if d.strip()]
         settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
+        settings_record.cache_dir = cache_dir.strip() if cache_dir and cache_dir.strip() else None
         settings_record.updated_at = datetime.utcnow()
 
         db.commit()
@@ -1418,6 +1421,7 @@ async def save_directory_settings(
         print(f"  Model dirs: {settings_record.model_dirs}")
         print(f"  LoRA dirs: {settings_record.lora_dirs}")
         print(f"  ControlNet dirs: {settings_record.controlnet_dirs}")
+        print(f"  Cache dir: {settings_record.cache_dir}")
 
         # Update managers with new directories
         lora_manager.set_additional_dirs(settings_record.lora_dirs)

@@ -2884,10 +2884,11 @@ class LoRATrainer:
             # Try to load from disk cache (Z-Image caption embeddings)
             import hashlib
             from pathlib import Path
+            from core.training.latent_cache import get_cache_base_dir
             caption_cache_loaded = 0
             if dataset_unique_ids and len(dataset_unique_ids) > 0:
                 # Use first dataset_unique_id for caption cache directory
-                cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                cache_base_dir = Path(get_cache_base_dir()) / dataset_unique_ids[0] / "text_embeddings"
                 if cache_base_dir.exists():
                     print(f"[CaptionCache] Loading cached caption embeddings from {cache_base_dir}...")
                     for caption in unique_captions:
@@ -2953,7 +2954,7 @@ class LoRATrainer:
 
             # Save newly encoded captions to disk
             if len(captions_to_encode) > 0 and dataset_unique_ids and len(dataset_unique_ids) > 0:
-                cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                cache_base_dir = Path(get_cache_base_dir()) / dataset_unique_ids[0] / "text_embeddings"
                 cache_base_dir.mkdir(parents=True, exist_ok=True)
                 print(f"[CaptionCache] Saving {len(captions_to_encode)} newly encoded caption embeddings to {cache_base_dir}...")
                 saved_count = 0
@@ -3165,7 +3166,8 @@ class LoRATrainer:
                                 if dataset_unique_ids and len(dataset_unique_ids) > 0:
                                     import hashlib
                                     from pathlib import Path
-                                    cache_base_dir = Path("cache/datasets") / dataset_unique_ids[0] / "text_embeddings"
+                                    from core.training.latent_cache import get_cache_base_dir
+                                    cache_base_dir = Path(get_cache_base_dir()) / dataset_unique_ids[0] / "text_embeddings"
                                     cache_base_dir.mkdir(parents=True, exist_ok=True)
                                     print(f"[CaptionCache] Saving {len(captions_to_encode)} newly encoded captions to {cache_base_dir}...")
                                     saved_count = 0

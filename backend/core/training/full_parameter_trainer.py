@@ -320,7 +320,7 @@ class FullParameterTrainer(LoRATrainer):
         print(f"{self.specific_log_prefix} Checkpoint loaded (step {step})")
         return step
 
-    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
+    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100, run_id: Optional[int] = None, epoch: Optional[int] = None):
         """
         Save full model checkpoint.
 
@@ -330,6 +330,8 @@ class FullParameterTrainer(LoRATrainer):
             save_optimizer: Whether to save optimizer state
             max_to_keep: Maximum number of checkpoints to keep (None = keep all)
             save_every: Save interval (used for checkpoint cleanup)
+            run_id: Training run ID for database registration (optional)
+            epoch: Current epoch number (optional)
         """
         if save_path is None:
             save_path = self.output_dir / f"full_step_{step}.safetensors"
@@ -376,6 +378,32 @@ class FullParameterTrainer(LoRATrainer):
             print(f"{self.specific_log_prefix} Optimizer state saved: {optimizer_path}")
 
         print(f"{self.specific_log_prefix} Checkpoint saved: {save_path}")
+
+        # Register checkpoint in database
+        if run_id is not None:
+            try:
+                from database import get_training_db
+                from database.models import TrainingCheckpoint
+
+                db = next(get_training_db())
+                try:
+                    file_size = save_path.stat().st_size
+                    checkpoint_record = TrainingCheckpoint(
+                        run_id=run_id,
+                        checkpoint_name=save_path.name,
+                        step=step,
+                        epoch=epoch,
+                        file_path=str(save_path),
+                        file_size=file_size,
+                        loss=None  # Loss can be added if tracked
+                    )
+                    db.add(checkpoint_record)
+                    db.commit()
+                    print(f"{self.specific_log_prefix} Checkpoint registered in database (run_id={run_id}, step={step})")
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"{self.specific_log_prefix} WARNING: Failed to register checkpoint in database: {e}")
 
         # Cleanup old checkpoints if max_to_keep is set
         if max_to_keep is not None and max_to_keep > 0:

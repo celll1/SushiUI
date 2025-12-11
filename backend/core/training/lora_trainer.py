@@ -2383,9 +2383,11 @@ class LoRATrainer:
             # Text Encoder: Keep on CPU (frozen)
             self.text_encoder.to('cpu')
 
-            # Transformer: Always on GPU for training (wrapped version with LoRA)
+            # Transformer: Move both wrapper and original to GPU
+            # IMPORTANT: Move transformer_original first, then wrapper
+            # This ensures the wrapper's reference to transformer is also on GPU
+            self.transformer_original.to(self.device)
             self.transformer.to(self.device)
-            self.transformer_original.to('cpu')  # Keep original on CPU
 
             # VAE: Keep on CPU if latent caching is enabled
             if vae_on_cpu:

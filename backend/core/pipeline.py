@@ -729,7 +729,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, progress_callback, step_callback, config_module
+                generator, progress_callback, step_callback
             )
 
             # Offload Transformer to CPU to free VRAM for VAE
@@ -912,7 +912,7 @@ class DiffusionPipelineManager:
     def _zimage_denoising_loop(
         self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-        generator, progress_callback, step_callback, config_module
+        generator, progress_callback, step_callback
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1000,8 +1000,9 @@ class DiffusionPipelineManager:
             t_norm = timestep[0].item()
 
             # CFG truncation logic (disable CFG after certain timestep)
+            # Default value from Z-Image: DEFAULT_CFG_TRUNCATION = 1.0
             current_guidance_scale = guidance_scale
-            cfg_truncation = config_module.DEFAULT_CFG_TRUNCATION if hasattr(config_module, 'DEFAULT_CFG_TRUNCATION') else 1.0
+            cfg_truncation = 1.0  # Z-Image default
             if do_classifier_free_guidance and cfg_truncation is not None and float(cfg_truncation) <= 1:
                 if t_norm > cfg_truncation:
                     current_guidance_scale = 1.0  # Set to 1.0 (no CFG) instead of 0.0

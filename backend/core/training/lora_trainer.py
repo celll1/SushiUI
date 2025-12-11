@@ -1162,10 +1162,9 @@ class LoRATrainer:
                 # Split to mean and logvar, sample
                 mean, logvar = torch.chunk(h, 2, dim=1)
                 latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
-                # Apply scaling and shift
-                latents = latents * self.vae.config.scaling_factor
-                if self.vae.config.shift_factor is not None:
-                    latents = latents + self.vae.config.shift_factor
+                # Apply scaling and shift (must match ai-toolkit: z = scaling * (raw - shift))
+                shift_factor = self.vae.config.shift_factor if self.vae.config.shift_factor is not None else 0.0
+                latents = self.vae.config.scaling_factor * (latents - shift_factor)
             else:
                 # SD/SDXL VAE: Use standard .encode() method
                 latents = self.vae.encode(image_tensor).latent_dist.sample()

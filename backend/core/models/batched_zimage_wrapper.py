@@ -42,7 +42,9 @@ class BatchedZImageWrapper(nn.Module):
             transformer: ZImageTransformer2DModel instance
         """
         super().__init__()
-        self.transformer = transformer
+        # Register the wrapped transformer as a submodule
+        # This is important for nn.Module to properly track it
+        self.add_module('transformer', transformer)
 
         # Copy attributes from transformer for easy access
         self.in_channels = transformer.in_channels
@@ -69,6 +71,12 @@ class BatchedZImageWrapper(nn.Module):
         # We need to use object.__getattribute__ to avoid infinite recursion
         try:
             transformer = object.__getattribute__(self, 'transformer')
+        except AttributeError:
+            # transformer not yet initialized (during __init__)
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        # Try to get attribute from wrapped transformer
+        try:
             return getattr(transformer, name)
         except AttributeError:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")

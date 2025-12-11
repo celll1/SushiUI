@@ -2438,49 +2438,61 @@ class LoRATrainer:
 
         # Denoising loop
         for i, t in enumerate(timesteps):
-            # Expand timestep for batch
-            t_batch = torch.full((batch_size,), t, device=device, dtype=torch.float32)
+            # Normalize timestep to [0, 1] (same as inference pipeline)
+            timestep = t.expand(latents.shape[0])
+            timestep = (1000 - timestep) / 1000
+            timestep_model_input = timestep
 
-            # Classifier-free guidance
-            if do_classifier_free_guidance:
-                # Concatenate conditional and unconditional
-                model_input_list = prompt_embeds_list + negative_prompt_embeds_list
-                t_input = torch.cat([t_batch, t_batch])
-            else:
-                model_input_list = prompt_embeds_list
-                t_input = t_batch
-
-            # Predict noise residual
-            latent_model_input = latents.repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1)
-
-            # Convert to transformer's dtype (bfloat16) - same as inference pipeline
+            # Prepare model input with CFG (same as inference pipeline)
+            # Convert to transformer's dtype
             transformer_dtype = next(transformer.parameters()).dtype
-            latent_model_input = latent_model_input.to(transformer_dtype)
+
+            if do_classifier_free_guidance:
+                # CFG: duplicate latents and concatenate [negative, positive] (same order as inference)
+                latent_model_input = latents.to(transformer_dtype).repeat(2, 1, 1, 1)
+                # CFG input order: [negative, positive] (consistent with inference)
+                model_input_list = negative_prompt_embeds_list + prompt_embeds_list
+                timestep_model_input = timestep.repeat(2)
+            else:
+                latent_model_input = latents.to(transformer_dtype)
+                model_input_list = prompt_embeds_list
+                timestep_model_input = timestep
 
             # Add frames dimension for Z-Image (same as inference pipeline)
             # Z-Image expects [batch, channels, frames, height, width]
             latent_model_input = latent_model_input.unsqueeze(2)
+            latent_model_input_list = list(latent_model_input.unbind(dim=0))
 
-            # Call transformer
-            noise_pred_list, _ = transformer(
-                x=list(torch.unbind(latent_model_input, dim=0)),
-                t=t_input,
-                cap_feats=model_input_list,
-            )
+            # Call transformer (same as inference pipeline)
+            with torch.no_grad():
+                model_out_list = transformer(
+                    latent_model_input_list,
+                    timestep_model_input,
+                    model_input_list,
+                )[0]
 
-            # Convert list to tensor (will be 5D: [batch, channels, frames, height, width])
-            noise_pred = torch.stack(noise_pred_list, dim=0)
-
-            # Perform guidance
+            # Apply CFG if enabled (same as inference pipeline)
             if do_classifier_free_guidance:
-                noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                # CFG output order matches input: [negative, positive]
+                neg_out = model_out_list[:batch_size]  # negative (uncond)
+                pos_out = model_out_list[batch_size:]  # positive (cond)
+                noise_pred = []
+                for j in range(batch_size):
+                    neg = neg_out[j].float()
+                    pos = pos_out[j].float()
+                    # Standard CFG formula (consistent with inference)
+                    # pred = uncond + guidance_scale * (cond - uncond)
+                    pred = neg + guidance_scale * (pos - neg)
+                    noise_pred.append(pred)
+                noise_pred = torch.stack(noise_pred, dim=0)
+            else:
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
 
             # Remove frames dimension for scheduler (5D → 4D) and negate (same as inference pipeline)
             noise_pred = -noise_pred.squeeze(2)
 
-            # Compute previous noisy sample (scheduler expects 4D latents)
-            latents = scheduler.step(noise_pred.to(torch.float32), t, latents).prev_sample
+            # Scheduler step (same as inference pipeline)
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
         return latents
 

@@ -571,52 +571,18 @@ class DiffusionPipelineManager:
 
         print("[Z-Image] Starting txt2img generation")
 
-        # Add Z-Image source to Python path
-        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
-
-        # Temporarily replace sys.path to prioritize Z-Image modules
-        original_sys_path = sys.path.copy()
-        sys.path = [str(zimage_src_path)] + sys.path
-
-        # Store original modules for restoration in finally block
-        original_config = sys.modules.get('config')
-        original_utils = sys.modules.get('utils')
-        original_tqdm = sys.modules.get('tqdm')
+        # Import Z-Image utilities (local implementation, no external dependencies, with fallback)
+        try:
+            from core.zimage_utils import calculate_shift
+        except ImportError:
+            # Fallback implementation if zimage_utils is not available
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
 
         try:
-            import importlib.util
-
-            # CRITICAL: Load Z-Image modules and inject them into sys.modules
-            # This is required because transformer.py uses dynamic imports like:
-            #   from utils.attention import dispatch_attention
-            # These imports need the modules to be in sys.modules
-
-            # 1. Load config module
-            config_spec = importlib.util.spec_from_file_location(
-                "config",
-                zimage_src_path / "config" / "__init__.py"
-            )
-            config_module = importlib.util.module_from_spec(config_spec)
-            sys.modules['config'] = config_module
-            config_spec.loader.exec_module(config_module)
-
-            # 2. Load utils module (required for transformer.py dynamic imports)
-            utils_spec = importlib.util.spec_from_file_location(
-                "utils",
-                zimage_src_path / "utils" / "__init__.py"
-            )
-            utils_module = importlib.util.module_from_spec(utils_spec)
-            sys.modules['utils'] = utils_module
-            utils_spec.loader.exec_module(utils_module)
-
-            # 3. Load utils.attention module
-            utils_attention_spec = importlib.util.spec_from_file_location(
-                "utils.attention",
-                zimage_src_path / "utils" / "attention.py"
-            )
-            utils_attention_module = importlib.util.module_from_spec(utils_attention_spec)
-            sys.modules['utils.attention'] = utils_attention_module
-            utils_attention_spec.loader.exec_module(utils_attention_module)
 
             # Extract components
             transformer = self.zimage_components["transformer"]
@@ -808,29 +774,6 @@ class DiffusionPipelineManager:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
-        finally:
-            # Restore original sys.path and sys.modules
-            sys.path = original_sys_path
-
-            # Restore original modules to avoid conflicts
-            if original_config is not None:
-                sys.modules['config'] = original_config
-            else:
-                sys.modules.pop('config', None)
-
-            if original_utils is not None:
-                sys.modules['utils'] = original_utils
-            else:
-                sys.modules.pop('utils', None)
-
-            if original_tqdm is not None:
-                sys.modules['tqdm'] = original_tqdm
-            else:
-                sys.modules.pop('tqdm', None)
-
-            # Remove Z-Image specific modules
-            sys.modules.pop('utils.attention', None)
-            sys.modules.pop('zimage_pipeline', None)
 
     def _zimage_encode_prompt(
         self, text_encoder, tokenizer, prompt, negative_prompt,
@@ -1004,16 +947,7 @@ class DiffusionPipelineManager:
         # Calculate dynamic shift for flow matching
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
-        # Import calculate_shift from loaded config module
-        calculate_shift = getattr(config_module, 'calculate_shift', None)
-        if calculate_shift is None:
-            # Fallback implementation
-            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
-                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
-                b = base_shift - m * base_seq_len
-                mu = image_seq_len * m + b
-                return mu
-
+        # Use local calculate_shift implementation (from zimage_utils.py)
         mu = calculate_shift(
             image_seq_len,
             scheduler.config.get("base_image_seq_len", 256),

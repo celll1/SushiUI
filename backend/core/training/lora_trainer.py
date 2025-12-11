@@ -72,7 +72,7 @@ def get_torch_dtype(dtype_str: str) -> torch.dtype:
     }
 
     if dtype_str not in dtype_map:
-        print(f"[LoRATrainer] WARNING: Unknown dtype '{dtype_str}', defaulting to fp16")
+        print(f"{self.log_prefix} WARNING: Unknown dtype '{dtype_str}', defaulting to fp16")
         return torch.float16
 
     return dtype_map[dtype_str]
@@ -320,7 +320,11 @@ class LoRATrainer:
         # Legacy dtype for compatibility (defaults to weight_dtype)
         self.dtype = self.weight_dtype
 
-        print(f"[LoRATrainer] Precision settings:")
+        # Log prefix for subclass override (LoRA vs Full Finetune identification)
+        self.log_prefix = "[Trainer]"  # Common logs, subclasses can override
+        self.specific_log_prefix = "{self.log_prefix}"  # LoRA-specific logs
+
+        print(f"[Trainer] Precision settings:")
         print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
         print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
         print(f"  Output dtype: {output_dtype} ({self.output_dtype}) - for safetensors saving")
@@ -337,9 +341,9 @@ class LoRATrainer:
         tensorboard_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(tensorboard_dir))
 
-        print(f"[LoRATrainer] Initializing on {self.device}")
-        print(f"[LoRATrainer] Tensorboard logs: {tensorboard_dir}")
-        print(f"[LoRATrainer] Loading model from {model_path}")
+        print(f"{self.log_prefix} Initializing on {self.device}")
+        print(f"{self.log_prefix} Tensorboard logs: {tensorboard_dir}")
+        print(f"{self.log_prefix} Loading model from {model_path}")
 
         # Detect model type (SD1.5, SDXL, Z-Image)
         from core.model_loader import ModelLoader
@@ -349,8 +353,8 @@ class LoRATrainer:
 
         # Z-Image model loading
         if self.is_zimage:
-            print(f"[LoRATrainer] Detected Z-Image model")
-            print(f"[LoRATrainer] Loading Z-Image components from {model_path}")
+            print(f"{self.log_prefix} Detected Z-Image model")
+            print(f"{self.log_prefix} Loading Z-Image components from {model_path}")
 
             # Load Z-Image components using ModelLoader
             components = ModelLoader.load_zimage_from_diffusers(
@@ -377,16 +381,16 @@ class LoRATrainer:
 
             # Wrap transformer with BatchedZImageWrapperOptimized for complete batched processing
             from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
-            print(f"[LoRATrainer] Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")
+            print(f"{self.log_prefix} Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")
             self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
-            print(f"[LoRATrainer] Phase 2 optimization: Complete batched processing (NO List[Tensor] operations)")
-            print(f"[LoRATrainer] - Batched patchify/unpatchify (no loops)")
-            print(f"[LoRATrainer] - Direct batched tensor processing throughout")
-            print(f"[LoRATrainer] - Expected VRAM reduction: significant (eliminates all List overhead)")
+            print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing (NO List[Tensor] operations)")
+            print(f"{self.log_prefix} - Batched patchify/unpatchify (no loops)")
+            print(f"{self.log_prefix} - Direct batched tensor processing throughout")
+            print(f"{self.log_prefix} - Expected VRAM reduction: significant (eliminates all List overhead)")
 
-            print(f"[LoRATrainer] Z-Image model loaded successfully")
-            print(f"[LoRATrainer] Scheduler type: {self.scheduler.__class__.__name__}")
-            print(f"[LoRATrainer] VAE latent channels: {self.vae.config.latent_channels}")
+            print(f"{self.log_prefix} Z-Image model loaded successfully")
+            print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
+            print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
 
         # SD/SDXL model loading (existing logic)
         elif not self.is_zimage:
@@ -394,11 +398,11 @@ class LoRATrainer:
             is_safetensors = model_path.endswith('.safetensors')
 
             if is_safetensors:
-                print(f"[LoRATrainer] Loading from safetensors file")
+                print(f"{self.log_prefix} Loading from safetensors file")
                 # Load pipeline from single safetensors file, then extract components
                 # Try SDXL first, fall back to SD1.5
                 try:
-                    print(f"[LoRATrainer] Trying SDXL pipeline...")
+                    print(f"{self.log_prefix} Trying SDXL pipeline...")
                     temp_pipeline = StableDiffusionXLPipeline.from_single_file(
                         model_path,
                         torch_dtype=self.dtype,
@@ -406,7 +410,7 @@ class LoRATrainer:
                     )
                     is_sdxl_model = True
                 except Exception as e:
-                    print(f"[LoRATrainer] Not SDXL, trying SD1.5 pipeline...")
+                    print(f"{self.log_prefix} Not SDXL, trying SD1.5 pipeline...")
                     temp_pipeline = StableDiffusionPipeline.from_single_file(
                         model_path,
                         torch_dtype=self.dtype,
@@ -446,7 +450,7 @@ class LoRATrainer:
                 # Convert VAE to vae_dtype (SDXL VAE works fine with fp16)
                 self.vae = self.vae.to(dtype=self.vae_dtype)
             else:
-                print(f"[LoRATrainer] Loading from diffusers directory")
+                print(f"{self.log_prefix} Loading from diffusers directory")
                 # Load model components from diffusers directory (SushiUI style)
                 self.vae = AutoencoderKL.from_pretrained(
                     model_path,
@@ -488,7 +492,7 @@ class LoRATrainer:
                         model_path,
                         subfolder="tokenizer_2"
                     )
-                    print(f"[LoRATrainer] Loaded SDXL text_encoder_2 and tokenizer_2")
+                    print(f"{self.log_prefix} Loaded SDXL text_encoder_2 and tokenizer_2")
                 except Exception:
                     # SD1.5 models don't have these
                     self.text_encoder_2 = None
@@ -496,24 +500,24 @@ class LoRATrainer:
 
             # Detect model type (SD1.5 vs SDXL) - only for SD/SDXL
             self.is_sdxl = hasattr(self.unet.config, "addition_embed_type") if hasattr(self, 'unet') and self.unet is not None else False
-            print(f"[LoRATrainer] Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
-            print(f"[LoRATrainer] Prediction type: {self.noise_scheduler.config.prediction_type}")
-            print(f"[LoRATrainer] VAE scaling factor: {self.vae.config.scaling_factor}")
+            print(f"{self.log_prefix} Model type: {'SDXL' if self.is_sdxl else 'SD1.5'}")
+            print(f"{self.log_prefix} Prediction type: {self.noise_scheduler.config.prediction_type}")
+            print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
 
         # Z-Image: Different setup from SD/SDXL
         if self.is_zimage:
             # Enable gradient checkpointing for Transformer (Z-Image)
             if hasattr(self.transformer, 'enable_gradient_checkpointing'):
                 self.transformer.enable_gradient_checkpointing()
-                print(f"[LoRATrainer] Gradient checkpointing enabled for Z-Image Transformer")
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
             else:
-                print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for Z-Image Transformer")
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
 
             # Text Encoder (Qwen3) gradient checkpointing
             # NOTE: Text Encoder is frozen, but gradient checkpointing is enabled for potential future use
             if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
-                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder (Qwen3)")
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
 
             # Freeze all base weights
             self.vae.requires_grad_(False)
@@ -523,10 +527,10 @@ class LoRATrainer:
             # Move to device
             # IMPORTANT: VAE stays on CPU (only used for latent cache generation)
             # IMPORTANT: Text Encoder stays on CPU initially (will be moved to GPU only during caption pre-encoding)
-            print(f"[LoRATrainer] VAE will stay on CPU (used only for latent cache generation)")
+            print(f"{self.log_prefix} VAE will stay on CPU (used only for latent cache generation)")
             # self.vae stays on CPU (loaded on CPU by ModelLoader)
             # self.text_encoder stays on CPU (loaded on CPU by ModelLoader)
-            print(f"[LoRATrainer] Moving Transformer to {self.device}...")
+            print(f"{self.log_prefix} Moving Transformer to {self.device}...")
             self.transformer.to(self.device)
 
             # Log actual device placement
@@ -534,7 +538,7 @@ class LoRATrainer:
                 """Get device of first parameter"""
                 return next(model.parameters()).device
 
-            print(f"\n[LoRATrainer] Component device placement:")
+            print(f"\n{self.log_prefix} Component device placement:")
             print(f"  Transformer: {get_device(self.transformer)}")
             print(f"  Text Encoder: {get_device(self.text_encoder)}")
             print(f"  VAE: {get_device(self.vae)}")
@@ -550,7 +554,7 @@ class LoRATrainer:
             # Text Encoder remains in eval mode (frozen)
             self.transformer.train()
             self.text_encoder.eval()
-            print(f"[LoRATrainer] Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
+            print(f"{self.log_prefix} Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
 
         # SD/SDXL: Existing setup
         else:
@@ -559,33 +563,33 @@ class LoRATrainer:
             if self.use_flash_attention:
                 try:
                     from core.inference.attention_processors import FlashAttnProcessor
-                    print(f"[LoRATrainer] Setting Flash Attention processors...")
+                    print(f"{self.log_prefix} Setting Flash Attention processors...")
                     processor = FlashAttnProcessor()
                     new_processors = {name: processor for name in self.unet.attn_processors.keys()}
                     self.unet.set_attn_processor(new_processors)
                     num_processors = len(new_processors)
-                    print(f"[LoRATrainer] [OK] Flash Attention enabled for {num_processors} attention layers")
+                    print(f"{self.log_prefix} [OK] Flash Attention enabled for {num_processors} attention layers")
                 except ImportError:
-                    print(f"[LoRATrainer] WARNING: Flash Attention not available, falling back to default")
+                    print(f"{self.log_prefix} WARNING: Flash Attention not available, falling back to default")
                 except Exception as e:
-                    print(f"[LoRATrainer] WARNING: Failed to enable Flash Attention: {e}")
+                    print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
 
             # Enable gradient checkpointing AFTER Flash Attention setup
             # This must be done before LoRA application to avoid breaking gradients
             if hasattr(self.unet, 'enable_gradient_checkpointing'):
                 self.unet.enable_gradient_checkpointing()
-                print(f"[LoRATrainer] Gradient checkpointing enabled for U-Net")
+                print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
             else:
-                print(f"[LoRATrainer] WARNING: Gradient checkpointing not available for this U-Net")
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for this U-Net")
 
             # Enable gradient checkpointing for Text Encoders (sd-scripts/ai-toolkit approach)
             if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
-                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 1")
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
 
             if self.text_encoder_2 is not None and hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
                 self.text_encoder_2.gradient_checkpointing_enable()
-                print(f"[LoRATrainer] Gradient checkpointing enabled for Text Encoder 2")
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
 
             # Freeze all base weights
             self.vae.requires_grad_(False)
@@ -613,7 +617,7 @@ class LoRATrainer:
             self.text_encoder.train()
             if self.text_encoder_2 is not None:
                 self.text_encoder_2.train()
-            print(f"[LoRATrainer] U-Net and Text Encoders set to train mode for gradient checkpointing")
+            print(f"{self.log_prefix} U-Net and Text Encoders set to train mode for gradient checkpointing")
 
         # LoRA layers storage
         self.lora_layers = {}
@@ -628,7 +632,7 @@ class LoRATrainer:
 
     def _apply_lora(self):
         """Apply LoRA layers to model modules."""
-        print(f"[LoRATrainer] Applying LoRA (rank={self.lora_rank}, alpha={self.lora_alpha})")
+        print(f"{self.specific_log_prefix} Applying LoRA (rank={self.lora_rank}, alpha={self.lora_alpha})")
 
         if self.is_zimage:
             # Z-Image: Apply LoRA to Transformer only (Text Encoder is frozen)
@@ -637,7 +641,7 @@ class LoRATrainer:
             # SD/SDXL: Apply LoRA to U-Net and Text Encoder
             # Apply LoRA to U-Net (Transformer2DModel approach, compatible with sd-scripts)
             unet_lora_count = self._apply_lora_to_unet_transformers()
-            print(f"[LoRATrainer] Injected {unet_lora_count} LoRA layers into U-Net")
+            print(f"{self.log_prefix} Injected {unet_lora_count} LoRA layers into U-Net")
 
             # Apply LoRA to Text Encoder 1
             te1_lora_count = self._apply_lora_to_module(
@@ -645,7 +649,7 @@ class LoRATrainer:
                 prefix="te1",
                 target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
             )
-            print(f"[LoRATrainer] Injected {te1_lora_count} LoRA layers into Text Encoder 1")
+            print(f"{self.log_prefix} Injected {te1_lora_count} LoRA layers into Text Encoder 1")
 
             # Apply LoRA to Text Encoder 2 (SDXL)
             if self.text_encoder_2 is not None:
@@ -654,7 +658,7 @@ class LoRATrainer:
                     prefix="te2",
                     target_modules=["mlp.fc1", "mlp.fc2"]
                 )
-                print(f"[LoRATrainer] Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+                print(f"{self.log_prefix} Injected {te2_lora_count} LoRA layers into Text Encoder 2")
 
     def _apply_lora_zimage(self):
         """
@@ -668,7 +672,7 @@ class LoRATrainer:
         """
         lora_count = 0
 
-        print(f"[LoRATrainer] Applying LoRA to Z-Image Transformer (ZImageAttention modules)")
+        print(f"{self.specific_log_prefix} Applying LoRA to Z-Image Transformer (ZImageAttention modules)")
 
         # Access the original transformer inside the wrapper
         # self.transformer is BatchedZImageWrapper, self.transformer.transformer is the original model
@@ -680,7 +684,7 @@ class LoRATrainer:
             if module.__class__.__name__ == "ZImageAttention":
                 attention_modules.append((name, module))
 
-        print(f"[LoRATrainer] Found {len(attention_modules)} ZImageAttention modules")
+        print(f"{self.log_prefix} Found {len(attention_modules)} ZImageAttention modules")
 
         # Target layers: to_q, to_k, to_v, to_out[0]
         target_attrs = ["to_q", "to_k", "to_v"]
@@ -719,8 +723,8 @@ class LoRATrainer:
                     self.lora_layers[storage_key] = lora_module
                     lora_count += 1
 
-        print(f"[LoRATrainer] Injected {lora_count} LoRA layers into Z-Image Transformer")
-        print(f"[LoRATrainer] Text Encoder (Qwen3) is frozen (no LoRA)")
+        print(f"{self.log_prefix} Injected {lora_count} LoRA layers into Z-Image Transformer")
+        print(f"{self.log_prefix} Text Encoder (Qwen3) is frozen (no LoRA)")
 
     def _convert_diffusers_to_sd_key(self, diffusers_name: str) -> str:
         """
@@ -790,7 +794,7 @@ class LoRATrainer:
             if module.__class__.__name__ == "Transformer2DModel":
                 transformer_modules.append((name, module))
 
-        print(f"[LoRATrainer] Found {len(transformer_modules)} Transformer2DModel modules in U-Net")
+        print(f"{self.log_prefix} Found {len(transformer_modules)} Transformer2DModel modules in U-Net")
 
         # For each transformer, apply LoRA to all Linear layers inside
         for transformer_name, transformer_module in transformer_modules:
@@ -882,7 +886,7 @@ class LoRATrainer:
         """
         from core.training.optimizers import OptimizerFactory
 
-        print(f"[LoRATrainer] Setting up optimizer: {optimizer_type}")
+        print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
 
         # Group trainable parameters by component
         unet_params = []  # SD/SDXL U-Net
@@ -908,17 +912,17 @@ class LoRATrainer:
         param_groups = []
         if len(unet_params) > 0:
             param_groups.append({"params": unet_params, "lr": self.unet_lr})
-            print(f"[LoRATrainer]   U-Net: {len(unet_params)} params, lr={self.unet_lr}")
+            print(f"{self.log_prefix}   U-Net: {len(unet_params)} params, lr={self.unet_lr}")
         if len(transformer_params) > 0:
             # Z-Image Transformer uses unet_lr (same role as U-Net in SD/SDXL)
             param_groups.append({"params": transformer_params, "lr": self.unet_lr})
-            print(f"[LoRATrainer]   Z-Image Transformer: {len(transformer_params)} params, lr={self.unet_lr}")
+            print(f"{self.log_prefix}   Z-Image Transformer: {len(transformer_params)} params, lr={self.unet_lr}")
         if len(text_encoder_1_params) > 0:
             param_groups.append({"params": text_encoder_1_params, "lr": self.text_encoder_1_lr})
-            print(f"[LoRATrainer]   Text Encoder 1: {len(text_encoder_1_params)} params, lr={self.text_encoder_1_lr}")
+            print(f"{self.log_prefix}   Text Encoder 1: {len(text_encoder_1_params)} params, lr={self.text_encoder_1_lr}")
         if len(text_encoder_2_params) > 0:
             param_groups.append({"params": text_encoder_2_params, "lr": self.text_encoder_2_lr})
-            print(f"[LoRATrainer]   Text Encoder 2: {len(text_encoder_2_params)} params, lr={self.text_encoder_2_lr}")
+            print(f"{self.log_prefix}   Text Encoder 2: {len(text_encoder_2_params)} params, lr={self.text_encoder_2_lr}")
 
         if len(param_groups) == 0:
             raise RuntimeError("No trainable parameters found")
@@ -934,8 +938,8 @@ class LoRATrainer:
                 eps=1e-8,
             )
         except (ValueError, ImportError) as e:
-            print(f"[LoRATrainer] ERROR: {e}")
-            print("[LoRATrainer] Falling back to AdamW")
+            print(f"{self.log_prefix} ERROR: {e}")
+            print("{self.log_prefix} Falling back to AdamW")
             self.optimizer = torch.optim.AdamW(
                 param_groups,
                 lr=self.learning_rate,  # This will be overridden by param_groups
@@ -1308,7 +1312,7 @@ class LoRATrainer:
 
         # Debug: Verify target correctness on first step
         if not hasattr(self, '_debug_logged_target_verification'):
-            print(f"[LoRATrainer] Target verification (prediction_type='{prediction_type}'):")
+            print(f"{self.log_prefix} Target verification (prediction_type='{prediction_type}'):")
             if prediction_type == "epsilon":
                 target_matches_noise = torch.equal(target, noise)
                 print(f"  - Target is identical to noise: {target_matches_noise}")
@@ -1540,7 +1544,7 @@ class LoRATrainer:
 
         # Debug: Verify target correctness on first step
         if not hasattr(self, '_debug_logged_zimage_target'):
-            print(f"[LoRATrainer] Z-Image Flow Matching Target verification:")
+            print(f"{self.log_prefix} Z-Image Flow Matching Target verification:")
             print(f"  - Target formula: velocity = data - noise")
             print(f"  - Target shape: {target.shape}")
             print(f"  - Target dtype: {target.dtype}")
@@ -1692,7 +1696,7 @@ class LoRATrainer:
         checkpoints_with_steps.sort(key=lambda x: x[1], reverse=True)
         latest_ckpt, latest_step = checkpoints_with_steps[0]
 
-        print(f"[LoRATrainer] Found latest checkpoint: {latest_ckpt} (step {latest_step})")
+        print(f"{self.log_prefix} Found latest checkpoint: {latest_ckpt} (step {latest_step})")
         return latest_ckpt, latest_step
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
@@ -1707,7 +1711,7 @@ class LoRATrainer:
         """
         from safetensors.torch import load_file
 
-        print(f"[LoRATrainer] Loading checkpoint from {checkpoint_path}")
+        print(f"{self.log_prefix} Loading checkpoint from {checkpoint_path}")
 
         state_dict = load_file(checkpoint_path)
 
@@ -1746,9 +1750,9 @@ class LoRATrainer:
                 lora.lora_up.weight.data = state_dict[up_key].to(self.device)
                 loaded_count += 1
             else:
-                print(f"[LoRATrainer] WARNING: Keys not found for {name}: {down_key}")
+                print(f"{self.log_prefix} WARNING: Keys not found for {name}: {down_key}")
 
-        print(f"[LoRATrainer] Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
+        print(f"{self.log_prefix} Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
 
         # Extract step from metadata or filename
         step = 0
@@ -1762,22 +1766,22 @@ class LoRATrainer:
             except (ValueError, IndexError):
                 pass
 
-        print(f"[LoRATrainer] Checkpoint loaded (step {step})")
+        print(f"{self.log_prefix} Checkpoint loaded (step {step})")
 
         # Try to load optimizer state if it exists
         optimizer_path = Path(checkpoint_path).with_suffix('.pt')
         if optimizer_path.exists() and hasattr(self, 'optimizer') and self.optimizer is not None:
             try:
-                print(f"[LoRATrainer] Loading optimizer state from {optimizer_path}")
+                print(f"{self.log_prefix} Loading optimizer state from {optimizer_path}")
                 optimizer_state = torch.load(optimizer_path, map_location=self.device)
                 self.optimizer.load_state_dict(optimizer_state['optimizer_state_dict'])
-                print(f"[LoRATrainer] Optimizer state loaded successfully")
+                print(f"{self.log_prefix} Optimizer state loaded successfully")
             except Exception as e:
-                print(f"[LoRATrainer] WARNING: Failed to load optimizer state: {e}")
-                print(f"[LoRATrainer] Training will continue with fresh optimizer state")
+                print(f"{self.log_prefix} WARNING: Failed to load optimizer state: {e}")
+                print(f"{self.log_prefix} Training will continue with fresh optimizer state")
         else:
             if not optimizer_path.exists():
-                print(f"[LoRATrainer] No optimizer state found at {optimizer_path}, using fresh optimizer state")
+                print(f"{self.log_prefix} No optimizer state found at {optimizer_path}, using fresh optimizer state")
 
         return step
 
@@ -1809,8 +1813,8 @@ class LoRATrainer:
         else:
             save_path = Path(save_path)
 
-        print(f"[LoRATrainer] Saving checkpoint to {save_path}")
-        print(f"[LoRATrainer] Converting weights to {self.output_dtype} for saving")
+        print(f"{self.log_prefix} Saving checkpoint to {save_path}")
+        print(f"{self.log_prefix} Converting weights to {self.output_dtype} for saving")
 
         # Collect all LoRA weights and convert to output_dtype
         state_dict = {}
@@ -1860,7 +1864,7 @@ class LoRATrainer:
 
         # Save as safetensors
         save_file(state_dict, str(save_path), metadata=metadata)
-        print(f"[LoRATrainer] Checkpoint saved: {save_path}")
+        print(f"{self.log_prefix} Checkpoint saved: {save_path}")
 
         # Get file size
         file_size = save_path.stat().st_size
@@ -1873,7 +1877,7 @@ class LoRATrainer:
                 'step': step,
             }
             torch.save(optimizer_state, optimizer_path)
-            print(f"[LoRATrainer] Optimizer state saved: {optimizer_path}")
+            print(f"{self.log_prefix} Optimizer state saved: {optimizer_path}")
 
         # Register checkpoint in database
         if run_id is not None:
@@ -1894,14 +1898,14 @@ class LoRATrainer:
                     )
                     db.add(checkpoint_record)
                     db.commit()
-                    print(f"[LoRATrainer] Checkpoint registered in DB: run_id={run_id}, step={step}")
+                    print(f"{self.log_prefix} Checkpoint registered in DB: run_id={run_id}, step={step}")
                 except Exception as e:
-                    print(f"[LoRATrainer] WARNING: Failed to register checkpoint in DB: {e}")
+                    print(f"{self.log_prefix} WARNING: Failed to register checkpoint in DB: {e}")
                     db.rollback()
                 finally:
                     db.close()
             except Exception as e:
-                print(f"[LoRATrainer] WARNING: Failed to connect to DB for checkpoint registration: {e}")
+                print(f"{self.log_prefix} WARNING: Failed to connect to DB for checkpoint registration: {e}")
 
         # Remove old checkpoints if max_to_keep is set
         if max_to_keep is not None and max_to_keep > 0:
@@ -1941,16 +1945,16 @@ class LoRATrainer:
         if checkpoint_path.exists():
             try:
                 checkpoint_path.unlink()
-                print(f"[LoRATrainer] Removed old checkpoint: {checkpoint_path}")
+                print(f"{self.log_prefix} Removed old checkpoint: {checkpoint_path}")
             except Exception as e:
-                print(f"[LoRATrainer] WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
+                print(f"{self.log_prefix} WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
 
         if optimizer_path.exists():
             try:
                 optimizer_path.unlink()
-                print(f"[LoRATrainer] Removed old optimizer state: {optimizer_path}")
+                print(f"{self.log_prefix} Removed old optimizer state: {optimizer_path}")
             except Exception as e:
-                print(f"[LoRATrainer] WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
+                print(f"{self.log_prefix} WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
 
     def generate_sample(self, step: int, sample_prompts: List[Dict[str, str]], config: Dict[str, Any], vae_on_cpu: bool = False):
         """
@@ -1967,7 +1971,7 @@ class LoRATrainer:
         samples_dir = self.output_dir / "samples"
         samples_dir.mkdir(exist_ok=True)
 
-        print(f"[LoRATrainer] Generating {len(sample_prompts)} samples at step {step}...")
+        print(f"{self.log_prefix} Generating {len(sample_prompts)} samples at step {step}...")
 
         # Z-Image uses different sample generation pipeline
         if self.is_zimage:
@@ -2025,10 +2029,10 @@ class LoRATrainer:
         # IMPORTANT: Use inference scheduler for sample generation, not training scheduler (DDPM)
         from core.inference.schedulers import get_scheduler
         temp_pipeline.scheduler = get_scheduler(temp_pipeline, sampler, schedule_type)
-        print(f"[LoRATrainer] Using scheduler: {temp_pipeline.scheduler.__class__.__name__} (sampler={sampler}, schedule_type={schedule_type})")
+        print(f"{self.log_prefix} Using scheduler: {temp_pipeline.scheduler.__class__.__name__} (sampler={sampler}, schedule_type={schedule_type})")
 
         # VRAM optimization: Use sequential component loading
-        print(f"[LoRATrainer] Applying VRAM optimization (sequential component loading)")
+        print(f"{self.log_prefix} Applying VRAM optimization (sequential component loading)")
 
         # Import VRAM optimization functions and custom sampling loop
         from core.vram_optimization import (
@@ -2064,7 +2068,7 @@ class LoRATrainer:
                 # Create generator (device will be checked in custom_sampling_loop)
                 generator = torch.Generator(device=self.device).manual_seed(gen_seed)
 
-                print(f"[LoRATrainer] Encoding prompts for sample {i}...")
+                print(f"{self.log_prefix} Encoding prompts for sample {i}...")
 
                 # Move text encoders to GPU for prompt encoding
                 move_text_encoders_to_gpu(temp_pipeline)
@@ -2102,7 +2106,7 @@ class LoRATrainer:
 
                 log_device_status(f"Sample {i} - Ready for inference", temp_pipeline)
 
-                print(f"[LoRATrainer] Generating sample {i} using custom_sampling_loop...")
+                print(f"{self.log_prefix} Generating sample {i} using custom_sampling_loop...")
 
                 # Generate image using custom sampling loop (same as SushiUI)
                 with torch.no_grad():
@@ -2162,10 +2166,10 @@ class LoRATrainer:
                 image_tensor = torchvision.transforms.ToTensor()(image)
                 self.writer.add_image(f"samples/sample_{i}", image_tensor, global_step=step)
 
-                print(f"[LoRATrainer] Sample {i} saved: {sample_path}")
+                print(f"{self.log_prefix} Sample {i} saved: {sample_path}")
 
         except Exception as e:
-            print(f"[LoRATrainer] ERROR generating sample: {e}")
+            print(f"{self.log_prefix} ERROR generating sample: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -2175,11 +2179,11 @@ class LoRATrainer:
 
             # IMPORTANT: Restore all components to GPU for training
             # (sample generation may have moved them to CPU)
-            print(f"[LoRATrainer] Restoring components for training")
+            print(f"{self.log_prefix} Restoring components for training")
 
             # VAE: Keep on CPU if latent caching is enabled, otherwise move to GPU
             if vae_on_cpu:
-                print(f"[LoRATrainer] Keeping VAE on CPU (latent caching enabled)")
+                print(f"{self.log_prefix} Keeping VAE on CPU (latent caching enabled)")
                 self.vae.to('cpu')
             else:
                 self.vae.to(self.device)
@@ -2191,7 +2195,7 @@ class LoRATrainer:
                 self.text_encoder_2.to(self.device)
             torch.cuda.empty_cache()
 
-            print(f"[LoRATrainer] Components restored for training")
+            print(f"{self.log_prefix} Components restored for training")
 
         # Set back to train mode
         self.unet.train()
@@ -2213,7 +2217,7 @@ class LoRATrainer:
         samples_dir = self.output_dir / "samples"
         samples_dir.mkdir(exist_ok=True)
 
-        print(f"[LoRATrainer] Generating {len(sample_prompts)} Z-Image samples at step {step}...")
+        print(f"{self.log_prefix} Generating {len(sample_prompts)} Z-Image samples at step {step}...")
 
         # Extract config parameters
         width = config.get("width", 1024)
@@ -2230,7 +2234,7 @@ class LoRATrainer:
         self.vae.eval()
         self.text_encoder.eval()
 
-        print(f"[LoRATrainer] Z-Image sample: {width}x{height}, steps={num_steps}, cfg={cfg_scale}")
+        print(f"{self.log_prefix} Z-Image sample: {width}x{height}, steps={num_steps}, cfg={cfg_scale}")
 
         # Import Z-Image denoising loop and VRAM functions
         from core.vram_optimization import (
@@ -2252,7 +2256,7 @@ class LoRATrainer:
         # This allows using the unwrapped transformer with LoRA applied
         lora_merged = False
         if self.training_method == "lora":
-            print(f"[LoRATrainer] Temporarily merging LoRA weights into transformer for inference...")
+            print(f"{self.specific_log_prefix} Temporarily merging LoRA weights into transformer for inference...")
             try:
                 from peft import get_peft_model
                 # Merge LoRA weights from self.transformer (wrapper) into self.transformer_original
@@ -2262,10 +2266,10 @@ class LoRATrainer:
                 lora_state = {k: v.clone() for k, v in wrapped_transformer.state_dict().items()}
                 self.transformer_original.load_state_dict(lora_state, strict=False)
                 lora_merged = True
-                print(f"[LoRATrainer] LoRA weights merged successfully")
+                print(f"{self.specific_log_prefix} LoRA weights merged successfully")
             except Exception as e:
-                print(f"[LoRATrainer] WARNING: Could not merge LoRA weights: {e}")
-                print(f"[LoRATrainer] Samples will use base model without LoRA")
+                print(f"{self.specific_log_prefix} WARNING: Could not merge LoRA weights: {e}")
+                print(f"{self.log_prefix} Samples will use base model without LoRA")
 
         try:
             for i, prompt_pair in enumerate(sample_prompts):
@@ -2280,10 +2284,10 @@ class LoRATrainer:
 
                 generator = torch.Generator(device=self.device).manual_seed(gen_seed)
 
-                print(f"[LoRATrainer] Generating Z-Image sample {i} (seed={gen_seed})...")
+                print(f"{self.log_prefix} Generating Z-Image sample {i} (seed={gen_seed})...")
 
                 # Move Text Encoder to GPU
-                print(f"[LoRATrainer] Encoding prompts...")
+                print(f"{self.log_prefix} Encoding prompts...")
                 move_zimage_text_encoder_to_gpu(self.text_encoder)
 
                 # Encode prompts
@@ -2307,7 +2311,7 @@ class LoRATrainer:
                 move_zimage_text_encoder_to_cpu(self.text_encoder)
 
                 # Move Transformer and VAE to GPU
-                print(f"[LoRATrainer] Moving Transformer and VAE to GPU...")
+                print(f"{self.log_prefix} Moving Transformer and VAE to GPU...")
                 move_zimage_transformer_to_gpu(self.transformer_original)
                 move_zimage_vae_to_gpu(self.vae)
 
@@ -2326,7 +2330,7 @@ class LoRATrainer:
                     config_spec.loader.exec_module(config_module)
 
                     # Run Z-Image denoising loop directly (same as pipeline.py)
-                    print(f"[LoRATrainer] Running Z-Image denoising loop...")
+                    print(f"{self.log_prefix} Running Z-Image denoising loop...")
                     with torch.no_grad():
                         latents = self._run_zimage_denoising_loop(
                             transformer=self.transformer_original,
@@ -2343,7 +2347,7 @@ class LoRATrainer:
                         )
 
                         # Decode latents to image
-                        print(f"[LoRATrainer] Decoding latents to image...")
+                        print(f"{self.log_prefix} Decoding latents to image...")
                         image = self._decode_zimage_latents(latents, self.vae)
 
                 finally:
@@ -2365,21 +2369,21 @@ class LoRATrainer:
                 image_tensor = torchvision.transforms.ToTensor()(image)
                 self.writer.add_image(f"samples/sample_{i}", image_tensor, global_step=step)
 
-                print(f"[LoRATrainer] Sample {i} saved: {sample_path}")
+                print(f"{self.log_prefix} Sample {i} saved: {sample_path}")
 
         except Exception as e:
-            print(f"[LoRATrainer] ERROR generating Z-Image sample: {e}")
+            print(f"{self.log_prefix} ERROR generating Z-Image sample: {e}")
             import traceback
             traceback.print_exc()
         finally:
             # Restore transformer_original to original state (unmerge LoRA)
             if lora_merged and self.training_method == "lora":
-                print(f"[LoRATrainer] Restoring transformer_original to original state...")
+                print(f"{self.log_prefix} Restoring transformer_original to original state...")
                 # Reload original weights (base model without LoRA)
                 # This is automatically done since we only modified in-memory state
 
             # Restore components for training
-            print(f"[LoRATrainer] Restoring Z-Image components for training")
+            print(f"{self.log_prefix} Restoring Z-Image components for training")
 
             # Text Encoder: Keep on CPU (frozen)
             self.text_encoder.to('cpu')
@@ -2392,13 +2396,13 @@ class LoRATrainer:
 
             # VAE: Keep on CPU if latent caching is enabled
             if vae_on_cpu:
-                print(f"[LoRATrainer] Keeping VAE on CPU (latent caching enabled)")
+                print(f"{self.log_prefix} Keeping VAE on CPU (latent caching enabled)")
                 self.vae.to('cpu')
             else:
                 self.vae.to(self.device)
 
             torch.cuda.empty_cache()
-            print(f"[LoRATrainer] Z-Image components restored for training")
+            print(f"{self.log_prefix} Z-Image components restored for training")
 
         # Set back to train mode
         self.transformer.train()
@@ -2551,19 +2555,19 @@ class LoRATrainer:
             bucket_strategy: Strategy for oversized images ("resize", "crop", "random_crop")
             multi_resolution_mode: How to assign images to resolutions ("max", "random")
         """
-        print(f"[LoRATrainer] Starting training")
-        print(f"[LoRATrainer] Dataset: {len(dataset_items)} items")
-        print(f"[LoRATrainer] Epochs: {num_epochs}")
-        print(f"[LoRATrainer] Batch size: {batch_size}")
-        print(f"[LoRATrainer] Debug latents: {debug_latents} (every {debug_latents_every} steps)")
-        print(f"[LoRATrainer] Bucketing: {enable_bucketing}")
+        print(f"{self.log_prefix} Starting training")
+        print(f"{self.log_prefix} Dataset: {len(dataset_items)} items")
+        print(f"{self.log_prefix} Epochs: {num_epochs}")
+        print(f"{self.log_prefix} Batch size: {batch_size}")
+        print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+        print(f"{self.log_prefix} Bucketing: {enable_bucketing}")
 
         # Create debug directory if debug mode is enabled
         debug_dir = None
         if debug_latents:
             debug_dir = self.output_dir / "debug"
             debug_dir.mkdir(exist_ok=True)
-            print(f"[LoRATrainer] Debug latents will be saved to: {debug_dir}")
+            print(f"{self.log_prefix} Debug latents will be saved to: {debug_dir}")
 
         # Setup bucketing if enabled
         bucket_manager = None
@@ -2580,19 +2584,19 @@ class LoRATrainer:
                 multi_resolution_mode=multi_resolution_mode
             )
 
-            print(f"[LoRATrainer] Bucketing enabled with resolutions: {base_resolutions}")
-            print(f"[LoRATrainer] Bucket strategy: {bucket_strategy}")
-            print(f"[LoRATrainer] Multi-resolution mode: {multi_resolution_mode}")
+            print(f"{self.log_prefix} Bucketing enabled with resolutions: {base_resolutions}")
+            print(f"{self.log_prefix} Bucket strategy: {bucket_strategy}")
+            print(f"{self.log_prefix} Multi-resolution mode: {multi_resolution_mode}")
 
             # Assign all images to buckets
-            print(f"[LoRATrainer] Assigning images to buckets...")
+            print(f"{self.log_prefix} Assigning images to buckets...")
             for idx, item in enumerate(dataset_items):
                 width = item.get("width", 1024)
                 height = item.get("height", 1024)
 
                 # Debug: Log first 3 images to verify width/height are correct
                 if idx < 3:
-                    print(f"[LoRATrainer] Image {idx}: {width}x{height} - {item['image_path']}")
+                    print(f"{self.log_prefix} Image {idx}: {width}x{height} - {item['image_path']}")
 
                 bucket_manager.assign_image_to_bucket(
                     image_path=item["image_path"],
@@ -2604,14 +2608,14 @@ class LoRATrainer:
 
             # Print bucket statistics
             bucket_counts = bucket_manager.get_bucket_counts()
-            print(f"[LoRATrainer] Bucket distribution:")
+            print(f"{self.log_prefix} Bucket distribution:")
             for bucket_size, count in sorted(bucket_counts.items()):
                 print(f"  {bucket_size}: {count} images")
 
             # Shuffle buckets and build batches
             bucket_manager.shuffle_buckets()
             batches = bucket_manager.build_batch_indices(batch_size)
-            print(f"[LoRATrainer] Created {len(batches)} batches from {len(dataset_items)} images (batch_size={batch_size})")
+            print(f"{self.log_prefix} Created {len(batches)} batches from {len(dataset_items)} images (batch_size={batch_size})")
 
         else:
             # No bucketing: create simple batches from dataset_items
@@ -2619,7 +2623,7 @@ class LoRATrainer:
             for start_idx in range(0, len(dataset_items), batch_size):
                 end_idx = min(start_idx + batch_size, len(dataset_items))
                 batches.append(dataset_items[start_idx:end_idx])
-            print(f"[LoRATrainer] Created {len(batches)} batches (no bucketing, batch_size={batch_size})")
+            print(f"{self.log_prefix} Created {len(batches)} batches (no bucketing, batch_size={batch_size})")
 
         # Calculate epochs and total steps based on actual batch count
         steps_per_epoch = len(batches)
@@ -2632,22 +2636,22 @@ class LoRATrainer:
             if target_steps < steps_per_epoch:
                 num_epochs = 1
                 total_steps = steps_per_epoch
-                print(f"[LoRATrainer] Target steps: {target_steps}, but will complete 1 full epoch ({steps_per_epoch} steps)")
+                print(f"{self.log_prefix} Target steps: {target_steps}, but will complete 1 full epoch ({steps_per_epoch} steps)")
             else:
                 # Calculate how many full epochs fit within target_steps
                 num_epochs = target_steps // steps_per_epoch
                 total_steps = steps_per_epoch * num_epochs
-                print(f"[LoRATrainer] Target steps: {target_steps}, will train for {num_epochs} full epochs ({total_steps} steps)")
+                print(f"{self.log_prefix} Target steps: {target_steps}, will train for {num_epochs} full epochs ({total_steps} steps)")
         elif num_epochs is None:
             # Fallback: default to 1 epoch
             num_epochs = 1
             total_steps = steps_per_epoch
-            print(f"[LoRATrainer] No target_steps or num_epochs provided, defaulting to 1 epoch ({total_steps} steps)")
+            print(f"{self.log_prefix} No target_steps or num_epochs provided, defaulting to 1 epoch ({total_steps} steps)")
         else:
             # num_epochs was explicitly provided
             total_steps = steps_per_epoch * num_epochs
 
-        print(f"[LoRATrainer] Training plan:")
+        print(f"{self.log_prefix} Training plan:")
         print(f"  Steps per epoch: {steps_per_epoch}")
         print(f"  Total epochs: {num_epochs}")
         print(f"  Total steps: {total_steps}")
@@ -2663,15 +2667,15 @@ class LoRATrainer:
         if cache_latents_to_disk and dataset_unique_ids is not None and len(dataset_unique_ids) > 0:
             from core.training.latent_cache import LatentCache
 
-            print(f"[LoRATrainer] Initializing {len(dataset_unique_ids)} latent cache(s)...")
+            print(f"{self.log_prefix} Initializing {len(dataset_unique_ids)} latent cache(s)...")
 
             # Create LatentCache instance for each dataset
             for unique_id in dataset_unique_ids:
                 latent_caches[unique_id] = LatentCache(dataset_unique_id=unique_id)
-                print(f"[LoRATrainer]   Dataset {unique_id[:8]}...: {latent_caches[unique_id].cache_dir}")
+                print(f"{self.log_prefix}   Dataset {unique_id[:8]}...: {latent_caches[unique_id].cache_dir}")
 
             # Build image_path -> dataset_unique_id mapping from dataset_items
-            print(f"[LoRATrainer] Building image-to-cache mapping...")
+            print(f"{self.log_prefix} Building image-to-cache mapping...")
             for batch in batches:
                 for item in batch:
                     image_path = item["image_path"]
@@ -2679,7 +2683,7 @@ class LoRATrainer:
                     if dataset_unique_id:
                         image_to_cache_id[image_path] = dataset_unique_id
 
-            print(f"[LoRATrainer] Mapped {len(image_to_cache_id)} images to {len(latent_caches)} cache(s)")
+            print(f"{self.log_prefix} Mapped {len(image_to_cache_id)} images to {len(latent_caches)} cache(s)")
 
             # Check cache validity and generate if needed for each dataset
             # Determine model type for cache validation
@@ -2726,7 +2730,7 @@ class LoRATrainer:
                     cache.clear()
 
                 # Move VAE to GPU for encoding
-                print(f"[LoRATrainer] Moving VAE to GPU for cache generation...")
+                print(f"{self.log_prefix} Moving VAE to GPU for cache generation...")
                 self.vae.to(self.device)
 
                 # Generate cache for all images
@@ -2822,13 +2826,13 @@ class LoRATrainer:
                     )
 
                 # Move VAE back to CPU to free VRAM
-                print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
+                print(f"{self.log_prefix} Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
                 if self.debug_vram:
                     print_vram_usage("After moving VAE to CPU")
             else:
-                print(f"[LoRATrainer] Using existing latent cache(s)")
+                print(f"{self.log_prefix} Using existing latent cache(s)")
 
                 # Count cache statistics per dataset and collect missing images
                 total_images = sum(len(batch) for batch in batches)
@@ -2875,7 +2879,7 @@ class LoRATrainer:
 
                 # Generate cache for missing images
                 if len(missing_images) > 0:
-                    print(f"[LoRATrainer] Generating cache for {len(missing_images)} missing image(s)...")
+                    print(f"{self.log_prefix} Generating cache for {len(missing_images)} missing image(s)...")
 
                     # Log device status before VAE move
                     from core.vram_optimization import log_device_status
@@ -2892,22 +2896,22 @@ class LoRATrainer:
 
                     # Move Transformer/UNet to CPU to free VRAM for VAE
                     if self.is_zimage:
-                        print(f"[LoRATrainer] Moving Transformer to CPU temporarily for VAE cache generation...")
+                        print(f"{self.log_prefix} Moving Transformer to CPU temporarily for VAE cache generation...")
                         self.transformer.to('cpu')
                     else:
                         if hasattr(self, 'unet') and self.unet is not None:
-                            print(f"[LoRATrainer] Moving U-Net to CPU temporarily for VAE cache generation...")
+                            print(f"{self.log_prefix} Moving U-Net to CPU temporarily for VAE cache generation...")
                             self.unet.to('cpu')
                     torch.cuda.empty_cache()
 
                     # Check if VAE is already on GPU (avoid redundant .to() call)
                     vae_device = next(self.vae.parameters()).device
                     if vae_device.type != 'cuda':
-                        print(f"[LoRATrainer] Moving VAE from {vae_device} to GPU for cache generation...")
+                        print(f"{self.log_prefix} Moving VAE from {vae_device} to GPU for cache generation...")
                         self.vae.to(self.device)
                         torch.cuda.empty_cache()
                     else:
-                        print(f"[LoRATrainer] VAE already on GPU, skipping move")
+                        print(f"{self.log_prefix} VAE already on GPU, skipping move")
 
                     log_device_status(
                         "After moving VAE to GPU for cache generation",
@@ -2988,17 +2992,17 @@ class LoRATrainer:
                     sys.stdout.flush()
                     print(f"[LatentCache] Generated cache for {newly_cached} new image(s)")
 
-                print(f"[LoRATrainer] Moving VAE to CPU (will stay on CPU during training)")
+                print(f"{self.log_prefix} Moving VAE to CPU (will stay on CPU during training)")
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
 
                 # Move Transformer/UNet back to GPU after VAE cache generation
                 if self.is_zimage:
-                    print(f"[LoRATrainer] Moving Transformer back to GPU...")
+                    print(f"{self.log_prefix} Moving Transformer back to GPU...")
                     self.transformer.to(self.device)
                 else:
                     if hasattr(self, 'unet') and self.unet is not None:
-                        print(f"[LoRATrainer] Moving U-Net back to GPU...")
+                        print(f"{self.log_prefix} Moving U-Net back to GPU...")
                         self.unet.to(self.device)
                 torch.cuda.empty_cache()
 
@@ -3008,12 +3012,12 @@ class LoRATrainer:
         # Z-Image: Caption pre-encoding (MANDATORY since Text Encoder is frozen)
         if self.is_zimage:
             print(f"\n{'='*80}")
-            print(f"[LoRATrainer] Z-Image detected: Pre-encoding captions...")
-            print(f"[LoRATrainer] is_zimage flag: {self.is_zimage}")
+            print(f"{self.log_prefix} Z-Image detected: Pre-encoding captions...")
+            print(f"{self.log_prefix} is_zimage flag: {self.is_zimage}")
             print(f"{'='*80}\n")
 
             # Move Text Encoder to GPU for encoding
-            print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to GPU for caption encoding...")
+            print(f"{self.log_prefix} Moving Text Encoder (Qwen3) to GPU for caption encoding...")
             self.text_encoder.to(self.device)
             if self.debug_vram:
                 print_vram_usage("After moving Text Encoder to GPU")
@@ -3040,7 +3044,7 @@ class LoRATrainer:
                     if caption:
                         unique_captions.add(caption)
 
-            print(f"[LoRATrainer] Found {len(unique_captions)} unique caption(s)")
+            print(f"{self.log_prefix} Found {len(unique_captions)} unique caption(s)")
 
             # Pre-encode all captions
             caption_cache = {}  # Map: caption_text -> {"embeddings": Tensor, "mask": Tensor}
@@ -3150,7 +3154,7 @@ class LoRATrainer:
             self.caption_cache = caption_cache
             print(f"[CaptionCache] Saved {len(self.caption_cache)} caption embeddings for reuse in subsequent epochs")
             # Move Text Encoder to CPU to free VRAM (it's frozen, won't be used during training)
-            print(f"[LoRATrainer] Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
+            print(f"{self.log_prefix} Moving Text Encoder (Qwen3) to CPU (frozen, no longer needed)")
             self.text_encoder.to('cpu')
             torch.cuda.empty_cache()
 
@@ -3183,7 +3187,7 @@ class LoRATrainer:
             # User specified a checkpoint to resume from
             checkpoint_path = self.output_dir / resume_from_checkpoint
             if checkpoint_path.exists():
-                print(f"[LoRATrainer] Resuming from specified checkpoint: {checkpoint_path}")
+                print(f"{self.log_prefix} Resuming from specified checkpoint: {checkpoint_path}")
                 loaded_step = self.load_checkpoint(str(checkpoint_path))
                 global_step = loaded_step
 
@@ -3191,20 +3195,20 @@ class LoRATrainer:
                 start_epoch = global_step // len(batches)
                 batches_in_epoch = global_step % len(batches)
 
-                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
+                print(f"{self.log_prefix} Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
 
                 # Fast-forward lr_scheduler to match the checkpoint
                 for _ in range(global_step):
                     self.lr_scheduler.step()
             else:
-                print(f"[LoRATrainer] WARNING: Checkpoint not found: {checkpoint_path}")
-                print(f"[LoRATrainer] Starting from scratch")
+                print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
+                print(f"{self.log_prefix} Starting from scratch")
         else:
             # Auto-detect latest checkpoint
             checkpoint_result = self.find_latest_checkpoint()
             if checkpoint_result is not None:
                 checkpoint_path, checkpoint_step = checkpoint_result
-                print(f"[LoRATrainer] Resuming from latest checkpoint: {checkpoint_path}")
+                print(f"{self.log_prefix} Resuming from latest checkpoint: {checkpoint_path}")
                 loaded_step = self.load_checkpoint(checkpoint_path)
                 global_step = loaded_step
 
@@ -3212,13 +3216,13 @@ class LoRATrainer:
                 start_epoch = global_step // len(batches)
                 batches_in_epoch = global_step % len(batches)
 
-                print(f"[LoRATrainer] Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
+                print(f"{self.log_prefix} Resuming from epoch {start_epoch + 1}, batch {batches_in_epoch}")
 
                 # Fast-forward lr_scheduler to match the checkpoint
                 for _ in range(global_step):
                     self.lr_scheduler.step()
             else:
-                print(f"[LoRATrainer] No checkpoint found, starting from scratch")
+                print(f"{self.log_prefix} No checkpoint found, starting from scratch")
 
         # Training loop
         try:
@@ -3226,20 +3230,20 @@ class LoRATrainer:
                 # Reload dataset for this epoch if callback is provided
                 # This allows caption processing (shuffle/dropout) to vary per epoch
                 if reload_dataset_callback is not None and epoch > 0:
-                    print(f"[LoRATrainer] Reloading dataset for epoch {epoch + 1} (caption processing may change)...")
+                    print(f"{self.log_prefix} Reloading dataset for epoch {epoch + 1} (caption processing may change)...")
                     try:
                         dataset_items = reload_dataset_callback(epoch)
-                        print(f"[LoRATrainer] Reloaded {len(dataset_items)} items")
+                        print(f"{self.log_prefix} Reloaded {len(dataset_items)} items")
 
                         # Debug: Check first reloaded item
                         if len(dataset_items) > 0:
                             first_item = dataset_items[0]
-                            print(f"[LoRATrainer] First reloaded item keys: {list(first_item.keys())}")
-                            print(f"[LoRATrainer] First reloaded item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
+                            print(f"{self.log_prefix} First reloaded item keys: {list(first_item.keys())}")
+                            print(f"{self.log_prefix} First reloaded item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
 
                         # Rebuild buckets/batches with new captions
                         if enable_bucketing:
-                            print(f"[LoRATrainer] Rebuilding buckets for epoch {epoch + 1}...")
+                            print(f"{self.log_prefix} Rebuilding buckets for epoch {epoch + 1}...")
                             bucket_manager = BucketManager(base_resolutions=base_resolutions)
                             for idx, item in enumerate(dataset_items):
                                 width = item.get("width", 1024)
@@ -3253,13 +3257,13 @@ class LoRATrainer:
                                 )
                             bucket_manager.shuffle_buckets()
                             batches = bucket_manager.build_batch_indices(batch_size)
-                            print(f"[LoRATrainer] Rebuilt {len(batches)} batches")
+                            print(f"{self.log_prefix} Rebuilt {len(batches)} batches")
 
                             # Debug: Check first rebuilt batch
                             if len(batches) > 0 and len(batches[0]) > 0:
                                 first_batch_item = batches[0][0]
-                                print(f"[LoRATrainer] First batch item keys after rebuild: {list(first_batch_item.keys())}")
-                                print(f"[LoRATrainer] First batch item dataset_unique_id after rebuild: {first_batch_item.get('dataset_unique_id', 'MISSING')}")
+                                print(f"{self.log_prefix} First batch item keys after rebuild: {list(first_batch_item.keys())}")
+                                print(f"{self.log_prefix} First batch item dataset_unique_id after rebuild: {first_batch_item.get('dataset_unique_id', 'MISSING')}")
                         else:
                             batches = []
                             for start_idx in range(0, len(dataset_items), batch_size):
@@ -3370,7 +3374,7 @@ class LoRATrainer:
                                         reattached_count += 1
                             print(f"[CaptionCache] Attached embeddings to {reattached_count} items")
                     except Exception as reload_err:
-                        print(f"[LoRATrainer] ERROR: Failed to reload dataset for epoch {epoch + 1}: {reload_err}")
+                        print(f"{self.log_prefix} ERROR: Failed to reload dataset for epoch {epoch + 1}: {reload_err}")
                         import traceback
                         traceback.print_exc()
                         raise
@@ -3381,19 +3385,19 @@ class LoRATrainer:
                     start_batch_idx = global_step % len(batches)
 
                 # Print epoch header
-                print(f"[LoRATrainer] === Epoch {epoch + 1}/{num_epochs} ===")
+                print(f"{self.log_prefix} === Epoch {epoch + 1}/{num_epochs} ===")
                 total_batches = len(batches)
-                print(f"[LoRATrainer] Total batches: {total_batches}")
+                print(f"{self.log_prefix} Total batches: {total_batches}")
 
                 # Debug: Check if batches are valid
                 if total_batches == 0:
-                    print(f"[LoRATrainer] ERROR: No batches generated for epoch {epoch + 1}")
+                    print(f"{self.log_prefix} ERROR: No batches generated for epoch {epoch + 1}")
                     raise RuntimeError(f"No batches generated for epoch {epoch + 1}")
 
                 # Calculate progress log interval (10% of total batches, minimum 1)
                 progress_interval = max(1, total_batches // 10)
 
-                print(f"[LoRATrainer] Starting batch loop from batch {start_batch_idx}...")
+                print(f"{self.log_prefix} Starting batch loop from batch {start_batch_idx}...")
 
                 for batch_idx, batch in enumerate(batches[start_batch_idx:], start=start_batch_idx):
                     try:
@@ -3412,11 +3416,11 @@ class LoRATrainer:
                                 } if self.is_zimage else None
                             )
 
-                            print(f"[LoRATrainer] Processing first batch {batch_idx}, batch size: {len(batch)}")
+                            print(f"{self.log_prefix} Processing first batch {batch_idx}, batch size: {len(batch)}")
                             if len(batch) > 0:
                                 first_item = batch[0]
-                                print(f"[LoRATrainer] First batch item keys: {list(first_item.keys())}")
-                                print(f"[LoRATrainer] First batch item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
+                                print(f"{self.log_prefix} First batch item keys: {list(first_item.keys())}")
+                                print(f"{self.log_prefix} First batch item dataset_unique_id: {first_item.get('dataset_unique_id', 'MISSING')}")
 
                         # VRAM profiling for first batch only (to avoid spam)
                         profile_vram = self.debug_vram and (global_step == 0)
@@ -3446,7 +3450,7 @@ class LoRATrainer:
                             try:
                                 image_path = item["image_path"]
                                 if not os.path.exists(image_path):
-                                    print(f"[LoRATrainer] WARNING: Image not found: {image_path}")
+                                    print(f"{self.log_prefix} WARNING: Image not found: {image_path}")
                                     continue
 
                                 # Try to load from cache first
@@ -3461,16 +3465,16 @@ class LoRATrainer:
                                                     image_path, target_width, target_height, device=self.device
                                                 )
                                             except Exception as cache_err:
-                                                print(f"[LoRATrainer] WARNING: Cache load failed for {image_path}: {cache_err}")
+                                                print(f"{self.log_prefix} WARNING: Cache load failed for {image_path}: {cache_err}")
                                                 latents = None
                                     else:
                                         # Debug: Log missing dataset_unique_id (first batch only)
                                         if batch_idx == start_batch_idx and item_idx == 0:
                                             if not dataset_unique_id:
-                                                print(f"[LoRATrainer] WARNING: No dataset_unique_id in item")
+                                                print(f"{self.log_prefix} WARNING: No dataset_unique_id in item")
                                             elif dataset_unique_id not in latent_caches:
-                                                print(f"[LoRATrainer] WARNING: dataset_unique_id {dataset_unique_id[:8]}... not in latent_caches")
-                                                print(f"[LoRATrainer] Available cache IDs: {[uid[:8] + '...' for uid in latent_caches.keys()]}")
+                                                print(f"{self.log_prefix} WARNING: dataset_unique_id {dataset_unique_id[:8]}... not in latent_caches")
+                                                print(f"{self.log_prefix} Available cache IDs: {[uid[:8] + '...' for uid in latent_caches.keys()]}")
 
                                 # If not cached, encode normally
                                 if latents is None:
@@ -3485,7 +3489,7 @@ class LoRATrainer:
                                         else:
                                             latents = self.encode_image(image)
                                     except Exception as img_err:
-                                        print(f"[LoRATrainer] ERROR: Corrupted or invalid image {image_path}: {img_err}")
+                                        print(f"{self.log_prefix} ERROR: Corrupted or invalid image {image_path}: {img_err}")
                                         continue
 
                                 batch_latents.append(latents)
@@ -3501,9 +3505,9 @@ class LoRATrainer:
                                         caption_mask = item["cached_caption_mask"].to(self.device)
                                     else:
                                         # Fallback: encode on-the-fly (should not happen if pre-encoding worked)
-                                        print(f"[LoRATrainer] WARNING: No cached caption embeddings for item {item_idx}, encoding on-the-fly")
-                                        print(f"[LoRATrainer] Item keys: {list(item.keys())}")
-                                        print(f"[LoRATrainer] Caption: {caption[:50]}...")
+                                        print(f"{self.log_prefix} WARNING: No cached caption embeddings for item {item_idx}, encoding on-the-fly")
+                                        print(f"{self.log_prefix} Item keys: {list(item.keys())}")
+                                        print(f"{self.log_prefix} Caption: {caption[:50]}...")
 
                                         # Move Text Encoder to GPU temporarily
                                         self.text_encoder.to(self.device)
@@ -3526,7 +3530,7 @@ class LoRATrainer:
                                     else:
                                         batch_text_embeddings.append(prompt_output)
                             except Exception as item_err:
-                                print(f"[LoRATrainer] ERROR: Failed to process item {item_idx} in batch {batch_idx}: {item_err}")
+                                print(f"{self.log_prefix} ERROR: Failed to process item {item_idx} in batch {batch_idx}: {item_err}")
                                 import traceback
                                 traceback.print_exc()
                                 continue
@@ -3652,11 +3656,11 @@ class LoRATrainer:
                         current_batch = batch_idx - start_batch_idx + 1
                         if current_batch % progress_interval == 0 or current_batch == total_batches:
                             progress_pct = (current_batch / total_batches) * 100
-                            print(f"[LoRATrainer] Epoch {epoch + 1}/{num_epochs} - Batch {current_batch}/{total_batches} ({progress_pct:.0f}%) - Loss: {loss:.4f}, LR: {current_lr:.2e}, Step: {global_step}")
+                            print(f"{self.log_prefix} Epoch {epoch + 1}/{num_epochs} - Batch {current_batch}/{total_batches} ({progress_pct:.0f}%) - Loss: {loss:.4f}, LR: {current_lr:.2e}, Step: {global_step}")
 
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
-                            print(f"[LoRATrainer] Checkpoint saved at step {global_step}")
+                            print(f"{self.log_prefix} Checkpoint saved at step {global_step}")
                             self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
 
                         # Sample generation
@@ -3664,24 +3668,24 @@ class LoRATrainer:
                         should_generate_sample = (global_step == 0 or global_step % sample_every == 0)
                         if should_generate_sample:
                             if sample_prompts and sample_config:
-                                print(f"[LoRATrainer] Generating samples at step {global_step}")
+                                print(f"{self.log_prefix} Generating samples at step {global_step}")
                                 vae_on_cpu = len(latent_caches) > 0
                                 self.generate_sample(global_step, sample_prompts, sample_config, vae_on_cpu=vae_on_cpu)
                             else:
-                                print(f"[LoRATrainer] Skipping sample generation at step {global_step}: sample_prompts={sample_prompts is not None and len(sample_prompts) > 0}, sample_config={sample_config is not None}")
+                                print(f"{self.log_prefix} Skipping sample generation at step {global_step}: sample_prompts={sample_prompts is not None and len(sample_prompts) > 0}, sample_config={sample_config is not None}")
 
                     except Exception as e:
-                        print(f"[LoRATrainer] ERROR processing batch: {e}")
+                        print(f"{self.log_prefix} ERROR processing batch: {e}")
                         import traceback
                         traceback.print_exc()
                         continue
 
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
-                    print(f"[LoRATrainer] Checkpoint saved at epoch {epoch + 1}")
+                    print(f"{self.log_prefix} Checkpoint saved at epoch {epoch + 1}")
                     self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
 
-            print(f"\n[LoRATrainer] Training completed! Total steps: {global_step}")
+            print(f"\n{self.log_prefix} Training completed! Total steps: {global_step}")
 
             # Save final checkpoint (with optimizer state for potential resume)
             # Use run_name format: extract short name if auto-generated
@@ -3696,8 +3700,8 @@ class LoRATrainer:
             self.save_checkpoint(global_step, final_path, save_optimizer=True, run_id=run_id, epoch=num_epochs)
 
         except KeyboardInterrupt:
-            print(f"\n[LoRATrainer] Training interrupted by user at step {global_step}")
-            print(f"[LoRATrainer] Saving checkpoint at interruption point...")
+            print(f"\n{self.log_prefix} Training interrupted by user at step {global_step}")
+            print(f"{self.log_prefix} Saving checkpoint at interruption point...")
 
             # Use run_name format
             import re
@@ -3709,12 +3713,12 @@ class LoRATrainer:
 
             interrupted_path = self.output_dir / f"{short_name}_step_{global_step}_interrupted.safetensors"
             self.save_checkpoint(global_step, interrupted_path, save_optimizer=True)
-            print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
+            print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise to propagate the interruption
 
         except Exception as e:
-            print(f"\n[LoRATrainer] Training failed with error at step {global_step}: {e}")
-            print(f"[LoRATrainer] Saving checkpoint at failure point...")
+            print(f"\n{self.log_prefix} Training failed with error at step {global_step}: {e}")
+            print(f"{self.log_prefix} Saving checkpoint at failure point...")
 
             # Use run_name format
             import re
@@ -3726,7 +3730,7 @@ class LoRATrainer:
 
             failed_path = self.output_dir / f"{short_name}_step_{global_step}_failed.safetensors"
             self.save_checkpoint(global_step, failed_path, save_optimizer=True)
-            print(f"[LoRATrainer] Checkpoint saved. You can resume training from this point.")
+            print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
             raise  # Re-raise the exception
 
         finally:

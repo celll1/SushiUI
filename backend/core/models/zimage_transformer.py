@@ -126,8 +126,8 @@ class ZImageAttention(nn.Module):
         dtype = query.dtype
         query, key = query.to(dtype), key.to(dtype)
 
-        # Dispatch
-        from utils.attention import dispatch_attention
+        # Dispatch attention (using local implementation from zimage_utils)
+        from core.zimage_utils import dispatch_attention
 
         hidden_states = dispatch_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False, backend=self._attention_backend

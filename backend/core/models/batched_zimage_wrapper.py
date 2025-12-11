@@ -57,28 +57,27 @@ class BatchedZImageWrapper(nn.Module):
         """Enable gradient checkpointing for memory-efficient training."""
         self.transformer.enable_gradient_checkpointing()
 
-    def __getattr__(self, name):
-        """
-        Delegate attribute access to the wrapped transformer.
+    @property
+    def gradient_checkpointing(self):
+        """Expose gradient_checkpointing attribute from wrapped transformer."""
+        return self.transformer.gradient_checkpointing
 
-        This allows the wrapper to transparently expose attributes from the
-        wrapped transformer, such as `gradient_checkpointing`, `training`, etc.
+    @property
+    def training(self):
+        """Expose training attribute from wrapped transformer."""
+        return self.transformer.training
 
-        Note: This method is only called when the attribute is NOT found.
-        Since we use direct assignment for self.transformer, it will be found
-        in _modules (via nn.Module's __getattribute__), so this only handles
-        delegation of other attributes.
-        """
-        # Check if we have a transformer (handles both __dict__ and _modules)
-        if 'transformer' in self._modules:
-            transformer = self._modules['transformer']
-            try:
-                return getattr(transformer, name)
-            except AttributeError:
-                pass
+    def train(self, mode=True):
+        """Set training mode."""
+        super().train(mode)
+        self.transformer.train(mode)
+        return self
 
-        # Attribute not found
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    def eval(self):
+        """Set evaluation mode."""
+        super().eval()
+        self.transformer.eval()
+        return self
 
     def batched_to_list(
         self,

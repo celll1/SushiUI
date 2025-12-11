@@ -2468,7 +2468,7 @@ class LoRATrainer:
                 cap_feats=model_input_list,
             )
 
-            # Convert list to tensor
+            # Convert list to tensor (will be 5D: [batch, channels, frames, height, width])
             noise_pred = torch.stack(noise_pred_list, dim=0)
 
             # Perform guidance
@@ -2476,8 +2476,11 @@ class LoRATrainer:
                 noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
-            # Compute previous noisy sample
-            latents = scheduler.step(noise_pred, t, latents).prev_sample
+            # Remove frames dimension for scheduler (5D → 4D) and negate (same as inference pipeline)
+            noise_pred = -noise_pred.squeeze(2)
+
+            # Compute previous noisy sample (scheduler expects 4D latents)
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents).prev_sample
 
         return latents
 

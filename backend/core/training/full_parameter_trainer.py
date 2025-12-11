@@ -65,6 +65,7 @@ class FullParameterTrainer(LoRATrainer):
         )
 
         # Full parameter training settings
+        self.training_method = "full_finetune"  # Identify as full fine-tuning (not LoRA)
         self.train_unet = True  # Always train U-Net/Transformer in full parameter mode
         self.train_text_encoder = False  # Default: don't train text encoders (can be overridden)
         self.unet_lr = None  # Use default learning_rate

@@ -16,7 +16,7 @@ build/
 # 出力ファイル
 outputs/
 /training/
-models/
+/models/
 lora/
 controlnet/
 taglist/

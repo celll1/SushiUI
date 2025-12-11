@@ -359,7 +359,8 @@ class LoRATrainer:
                 torch_dtype=self.weight_dtype
             )
 
-            self.transformer = components["transformer"]
+            # Store original transformer before wrapping
+            self.transformer_original = components["transformer"]
             self.vae = components["vae"]
             self.text_encoder = components["text_encoder"]
             self.tokenizer = components["tokenizer"]
@@ -373,6 +374,12 @@ class LoRATrainer:
 
             # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            # Wrap transformer with BatchedZImageWrapper for memory-efficient training
+            from core.models.batched_zimage_wrapper import BatchedZImageWrapper
+            print(f"[LoRATrainer] Wrapping Z-Image Transformer with BatchedZImageWrapper for memory optimization")
+            self.transformer = BatchedZImageWrapper(self.transformer_original)
+            print(f"[LoRATrainer] BatchedZImageWrapper enabled: Batched tensor input/output (reduces VRAM usage)")
 
             print(f"[LoRATrainer] Z-Image model loaded successfully")
             print(f"[LoRATrainer] Scheduler type: {self.scheduler.__class__.__name__}")
@@ -660,9 +667,13 @@ class LoRATrainer:
 
         print(f"[LoRATrainer] Applying LoRA to Z-Image Transformer (ZImageAttention modules)")
 
+        # Access the original transformer inside the wrapper
+        # self.transformer is BatchedZImageWrapper, self.transformer.transformer is the original model
+        target_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
+
         # Find all ZImageAttention modules in the Transformer
         attention_modules = []
-        for name, module in self.transformer.named_modules():
+        for name, module in target_transformer.named_modules():
             if module.__class__.__name__ == "ZImageAttention":
                 attention_modules.append((name, module))
 
@@ -1459,17 +1470,10 @@ class LoRATrainer:
 
         # Predict velocity using Z-Image Transformer (LoRA is already integrated)
         # Velocity target: v = data - noise
-        # Note: Z-Image Transformer expects List[Tensor] for x and cap_feats
-        # Also expects 4D latents [C, F, H, W] where F is frame dimension (use F=1 for static images)
-        # Convert batched tensors to list format and add frame dimension
-        x_list = []
-        for i in range(batch_size):
-            latent = noisy_latents[i]  # [C, H, W]
-            # Add frame dimension: [C, H, W] -> [C, 1, H, W]
-            latent_4d = latent.unsqueeze(1)
-            x_list.append(latent_4d)
-
-        cap_feats_list = [caption_embeds[i] for i in range(batch_size)]
+        # Note: BatchedZImageWrapper handles conversion to/from List[Tensor] internally
+        # Input: [B, C, H, W], Output: [B, C, H, W]
+        # Add frame dimension for Z-Image: [B, C, H, W] -> [B, C, 1, H, W]
+        noisy_latents_4d = noisy_latents.unsqueeze(2)  # Add F=1 dimension
 
         # Debug: Verify gradient checkpointing is active (first step only)
         if not hasattr(self, '_debug_logged_gc_status'):
@@ -1500,31 +1504,24 @@ class LoRATrainer:
         if self.mixed_precision:
             # Autocast to training_dtype for forward pass
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                model_pred = self.transformer(
-                    x=x_list,
+                model_pred, _ = self.transformer(
+                    x=noisy_latents_4d,
                     t=timesteps,
-                    cap_feats=cap_feats_list,
+                    cap_feats=caption_embeds,
+                    cap_mask=caption_mask,
                 )
         else:
             # No mixed precision: use weight_dtype throughout
-            model_pred = self.transformer(
-                x=x_list,
+            model_pred, _ = self.transformer(
+                x=noisy_latents_4d,
                 t=timesteps,
-                cap_feats=cap_feats_list,
+                cap_feats=caption_embeds,
+                cap_mask=caption_mask,
             )
 
-        # Z-Image Transformer returns (x, {}) tuple - unpack it
-        if isinstance(model_pred, tuple):
-            model_pred = model_pred[0]
-
-        # Z-Image Transformer returns List[Tensor], convert back to batched tensor
-        # Output will be [C, 1, H, W] per item, need to remove frame dimension
-        if isinstance(model_pred, list):
-            # Each item is [C, 1, H, W], squeeze to [C, H, W] then stack
-            model_pred = torch.stack([pred.squeeze(1) for pred in model_pred], dim=0)
-        else:
-            # If already batched [B, C, 1, H, W], squeeze frame dimension
-            model_pred = model_pred.squeeze(2)
+        # BatchedZImageWrapper returns batched tensor [B, C, 1, H, W]
+        # Remove frame dimension: [B, C, 1, H, W] -> [B, C, H, W]
+        model_pred = model_pred.squeeze(2)
 
         # Debug: Log VRAM after forward pass (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_after'):

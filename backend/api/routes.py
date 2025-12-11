@@ -1393,13 +1393,15 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
 
 @router.post("/settings/directories")
 async def save_directory_settings(
-    model_dirs: List[str] = [],
-    lora_dirs: List[str] = [],
-    controlnet_dirs: List[str] = [],
-    cache_dir: str = None,
+    settings_data: dict,
     db: Session = Depends(get_gallery_db)
 ):
     """Save user-configured model directories and cache directory"""
+    # Extract from request body
+    model_dirs = settings_data.get("model_dirs", [])
+    lora_dirs = settings_data.get("lora_dirs", [])
+    controlnet_dirs = settings_data.get("controlnet_dirs", [])
+    cache_dir = settings_data.get("cache_dir")
     try:
         # Get or create settings record
         settings_record = db.query(UserSettings).first()

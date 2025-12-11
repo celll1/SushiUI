@@ -25,7 +25,7 @@ def get_cache_base_dir() -> str:
         Base cache directory path (default: "cache/datasets")
     """
     try:
-        from database.gallery_db import get_gallery_db
+        from database import get_gallery_db
         from database.models import UserSettings
 
         db = next(get_gallery_db())

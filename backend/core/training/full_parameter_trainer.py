@@ -362,8 +362,15 @@ class FullParameterTrainer(LoRATrainer):
                 # For SD/SDXL: check for unet weights ("unet." prefix)
                 has_model_weights = False
                 if self.is_zimage:
-                    # Z-Image: Keys should be transformer layers without prefix (Comfy format)
-                    has_model_weights = any("layers." in key or "final_layer" in key for key in state_dict.keys())
+                    # Z-Image: Check for both official format and Comfy format keys
+                    # Official format: all_final_layer, cap_embedder, context_refiner, rope, layers.X
+                    # Comfy format: final_layer, layers.X
+                    has_model_weights = any(
+                        "all_final_layer" in key or "cap_embedder" in key or
+                        "context_refiner" in key or "final_layer" in key or
+                        "layers." in key
+                        for key in state_dict.keys()
+                    )
                 else:
                     # SD/SDXL: Keys should have "unet." prefix
                     has_model_weights = any(key.startswith("unet.") for key in state_dict.keys())

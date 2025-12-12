@@ -3457,6 +3457,13 @@ class LoRATrainer:
                 print(f"{self.log_prefix} Starting batch loop from batch {start_batch_idx}...")
 
                 for batch_idx, batch in enumerate(batches[start_batch_idx:], start=start_batch_idx):
+                    # Check for stop flag (file-based, works on Windows)
+                    stop_flag_file = self.output_dir / ".stop_training"
+                    if stop_flag_file.exists():
+                        print(f"\n{self.log_prefix} Stop flag detected at step {global_step}, initiating graceful shutdown...")
+                        stop_flag_file.unlink()  # Remove flag file
+                        raise KeyboardInterrupt("User requested stop via stop flag")
+
                     try:
                         # Debug: Log batch entry (first batch only to avoid spam)
                         if batch_idx == start_batch_idx:

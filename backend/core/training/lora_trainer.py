@@ -1344,9 +1344,28 @@ class LoRATrainer:
         # Calculate reconstruction loss (for monitoring/visualization)
         # This measures how well the model can reconstruct the target latent from noisy input
         with torch.no_grad():
-            # Approximation: predicted_latent = noisy_latents - predicted_noise
-            # (Exact formula requires scheduler parameters, but this is sufficient for monitoring)
-            predicted_latent_for_recon = noisy_latents - model_pred
+            # Get alpha_bar for reconstruction
+            alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
+            alpha_bar_t = alphas_cumprod[timesteps]
+            while alpha_bar_t.dim() < latents.dim():
+                alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+            sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
+            sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
+
+            # Reconstruct x_0 based on prediction type
+            if prediction_type == "epsilon":
+                # x_0 = (x_t - sqrt(1 - alpha_bar_t) * epsilon_pred) / sqrt(alpha_bar_t)
+                predicted_latent_for_recon = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+            elif prediction_type == "v_prediction":
+                # x_0 = sqrt(alpha_bar_t) * x_t - sqrt(1 - alpha_bar_t) * v_pred
+                predicted_latent_for_recon = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
+            elif prediction_type == "sample":
+                # Direct prediction of x_0
+                predicted_latent_for_recon = model_pred
+            else:
+                # Fallback (should not reach here)
+                predicted_latent_for_recon = noisy_latents - model_pred
+
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
             recon_loss = recon_loss_per_sample.mean()
@@ -1362,11 +1381,17 @@ class LoRATrainer:
             timestep_value = timesteps[0].item()
 
             # Calculate predicted_latent (denoised latent at t=0)
-            # Formula: predicted_latent = (noisy_latents - sqrt(1 - alpha_bar) * predicted_noise) / sqrt(alpha_bar)
-            # For simplicity, use: predicted_latent = noisy_latents - predicted_noise
-            # This is an approximation; exact formula requires scheduler parameters
+            # Use exact reconstruction formula based on prediction type
             with torch.no_grad():
-                predicted_latent = noisy_latents - model_pred
+                # Reuse alpha_bar from reconstruction loss calculation
+                if prediction_type == "epsilon":
+                    predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+                elif prediction_type == "v_prediction":
+                    predicted_latent = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
+                elif prediction_type == "sample":
+                    predicted_latent = model_pred
+                else:
+                    predicted_latent = noisy_latents - model_pred
 
             # Prepare debug data
             debug_data = {

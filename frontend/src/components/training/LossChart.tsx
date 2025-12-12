@@ -127,11 +127,10 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   }
 
   // Calculate chart dimensions and scaling
-  const width = 100; // Use percentage width for responsiveness
+  const width = 550; // Fixed pixel width for accurate mouse tracking
   const height = 300;
   const padding = { top: 20, right: 20, bottom: 40, left: 60 };
-  const actualWidth = 550; // Actual pixel width for calculations
-  const chartWidth = actualWidth - padding.left - padding.right;
+  const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
   const maxStep = Math.max(...lossData.map((d) => d.step));
@@ -202,18 +201,14 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     const svgRect = e.currentTarget.getBoundingClientRect();
     const mouseX = e.clientX - svgRect.left;
 
-    // Convert to viewBox coordinates
-    const scaleFactorX = actualWidth / svgRect.width;
-    const viewBoxX = mouseX * scaleFactorX;
-
-    // Check if mouse is within chart area
-    if (viewBoxX < padding.left || viewBoxX > actualWidth - padding.right) {
+    // Check if mouse is within chart area (use pixel coordinates directly)
+    if (mouseX < padding.left || mouseX > width - padding.right) {
       setTooltip(null);
       return;
     }
 
     // Find nearest data point by step
-    const hoveredStep = minStep + ((viewBoxX - padding.left) / chartWidth) * (maxStep - minStep);
+    const hoveredStep = minStep + ((mouseX - padding.left) / chartWidth) * (maxStep - minStep);
 
     // Find closest data point
     let closestIndex = 0;
@@ -332,12 +327,10 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       </div>
 
       <svg
-        width="100%"
+        width={width}
         height={height}
-        viewBox={`0 0 ${actualWidth} ${height}`}
-        preserveAspectRatio="xMidYMid meet"
         className="text-gray-400"
-        style={{ fontFamily: "monospace", fontSize: "10px", maxWidth: "100%" }}
+        style={{ fontFamily: "monospace", fontSize: "10px" }}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       >
@@ -355,7 +348,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         <line
           x1={padding.left}
           y1={height - padding.bottom}
-          x2={actualWidth - padding.right}
+          x2={width - padding.right}
           y2={height - padding.bottom}
           stroke="currentColor"
           strokeWidth="1"
@@ -387,7 +380,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               <line
                 x1={padding.left}
                 y1={y}
-                x2={actualWidth - padding.right}
+                x2={width - padding.right}
                 y2={y}
                 stroke="currentColor"
                 strokeWidth="0.5"
@@ -434,7 +427,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
         {/* Axis labels */}
         <text
-          x={actualWidth / 2}
+          x={width / 2}
           y={height - 5}
           textAnchor="middle"
           fill="currentColor"

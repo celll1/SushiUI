@@ -1713,35 +1713,69 @@ class LoRATrainer:
 
     def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
         """
-        Find the latest checkpoint in output directory.
+        Find the latest valid checkpoint in output directory.
+
+        Strategy:
+        1. Find all .safetensors files
+        2. Validate each checkpoint (can be loaded)
+        3. Extract step number
+        4. Return the one with highest step number
 
         Returns:
-            Tuple of (checkpoint_path, step) or None if no checkpoint found
+            Tuple of (checkpoint_path, step) or None if no valid checkpoint found
         """
-        checkpoint_files = list(self.output_dir.glob("lora_step_*.safetensors"))
+        from safetensors.torch import load_file
+
+        # Find all safetensors files
+        checkpoint_files = list(self.output_dir.glob("*.safetensors"))
 
         if not checkpoint_files:
             return None
 
-        # Extract step numbers and find latest
-        checkpoints_with_steps = []
+        # Validate checkpoints and extract step numbers
+        valid_checkpoints = []
         for ckpt_path in checkpoint_files:
             try:
-                # Extract step number from filename: lora_step_1000.safetensors -> 1000
-                step_str = ckpt_path.stem.split("_")[-1]
-                step = int(step_str)
-                checkpoints_with_steps.append((str(ckpt_path), step))
-            except (ValueError, IndexError):
+                # Try to load safetensors file (validation)
+                state_dict = load_file(str(ckpt_path))
+
+                # Extract step from metadata or filename
+                step = 0
+                if hasattr(state_dict, 'metadata') and 'ss_training_step' in state_dict.metadata():
+                    step = int(state_dict.metadata()['ss_training_step'])
+                else:
+                    # Fallback: extract from filename (any file with "step_{number}")
+                    stem = ckpt_path.stem
+                    parts = stem.split("_")
+                    if "step" in parts:
+                        step_idx = parts.index("step")
+                        if step_idx + 1 < len(parts):
+                            step = int(parts[step_idx + 1])
+
+                # Check if this checkpoint has LoRA weights (basic validation)
+                has_lora_weights = any("lora_down" in key or "lora_up" in key for key in state_dict.keys())
+                if has_lora_weights:
+                    valid_checkpoints.append((str(ckpt_path), step))
+                    print(f"{self.log_prefix} Found valid checkpoint: {ckpt_path.name} (step {step})")
+
+            except Exception as e:
+                print(f"{self.log_prefix} Skipping invalid checkpoint {ckpt_path.name}: {e}")
                 continue
 
-        if not checkpoints_with_steps:
+        if not valid_checkpoints:
             return None
 
         # Sort by step and return latest
-        checkpoints_with_steps.sort(key=lambda x: x[1], reverse=True)
-        latest_ckpt, latest_step = checkpoints_with_steps[0]
+        valid_checkpoints.sort(key=lambda x: x[1], reverse=True)
+        latest_ckpt, latest_step = valid_checkpoints[0]
 
-        print(f"{self.log_prefix} Found latest checkpoint: {latest_ckpt} (step {latest_step})")
+        # Check for optimizer state
+        optimizer_path = Path(latest_ckpt).with_suffix('.pt')
+        if optimizer_path.exists():
+            print(f"{self.log_prefix} Latest checkpoint: {latest_ckpt} (step {latest_step}, with optimizer state)")
+        else:
+            print(f"{self.log_prefix} Latest checkpoint: {latest_ckpt} (step {latest_step}, no optimizer state)")
+
         return latest_ckpt, latest_step
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
@@ -3240,8 +3274,8 @@ class LoRATrainer:
         global_step = 0
         start_epoch = 0
 
-        if resume_from_checkpoint:
-            # User specified a checkpoint to resume from
+        if resume_from_checkpoint and resume_from_checkpoint.lower() != "latest":
+            # User specified a specific checkpoint file to resume from
             checkpoint_path = self.output_dir / resume_from_checkpoint
             if checkpoint_path.exists():
                 print(f"{self.log_prefix} Resuming from specified checkpoint: {checkpoint_path}")
@@ -3260,8 +3294,8 @@ class LoRATrainer:
             else:
                 print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                 print(f"{self.log_prefix} Starting from scratch")
-        else:
-            # Auto-detect latest checkpoint
+        elif resume_from_checkpoint and resume_from_checkpoint.lower() == "latest":
+            # User explicitly requested "latest" - auto-detect latest checkpoint
             checkpoint_result = self.find_latest_checkpoint()
             if checkpoint_result is not None:
                 checkpoint_path, checkpoint_step = checkpoint_result
@@ -3279,7 +3313,10 @@ class LoRATrainer:
                 for _ in range(global_step):
                     self.lr_scheduler.step()
             else:
-                print(f"{self.log_prefix} No checkpoint found, starting from scratch")
+                print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
+        else:
+            # User selected "Start from Beginning" (resume_from_checkpoint is None or empty)
+            print(f"{self.log_prefix} Starting training from beginning")
 
         # Training loop
         try:

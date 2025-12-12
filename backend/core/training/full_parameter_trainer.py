@@ -320,6 +320,78 @@ class FullParameterTrainer(LoRATrainer):
         print(f"{self.specific_log_prefix} Checkpoint loaded (step {step})")
         return step
 
+    def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
+        """
+        Find the latest valid checkpoint in output directory.
+
+        Strategy:
+        1. Find all .safetensors files
+        2. Validate each checkpoint (can be loaded)
+        3. Extract step number
+        4. Return the one with highest step number
+
+        Returns:
+            Tuple of (checkpoint_path, step) or None if no valid checkpoint found
+        """
+        from safetensors.torch import load_file
+
+        # Find all safetensors files
+        checkpoint_files = list(self.output_dir.glob("*.safetensors"))
+
+        if not checkpoint_files:
+            return None
+
+        # Validate checkpoints and extract step numbers
+        valid_checkpoints = []
+        for ckpt_path in checkpoint_files:
+            try:
+                # Try to load safetensors file (validation)
+                state_dict = load_file(str(ckpt_path))
+
+                # Extract step from filename
+                stem = ckpt_path.stem
+                parts = stem.split("_")
+                step = 0
+                if "step" in parts:
+                    step_idx = parts.index("step")
+                    if step_idx + 1 < len(parts):
+                        step = int(parts[step_idx + 1])
+
+                # Check if this checkpoint has model weights (basic validation)
+                # For Z-Image: check for transformer weights (no prefix)
+                # For SD/SDXL: check for unet weights ("unet." prefix)
+                has_model_weights = False
+                if self.is_zimage:
+                    # Z-Image: Keys should be transformer layers without prefix (Comfy format)
+                    has_model_weights = any("layers." in key or "final_layer" in key for key in state_dict.keys())
+                else:
+                    # SD/SDXL: Keys should have "unet." prefix
+                    has_model_weights = any(key.startswith("unet.") for key in state_dict.keys())
+
+                if has_model_weights:
+                    valid_checkpoints.append((str(ckpt_path), step))
+                    print(f"{self.specific_log_prefix} Found valid checkpoint: {ckpt_path.name} (step {step})")
+
+            except Exception as e:
+                print(f"{self.specific_log_prefix} Skipping invalid checkpoint {ckpt_path.name}: {e}")
+                continue
+
+        if not valid_checkpoints:
+            return None
+
+        # Sort by step and return latest
+        valid_checkpoints.sort(key=lambda x: x[1], reverse=True)
+        latest_ckpt, latest_step = valid_checkpoints[0]
+
+        # Check for optimizer state
+        optimizer_path = Path(latest_ckpt).with_suffix('.pt')
+        if optimizer_path.exists():
+            print(f"{self.specific_log_prefix} Latest checkpoint: {latest_ckpt} (step {latest_step}, with optimizer state)")
+        else:
+            print(f"{self.specific_log_prefix} Latest checkpoint: {latest_ckpt} (step {latest_step}, no optimizer state)")
+
+        return latest_ckpt, latest_step
+
     def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100, run_id: Optional[int] = None, epoch: Optional[int] = None):
         """
         Save full model checkpoint.
@@ -334,7 +406,15 @@ class FullParameterTrainer(LoRATrainer):
             epoch: Current epoch number (optional)
         """
         if save_path is None:
-            save_path = self.output_dir / f"full_step_{step}.safetensors"
+            # Extract short name from run_name (same logic as LoRATrainer)
+            import re
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)
+            else:
+                short_name = self.run_name
+
+            save_path = self.output_dir / f"{short_name}_step_{step}.safetensors"
         else:
             save_path = Path(save_path)
 

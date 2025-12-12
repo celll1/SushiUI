@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import { getTrainingMetrics } from "@/utils/api";
 
@@ -49,6 +49,10 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
   // Tooltip state
   const [tooltip, setTooltip] = useState<{ x: number; y: number; step: number; loss: number; smoothLoss: number; reconLoss?: number; smoothReconLoss?: number } | null>(null);
+
+  // SVG ref for responsive width
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [svgWidth, setSvgWidth] = useState<number>(550);
 
   // Calculate smooth loss on client side
   const smoothLossData = useMemo(() => {
@@ -106,6 +110,29 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     }
   }, [pollingInterval, fetchMetrics]);
 
+  // Monitor SVG width for responsive layout
+  useEffect(() => {
+    if (!svgRef.current) return;
+
+    const updateWidth = () => {
+      if (svgRef.current) {
+        const rect = svgRef.current.getBoundingClientRect();
+        setSvgWidth(rect.width);
+      }
+    };
+
+    // Initial width
+    updateWidth();
+
+    // Watch for resize
+    const resizeObserver = new ResizeObserver(updateWidth);
+    resizeObserver.observe(svgRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
   if (error) {
     return (
       <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 text-sm">
@@ -127,10 +154,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   }
 
   // Calculate chart dimensions and scaling
-  const width = 550; // Fixed pixel width for accurate mouse tracking
   const height = 300;
   const padding = { top: 20, right: 180, bottom: 40, left: 60 }; // right: 180 for tooltip space
-  const chartWidth = width - padding.left - padding.right;
+  const chartWidth = svgWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
   const maxStep = Math.max(...lossData.map((d) => d.step));
@@ -201,8 +227,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     const svgRect = e.currentTarget.getBoundingClientRect();
     const mouseX = e.clientX - svgRect.left;
 
-    // Check if mouse is within chart area (use pixel coordinates directly)
-    if (mouseX < padding.left || mouseX > width - padding.right) {
+    // Check if mouse is within chart area
+    if (mouseX < padding.left || mouseX > svgWidth - padding.right) {
       setTooltip(null);
       return;
     }
@@ -327,7 +353,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       </div>
 
       <svg
-        width={width}
+        ref={svgRef}
+        width="100%"
         height={height}
         className="text-gray-400"
         style={{ fontFamily: "monospace", fontSize: "10px" }}
@@ -348,7 +375,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         <line
           x1={padding.left}
           y1={height - padding.bottom}
-          x2={width - padding.right}
+          x2={svgWidth - padding.right}
           y2={height - padding.bottom}
           stroke="currentColor"
           strokeWidth="1"
@@ -380,7 +407,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               <line
                 x1={padding.left}
                 y1={y}
-                x2={width - padding.right}
+                x2={svgWidth - padding.right}
                 y2={y}
                 stroke="currentColor"
                 strokeWidth="0.5"
@@ -427,7 +454,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
         {/* Axis labels */}
         <text
-          x={width / 2}
+          x={svgWidth / 2}
           y={height - 5}
           textAnchor="middle"
           fill="currentColor"
@@ -525,87 +552,74 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               strokeWidth="2"
             />
 
-            {/* Tooltip box */}
+            {/* Tooltip box - always on right side */}
             <g>
-              {(() => {
-                // Calculate tooltip position: right side by default, left side if too close to right edge
-                const tooltipWidth = 160;
-                const tooltipHeight = tooltip.reconLoss !== undefined ? 85 : 50;
-                const showOnLeft = tooltip.x + tooltipWidth + 10 > width - padding.right;
-                const tooltipX = showOnLeft ? tooltip.x - tooltipWidth - 10 : tooltip.x + 10;
-                const textX = showOnLeft ? tooltip.x - tooltipWidth - 5 : tooltip.x + 15;
+              {/* Background */}
+              <rect
+                x={tooltip.x + 10}
+                y={tooltip.y - 55}
+                width="160"
+                height={tooltip.reconLoss !== undefined ? 85 : 50}
+                fill="#1f2937"
+                stroke="#4b5563"
+                strokeWidth="1"
+                rx="4"
+              />
 
-                return (
-                  <>
-                    {/* Background */}
-                    <rect
-                      x={tooltipX}
-                      y={tooltip.y - 55}
-                      width={tooltipWidth}
-                      height={tooltipHeight}
-                      fill="#1f2937"
-                      stroke="#4b5563"
-                      strokeWidth="1"
-                      rx="4"
-                    />
-
-                    {/* Text content */}
-                    <text
-                      x={textX}
-                      y={tooltip.y - 40}
-                      fill="#e5e7eb"
-                      fontSize="11"
-                      fontFamily="monospace"
-                    >
-                      Step: {tooltip.step}
-                    </text>
-                    {showLoss && (
-                      <>
-                        <text
-                          x={textX}
-                          y={tooltip.y - 25}
-                          fill="#3b82f6"
-                          fontSize="11"
-                          fontFamily="monospace"
-                        >
-                          Pred Loss: {tooltip.loss.toFixed(4)}
-                        </text>
-                        <text
-                          x={textX}
-                          y={tooltip.y - 10}
-                          fill="#60a5fa"
-                          fontSize="11"
-                          fontFamily="monospace"
-                        >
-                          Smooth: {tooltip.smoothLoss.toFixed(4)}
-                        </text>
-                      </>
-                    )}
-                    {showReconLoss && tooltip.reconLoss !== undefined && (
-                      <>
-                        <text
-                          x={textX}
-                          y={tooltip.y + 5}
-                          fill="#10b981"
-                          fontSize="11"
-                          fontFamily="monospace"
-                        >
-                          Recon Loss: {tooltip.reconLoss.toFixed(4)}
-                        </text>
-                        <text
-                          x={textX}
-                          y={tooltip.y + 20}
-                          fill="#34d399"
-                          fontSize="11"
-                          fontFamily="monospace"
-                        >
-                          Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
-                        </text>
-                      </>
-                    )}
-                  </>
-                );
-              })()}
+              {/* Text content */}
+              <text
+                x={tooltip.x + 15}
+                y={tooltip.y - 40}
+                fill="#e5e7eb"
+                fontSize="11"
+                fontFamily="monospace"
+              >
+                Step: {tooltip.step}
+              </text>
+              {showLoss && (
+                <>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y - 25}
+                    fill="#3b82f6"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Pred Loss: {tooltip.loss.toFixed(4)}
+                  </text>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y - 10}
+                    fill="#60a5fa"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Smooth: {tooltip.smoothLoss.toFixed(4)}
+                  </text>
+                </>
+              )}
+              {showReconLoss && tooltip.reconLoss !== undefined && (
+                <>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y + 5}
+                    fill="#10b981"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Recon Loss: {tooltip.reconLoss.toFixed(4)}
+                  </text>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y + 20}
+                    fill="#34d399"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
+                  </text>
+                </>
+              )}
             </g>
           </g>
         )}

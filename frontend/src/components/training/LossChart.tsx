@@ -36,6 +36,7 @@ interface LossChartProps {
 
 export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [lossData, setLossData] = useState<MetricPoint[]>([]);
+  const [reconLossData, setReconLossData] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastStep, setLastStep] = useState<number>(-1);
@@ -43,14 +44,20 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   // UI controls
   const [smoothingFactor, setSmoothingFactor] = useState(0.9);
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
+  const [showLoss, setShowLoss] = useState(true);
+  const [showReconLoss, setShowReconLoss] = useState(true);
 
   // Tooltip state
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; step: number; loss: number; smoothLoss: number } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; step: number; loss: number; smoothLoss: number; reconLoss?: number; smoothReconLoss?: number } | null>(null);
 
   // Calculate smooth loss on client side
   const smoothLossData = useMemo(() => {
     return calculateSmoothing(lossData, smoothingFactor);
   }, [lossData, smoothingFactor]);
+
+  const smoothReconLossData = useMemo(() => {
+    return calculateSmoothing(reconLossData, smoothingFactor);
+  }, [reconLossData, smoothingFactor]);
 
   const fetchMetrics = useCallback(async (isIncremental: boolean = false) => {
     try {
@@ -70,6 +77,12 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           setLastStep(maxStep);
         }
 
+        return newData;
+      });
+
+      // Update recon_loss data
+      setReconLossData((prevData) => {
+        const newData = sinceStep !== undefined ? [...prevData, ...(data.recon_loss || [])] : (data.recon_loss || []);
         return newData;
       });
     } catch (err: any) {
@@ -123,8 +136,14 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
   const maxStep = Math.max(...lossData.map((d) => d.step));
   const minStep = Math.min(...lossData.map((d) => d.step));
-  const maxLoss = Math.max(...lossData.map((d) => d.value));
-  const minLoss = Math.min(...lossData.map((d) => d.value));
+
+  // Calculate min/max considering both loss and recon_loss
+  const allValues = [
+    ...(showLoss ? lossData.map((d) => d.value) : []),
+    ...(showReconLoss ? reconLossData.map((d) => d.value) : [])
+  ];
+  const maxLoss = allValues.length > 0 ? Math.max(...allValues) : 1;
+  const minLoss = allValues.length > 0 ? Math.min(...allValues) : 0;
 
   const scaleX = (step: number) =>
     padding.left + ((step - minStep) / (maxStep - minStep || 1)) * chartWidth;
@@ -142,6 +161,23 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     .join(" ");
 
   const smoothLinePath = smoothLossData
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  // Generate recon_loss paths
+  const rawReconLinePath = reconLossData
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  const smoothReconLinePath = smoothReconLossData
     .map((d, i) => {
       const x = scaleX(d.step);
       const y = scaleY(d.value);
@@ -193,6 +229,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
     const closestPoint = lossData[closestIndex];
     const closestSmooth = smoothLossData[closestIndex];
+    const closestReconPoint = reconLossData[closestIndex];
+    const closestSmoothRecon = smoothReconLossData[closestIndex];
     const pointX = scaleX(closestSmooth.step);
     const pointY = scaleY(closestSmooth.value);  // Use smooth loss Y position
 
@@ -201,7 +239,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       y: pointY,
       step: closestSmooth.step,
       loss: closestPoint.value,
-      smoothLoss: closestSmooth.value
+      smoothLoss: closestSmooth.value,
+      reconLoss: closestReconPoint?.value,
+      smoothReconLoss: closestSmoothRecon?.value
     });
   };
 
@@ -261,6 +301,30 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         <span className="text-xs text-gray-400 w-12 text-right">
           {(smoothingFactor * 100).toFixed(0)}%
         </span>
+      </div>
+
+      {/* Visibility toggles */}
+      <div className="flex items-center gap-4 mb-3">
+        <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showLoss}
+            onChange={(e) => setShowLoss(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <span>Prediction Loss</span>
+        </label>
+        {reconLossData.length > 0 && (
+          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showReconLoss}
+              onChange={(e) => setShowReconLoss(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>Reconstruction Loss</span>
+          </label>
+        )}
       </div>
 
       <svg
@@ -385,26 +449,58 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           Loss
         </text>
 
-        {/* Raw loss line (behind) */}
-        <path
-          d={rawLinePath}
-          fill="none"
-          stroke="#3b82f6"
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          opacity="0.3"
-        />
+        {/* Prediction Loss lines */}
+        {showLoss && (
+          <>
+            {/* Raw loss line (behind) */}
+            <path
+              d={rawLinePath}
+              fill="none"
+              stroke="#3b82f6"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              opacity="0.3"
+            />
 
-        {/* Smooth loss line (always shown) */}
-        {smoothingFactor > 0 && (
-          <path
-            d={smoothLinePath}
-            fill="none"
-            stroke="#60a5fa"
-            strokeWidth="2.5"
-            strokeLinejoin="round"
-            opacity="0.9"
-          />
+            {/* Smooth loss line */}
+            {smoothingFactor > 0 && (
+              <path
+                d={smoothLinePath}
+                fill="none"
+                stroke="#60a5fa"
+                strokeWidth="2.5"
+                strokeLinejoin="round"
+                opacity="0.9"
+              />
+            )}
+          </>
+        )}
+
+        {/* Reconstruction Loss lines */}
+        {showReconLoss && reconLossData.length > 0 && (
+          <>
+            {/* Raw recon loss line (behind) */}
+            <path
+              d={rawReconLinePath}
+              fill="none"
+              stroke="#10b981"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              opacity="0.3"
+            />
+
+            {/* Smooth recon loss line */}
+            {smoothingFactor > 0 && (
+              <path
+                d={smoothReconLinePath}
+                fill="none"
+                stroke="#34d399"
+                strokeWidth="2.5"
+                strokeLinejoin="round"
+                opacity="0.9"
+              />
+            )}
+          </>
         )}
 
         {/* Tooltip */}
@@ -437,9 +533,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               {/* Background */}
               <rect
                 x={tooltip.x + 10}
-                y={tooltip.y - 40}
-                width="140"
-                height="50"
+                y={tooltip.y - 55}
+                width="160"
+                height={tooltip.reconLoss !== undefined ? 85 : 50}
                 fill="#1f2937"
                 stroke="#4b5563"
                 strokeWidth="1"
@@ -449,54 +545,111 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               {/* Text content */}
               <text
                 x={tooltip.x + 15}
-                y={tooltip.y - 25}
+                y={tooltip.y - 40}
                 fill="#e5e7eb"
                 fontSize="11"
                 fontFamily="monospace"
               >
                 Step: {tooltip.step}
               </text>
-              <text
-                x={tooltip.x + 15}
-                y={tooltip.y - 10}
-                fill="#3b82f6"
-                fontSize="11"
-                fontFamily="monospace"
-              >
-                Loss: {tooltip.loss.toFixed(4)}
-              </text>
-              <text
-                x={tooltip.x + 15}
-                y={tooltip.y + 5}
-                fill="#60a5fa"
-                fontSize="11"
-                fontFamily="monospace"
-              >
-                Smooth: {tooltip.smoothLoss.toFixed(4)}
-              </text>
+              {showLoss && (
+                <>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y - 25}
+                    fill="#3b82f6"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Pred Loss: {tooltip.loss.toFixed(4)}
+                  </text>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y - 10}
+                    fill="#60a5fa"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Smooth: {tooltip.smoothLoss.toFixed(4)}
+                  </text>
+                </>
+              )}
+              {showReconLoss && tooltip.reconLoss !== undefined && (
+                <>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y + 5}
+                    fill="#10b981"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Recon Loss: {tooltip.reconLoss.toFixed(4)}
+                  </text>
+                  <text
+                    x={tooltip.x + 15}
+                    y={tooltip.y + 20}
+                    fill="#34d399"
+                    fontSize="11"
+                    fontFamily="monospace"
+                  >
+                    Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
+                  </text>
+                </>
+              )}
             </g>
           </g>
         )}
       </svg>
 
       {/* Legend and stats */}
-      <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-0.5 bg-blue-500 opacity-30"></div>
-            <span>Raw ({lossData.length} points)</span>
-          </div>
-          {smoothingFactor > 0 && (
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-0.5 bg-blue-400"></div>
-              <span>Smooth (EMA {(smoothingFactor * 100).toFixed(0)}%)</span>
+      <div className="mt-3 text-xs text-gray-500">
+        <div className="flex items-center gap-6 mb-2">
+          {showLoss && (
+            <div className="flex items-center gap-3">
+              <span className="text-gray-400">Prediction Loss:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-blue-500 opacity-30"></div>
+                <span>Raw</span>
+              </div>
+              {smoothingFactor > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 bg-blue-400"></div>
+                  <span>Smooth</span>
+                </div>
+              )}
+            </div>
+          )}
+          {showReconLoss && reconLossData.length > 0 && (
+            <div className="flex items-center gap-3">
+              <span className="text-gray-400">Reconstruction Loss:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-emerald-500 opacity-30"></div>
+                <span>Raw</span>
+              </div>
+              {smoothingFactor > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 bg-emerald-400"></div>
+                  <span>Smooth</span>
+                </div>
+              )}
             </div>
           )}
         </div>
-        <span>
-          Latest: {smoothLossData[smoothLossData.length - 1]?.value.toFixed(4)} (Step{" "}
-          {smoothLossData[smoothLossData.length - 1]?.step})
-        </span>
+        <div className="flex items-center gap-4 text-gray-400">
+          {showLoss && smoothLossData.length > 0 && (
+            <span>
+              Latest Pred: {smoothLossData[smoothLossData.length - 1]?.value.toFixed(4)}
+            </span>
+          )}
+          {showReconLoss && smoothReconLossData.length > 0 && (
+            <span>
+              Latest Recon: {smoothReconLossData[smoothReconLossData.length - 1]?.value.toFixed(4)}
+            </span>
+          )}
+          <span className="ml-auto">
+            Step {smoothLossData[smoothLossData.length - 1]?.step || 0} / {lossData.length} points
+          </span>
+        </div>
       </div>
     </div>
   );

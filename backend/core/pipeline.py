@@ -580,6 +580,14 @@ class DiffusionPipelineManager:
             tokenizer = self.zimage_components["tokenizer"]
             scheduler = self.zimage_components["scheduler"]
 
+            # Set attention backend based on global settings or params
+            attention_type = params.get("attention_type", settings.attention_type)
+            print(f"[Z-Image] Setting attention backend: {attention_type}")
+
+            # Set backend for all ZImageAttention layers
+            from core.models.zimage_transformer import ZImageAttention
+            ZImageAttention._attention_backend = attention_type
+
             # Load or unload LoRAs
             lora_configs = params.get("loras", [])
             print(f"[Z-Image] DEBUG: lora_configs received: {lora_configs}")

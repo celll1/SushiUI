@@ -25,7 +25,7 @@ limitations under the License.
 
 Modifications made by SushiUI:
 - Extracted calculate_shift function and constants for standalone use
-- Extracted dispatch_attention function (NATIVE backend only, using PyTorch SDPA)
+- Extracted dispatch_attention function with multi-backend support (NATIVE, SageAttention, FlashAttention)
 - Added type hints for clarity
 """
 
@@ -111,10 +111,12 @@ def dispatch_attention(
     backend: Optional[str] = None,
 ) -> torch.Tensor:
     """
-    Dispatch attention computation using PyTorch's scaled_dot_product_attention.
+    Dispatch attention computation to appropriate backend.
 
-    This is a simplified version that only supports the NATIVE backend (PyTorch SDPA).
-    Extracted from Z-Image utils/attention.py for standalone use.
+    Supports three backends:
+    - "native" or None: PyTorch SDPA (auto Flash Attention in PyTorch 2.0+)
+    - "sage": SageAttention (INT8 quantized attention for 2-5x speedup)
+    - "flash": Explicit Flash Attention 2
 
     Args:
         query: Query tensor [batch, seq_len_q, num_heads, head_dim]
@@ -124,11 +126,74 @@ def dispatch_attention(
         dropout_p: Dropout probability (default: 0.0)
         is_causal: Whether to use causal masking (default: False)
         scale: Optional scale factor for attention scores
-        backend: Attention backend (ignored, always uses NATIVE)
+        backend: Attention backend ("native", "sage", "flash")
 
     Returns:
         Attention output tensor [batch, seq_len_q, num_heads, head_dim]
     """
+    backend = backend or "native"
+
+    if backend == "sage":
+        # SageAttention: INT8 quantized attention
+        try:
+            from sageattention import sageattn
+
+            # SageAttention expects [batch, seq_len, num_heads, head_dim] layout
+            # Z-Image already uses this layout - no transpose needed
+
+            # Process mask if provided
+            processed_mask = _process_mask(attn_mask, query.dtype) if attn_mask is not None else None
+
+            # Call SageAttention
+            # Note: SageAttention uses "HND" layout notation but expects
+            # [batch, seq_len, num_heads, head_dim] tensor order
+            out = sageattn(
+                query, key, value,
+                tensor_layout="HND",
+                is_causal=is_causal,
+                attn_mask=processed_mask
+            )
+
+            return out.contiguous()
+
+        except ImportError:
+            print("[Z-Image Attention] WARNING: SageAttention not available, falling back to NATIVE")
+            backend = "native"
+        except Exception as e:
+            print(f"[Z-Image Attention] WARNING: SageAttention error: {e}, falling back to NATIVE")
+            backend = "native"
+
+    elif backend == "flash":
+        # Explicit Flash Attention 2
+        try:
+            from flash_attn import flash_attn_func
+
+            # Flash Attention expects [batch, seq_len, num_heads, head_dim]
+            # Z-Image already uses this layout - no transpose needed
+
+            # Flash Attention doesn't support attention mask directly
+            # Only supports causal masking via is_causal parameter
+            if attn_mask is not None:
+                print("[Z-Image Attention] WARNING: Flash Attention does not support custom masks, ignoring mask")
+
+            # Call Flash Attention
+            out = flash_attn_func(
+                query, key, value,
+                dropout_p=dropout_p,
+                causal=is_causal,
+                softmax_scale=scale
+            )
+
+            return out.contiguous()
+
+        except ImportError:
+            print("[Z-Image Attention] WARNING: Flash Attention not available, falling back to NATIVE")
+            backend = "native"
+        except Exception as e:
+            print(f"[Z-Image Attention] WARNING: Flash Attention error: {e}, falling back to NATIVE")
+            backend = "native"
+
+    # NATIVE backend (PyTorch SDPA)
     # Transpose to [batch, num_heads, seq_len, head_dim] for PyTorch SDPA
     query = query.transpose(1, 2)
     key = key.transpose(1, 2)
@@ -138,6 +203,7 @@ def dispatch_attention(
     attn_mask = _process_mask(attn_mask, query.dtype)
 
     # Use PyTorch's scaled_dot_product_attention (NATIVE backend)
+    # PyTorch 2.0+ automatically uses Flash Attention when available
     out = F.scaled_dot_product_attention(
         query, key, value,
         attn_mask=attn_mask,

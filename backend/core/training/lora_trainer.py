@@ -506,6 +506,14 @@ class LoRATrainer:
 
         # Z-Image: Different setup from SD/SDXL
         if self.is_zimage:
+            # Enable Flash Attention BEFORE gradient checkpointing
+            # Gradient checkpointing must be enabled after setting attention processors
+            if self.use_flash_attention:
+                from core.models.zimage_transformer import ZImageAttention
+                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
+                ZImageAttention._attention_backend = "flash"
+                print(f"{self.log_prefix} [OK] Flash Attention backend enabled for Z-Image Transformer")
+
             # Enable gradient checkpointing for Transformer (Z-Image)
             if hasattr(self.transformer, 'enable_gradient_checkpointing'):
                 self.transformer.enable_gradient_checkpointing()

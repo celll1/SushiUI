@@ -249,7 +249,9 @@ class FullParameterTrainer(LoRATrainer):
                 print(f"{self.specific_log_prefix} Loading transformer weights (Comfy format without prefix)")
 
             if len(transformer_state) > 0:
-                self.transformer.load_state_dict(transformer_state)
+                # Load into original transformer (unwrapped) if wrapper exists
+                transformer_to_load = getattr(self, 'transformer_original', self.transformer)
+                transformer_to_load.load_state_dict(transformer_state)
                 print(f"{self.specific_log_prefix} Loaded {len(transformer_state)} transformer parameters")
             else:
                 print(f"{self.specific_log_prefix} WARNING: No transformer weights found in checkpoint")

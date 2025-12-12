@@ -1437,6 +1437,7 @@ export interface DebugLatentVisualization {
   step: number;
   timestep: number;
   loss: number;
+  recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   latents_image?: string;  // base64
   noisy_latents_image?: string;  // base64

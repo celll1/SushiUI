@@ -1404,6 +1404,8 @@ class LoRATrainer:
                 'loss': loss_per_sample_weighted[0].item(),  # Per-sample loss (weighted) for first sample
                 'loss_batch_mean': loss.item(),  # Batch mean loss (for reference)
                 'loss_unweighted': loss_per_sample[0].item(),  # Raw MSE loss for first sample (no Min-SNR)
+                'recon_loss': recon_loss_per_sample[0].item(),  # Reconstruction loss for first sample
+                'recon_loss_batch_mean': recon_loss.item(),  # Batch mean reconstruction loss
                 'batch_size': batch_size,
                 'min_snr_gamma': self.min_snr_gamma,
             }
@@ -1640,6 +1642,8 @@ class LoRATrainer:
                 'timestep': timestep_value,
                 'loss': loss_per_sample[0].item(),
                 'loss_batch_mean': loss.item(),
+                'recon_loss': recon_loss_per_sample[0].item(),  # Reconstruction loss for first sample
+                'recon_loss_batch_mean': recon_loss.item(),  # Batch mean reconstruction loss
                 'batch_size': batch_size,
                 'scheduler_type': 'FlowMatching',
             }

@@ -117,21 +117,25 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     const updateWidth = () => {
       if (svgRef.current) {
         const rect = svgRef.current.getBoundingClientRect();
-        setSvgWidth(rect.width);
+        if (rect.width > 0) {
+          setSvgWidth(rect.width);
+        }
       }
     };
 
-    // Initial width
+    // Initial width immediately and after render
     updateWidth();
+    const timeoutId = setTimeout(updateWidth, 10);
 
     // Watch for resize
     const resizeObserver = new ResizeObserver(updateWidth);
     resizeObserver.observe(svgRef.current);
 
     return () => {
+      clearTimeout(timeoutId);
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [lossData.length]); // Update when data changes
 
   if (error) {
     return (

@@ -4101,6 +4101,25 @@ async def get_training_metrics(
         all_recon_loss.sort(key=lambda x: x["step"])
         all_lr.sort(key=lambda x: x["step"])
 
+        # Deduplicate: If the same step appears multiple times (resume scenario),
+        # keep only the one with the latest wall_time (most recent training run)
+        def deduplicate_by_latest_wall_time(data):
+            if not data:
+                return []
+
+            step_to_latest = {}
+            for point in data:
+                step = point["step"]
+                if step not in step_to_latest or point["wall_time"] > step_to_latest[step]["wall_time"]:
+                    step_to_latest[step] = point
+
+            # Return sorted by step
+            return sorted(step_to_latest.values(), key=lambda x: x["step"])
+
+        all_loss = deduplicate_by_latest_wall_time(all_loss)
+        all_recon_loss = deduplicate_by_latest_wall_time(all_recon_loss)
+        all_lr = deduplicate_by_latest_wall_time(all_lr)
+
         # Filter by since_step if provided
         if since_step is not None:
             all_loss = [d for d in all_loss if d["step"] > since_step]

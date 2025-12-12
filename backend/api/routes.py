@@ -4051,7 +4051,7 @@ async def get_training_metrics(
     tensorboard_dir = output_dir / "tensorboard"
 
     if not tensorboard_dir.exists():
-        return {"loss": [], "learning_rate": []}
+        return {"loss": [], "recon_loss": [], "learning_rate": []}
 
     try:
         from tensorboard.backend.event_processing import event_accumulator
@@ -4063,10 +4063,11 @@ async def get_training_metrics(
                 event_files.extend(glob.glob(str(subdir / "events.out.tfevents.*")))
 
         if not event_files:
-            return {"loss": [], "learning_rate": []}
+            return {"loss": [], "recon_loss": [], "learning_rate": []}
 
         # Use the most recent event file or merge all
         all_loss = []
+        all_recon_loss = []
         all_lr = []
 
         for event_file in event_files:
@@ -4081,6 +4082,13 @@ async def get_training_metrics(
                     for e in loss_events
                 ])
 
+            if 'train/recon_loss' in ea.Tags()['scalars']:
+                recon_loss_events = ea.Scalars('train/recon_loss')
+                all_recon_loss.extend([
+                    {"step": int(e.step), "value": float(e.value), "wall_time": float(e.wall_time)}
+                    for e in recon_loss_events
+                ])
+
             if 'train/learning_rate' in ea.Tags()['scalars']:
                 lr_events = ea.Scalars('train/learning_rate')
                 all_lr.extend([
@@ -4090,11 +4098,13 @@ async def get_training_metrics(
 
         # Sort by step
         all_loss.sort(key=lambda x: x["step"])
+        all_recon_loss.sort(key=lambda x: x["step"])
         all_lr.sort(key=lambda x: x["step"])
 
         # Filter by since_step if provided
         if since_step is not None:
             all_loss = [d for d in all_loss if d["step"] > since_step]
+            all_recon_loss = [d for d in all_recon_loss if d["step"] > since_step]
             all_lr = [d for d in all_lr if d["step"] > since_step]
 
         # Decimate data if too many points (simple nth-point sampling)
@@ -4105,10 +4115,12 @@ async def get_training_metrics(
             return [data[i] for i in range(0, len(data), step_size)][:max_points]
 
         all_loss = decimate(all_loss, max_points)
+        all_recon_loss = decimate(all_recon_loss, max_points)
         all_lr = decimate(all_lr, max_points)
 
         return {
             "loss": all_loss,
+            "recon_loss": all_recon_loss,
             "learning_rate": all_lr
         }
 

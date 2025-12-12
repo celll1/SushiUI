@@ -1341,6 +1341,16 @@ class LoRATrainer:
         # Shape: [B] -> scalar
         loss = loss_per_sample_weighted.mean()
 
+        # Calculate reconstruction loss (for monitoring/visualization)
+        # This measures how well the model can reconstruct the target latent from noisy input
+        with torch.no_grad():
+            # Approximation: predicted_latent = noisy_latents - predicted_noise
+            # (Exact formula requires scheduler parameters, but this is sufficient for monitoring)
+            predicted_latent_for_recon = noisy_latents - model_pred
+            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+            recon_loss = recon_loss_per_sample.mean()
+
         if profile_vram:
             print_vram_usage("[train_step] After loss calculation")
 
@@ -1414,15 +1424,16 @@ class LoRATrainer:
         if profile_vram:
             print_vram_usage("[train_step] After optimizer step")
 
-        # Get loss value before cleanup
+        # Get loss values before cleanup
         loss_value = loss.detach().item()
+        recon_loss_value = recon_loss.detach().item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
-        del noise, noisy_latents, model_pred, loss
+        del noise, noisy_latents, model_pred, loss, recon_loss
         if self.is_sdxl and added_cond_kwargs is not None:
             del added_cond_kwargs
 
-        return loss_value
+        return loss_value, recon_loss_value
 
     def train_step_zimage(
         self,
@@ -1570,6 +1581,14 @@ class LoRATrainer:
         # Take mean across batch dimension
         loss = loss_per_sample.mean()
 
+        # Calculate reconstruction loss (for monitoring/visualization)
+        # This measures how well the model can reconstruct the target latent from noisy input
+        with torch.no_grad():
+            predicted_latent_for_recon = noisy_latents + (1.0 - t) * model_pred
+            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+            recon_loss = recon_loss_per_sample.mean()
+
         if profile_vram:
             print_vram_usage("[train_step_zimage] After loss calculation")
 
@@ -1658,13 +1677,14 @@ class LoRATrainer:
         if profile_vram:
             print_vram_usage("[train_step_zimage] After optimizer step")
 
-        # Get loss value before cleanup
+        # Get loss values before cleanup
         loss_value = loss.detach().item()
+        recon_loss_value = recon_loss.detach().item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
-        del noise, noisy_latents, model_pred, target, loss
+        del noise, noisy_latents, model_pred, target, loss, recon_loss
 
-        return loss_value
+        return loss_value, recon_loss_value
 
     def find_latest_checkpoint(self) -> Optional[tuple[str, int]]:
         """
@@ -3611,7 +3631,7 @@ class LoRATrainer:
 
                         # Call appropriate train_step based on model type
                         if self.is_zimage:
-                            loss = self.train_step_zimage(
+                            loss, recon_loss = self.train_step_zimage(
                                 batched_latents,
                                 batched_caption_embeds,
                                 batched_caption_masks,
@@ -3620,7 +3640,7 @@ class LoRATrainer:
                                 profile_vram=profile_vram
                             )
                         elif self.is_sdxl:
-                            loss = self.train_step(
+                            loss, recon_loss = self.train_step(
                                 batched_latents,
                                 batched_text_embeddings,
                                 batched_pooled_embeddings,
@@ -3629,7 +3649,7 @@ class LoRATrainer:
                                 profile_vram=profile_vram
                             )
                         else:
-                            loss = self.train_step(
+                            loss, recon_loss = self.train_step(
                                 batched_latents,
                                 batched_text_embeddings,
                                 debug_save_path=debug_save_path,
@@ -3657,6 +3677,7 @@ class LoRATrainer:
                         # Log to tensorboard
                         current_lr = self.lr_scheduler.get_last_lr()[0]
                         self.writer.add_scalar('train/loss', loss, global_step)
+                        self.writer.add_scalar('train/recon_loss', recon_loss, global_step)
                         self.writer.add_scalar('train/learning_rate', current_lr, global_step)
                         self.writer.add_scalar('train/epoch', epoch + 1, global_step)
 

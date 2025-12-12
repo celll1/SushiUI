@@ -229,8 +229,12 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
     const closestPoint = lossData[closestIndex];
     const closestSmooth = smoothLossData[closestIndex];
-    const closestReconPoint = reconLossData[closestIndex];
-    const closestSmoothRecon = smoothReconLossData[closestIndex];
+
+    // Find recon loss for the same step (not by index, as arrays may have different lengths)
+    const step = closestSmooth.step;
+    const closestReconPoint = reconLossData.find(d => d.step === step);
+    const closestSmoothRecon = smoothReconLossData.find(d => d.step === step);
+
     const pointX = scaleX(closestSmooth.step);
     const pointY = scaleY(closestSmooth.value);  // Use smooth loss Y position
 

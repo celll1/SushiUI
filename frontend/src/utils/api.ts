@@ -1386,6 +1386,7 @@ export interface MetricPoint {
 
 export interface TrainingMetrics {
   loss: MetricPoint[];
+  recon_loss: MetricPoint[];
   learning_rate: MetricPoint[];
 }
 

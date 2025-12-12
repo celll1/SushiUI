@@ -3672,7 +3672,11 @@ class LoRATrainer:
                         # Save checkpoint (step-based)
                         if save_every_unit == "steps" and global_step % save_every == 0:
                             print(f"{self.log_prefix} Checkpoint saved at step {global_step}")
-                            self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
+                            try:
+                                self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
+                            except Exception as save_error:
+                                print(f"{self.log_prefix} WARNING: Checkpoint save failed: {save_error}")
+                                print(f"{self.log_prefix} Training will continue.")
 
                         # Sample generation
                         # Generate samples at step 0 (initial) or every sample_every steps
@@ -3694,7 +3698,11 @@ class LoRATrainer:
                 # Save checkpoint (epoch-based)
                 if save_every_unit == "epochs" and (epoch + 1) % save_every == 0:
                     print(f"{self.log_prefix} Checkpoint saved at epoch {epoch + 1}")
-                    self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
+                    try:
+                        self.save_checkpoint(global_step, save_optimizer=False, max_to_keep=max_step_saves_to_keep, save_every=save_every, run_id=run_id, epoch=epoch + 1)
+                    except Exception as save_error:
+                        print(f"{self.log_prefix} WARNING: Checkpoint save failed: {save_error}")
+                        print(f"{self.log_prefix} Training will continue.")
 
             print(f"\n{self.log_prefix} Training completed! Total steps: {global_step}")
 
@@ -3708,7 +3716,11 @@ class LoRATrainer:
                 short_name = self.run_name  # Use full name
 
             final_path = self.output_dir / f"{short_name}_final.safetensors"
-            self.save_checkpoint(global_step, final_path, save_optimizer=True, run_id=run_id, epoch=num_epochs)
+            try:
+                self.save_checkpoint(global_step, final_path, save_optimizer=True, run_id=run_id, epoch=num_epochs)
+            except Exception as save_error:
+                print(f"{self.log_prefix} WARNING: Final checkpoint save failed: {save_error}")
+                print(f"{self.log_prefix} Training is complete but final checkpoint could not be saved.")
 
         except KeyboardInterrupt:
             print(f"\n{self.log_prefix} Training interrupted by user at step {global_step}")
@@ -3723,8 +3735,11 @@ class LoRATrainer:
                 short_name = self.run_name
 
             interrupted_path = self.output_dir / f"{short_name}_step_{global_step}_interrupted.safetensors"
-            self.save_checkpoint(global_step, interrupted_path, save_optimizer=True)
-            print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
+            try:
+                self.save_checkpoint(global_step, interrupted_path, save_optimizer=True)
+                print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
+            except Exception as save_error:
+                print(f"{self.log_prefix} WARNING: Failed to save checkpoint at interruption point: {save_error}")
             raise  # Re-raise to propagate the interruption
 
         except Exception as e:
@@ -3740,9 +3755,13 @@ class LoRATrainer:
                 short_name = self.run_name
 
             failed_path = self.output_dir / f"{short_name}_step_{global_step}_failed.safetensors"
-            self.save_checkpoint(global_step, failed_path, save_optimizer=True)
-            print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
-            raise  # Re-raise the exception
+            try:
+                self.save_checkpoint(global_step, failed_path, save_optimizer=True)
+                print(f"{self.log_prefix} Checkpoint saved. You can resume training from this point.")
+            except Exception as save_error:
+                print(f"{self.log_prefix} WARNING: Failed to save checkpoint at failure point: {save_error}")
+                print(f"{self.log_prefix} Original error: {e}")
+            raise  # Re-raise the original exception
 
         finally:
             # Close tensorboard writer

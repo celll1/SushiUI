@@ -129,7 +129,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   // Calculate chart dimensions and scaling
   const width = 550; // Fixed pixel width for accurate mouse tracking
   const height = 300;
-  const padding = { top: 20, right: 20, bottom: 40, left: 60 };
+  const padding = { top: 20, right: 180, bottom: 40, left: 60 }; // right: 180 for tooltip space
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
@@ -527,72 +527,85 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
             {/* Tooltip box */}
             <g>
-              {/* Background */}
-              <rect
-                x={tooltip.x + 10}
-                y={tooltip.y - 55}
-                width="160"
-                height={tooltip.reconLoss !== undefined ? 85 : 50}
-                fill="#1f2937"
-                stroke="#4b5563"
-                strokeWidth="1"
-                rx="4"
-              />
+              {(() => {
+                // Calculate tooltip position: right side by default, left side if too close to right edge
+                const tooltipWidth = 160;
+                const tooltipHeight = tooltip.reconLoss !== undefined ? 85 : 50;
+                const showOnLeft = tooltip.x + tooltipWidth + 10 > width - padding.right;
+                const tooltipX = showOnLeft ? tooltip.x - tooltipWidth - 10 : tooltip.x + 10;
+                const textX = showOnLeft ? tooltip.x - tooltipWidth - 5 : tooltip.x + 15;
 
-              {/* Text content */}
-              <text
-                x={tooltip.x + 15}
-                y={tooltip.y - 40}
-                fill="#e5e7eb"
-                fontSize="11"
-                fontFamily="monospace"
-              >
-                Step: {tooltip.step}
-              </text>
-              {showLoss && (
-                <>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 25}
-                    fill="#3b82f6"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Pred Loss: {tooltip.loss.toFixed(4)}
-                  </text>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 10}
-                    fill="#60a5fa"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Smooth: {tooltip.smoothLoss.toFixed(4)}
-                  </text>
-                </>
-              )}
-              {showReconLoss && tooltip.reconLoss !== undefined && (
-                <>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y + 5}
-                    fill="#10b981"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Recon Loss: {tooltip.reconLoss.toFixed(4)}
-                  </text>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y + 20}
-                    fill="#34d399"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
-                  </text>
-                </>
-              )}
+                return (
+                  <>
+                    {/* Background */}
+                    <rect
+                      x={tooltipX}
+                      y={tooltip.y - 55}
+                      width={tooltipWidth}
+                      height={tooltipHeight}
+                      fill="#1f2937"
+                      stroke="#4b5563"
+                      strokeWidth="1"
+                      rx="4"
+                    />
+
+                    {/* Text content */}
+                    <text
+                      x={textX}
+                      y={tooltip.y - 40}
+                      fill="#e5e7eb"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      Step: {tooltip.step}
+                    </text>
+                    {showLoss && (
+                      <>
+                        <text
+                          x={textX}
+                          y={tooltip.y - 25}
+                          fill="#3b82f6"
+                          fontSize="11"
+                          fontFamily="monospace"
+                        >
+                          Pred Loss: {tooltip.loss.toFixed(4)}
+                        </text>
+                        <text
+                          x={textX}
+                          y={tooltip.y - 10}
+                          fill="#60a5fa"
+                          fontSize="11"
+                          fontFamily="monospace"
+                        >
+                          Smooth: {tooltip.smoothLoss.toFixed(4)}
+                        </text>
+                      </>
+                    )}
+                    {showReconLoss && tooltip.reconLoss !== undefined && (
+                      <>
+                        <text
+                          x={textX}
+                          y={tooltip.y + 5}
+                          fill="#10b981"
+                          fontSize="11"
+                          fontFamily="monospace"
+                        >
+                          Recon Loss: {tooltip.reconLoss.toFixed(4)}
+                        </text>
+                        <text
+                          x={textX}
+                          y={tooltip.y + 20}
+                          fill="#34d399"
+                          fontSize="11"
+                          fontFamily="monospace"
+                        >
+                          Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
+                        </text>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
             </g>
           </g>
         )}

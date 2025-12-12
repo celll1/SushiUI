@@ -187,13 +187,30 @@ class TrainingProcess:
         if self.process and self.is_running:
             print(f"[Training] Stopping process (user requested)")
             self.is_user_stopped = True  # Mark as user-requested stop
-            self.process.terminate()
+
+            # Create stop flag file for graceful shutdown (works on Windows)
+            stop_flag_file = Path(self.output_dir) / ".stop_training"
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=10)
+                stop_flag_file.touch()
+                print(f"[Training] Created stop flag file: {stop_flag_file}")
+            except Exception as e:
+                print(f"[Training] WARNING: Failed to create stop flag file: {e}")
+
+            # Wait for graceful shutdown (up to 30 seconds)
+            print(f"[Training] Waiting for graceful shutdown (max 30 seconds)...")
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=30)
+                print(f"[Training] Process terminated gracefully")
             except asyncio.TimeoutError:
-                print(f"[Training] Process did not terminate gracefully, killing...")
-                self.process.kill()
-                await self.process.wait()
+                print(f"[Training] Graceful shutdown timeout, terminating process...")
+                self.process.terminate()
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    print(f"[Training] Process did not terminate, killing...")
+                    self.process.kill()
+                    await self.process.wait()
+
             self.is_running = False
 
     def get_status(self) -> Dict[str, Any]:

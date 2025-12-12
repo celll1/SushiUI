@@ -1186,13 +1186,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
           {/* Resume from Checkpoint */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint (Optional)</label>
+            <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint</label>
             <select
               value={resumeFromCheckpoint || ""}
               onChange={(e) => setResumeFromCheckpoint(e.target.value || null)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
             >
-              <option value="">Latest (Auto-detect)</option>
+              <option value="">Start from Beginning</option>
+              <option value="latest">Resume from Latest (Auto-detect)</option>
               {availableCheckpoints.map((ckpt) => (
                 <option key={ckpt.filename} value={ckpt.filename}>
                   Step {ckpt.step} - {ckpt.filename}
@@ -1200,7 +1201,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Note: Checkpoints will be available after first training session
+              Latest checkpoint will be auto-detected from the output directory
             </p>
           </div>
         </div>

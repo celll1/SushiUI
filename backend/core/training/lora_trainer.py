@@ -1581,9 +1581,10 @@ class LoRATrainer:
             timestep_value = timesteps[0].item()
 
             # Calculate predicted_latent (denoised latent at t=0)
-            # Flow Matching: x_0 = x_t - (1 - t) * v
+            # Flow Matching: x_1 = x_t + (1 - t) * v
+            # Derivation: x_t = x_1 - (1-t) * v  →  x_1 = x_t + (1-t) * v
             with torch.no_grad():
-                predicted_latent = noisy_latents - (1.0 - t) * model_pred
+                predicted_latent = noisy_latents + (1.0 - t) * model_pred
 
             # Prepare debug data
             debug_data = {

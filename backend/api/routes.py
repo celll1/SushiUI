@@ -4001,6 +4001,7 @@ async def visualize_debug_latent(
         "step": step,
         "timestep": data.get("timestep", 0),
         "loss": data.get("loss", 0.0),
+        "recon_loss": data.get("recon_loss", 0.0),
     }
 
     # Add caption if available

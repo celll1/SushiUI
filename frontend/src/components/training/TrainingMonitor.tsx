@@ -455,7 +455,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
                           <div><span className="text-gray-400">Step:</span> {debugVisualization.step}</div>
                           <div><span className="text-gray-400">Timestep:</span> {debugVisualization.timestep}</div>
-                          <div><span className="text-gray-400">Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
+                          <div><span className="text-gray-400">Prediction Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
+                          {debugVisualization.recon_loss !== undefined && (
+                            <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>
+                          )}
                           {debugVisualization.caption && (
                             <div className="pt-1 border-t border-gray-700">
                               <div className="text-gray-400 mb-0.5">Caption (processed):</div>

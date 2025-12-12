@@ -363,19 +363,39 @@ class FullParameterTrainer(LoRATrainer):
                 for key, value in self.text_encoder_2.state_dict().items():
                     checkpoint_data[f"text_encoder_2.{key}"] = value
 
-        # Save as safetensors
+        # Save as safetensors (with error handling for disk space issues)
         from safetensors.torch import save_file
-        save_file(checkpoint_data, str(save_path))
+        try:
+            save_file(checkpoint_data, str(save_path))
+        except Exception as e:
+            error_msg = str(e)
+            # Check if it's a disk space error (os error 112 on Windows)
+            if "os error 112" in error_msg or "No space left" in error_msg or "I/O error" in error_msg:
+                print(f"{self.specific_log_prefix} WARNING: Checkpoint save failed due to insufficient disk space")
+                print(f"{self.specific_log_prefix} Training will continue. Please free up disk space for future checkpoints.")
+                print(f"{self.specific_log_prefix} Error details: {error_msg}")
+                return  # Skip the rest of checkpoint saving but continue training
+            else:
+                # For other errors, re-raise
+                raise
 
         # Save optimizer state separately (as .pt file)
         if save_optimizer and self.optimizer is not None:
             optimizer_path = save_path.with_suffix(".pt")
-            torch.save({
-                "optimizer": self.optimizer.state_dict(),
-                "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
-                "step": step,
-            }, optimizer_path)
-            print(f"{self.specific_log_prefix} Optimizer state saved: {optimizer_path}")
+            try:
+                torch.save({
+                    "optimizer": self.optimizer.state_dict(),
+                    "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
+                    "step": step,
+                }, optimizer_path)
+                print(f"{self.specific_log_prefix} Optimizer state saved: {optimizer_path}")
+            except Exception as e:
+                error_msg = str(e)
+                if "os error 112" in error_msg or "No space left" in error_msg or "I/O error" in error_msg:
+                    print(f"{self.specific_log_prefix} WARNING: Optimizer state save failed due to insufficient disk space")
+                    print(f"{self.specific_log_prefix} Model checkpoint was saved successfully")
+                else:
+                    print(f"{self.specific_log_prefix} WARNING: Failed to save optimizer state: {error_msg}")
 
         print(f"{self.specific_log_prefix} Checkpoint saved: {save_path}")
 

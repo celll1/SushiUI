@@ -1388,7 +1388,8 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
                 model_dirs=[],
                 lora_dirs=[],
                 controlnet_dirs=[],
-                cache_dir=None
+                cache_dir=None,
+                training_dir=None
             )
             db.add(settings_record)
             db.commit()
@@ -1404,12 +1405,13 @@ async def save_directory_settings(
     settings_data: dict,
     db: Session = Depends(get_gallery_db)
 ):
-    """Save user-configured model directories and cache directory"""
+    """Save user-configured model directories, cache directory, and training directory"""
     # Extract from request body
     model_dirs = settings_data.get("model_dirs", [])
     lora_dirs = settings_data.get("lora_dirs", [])
     controlnet_dirs = settings_data.get("controlnet_dirs", [])
     cache_dir = settings_data.get("cache_dir")
+    training_dir = settings_data.get("training_dir")
     try:
         # Get or create settings record
         settings_record = db.query(UserSettings).first()
@@ -1422,6 +1424,7 @@ async def save_directory_settings(
         settings_record.lora_dirs = [d.strip() for d in lora_dirs if d.strip()]
         settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
         settings_record.cache_dir = cache_dir.strip() if cache_dir and cache_dir.strip() else None
+        settings_record.training_dir = training_dir.strip() if training_dir and training_dir.strip() else None
         settings_record.updated_at = datetime.utcnow()
 
         db.commit()
@@ -1432,6 +1435,7 @@ async def save_directory_settings(
         print(f"  LoRA dirs: {settings_record.lora_dirs}")
         print(f"  ControlNet dirs: {settings_record.controlnet_dirs}")
         print(f"  Cache dir: {settings_record.cache_dir}")
+        print(f"  Training dir: {settings_record.training_dir}")
 
         # Update managers with new directories
         lora_manager.set_additional_dirs(settings_record.lora_dirs)
@@ -3356,9 +3360,16 @@ async def create_training_run(
         if not os.path.exists(request.base_model_path):
             raise HTTPException(status_code=400, detail=f"Base model not found: {request.base_model_path}")
 
-        # Create output directory (use absolute path from project root)
-        project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
-        output_dir = project_root / "training" / run_name
+        # Create output directory (use training base dir from user settings or default)
+        from core.training.training_utils import get_training_base_dir
+        training_base_dir = Path(get_training_base_dir())
+
+        # If relative path, resolve from project root
+        if not training_base_dir.is_absolute():
+            project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
+            training_base_dir = project_root / training_base_dir
+
+        output_dir = training_base_dir / run_name
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
 

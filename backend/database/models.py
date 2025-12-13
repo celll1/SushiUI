@@ -28,6 +28,7 @@ class UserSettings(GalleryBase):
     lora_dirs = Column(JSON, default=list)   # Additional directories for LoRAs
     controlnet_dirs = Column(JSON, default=list)  # Additional directories for ControlNets
     cache_dir = Column(String, nullable=True)  # Custom cache directory (default: backend/cache)
+    training_dir = Column(String, nullable=True)  # Custom training output directory (default: training)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -37,6 +38,7 @@ class UserSettings(GalleryBase):
             "lora_dirs": self.lora_dirs or [],
             "controlnet_dirs": self.controlnet_dirs or [],
             "cache_dir": self.cache_dir,
+            "training_dir": self.training_dir,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 

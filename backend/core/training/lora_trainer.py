@@ -536,21 +536,39 @@ class LoRATrainer:
             # Enable Flash Attention AFTER gradient checkpointing
             # This ensures the attention backend is set after all module setup is complete
             if self.use_flash_attention:
-                # IMPORTANT: Use the ZImageAttention class from sys.modules['zimage.transformer']
-                # ModelLoader injects SushiUI's transformer into sys.modules, so we must use that instance
+                # IMPORTANT: Set attention backend on ALL ZImageAttention instances in the transformer
+                # The wrapper uses self.transformer which contains the actual attention modules
                 import sys
                 if 'zimage.transformer' in sys.modules:
                     zimage_transformer_module = sys.modules['zimage.transformer']
                     ZImageAttention = zimage_transformer_module.ZImageAttention
                     print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (from sys.modules, after gradient checkpointing)...")
                     ZImageAttention._attention_backend = "flash"
-                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled: {ZImageAttention._attention_backend}")
+                    print(f"{self.log_prefix} [OK] Flash Attention class variable set: {ZImageAttention._attention_backend}")
+
+                    # Also set on all actual instances in the transformer
+                    # The wrapper's self.transformer contains the real transformer
+                    actual_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
+                    attention_count = 0
+                    for name, module in actual_transformer.named_modules():
+                        if isinstance(module, ZImageAttention):
+                            module._attention_backend = "flash"
+                            attention_count += 1
+                    print(f"{self.log_prefix} [OK] Set Flash Attention on {attention_count} ZImageAttention instances")
                 else:
                     # Fallback: use direct import (for non-ModelLoader cases)
                     from core.models.zimage_transformer import ZImageAttention
                     print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (direct import, after gradient checkpointing)...")
                     ZImageAttention._attention_backend = "flash"
-                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled: {ZImageAttention._attention_backend}")
+
+                    # Also set on all actual instances
+                    actual_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
+                    attention_count = 0
+                    for name, module in actual_transformer.named_modules():
+                        if isinstance(module, ZImageAttention):
+                            module._attention_backend = "flash"
+                            attention_count += 1
+                    print(f"{self.log_prefix} [OK] Set Flash Attention on {attention_count} ZImageAttention instances")
 
             # Text Encoder (Qwen3) gradient checkpointing
             # NOTE: Text Encoder is frozen, but gradient checkpointing is enabled for potential future use

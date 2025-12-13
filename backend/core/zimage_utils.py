@@ -100,6 +100,9 @@ def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
     return attn_mask
 
 
+# Global flag to track if backend has been logged (avoid spamming logs)
+_attention_backend_logged = {}
+
 def dispatch_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -131,7 +134,9 @@ def dispatch_attention(
     Returns:
         Attention output tensor [batch, seq_len_q, num_heads, head_dim]
     """
+    global _attention_backend_logged
     backend = backend or "native"
+    original_backend = backend  # Track original request for logging
 
     if backend == "sage":
         # SageAttention: INT8 quantized attention
@@ -153,6 +158,11 @@ def dispatch_attention(
                 is_causal=is_causal,
                 attn_mask=processed_mask
             )
+
+            # Log once per backend type
+            if backend not in _attention_backend_logged:
+                print(f"[Z-Image Attention] Using SAGE backend (INT8 quantized attention)")
+                _attention_backend_logged[backend] = True
 
             return out.contiguous()
 
@@ -184,6 +194,11 @@ def dispatch_attention(
                 softmax_scale=scale
             )
 
+            # Log once per backend type
+            if backend not in _attention_backend_logged:
+                print(f"[Z-Image Attention] Using FLASH backend (explicit Flash Attention 2)")
+                _attention_backend_logged[backend] = True
+
             return out.contiguous()
 
         except ImportError:
@@ -194,6 +209,16 @@ def dispatch_attention(
             backend = "native"
 
     # NATIVE backend (PyTorch SDPA)
+    # Log once per backend type (including fallback case)
+    if backend not in _attention_backend_logged:
+        if original_backend != "native":
+            # Fallback case
+            print(f"[Z-Image Attention] Using NATIVE backend (PyTorch SDPA) - fallback from {original_backend.upper()}")
+        else:
+            # Normal native backend
+            print(f"[Z-Image Attention] Using NATIVE backend (PyTorch SDPA)")
+        _attention_backend_logged[backend] = True
+
     # Transpose to [batch, num_heads, seq_len, head_dim] for PyTorch SDPA
     query = query.transpose(1, 2)
     key = key.transpose(1, 2)

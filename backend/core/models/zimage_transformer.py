@@ -8,15 +8,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
-from config import (
-    ADALN_EMBED_DIM,
-    FREQUENCY_EMBEDDING_SIZE,
-    MAX_PERIOD,
-    ROPE_AXES_DIMS,
-    ROPE_AXES_LENS,
-    ROPE_THETA,
-    SEQ_MULTI_OF,
-)
+# Z-Image model configuration constants
+# Extracted from Z-Image config/model.py to avoid import conflicts with SushiUI's config module
+ADALN_EMBED_DIM = 256
+SEQ_MULTI_OF = 32
+ROPE_THETA = 256.0
+ROPE_AXES_DIMS = [32, 48, 48]
+ROPE_AXES_LENS = [1536, 512, 512]
+FREQUENCY_EMBEDDING_SIZE = 256
+MAX_PERIOD = 10000
 
 
 class TimestepEmbedder(nn.Module):

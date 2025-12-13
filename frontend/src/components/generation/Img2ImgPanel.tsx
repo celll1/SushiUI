@@ -65,6 +65,8 @@ interface Img2ImgParams {
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
   text_encoder_quantization?: string | null;
+  // Attention type
+  attention_type?: string;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -103,6 +105,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   use_torch_compile: false,
+  attention_type: "normal",
 };
 
 const STORAGE_KEY = "img2img_params";

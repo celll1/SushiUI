@@ -60,6 +60,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   enable_block_swap: false,
   blocks_to_swap: 20,
   use_pinned_memory: false,
+  attention_type: "normal",
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -242,6 +243,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
     if (savedShowAdvancedCFG === 'true') {
       setShowAdvancedCFG(true);
+    }
+
+    // Load attention type from global settings
+    const savedAttentionType = localStorage.getItem('attention_type');
+    if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+      setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
     }
 
     // Load custom presets

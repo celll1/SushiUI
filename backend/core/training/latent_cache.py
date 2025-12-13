@@ -261,19 +261,21 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cached embeddings for caption: {e}")
             return None
 
-    def save_cache_info(self, model_path: str, model_type: str, item_count: int):
+    def save_cache_info(self, model_path: str, model_type: str, item_count: int, training_dtype: str = 'unknown'):
         """
         Save cache metadata.
 
         Args:
             model_path: Path to base model
-            model_type: Model type ('sdxl' or 'sd15')
+            model_type: Model type ('sdxl', 'sd15', 'zimage')
             item_count: Number of items in dataset
+            training_dtype: Training dtype (e.g., 'bf16', 'fp16', 'fp32')
         """
         info = {
             'dataset_unique_id': self.dataset_unique_id,
             'model_path': model_path,
             'model_type': model_type,
+            'training_dtype': training_dtype,
             'created_at': datetime.utcnow().isoformat(),
             'item_count': item_count,
         }
@@ -298,13 +300,14 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cache info: {e}")
             return None
 
-    def is_valid(self, model_path: str, model_type: str) -> bool:
+    def is_valid(self, model_path: str, model_type: str, training_dtype: str = 'unknown') -> bool:
         """
         Check if cache is valid for current model.
 
         Args:
             model_path: Current model path
             model_type: Current model type
+            training_dtype: Current training dtype
 
         Returns:
             True if cache is valid
@@ -341,6 +344,14 @@ class LatentCache:
             print(f"[LatentCache] Validation failed: Model type mismatch")
             print(f"[LatentCache]   Cached: {info.get('model_type')}")
             print(f"[LatentCache]   Current: {model_type}")
+            return False
+
+        # Check training dtype (latents are stored in training dtype for memory efficiency)
+        cached_dtype = info.get('training_dtype', 'unknown')
+        if cached_dtype != 'unknown' and cached_dtype != training_dtype:
+            print(f"[LatentCache] Validation failed: Training dtype mismatch")
+            print(f"[LatentCache]   Cached: {cached_dtype}")
+            print(f"[LatentCache]   Current: {training_dtype}")
             return False
 
         print(f"[LatentCache] Validation passed: Cache is valid for current model")

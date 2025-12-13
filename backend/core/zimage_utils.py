@@ -102,6 +102,7 @@ def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
 
 # Global flag to track if backend has been logged (avoid spamming logs)
 _attention_backend_logged = {}
+_attention_call_count = 0  # Track number of attention calls for debugging
 
 def dispatch_attention(
     query: torch.Tensor,
@@ -134,9 +135,14 @@ def dispatch_attention(
     Returns:
         Attention output tensor [batch, seq_len_q, num_heads, head_dim]
     """
-    global _attention_backend_logged
+    global _attention_backend_logged, _attention_call_count
+    _attention_call_count += 1
     backend = backend or "native"
     original_backend = backend  # Track original request for logging
+
+    # Debug: Log backend for first 3 calls to verify correct backend is being used
+    if _attention_call_count <= 3:
+        print(f"[Z-Image Attention DEBUG] Call #{_attention_call_count}: backend={backend}")
 
     if backend == "sage":
         # SageAttention: INT8 quantized attention

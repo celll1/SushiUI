@@ -196,22 +196,35 @@ def dispatch_attention(
 
             # Flash Attention only supports fp16/bf16, convert if needed
             original_dtype = query.dtype
-            if original_dtype not in [torch.float16, torch.bfloat16]:
-                # Convert to bf16 (training dtype)
-                query = query.to(torch.bfloat16)
-                key = key.to(torch.bfloat16)
-                value = value.to(torch.bfloat16)
+            needs_conversion = original_dtype not in [torch.float16, torch.bfloat16]
+
+            # Debug: Log dtype info on first call
+            if _attention_call_count == 1:
+                print(f"[Flash Attention DEBUG] Query dtype: {original_dtype}")
+                print(f"[Flash Attention DEBUG] Needs conversion: {needs_conversion}")
+                print(f"[Flash Attention DEBUG] Query shape: {query.shape}")
+
+            if needs_conversion:
+                # Convert to bf16 (training dtype) - create new tensors
+                query_fa = query.to(torch.bfloat16)
+                key_fa = key.to(torch.bfloat16)
+                value_fa = value.to(torch.bfloat16)
+            else:
+                # No conversion needed, use original tensors
+                query_fa = query
+                key_fa = key
+                value_fa = value
 
             # Call Flash Attention
             out = flash_attn_func(
-                query, key, value,
+                query_fa, key_fa, value_fa,
                 dropout_p=dropout_p,
                 causal=is_causal,
                 softmax_scale=scale
             )
 
             # Convert back to original dtype if needed
-            if original_dtype not in [torch.float16, torch.bfloat16]:
+            if needs_conversion:
                 out = out.to(original_dtype)
 
             # Log once per backend type

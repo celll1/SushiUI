@@ -1246,6 +1246,11 @@ class LoRATrainer:
             print(f"[encode_image] VRAM after VAE encode: {vram_after:.2f} GB")
             print(f"[encode_image] Latent shape: {latents.shape}")
 
+        # Convert latents to training dtype for memory efficiency
+        # This reduces VRAM usage during training (bf16 vs fp32)
+        # and avoids dtype conversion overhead in attention computation
+        latents = latents.to(dtype=self.training_dtype)
+
         return latents
 
     # Note: unet_forward_with_lora() removed - no longer needed
@@ -1640,7 +1645,14 @@ class LoRATrainer:
         # Debug: Log VRAM after forward pass (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_after'):
             allocated_after = torch.cuda.memory_allocated() / 1024**3
-            print(f"  - VRAM after forward pass: {allocated_after:.2f} GB")
+            reserved_after = torch.cuda.memory_reserved() / 1024**3
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            max_reserved = torch.cuda.max_memory_reserved() / 1024**3
+            print(f"  - VRAM after forward pass:")
+            print(f"    - Allocated: {allocated_after:.2f} GB")
+            print(f"    - Reserved: {reserved_after:.2f} GB")
+            print(f"    - Max Allocated: {max_allocated:.2f} GB")
+            print(f"    - Max Reserved: {max_reserved:.2f} GB")
             self._debug_logged_gc_vram_after = True
 
         if profile_vram:
@@ -1736,7 +1748,14 @@ class LoRATrainer:
         # Debug: Log VRAM before backward pass (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_before_backward'):
             allocated_before_backward = torch.cuda.memory_allocated() / 1024**3
-            print(f"  - VRAM before backward pass: {allocated_before_backward:.2f} GB")
+            reserved_before_backward = torch.cuda.memory_reserved() / 1024**3
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            max_reserved = torch.cuda.max_memory_reserved() / 1024**3
+            print(f"  - VRAM before backward pass:")
+            print(f"    - Allocated: {allocated_before_backward:.2f} GB")
+            print(f"    - Reserved: {reserved_before_backward:.2f} GB")
+            print(f"    - Max Allocated: {max_allocated:.2f} GB")
+            print(f"    - Max Reserved: {max_reserved:.2f} GB")
             self._debug_logged_gc_vram_before_backward = True
 
         self.optimizer.zero_grad()
@@ -1745,7 +1764,14 @@ class LoRATrainer:
         # Debug: Log VRAM after backward pass (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_after_backward'):
             allocated_after_backward = torch.cuda.memory_allocated() / 1024**3
-            print(f"  - VRAM after backward pass: {allocated_after_backward:.2f} GB")
+            reserved_after_backward = torch.cuda.memory_reserved() / 1024**3
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            max_reserved = torch.cuda.max_memory_reserved() / 1024**3
+            print(f"  - VRAM after backward pass:")
+            print(f"    - Allocated: {allocated_after_backward:.2f} GB")
+            print(f"    - Reserved: {reserved_after_backward:.2f} GB")
+            print(f"    - Max Allocated: {max_allocated:.2f} GB")
+            print(f"    - Max Reserved: {max_reserved:.2f} GB")
             self._debug_logged_gc_vram_after_backward = True
 
         if profile_vram:
@@ -1770,7 +1796,18 @@ class LoRATrainer:
         # Debug: Log VRAM after optimizer step and zero_grad (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_after_optim'):
             allocated_after_optim = torch.cuda.memory_allocated() / 1024**3
-            print(f"  - VRAM after optimizer.step() + zero_grad(): {allocated_after_optim:.2f} GB")
+            reserved_after_optim = torch.cuda.memory_reserved() / 1024**3
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+            max_reserved = torch.cuda.max_memory_reserved() / 1024**3
+            print(f"  - VRAM after optimizer.step() + zero_grad():")
+            print(f"    - Allocated: {allocated_after_optim:.2f} GB")
+            print(f"    - Reserved: {reserved_after_optim:.2f} GB")
+            print(f"    - Max Allocated: {max_allocated:.2f} GB")
+            print(f"    - Max Reserved: {max_reserved:.2f} GB")
+            print(f"  - PyTorch VRAM tracking vs nvidia-smi:")
+            print(f"    - Please check nvidia-smi output now")
+            print(f"    - If nvidia-smi shows significantly more (>5GB difference),")
+            print(f"    - this indicates memory allocated outside PyTorch's tracking")
             self._debug_logged_gc_vram_after_optim = True
 
         if profile_vram:
@@ -2867,8 +2904,10 @@ class LoRATrainer:
                     caches_to_generate.append((unique_id, cache))
                     continue
 
-                # Check metadata validity (model path, model type)
-                if not cache.is_valid(self.model_path, model_type):
+                # Check metadata validity (model path, model type, training dtype)
+                # Convert dtype to string for cache validation
+                dtype_str = str(self.training_dtype).replace('torch.', '')  # e.g., 'bfloat16' -> 'bfloat16'
+                if not cache.is_valid(self.model_path, model_type, dtype_str):
                     print(f"[LatentCache] Cache metadata invalid for dataset {unique_id[:8]}...")
                     caches_to_generate.append((unique_id, cache))
                     continue
@@ -2984,10 +3023,13 @@ class LoRATrainer:
                         1 for batch in batches for item in batch
                         if item.get("dataset_unique_id") == unique_id
                     )
+                    # Convert dtype to string for cache info
+                    dtype_str = str(self.training_dtype).replace('torch.', '')
                     cache.save_cache_info(
                         model_path=self.model_path,
                         model_type=model_type,
-                        item_count=dataset_image_count
+                        item_count=dataset_image_count,
+                        training_dtype=dtype_str
                     )
 
                 # Move VAE back to CPU to free VRAM

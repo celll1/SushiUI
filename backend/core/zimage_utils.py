@@ -103,6 +103,7 @@ def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
 # Global flag to track if backend has been logged (avoid spamming logs)
 _attention_backend_logged = {}
 _attention_call_count = 0  # Track number of attention calls for debugging
+_flash_mask_warning_logged = False  # Track if Flash Attention mask warning has been shown
 
 def dispatch_attention(
     query: torch.Tensor,
@@ -135,7 +136,7 @@ def dispatch_attention(
     Returns:
         Attention output tensor [batch, seq_len_q, num_heads, head_dim]
     """
-    global _attention_backend_logged, _attention_call_count
+    global _attention_backend_logged, _attention_call_count, _flash_mask_warning_logged
     _attention_call_count += 1
     backend = backend or "native"
     original_backend = backend  # Track original request for logging
@@ -189,8 +190,17 @@ def dispatch_attention(
 
             # Flash Attention doesn't support attention mask directly
             # Only supports causal masking via is_causal parameter
-            if attn_mask is not None:
+            if attn_mask is not None and not _flash_mask_warning_logged:
                 print("[Z-Image Attention] WARNING: Flash Attention does not support custom masks, ignoring mask")
+                _flash_mask_warning_logged = True
+
+            # Flash Attention only supports fp16/bf16, convert if needed
+            original_dtype = query.dtype
+            if original_dtype not in [torch.float16, torch.bfloat16]:
+                # Convert to bf16 (training dtype)
+                query = query.to(torch.bfloat16)
+                key = key.to(torch.bfloat16)
+                value = value.to(torch.bfloat16)
 
             # Call Flash Attention
             out = flash_attn_func(
@@ -199,6 +209,10 @@ def dispatch_attention(
                 causal=is_causal,
                 softmax_scale=scale
             )
+
+            # Convert back to original dtype if needed
+            if original_dtype not in [torch.float16, torch.bfloat16]:
+                out = out.to(original_dtype)
 
             # Log once per backend type
             if backend not in _attention_backend_logged:

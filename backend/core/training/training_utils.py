@@ -23,7 +23,10 @@ def get_training_base_dir() -> str:
             settings = db.query(UserSettings).first()
             if settings and settings.training_dir:
                 # User configured training directory
+                print(f"[Training] Using user-configured training_dir: {settings.training_dir}")
                 return settings.training_dir
+            else:
+                print(f"[Training] No training_dir in UserSettings, using default")
         finally:
             db.close()
     except Exception as e:
@@ -31,4 +34,5 @@ def get_training_base_dir() -> str:
         print(f"[Training] Warning: Failed to get training_dir from settings: {e}")
 
     # Default training directory (relative to project root)
+    print(f"[Training] Using default training_dir: training")
     return "training"

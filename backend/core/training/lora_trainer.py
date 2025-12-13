@@ -548,12 +548,24 @@ class LoRATrainer:
 
                     # Also set on all actual instances in the transformer
                     # The wrapper's self.transformer contains the real transformer
+                    print(f"{self.log_prefix} [DEBUG] self.transformer type: {type(self.transformer)}")
+                    print(f"{self.log_prefix} [DEBUG] hasattr(self.transformer, 'transformer'): {hasattr(self.transformer, 'transformer')}")
+
                     actual_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
+                    print(f"{self.log_prefix} [DEBUG] actual_transformer type: {type(actual_transformer)}")
+
                     attention_count = 0
+                    total_modules = 0
                     for name, module in actual_transformer.named_modules():
-                        if isinstance(module, ZImageAttention):
+                        total_modules += 1
+                        # Use class name comparison instead of isinstance (different module instances)
+                        if type(module).__name__ == 'ZImageAttention':
                             module._attention_backend = "flash"
                             attention_count += 1
+                            if attention_count <= 3:  # Log first 3 for debugging
+                                print(f"{self.log_prefix} [DEBUG] Set flash on module: {name}, type: {type(module)}")
+
+                    print(f"{self.log_prefix} [DEBUG] Total modules scanned: {total_modules}")
                     print(f"{self.log_prefix} [OK] Set Flash Attention on {attention_count} ZImageAttention instances")
                 else:
                     # Fallback: use direct import (for non-ModelLoader cases)
@@ -565,10 +577,11 @@ class LoRATrainer:
                     actual_transformer = self.transformer.transformer if hasattr(self.transformer, 'transformer') else self.transformer
                     attention_count = 0
                     for name, module in actual_transformer.named_modules():
-                        if isinstance(module, ZImageAttention):
+                        # Use class name comparison instead of isinstance (different module instances)
+                        if type(module).__name__ == 'ZImageAttention':
                             module._attention_backend = "flash"
                             attention_count += 1
-                    print(f"{self.log_prefix} [OK] Set Flash Attention on {attention_count} ZImageAttention instances")
+                    print(f"{self.log_prefix} [OK] Set Flash Attention on {attention_count} ZImageAttention instances (fallback path)")
 
             # Text Encoder (Qwen3) gradient checkpointing
             # NOTE: Text Encoder is frozen, but gradient checkpointing is enabled for potential future use

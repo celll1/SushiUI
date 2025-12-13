@@ -2589,40 +2589,65 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     total_tags = db.query(func.count(TagDictionary.id)).scalar()
     return {"total_tags": total_tags or 0}
 
-async def compute_tag_statistics(dataset_id: int, db: Session) -> dict:
+async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_images: int = 0) -> dict:
     """
     Compute tag statistics for a dataset: tag counts only (no categories)
     Returns: {"tag": {"count": N}, ...}
 
     Note: Categories are determined by frontend (tagSuggestions.ts) to maintain consistency.
     Backend only counts tag occurrences.
+
+    Optimized for large datasets (streaming processing, no full data load).
     """
     print(f"[Dataset] Computing tag statistics for dataset {dataset_id}...")
 
-    # Get all items in dataset
-    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
-    if not items:
+    # Count total items
+    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
+    if total_items == 0:
         print(f"[Dataset] No items found, returning empty statistics")
         return {}
 
-    # Get all tag captions
-    item_ids = [item.id for item in items]
-    tag_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(item_ids),
-        DatasetCaption.caption_type == "tags"
-    ).all()
-
-    # Count tag occurrences
+    # Stream captions in batches to avoid loading all into memory
     tag_counts: dict[str, int] = {}
-    for caption in tag_captions:
-        if caption.content:
-            tags = caption.content.split(",")
-            for tag in tags:
-                tag = tag.strip()
-                if tag:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    batch_size = 1000
+    offset = 0
+    processed = 0
 
-    print(f"[Dataset] Found {len(tag_counts)} unique tags")
+    while True:
+        # Get batch of captions via JOIN (efficient query)
+        batch = db.query(DatasetCaption).join(
+            DatasetItem, DatasetCaption.item_id == DatasetItem.id
+        ).filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetCaption.caption_type == "tags"
+        ).offset(offset).limit(batch_size).all()
+
+        if not batch:
+            break
+
+        # Process batch
+        for caption in batch:
+            if caption.content:
+                tags = caption.content.split(",")
+                for tag in tags:
+                    tag = tag.strip()
+                    if tag:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        processed += len(batch)
+        offset += batch_size
+
+        # Log progress every 10k captions
+        if processed % 10000 == 0:
+            print(f"[Dataset] Tag statistics: processed {processed} captions, {len(tag_counts)} unique tags so far")
+            if send_progress:
+                manager.send_progress_sync(
+                    total_images,
+                    max(total_images, 1),
+                    f"Computing tag statistics: {processed} captions processed, {len(tag_counts)} unique tags"
+                )
+
+    print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
 
     # Build final statistics (count only, categories added by frontend)
     statistics = {}
@@ -2643,6 +2668,10 @@ async def scan_dataset(
     import os
     from PIL import Image
     import hashlib
+    import warnings
+
+    # Suppress PIL warnings for corrupt EXIF data
+    warnings.filterwarnings('ignore', category=UserWarning, module='PIL')
 
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
@@ -2658,9 +2687,39 @@ async def scan_dataset(
     # Scan directory
     items_found = 0
     captions_found = 0
+    files_processed = 0
+    total_images = 0
+
+    # First pass: count total images for progress
+    def count_images(dir_path, current_depth=0):
+        nonlocal total_images
+        try:
+            entries = os.listdir(dir_path)
+        except PermissionError:
+            return
+
+        for entry in entries:
+            entry_path = os.path.join(dir_path, entry)
+            if os.path.isfile(entry_path):
+                _, ext = os.path.splitext(entry)
+                if ext.lower() in image_exts:
+                    total_images += 1
+            elif os.path.isdir(entry_path) and dataset.recursive:
+                max_depth = dataset.max_depth if dataset.max_depth else float('inf')
+                if current_depth < max_depth:
+                    count_images(entry_path, current_depth + 1)
+
+    print(f"[Dataset Scan] Counting images in {dataset.path}...")
+    count_images(dataset.path)
+    print(f"[Dataset Scan] Found {total_images} total images to process")
+
+    # Send initial progress
+    print(f"[Dataset Scan] Sending initial progress to frontend...")
+    manager.send_progress_sync(0, max(total_images, 1), f"Starting scan: 0/{total_images} images processed")
+    print(f"[Dataset Scan] Starting directory scan...")
 
     def scan_directory(dir_path, current_depth=0):
-        nonlocal items_found, captions_found
+        nonlocal items_found, captions_found, files_processed
 
         try:
             entries = os.listdir(dir_path)
@@ -2668,9 +2727,16 @@ async def scan_dataset(
             print(f"[Dataset Scan] Permission denied: {dir_path}")
             return
 
+        print(f"[Dataset Scan] Scanning directory: {dir_path} ({len(entries)} entries)")
+
         # Group files by base name
         file_groups = {}
+        entries_processed = 0
         for entry in entries:
+            entries_processed += 1
+            # Log progress every 10k entries
+            if entries_processed % 10000 == 0:
+                print(f"[Dataset Scan] Grouped {entries_processed}/{len(entries)} entries in {dir_path}")
             entry_path = os.path.join(dir_path, entry)
 
             if os.path.isfile(entry_path):
@@ -2691,8 +2757,15 @@ async def scan_dataset(
                 if current_depth < max_depth:
                     scan_directory(entry_path, current_depth + 1)
 
+        print(f"[Dataset Scan] Grouped {len(file_groups)} file groups in {dir_path}, starting processing...")
+
         # Process file groups
+        groups_processed = 0
         for base_name, files in file_groups.items():
+            groups_processed += 1
+            # Log progress every 1k groups
+            if groups_processed % 1000 == 0:
+                print(f"[Dataset Scan] Processed {groups_processed}/{len(file_groups)} file groups in {dir_path}")
             if not files["images"]:
                 continue
 
@@ -2700,55 +2773,87 @@ async def scan_dataset(
             image_path = files["images"][0]
 
             try:
-                # Read image metadata
-                with Image.open(image_path) as img:
-                    width, height = img.size
-                    file_size = os.path.getsize(image_path)
+                # Read image metadata (with warning suppression for corrupt EXIF)
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        with Image.open(image_path) as img:
+                            width, height = img.size
+                except Exception as img_error:
+                    # Skip images that can't be opened (corrupt, unsupported format, etc.)
+                    print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
+                    files_processed += 1
+                    if files_processed % 10 == 0 or total_images < 100:
+                        manager.send_progress_sync(
+                            files_processed,
+                            max(total_images, 1),
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                        )
+                    continue
 
-                    # Calculate image hash
-                    with open(image_path, 'rb') as f:
-                        image_hash = hashlib.sha256(f.read()).hexdigest()
+                file_size = os.path.getsize(image_path)
 
-                    # Check if item already exists
-                    existing_item = db.query(DatasetItem).filter(
-                        DatasetItem.dataset_id == dataset_id,
-                        DatasetItem.image_hash == image_hash
-                    ).first()
+                # Calculate image hash
+                with open(image_path, 'rb') as f:
+                    image_hash = hashlib.sha256(f.read()).hexdigest()
 
-                    if existing_item:
-                        continue  # Skip duplicate
+                # Check if item already exists
+                existing_item = db.query(DatasetItem).filter(
+                    DatasetItem.dataset_id == dataset_id,
+                    DatasetItem.image_hash == image_hash
+                ).first()
 
-                    # Create dataset item
-                    item = DatasetItem(
-                        dataset_id=dataset_id,
-                        item_type="single",
-                        base_name=base_name,
-                        image_path=image_path,
-                        width=width,
-                        height=height,
-                        file_size=file_size,
-                        image_hash=image_hash
+                if existing_item:
+                    files_processed += 1
+                    # Send progress update for skipped items too
+                    if files_processed % 10 == 0 or total_images < 100:
+                        manager.send_progress_sync(
+                            files_processed,
+                            max(total_images, 1),
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                        )
+                    continue  # Skip duplicate
+
+                # Create dataset item
+                item = DatasetItem(
+                    dataset_id=dataset_id,
+                    item_type="single",
+                    base_name=base_name,
+                    image_path=image_path,
+                    width=width,
+                    height=height,
+                    file_size=file_size,
+                    image_hash=image_hash
+                )
+                db.add(item)
+                db.flush()  # Get item.id
+                items_found += 1
+                files_processed += 1
+
+                # Send progress update every 10 images or immediately if total < 100
+                if files_processed % 10 == 0 or total_images < 100:
+                    manager.send_progress_sync(
+                        files_processed,
+                        max(total_images, 1),
+                        f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                     )
-                    db.add(item)
-                    db.flush()  # Get item.id
-                    items_found += 1
 
-                    # Process captions
-                    for caption_path in files["captions"]:
-                        try:
-                            with open(caption_path, 'r', encoding='utf-8') as f:
-                                content = f.read().strip()
-                                if content:
-                                    caption = DatasetCaption(
-                                        item_id=item.id,
-                                        caption_type="tags",
-                                        content=content,
-                                        source="file"
-                                    )
-                                    db.add(caption)
-                                    captions_found += 1
-                        except Exception as e:
-                            print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
+                # Process captions
+                for caption_path in files["captions"]:
+                    try:
+                        with open(caption_path, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
+                            if content:
+                                caption = DatasetCaption(
+                                    item_id=item.id,
+                                    caption_type="tags",
+                                    content=content,
+                                    source="file"
+                                )
+                                db.add(caption)
+                                captions_found += 1
+                    except Exception as e:
+                        print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
@@ -2756,8 +2861,17 @@ async def scan_dataset(
     # Start scanning
     scan_directory(dataset.path)
 
-    # Compute tag statistics
-    tag_statistics = await compute_tag_statistics(dataset_id, db)
+    # Send final progress update
+    manager.send_progress_sync(
+        total_images,
+        max(total_images, 1),
+        f"Scan complete: {files_processed} images processed | {items_found} new items, {captions_found} captions"
+    )
+
+    # Compute tag statistics with progress updates
+    print(f"[Dataset Scan] Computing tag statistics...")
+    manager.send_progress_sync(total_images, max(total_images, 1), "Computing tag statistics...")
+    tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_images=total_images)
 
     # Update dataset statistics
     dataset.total_items = items_found

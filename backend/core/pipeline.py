@@ -49,6 +49,7 @@ class DiffusionPipelineManager:
 
         # Attention processor settings (dynamically loaded from localStorage via API)
         self.original_processors: Optional[dict] = None  # Store original processors
+        self.current_attention_type: str = "normal"  # Track current attention type to avoid redundant switching
 
         # Cancellation flag
         self.cancel_requested = False
@@ -167,6 +168,7 @@ class DiffusionPipelineManager:
                 self.zimage_components = model_result
                 self.is_zimage_model = True
                 self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
 
                 # Initialize VRAM optimization: Move all components to CPU
                 print("[VRAM] Initializing sequential loading strategy for Z-Image...")
@@ -246,6 +248,7 @@ class DiffusionPipelineManager:
             log_device_status("Initial load complete, all components on CPU", self.txt2img_pipeline)
 
             self.current_model = model_id
+            self.current_attention_type = "normal"  # Reset on model load
 
             # Detect v-prediction status
             is_v_prediction = False
@@ -582,11 +585,17 @@ class DiffusionPipelineManager:
 
             # Set attention backend based on global settings or params
             attention_type = params.get("attention_type", settings.attention_type)
-            print(f"[Z-Image] Setting attention backend: {attention_type}")
 
-            # Set backend for all ZImageAttention layers
-            from core.models.zimage_transformer import ZImageAttention
-            ZImageAttention._attention_backend = attention_type
+            # Only switch if attention type has changed (avoid redundant switching overhead)
+            if attention_type != self.current_attention_type:
+                print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type
+                self.current_attention_type = attention_type
+            else:
+                print(f"[Z-Image] Attention backend already set to: {attention_type} (skipping)")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type  # Ensure it's set (for safety)
 
             # Load or unload LoRAs
             lora_configs = params.get("loras", [])
@@ -2158,9 +2167,22 @@ class DiffusionPipelineManager:
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
-            if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.inference.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+            # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+            if not params.get("nag_enable", False):
+                if attention_type != "normal" and attention_type != self.current_attention_type:
+                    print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                    from core.inference.attention_processors import set_attention_processor
+                    self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                    self.current_attention_type = attention_type
+                elif attention_type == "normal" and self.current_attention_type != "normal":
+                    print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                    if self.original_processors is not None:
+                        pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                        self.original_processors = None
+                    self.current_attention_type = "normal"
+                else:
+                    print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
             # Call custom sampling loop
             image = custom_sampling_loop(
@@ -2590,9 +2612,22 @@ class DiffusionPipelineManager:
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
-            if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.inference.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+            # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+            if not params.get("nag_enable", False):
+                if attention_type != "normal" and attention_type != self.current_attention_type:
+                    print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                    from core.inference.attention_processors import set_attention_processor
+                    self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                    self.current_attention_type = attention_type
+                elif attention_type == "normal" and self.current_attention_type != "normal":
+                    print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                    if self.original_processors is not None:
+                        pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                        self.original_processors = None
+                    self.current_attention_type = "normal"
+                else:
+                    print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
             # Use t_start directly for custom sampling loop
             t_start_override = t_start if fix_steps else None
@@ -2890,9 +2925,22 @@ class DiffusionPipelineManager:
         # Set attention processor based on attention_type (unless NAG is enabled)
         # NAG has its own processors that will be set in custom_sampling_loop
         attention_type = params.get("attention_type", "normal")
-        if not params.get("nag_enable", False) and attention_type != "normal":
-            from core.inference.attention_processors import set_attention_processor
-            self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+        # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+        if not params.get("nag_enable", False):
+            if attention_type != "normal" and attention_type != self.current_attention_type:
+                print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                from core.inference.attention_processors import set_attention_processor
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                self.current_attention_type = attention_type
+            elif attention_type == "normal" and self.current_attention_type != "normal":
+                print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                if self.original_processors is not None:
+                    pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                    self.original_processors = None
+                self.current_attention_type = "normal"
+            else:
+                print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
         # Use t_start directly for custom sampling loop
         t_start_override = t_start if fix_steps else None

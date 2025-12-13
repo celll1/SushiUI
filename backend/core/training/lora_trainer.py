@@ -391,10 +391,21 @@ class LoRATrainer:
             # Set Flash Attention backend immediately after wrapping (if enabled)
             # This ensures the attention backend is set before any forward passes
             if self.use_flash_attention:
-                from core.models.zimage_transformer import ZImageAttention
-                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (pre-setup)...")
-                ZImageAttention._attention_backend = "flash"
-                print(f"{self.log_prefix} [OK] Flash Attention backend enabled (pre-setup)")
+                # IMPORTANT: Use the ZImageAttention class from sys.modules['zimage.transformer']
+                # ModelLoader injects SushiUI's transformer into sys.modules, so we must use that instance
+                import sys
+                if 'zimage.transformer' in sys.modules:
+                    zimage_transformer_module = sys.modules['zimage.transformer']
+                    ZImageAttention = zimage_transformer_module.ZImageAttention
+                    print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (pre-setup, from sys.modules)...")
+                    ZImageAttention._attention_backend = "flash"
+                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled (pre-setup): {ZImageAttention._attention_backend}")
+                else:
+                    # Fallback: use direct import (for non-ModelLoader cases)
+                    from core.models.zimage_transformer import ZImageAttention
+                    print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (pre-setup, direct import)...")
+                    ZImageAttention._attention_backend = "flash"
+                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled (pre-setup): {ZImageAttention._attention_backend}")
 
             print(f"{self.log_prefix} Z-Image model loaded successfully")
             print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
@@ -517,10 +528,21 @@ class LoRATrainer:
             # Enable Flash Attention BEFORE gradient checkpointing
             # Gradient checkpointing must be enabled after setting attention processors
             if self.use_flash_attention:
-                from core.models.zimage_transformer import ZImageAttention
-                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
-                ZImageAttention._attention_backend = "flash"
-                print(f"{self.log_prefix} [OK] Flash Attention backend enabled for Z-Image Transformer")
+                # IMPORTANT: Use the ZImageAttention class from sys.modules['zimage.transformer']
+                # ModelLoader injects SushiUI's transformer into sys.modules, so we must use that instance
+                import sys
+                if 'zimage.transformer' in sys.modules:
+                    zimage_transformer_module = sys.modules['zimage.transformer']
+                    ZImageAttention = zimage_transformer_module.ZImageAttention
+                    print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (from sys.modules)...")
+                    ZImageAttention._attention_backend = "flash"
+                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled: {ZImageAttention._attention_backend}")
+                else:
+                    # Fallback: use direct import (for non-ModelLoader cases)
+                    from core.models.zimage_transformer import ZImageAttention
+                    print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (direct import)...")
+                    ZImageAttention._attention_backend = "flash"
+                    print(f"{self.log_prefix} [OK] Flash Attention backend enabled: {ZImageAttention._attention_backend}")
 
             # Enable gradient checkpointing for Transformer (Z-Image)
             if hasattr(self.transformer, 'enable_gradient_checkpointing'):

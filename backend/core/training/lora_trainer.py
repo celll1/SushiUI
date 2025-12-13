@@ -388,6 +388,14 @@ class LoRATrainer:
             print(f"{self.log_prefix} - Direct batched tensor processing throughout")
             print(f"{self.log_prefix} - Expected VRAM reduction: significant (eliminates all List overhead)")
 
+            # Set Flash Attention backend immediately after wrapping (if enabled)
+            # This ensures the attention backend is set before any forward passes
+            if self.use_flash_attention:
+                from core.models.zimage_transformer import ZImageAttention
+                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (pre-setup)...")
+                ZImageAttention._attention_backend = "flash"
+                print(f"{self.log_prefix} [OK] Flash Attention backend enabled (pre-setup)")
+
             print(f"{self.log_prefix} Z-Image model loaded successfully")
             print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
             print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")

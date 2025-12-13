@@ -3427,6 +3427,7 @@ async def create_training_run(
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
                 sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
             )
         else:  # full_finetune
@@ -3472,6 +3473,7 @@ async def create_training_run(
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
                 sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
             )
 
@@ -3973,6 +3975,9 @@ async def visualize_debug_latent(
 
         # latent_tensor shape: [C, H, W]
         # For SDXL latents: C=4, we'll map first 3 channels to RGB
+        # Convert to float32 first (NumPy doesn't support bfloat16)
+        if latent_tensor.dtype == torch.bfloat16:
+            latent_tensor = latent_tensor.to(torch.float32)
         latent_np = latent_tensor.numpy()  # [C, H, W]
 
         # Take first 3 channels (or repeat if less than 3)

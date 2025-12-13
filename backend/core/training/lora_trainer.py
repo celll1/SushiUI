@@ -1572,12 +1572,14 @@ class LoRATrainer:
             print_vram_usage("[train_step_zimage] After timestep sampling")
 
         # Flow Matching: Sample noise (standard normal distribution)
-        noise = torch.randn_like(latents)
+        # Use training dtype to avoid dtype promotion
+        noise = torch.randn_like(latents, dtype=latents.dtype)
 
         # Flow Matching: Interpolate between noise and data
         # x_t = (1 - t) * noise + t * data
         # Reshape timesteps for broadcasting: [B] -> [B, 1, 1, 1]
-        t = timesteps[:, None, None, None]
+        # Convert timesteps to latents dtype to avoid fp32 promotion
+        t = timesteps[:, None, None, None].to(dtype=latents.dtype)
         noisy_latents = (1.0 - t) * noise + t * latents
 
         if profile_vram:
@@ -1659,6 +1661,7 @@ class LoRATrainer:
             print_vram_usage("[train_step_zimage] After Transformer forward")
 
         # Flow Matching target: velocity = data - noise
+        # OPTIMIZATION: Compute in-place to reduce memory allocation
         target = latents - noise
 
         # Debug: Verify target correctness on first step
@@ -1679,48 +1682,55 @@ class LoRATrainer:
             print(f"  - model_pred min: {model_pred.min().item():.6f}, max: {model_pred.max().item():.6f}")
             self._debug_logged_zimage_target = True
 
-        # Calculate loss (always in fp32 for numerical stability)
-        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        # Calculate loss (keep in bf16 until final reduction for memory efficiency)
+        # OPTIMIZATION: MSE loss in bf16, only convert final scalar to fp32
+        loss_per_element = F.mse_loss(model_pred, target, reduction="none")
 
         # Take mean across spatial and channel dimensions first (keep batch dimension)
         # Shape: [B, 16, H, W] -> [B]
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Flow Matching does not use Min-SNR weighting (continuous time formulation already handles weighting)
-        # Take mean across batch dimension
-        loss = loss_per_sample.mean()
+        # Take mean across batch dimension (convert to fp32 only for final scalar)
+        loss = loss_per_sample.mean().float()
+
+        # OPTIMIZATION: Free intermediate tensor immediately
+        del loss_per_element
 
         # Calculate reconstruction loss (for monitoring/visualization)
         # This measures how well the model can reconstruct the target latent from noisy input
+        # OPTIMIZATION: Reuse calculation for both recon_loss and debug saving
         with torch.no_grad():
-            predicted_latent_for_recon = noisy_latents + (1.0 - t) * model_pred
-            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            # predicted_latent: denoised latent at t=0
+            # Flow Matching: x_1 = x_t + (1 - t) * v
+            predicted_latent = noisy_latents + (1.0 - t) * model_pred
+
+            # Compute reconstruction loss in bf16, convert final scalar to fp32
+            recon_loss_per_element = F.mse_loss(predicted_latent, latents, reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-            recon_loss = recon_loss_per_sample.mean()
+            recon_loss = recon_loss_per_sample.mean().float()
+
+            # Free intermediate tensor
+            del recon_loss_per_element
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After loss calculation")
 
         # Debug: Save latents if requested
+        # OPTIMIZATION: Reuse predicted_latent from reconstruction loss calculation
         if debug_save_path is not None:
             debug_save_path.mkdir(parents=True, exist_ok=True)
 
             # Save as .pt files with detailed info (save first item in batch)
             timestep_value = timesteps[0].item()
 
-            # Calculate predicted_latent (denoised latent at t=0)
-            # Flow Matching: x_1 = x_t + (1 - t) * v
-            # Derivation: x_t = x_1 - (1-t) * v  →  x_1 = x_t + (1-t) * v
-            with torch.no_grad():
-                predicted_latent = noisy_latents + (1.0 - t) * model_pred
-
-            # Prepare debug data
+            # Prepare debug data (reuse predicted_latent from recon_loss calculation)
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
                 'noisy_latents': noisy_latents[0:1].detach().cpu(),
                 'predicted_velocity': model_pred[0:1].detach().cpu(),
                 'actual_velocity': target[0:1].detach().cpu(),
-                'predicted_latent': predicted_latent[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent[0:1].detach().cpu(),  # Reuse from recon_loss
                 'timestep': timestep_value,
                 'loss': loss_per_sample[0].item(),
                 'loss_batch_mean': loss.item(),
@@ -1737,9 +1747,11 @@ class LoRATrainer:
 
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
 
-            del predicted_latent
             caption_info = f" (caption: {debug_captions[0][:50]}...)" if debug_captions and len(debug_captions) > 0 else ""
             print(f"[Debug] Saved Z-Image latents to {debug_save_path} (timestep={timestep_value:.4f}){caption_info}")
+
+        # OPTIMIZATION: Free predicted_latent after debug saving
+        del predicted_latent
 
         # Backward pass
         if profile_vram:
@@ -1761,13 +1773,19 @@ class LoRATrainer:
         self.optimizer.zero_grad()
         loss.backward()
 
+        # OPTIMIZATION: Free intermediate activations immediately after backward
+        # These are no longer needed after gradients are computed
+        # Keep only: loss (for logging), recon_loss (for logging)
+        # Delete: noisy_latents, model_pred, target (large tensors)
+        del noisy_latents, noisy_latents_4d, model_pred, target
+
         # Debug: Log VRAM after backward pass (first step only)
         if not hasattr(self, '_debug_logged_gc_vram_after_backward'):
             allocated_after_backward = torch.cuda.memory_allocated() / 1024**3
             reserved_after_backward = torch.cuda.memory_reserved() / 1024**3
             max_allocated = torch.cuda.max_memory_allocated() / 1024**3
             max_reserved = torch.cuda.max_memory_reserved() / 1024**3
-            print(f"  - VRAM after backward pass:")
+            print(f"  - VRAM after backward pass + cleanup:")
             print(f"    - Allocated: {allocated_after_backward:.2f} GB")
             print(f"    - Reserved: {reserved_after_backward:.2f} GB")
             print(f"    - Max Allocated: {max_allocated:.2f} GB")
@@ -1814,11 +1832,18 @@ class LoRATrainer:
             print_vram_usage("[train_step_zimage] After optimizer step")
 
         # Get loss values before cleanup
-        loss_value = loss.detach().item()
-        recon_loss_value = recon_loss.detach().item()
+        loss_value = loss.item()  # Already detached (scalar tensor)
+        recon_loss_value = recon_loss.item()
 
-        # Free intermediate tensors explicitly to reduce VRAM usage
-        del noise, noisy_latents, model_pred, target, loss, recon_loss
+        # OPTIMIZATION: Free remaining intermediate tensors
+        # Note: noisy_latents, model_pred, target, noisy_latents_4d already deleted after backward
+        del loss, recon_loss, recon_loss_per_sample
+        del t, noise
+        del loss_per_sample
+
+        # Force CUDA cache cleanup (helps with fragmentation)
+        if hasattr(torch.cuda, 'empty_cache'):
+            torch.cuda.empty_cache()
 
         return loss_value, recon_loss_value
 
@@ -1863,11 +1888,16 @@ class LoRATrainer:
                         if step_idx + 1 < len(parts):
                             step = int(parts[step_idx + 1])
 
-                # Check if this checkpoint has LoRA weights (basic validation)
+                # Check if this checkpoint has weights (validation)
+                # LoRA: check for lora_down/lora_up keys
+                # Full Finetune: check for any model weights
                 has_lora_weights = any("lora_down" in key or "lora_up" in key for key in state_dict.keys())
-                if has_lora_weights:
+                has_model_weights = len(state_dict.keys()) > 0  # Any weights indicate valid checkpoint
+
+                if has_lora_weights or has_model_weights:
                     valid_checkpoints.append((str(ckpt_path), step))
-                    print(f"{self.log_prefix} Found valid checkpoint: {ckpt_path.name} (step {step})")
+                    checkpoint_type = "LoRA" if has_lora_weights else "Full Finetune"
+                    print(f"{self.log_prefix} Found valid checkpoint: {ckpt_path.name} (step {step}, {checkpoint_type})")
 
             except Exception as e:
                 print(f"{self.log_prefix} Skipping invalid checkpoint {ckpt_path.name}: {e}")
@@ -1891,7 +1921,7 @@ class LoRATrainer:
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """
-        Load LoRA checkpoint from safetensors file.
+        Load checkpoint from safetensors file (LoRA or Full Finetune).
 
         Args:
             checkpoint_path: Path to checkpoint file
@@ -1905,44 +1935,73 @@ class LoRATrainer:
 
         state_dict = load_file(checkpoint_path)
 
-        # Load weights into LoRA layers
-        loaded_count = 0
-        for name, lora in self.lora_layers.items():
-            # Parse prefix and module name (same logic as save_checkpoint)
-            if "." in name:
-                prefix, module_name = name.split(".", 1)
+        # Detect checkpoint type
+        is_lora_checkpoint = any("lora_down" in key or "lora_up" in key for key in state_dict.keys())
+
+        if is_lora_checkpoint:
+            # Load LoRA weights
+            print(f"{self.log_prefix} Detected LoRA checkpoint")
+            loaded_count = 0
+            for name, lora in self.lora_layers.items():
+                # Parse prefix and module name (same logic as save_checkpoint)
+                if "." in name:
+                    prefix, module_name = name.split(".", 1)
+                else:
+                    # Fallback for legacy keys without prefix
+                    prefix = "unet"
+                    module_name = name
+
+                # Generate key prefix based on module type (same as save_checkpoint)
+                # Use diffusers format (compatible with save_checkpoint format)
+                if prefix == "unet":
+                    key_prefix = f"unet.{module_name}"
+                elif prefix == "transformer":
+                    # Z-Image transformer (FlowDiT)
+                    key_prefix = f"transformer.{module_name}"
+                elif prefix == "te1":
+                    key_prefix = f"text_encoder.{module_name}"
+                elif prefix == "te2":
+                    key_prefix = f"text_encoder_2.{module_name}"
+                else:
+                    # Unknown prefix, use as-is
+                    key_prefix = f"{prefix}.{module_name}"
+
+                down_key = f"{key_prefix}.lora_down.weight"
+                up_key = f"{key_prefix}.lora_up.weight"
+
+                # Try to load with the generated key
+                if down_key in state_dict and up_key in state_dict:
+                    lora.lora_down.weight.data = state_dict[down_key].to(self.device)
+                    lora.lora_up.weight.data = state_dict[up_key].to(self.device)
+                    loaded_count += 1
+                else:
+                    print(f"{self.log_prefix} WARNING: Keys not found for {name}: {down_key}")
+
+            print(f"{self.log_prefix} Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
+        else:
+            # Load Full Finetune weights (entire model)
+            print(f"{self.log_prefix} Detected Full Finetune checkpoint")
+
+            # Load weights directly into transformer
+            if self.is_zimage and hasattr(self, 'transformer'):
+                # Load state dict into transformer (incompatible keys are expected)
+                missing_keys, unexpected_keys = self.transformer.load_state_dict(state_dict, strict=False)
+                print(f"{self.log_prefix} Loaded Full Finetune weights into Transformer")
+                if missing_keys:
+                    print(f"{self.log_prefix} WARNING: Missing keys: {len(missing_keys)} (expected for partial checkpoint)")
+                if unexpected_keys:
+                    print(f"{self.log_prefix} WARNING: Unexpected keys: {len(unexpected_keys)}")
             else:
-                # Fallback for legacy keys without prefix
-                prefix = "unet"
-                module_name = name
-
-            # Generate key prefix based on module type (same as save_checkpoint)
-            # Use diffusers format (compatible with save_checkpoint format)
-            if prefix == "unet":
-                key_prefix = f"unet.{module_name}"
-            elif prefix == "transformer":
-                # Z-Image transformer (FlowDiT)
-                key_prefix = f"transformer.{module_name}"
-            elif prefix == "te1":
-                key_prefix = f"text_encoder.{module_name}"
-            elif prefix == "te2":
-                key_prefix = f"text_encoder_2.{module_name}"
-            else:
-                # Unknown prefix, use as-is
-                key_prefix = f"{prefix}.{module_name}"
-
-            down_key = f"{key_prefix}.lora_down.weight"
-            up_key = f"{key_prefix}.lora_up.weight"
-
-            # Try to load with the generated key
-            if down_key in state_dict and up_key in state_dict:
-                lora.lora_down.weight.data = state_dict[down_key].to(self.device)
-                lora.lora_up.weight.data = state_dict[up_key].to(self.device)
-                loaded_count += 1
-            else:
-                print(f"{self.log_prefix} WARNING: Keys not found for {name}: {down_key}")
-
-        print(f"{self.log_prefix} Loaded {loaded_count}/{len(self.lora_layers)} LoRA layers from checkpoint")
+                # SDXL/SD1.5 U-Net
+                if hasattr(self, 'unet'):
+                    missing_keys, unexpected_keys = self.unet.load_state_dict(state_dict, strict=False)
+                    print(f"{self.log_prefix} Loaded Full Finetune weights into U-Net")
+                    if missing_keys:
+                        print(f"{self.log_prefix} WARNING: Missing keys: {len(missing_keys)}")
+                    if unexpected_keys:
+                        print(f"{self.log_prefix} WARNING: Unexpected keys: {len(unexpected_keys)}")
+                else:
+                    print(f"{self.log_prefix} WARNING: No model to load weights into (unet/transformer not found)")
 
         # Extract step from metadata or filename
         step = 0

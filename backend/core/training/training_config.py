@@ -57,6 +57,8 @@ class TrainingConfigGenerator:
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
         sample_seed: int = 42,
+        # Resume settings
+        resume_from_checkpoint: Optional[str] = None,
         # Caption processing settings
         caption_processing: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -179,6 +181,7 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 10,
                         },
+                        **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         "datasets": datasets_array,
                         "train": {
                             "batch_size": batch_size,
@@ -277,6 +280,7 @@ class TrainingConfigGenerator:
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
         sample_seed: int = -1,
+        resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[dict] = None,
     ) -> str:
         """
@@ -397,6 +401,7 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
                         },
+                        **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         "datasets": datasets_array,
                         "train": train_config,
                         "model": {

@@ -8,6 +8,7 @@ interface DirectorySettingsData {
   lora_dirs: string[];
   controlnet_dirs: string[];
   cache_dir: string | null;
+  training_dir: string | null;
 }
 
 export default function DirectorySettings() {
@@ -15,6 +16,7 @@ export default function DirectorySettings() {
   const [loraDirs, setLoraDirs] = useState("");
   const [controlnetDirs, setControlnetDirs] = useState("");
   const [cacheDir, setCacheDir] = useState("");
+  const [trainingDir, setTrainingDir] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -37,6 +39,7 @@ export default function DirectorySettings() {
       setLoraDirs((data.lora_dirs || []).join("\n"));
       setControlnetDirs((data.controlnet_dirs || []).join("\n"));
       setCacheDir(data.cache_dir || "");
+      setTrainingDir(data.training_dir || "");
     } catch (error) {
       console.error("Error loading directory settings:", error);
       setMessage({ type: "error", text: "Failed to load directory settings" });
@@ -63,6 +66,7 @@ export default function DirectorySettings() {
           lora_dirs: loraDirsArray,
           controlnet_dirs: controlnetDirsArray,
           cache_dir: cacheDir.trim() || null,
+          training_dir: trainingDir.trim() || null,
         }),
       });
 
@@ -168,6 +172,22 @@ export default function DirectorySettings() {
           />
           <p className="text-xs text-gray-500 mt-1">
             Custom directory for training caches (latents, text embeddings). Leave empty to use default (backend/cache).
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Training Output Directory
+          </label>
+          <input
+            type="text"
+            value={trainingDir}
+            onChange={(e) => setTrainingDir(e.target.value)}
+            placeholder="D:\training (leave empty for default: training)"
+            className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm font-mono"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Custom directory for training outputs (checkpoints, samples, logs). Leave empty to use default (training).
           </p>
         </div>
       </div>

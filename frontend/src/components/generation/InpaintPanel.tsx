@@ -71,6 +71,8 @@ interface InpaintParams {
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
   text_encoder_quantization?: string | null;
+  // Attention backend
+  attention_type?: string;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -115,6 +117,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   text_encoder_quantization: null,
   use_torch_compile: false,
   feeling_lucky: false,
+  attention_type: "normal",
 };
 
 const STORAGE_KEY = "inpaint_params";
@@ -351,6 +354,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
       if (savedShowAdvancedCFG === 'true') {
         setShowAdvancedCFG(true);
+      }
+
+      // Load attention type from global settings
+      const savedAttentionType = localStorage.getItem('attention_type');
+      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+        setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
       }
 
       // Load custom presets
@@ -1154,6 +1163,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_blur_strength: mainParams.inpaint_blur_strength,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        attention_type: mainParams.attention_type, // Inherit attention backend from main
       };
 
       // Use custom settings or inherit from main
@@ -1305,6 +1315,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         nag_sigma_end: nextItem.params.nag_sigma_end,
         nag_negative_prompt: nextItem.params.nag_negative_prompt,
         unet_quantization: nextItem.params.unet_quantization,
+        attention_type: nextItem.params.attention_type,
       };
 
       console.log('[Inpaint] Generating with params:', {

@@ -2450,6 +2450,66 @@ async def update_caption_processing(
     dataset.caption_processing = request.caption_processing
     db.commit()
     db.refresh(dataset)
+
+    # Generate pre-ordered captions if category_order is specified
+    from core.training.caption_processor import process_caption
+    caption_config = request.caption_processing
+    if caption_config.get("category_order"):
+        print(f"[API] Generating pre-ordered captions for dataset {dataset_id}...")
+        items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        total_items = len(items)
+        print(f"[API] Processing {total_items} items...")
+
+        for idx, item in enumerate(items):
+            # Progress log every 1000 items
+            if (idx + 1) % 1000 == 0:
+                print(f"[API] Processed {idx + 1}/{total_items} items ({(idx + 1) / total_items * 100:.1f}%)")
+
+            # Get original tags caption
+            primary_caption = db.query(DatasetCaption).filter(
+                DatasetCaption.item_id == item.id,
+                DatasetCaption.caption_type == "tags"
+            ).first()
+
+            if not primary_caption:
+                continue
+
+            # Process caption with category ordering and normalization
+            processed_caption = process_caption(
+                caption=primary_caption.content,
+                epoch_num=0,
+                item_path=item.image_path,
+                normalize_tags=caption_config.get("normalize_tags", True),
+                category_order=caption_config.get("category_order", None),
+                # Disable dropout/shuffle for pre-ordered captions
+                caption_dropout_rate=0.0,
+                token_dropout_rate=0.0,
+                shuffle_tokens=False,
+                tag_dropout_rate=0.0,
+                tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+            )
+
+            # Save or update pre-ordered caption
+            ordered_caption = db.query(DatasetCaption).filter(
+                DatasetCaption.item_id == item.id,
+                DatasetCaption.caption_type == "tags_ordered"
+            ).first()
+
+            if ordered_caption:
+                ordered_caption.content = processed_caption
+                ordered_caption.updated_at = datetime.utcnow()
+            else:
+                ordered_caption = DatasetCaption(
+                    item_id=item.id,
+                    caption_type="tags_ordered",
+                    content=processed_caption,
+                    source="auto_processed"
+                )
+                db.add(ordered_caption)
+
+        db.commit()
+        print(f"[API] Completed generating pre-ordered captions for {total_items} items")
+
     return dataset.to_dict()
 
 

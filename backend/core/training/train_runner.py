@@ -62,25 +62,51 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
     print(f"[TrainRunner] Processing {total_items} items from dataset {dataset_id}...")
 
     dataset_items = []
+    # Check if category_order is enabled
+    has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
+
+    # Check if pre-ordered captions are available
+    if has_category_order and epoch_num == 0:
+        preordered_count = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id.in_([item.id for item in items]),
+            DatasetCaption.caption_type == "tags_ordered"
+        ).count()
+        print(f"[TrainRunner] Using pre-ordered captions: {preordered_count}/{total_items} items")
+        if preordered_count > 0:
+            print(f"[TrainRunner] Skipping category ordering for pre-ordered captions (faster training start)")
+
     for idx, item in enumerate(items):
         # Progress log every 1000 items
         if (idx + 1) % 1000 == 0:
             print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({(idx + 1) / total_items * 100:.1f}%)")
-        # Get primary caption from dataset_captions table
-        primary_caption = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id == item.id,
-            DatasetCaption.caption_type == "tags"
-        ).first()
+
+        # Get caption: prioritize pre-ordered if category ordering is enabled
+        primary_caption = None
+        if has_category_order:
+            # Try to get pre-ordered caption first
+            primary_caption = db.query(DatasetCaption).filter(
+                DatasetCaption.item_id == item.id,
+                DatasetCaption.caption_type == "tags_ordered"
+            ).first()
+
+        # Fallback to original tags if pre-ordered not found
+        if not primary_caption:
+            primary_caption = db.query(DatasetCaption).filter(
+                DatasetCaption.item_id == item.id,
+                DatasetCaption.caption_type == "tags"
+            ).first()
 
         raw_caption = primary_caption.content if primary_caption else ""
+        is_preordered = primary_caption and primary_caption.caption_type == "tags_ordered"
 
         # Apply caption processing (dropout, shuffle, etc.)
+        # Skip category_order if using pre-ordered caption (already ordered)
         processed_caption = process_caption(
             caption=raw_caption,
             epoch_num=epoch_num,
             item_path=item.image_path,
-            normalize_tags=caption_config.get("normalize_tags", True),
-            category_order=caption_config.get("category_order", None),
+            normalize_tags=False if is_preordered else caption_config.get("normalize_tags", True),
+            category_order=None if is_preordered else caption_config.get("category_order", None),
             caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
             token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
             keep_tokens=caption_config.get("keep_tokens", 0),

@@ -2589,7 +2589,7 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     total_tags = db.query(func.count(TagDictionary.id)).scalar()
     return {"total_tags": total_tags or 0}
 
-async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_images: int = 0) -> dict:
+async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_steps: int = 0, current_step: int = 0) -> dict:
     """
     Compute tag statistics for a dataset: tag counts only (no categories)
     Returns: {"tag": {"count": N}, ...}
@@ -2640,11 +2640,15 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
         # Log progress every 10k captions
         if processed % 10000 == 0:
             print(f"[Dataset] Tag statistics: processed {processed} captions, {len(tag_counts)} unique tags so far")
-            if send_progress:
+            if send_progress and total_steps > 0:
+                # Interpolate progress from current_step (90%) to total_steps (100%)
+                # Example: current_step=540000 (90%), total_steps=600000 (100%)
+                # After processing 50% of captions: step = 540000 + 0.5 * (600000 - 540000) = 570000 (95%)
+                estimated_progress = current_step
                 manager.send_progress_sync(
-                    total_images,
-                    max(total_images, 1),
-                    f"Computing tag statistics: {processed} captions processed, {len(tag_counts)} unique tags"
+                    estimated_progress,
+                    total_steps,
+                    f"Computing tag statistics: {processed} captions, {len(tag_counts)} unique tags"
                 )
 
     print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
@@ -2713,9 +2717,14 @@ async def scan_dataset(
     count_images(dataset.path)
     print(f"[Dataset Scan] Found {total_images} total images to process")
 
+    # Progress tracking: Phase 1 (File scan): 0-90%, Phase 2 (Tag stats): 90-100%
+    # We'll use a unified total_steps = total_images * 1.1 (rounded)
+    # This way: file scan uses steps 0 to total_images (90.9%), tag stats uses remaining (9.1%)
+    total_steps = int(total_images * 1.1) if total_images > 0 else 100
+
     # Send initial progress
     print(f"[Dataset Scan] Sending initial progress to frontend...")
-    manager.send_progress_sync(0, max(total_images, 1), f"Starting scan: 0/{total_images} images processed")
+    manager.send_progress_sync(0, total_steps, f"Starting scan: 0/{total_images} images to process")
     print(f"[Dataset Scan] Starting directory scan...")
 
     def scan_directory(dir_path, current_depth=0):
@@ -2786,7 +2795,7 @@ async def scan_dataset(
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(
                             files_processed,
-                            max(total_images, 1),
+                            total_steps,
                             f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                         )
                     continue
@@ -2809,7 +2818,7 @@ async def scan_dataset(
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(
                             files_processed,
-                            max(total_images, 1),
+                            total_steps,
                             f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                         )
                     continue  # Skip duplicate
@@ -2834,7 +2843,7 @@ async def scan_dataset(
                 if files_processed % 10 == 0 or total_images < 100:
                     manager.send_progress_sync(
                         files_processed,
-                        max(total_images, 1),
+                        total_steps,
                         f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                     )
 
@@ -2861,17 +2870,23 @@ async def scan_dataset(
     # Start scanning
     scan_directory(dataset.path)
 
-    # Send final progress update
+    # File scan complete - progress is now at ~90%
     manager.send_progress_sync(
         total_images,
-        max(total_images, 1),
-        f"Scan complete: {files_processed} images processed | {items_found} new items, {captions_found} captions"
+        total_steps,
+        f"File scan complete: {files_processed} images processed | Starting tag statistics..."
     )
 
-    # Compute tag statistics with progress updates
+    # Compute tag statistics with progress updates (remaining 10%)
     print(f"[Dataset Scan] Computing tag statistics...")
-    manager.send_progress_sync(total_images, max(total_images, 1), "Computing tag statistics...")
-    tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_images=total_images)
+    tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
+
+    # Send final completion progress
+    manager.send_progress_sync(
+        total_steps,
+        total_steps,
+        f"Scan complete: {items_found} items, {captions_found} captions, {len(tag_statistics)} unique tags"
+    )
 
     # Update dataset statistics
     dataset.total_items = items_found

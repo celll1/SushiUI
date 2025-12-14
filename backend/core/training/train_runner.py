@@ -58,9 +58,14 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
         print(f"  shuffle_tokens: {caption_config.get('shuffle_tokens', False)}")
 
     items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+    total_items = len(items)
+    print(f"[TrainRunner] Processing {total_items} items from dataset {dataset_id}...")
 
     dataset_items = []
-    for item in items:
+    for idx, item in enumerate(items):
+        # Progress log every 1000 items
+        if (idx + 1) % 1000 == 0:
+            print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({(idx + 1) / total_items * 100:.1f}%)")
         # Get primary caption from dataset_captions table
         primary_caption = db.query(DatasetCaption).filter(
             DatasetCaption.item_id == item.id,
@@ -100,6 +105,7 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
             "height": item.height,
         })
 
+    print(f"[TrainRunner] Completed processing {total_items} items from dataset {dataset_id}")
     return dataset_items
 
 

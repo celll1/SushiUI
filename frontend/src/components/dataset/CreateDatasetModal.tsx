@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X, Folder, AlertCircle } from "lucide-react";
 import { createDataset, scanDataset, Dataset } from "@/utils/api";
+import { wsClient } from "@/utils/websocket";
 
 interface CreateDatasetModalProps {
   initialPath: string | null;
@@ -19,6 +20,22 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanningProgress, setScanningProgress] = useState<number | null>(null);
+  const [scanningMessage, setScanningMessage] = useState<string>("");
+
+  // WebSocket progress handler
+  useEffect(() => {
+    const handleProgress = (step: number, totalSteps: number, message: string) => {
+      if (scanningProgress !== null) {
+        // Only update if we're currently scanning
+        const progress = totalSteps > 0 ? (step / totalSteps) * 100 : 0;
+        setScanningProgress(progress);
+        setScanningMessage(message || "Scanning dataset...");
+      }
+    };
+
+    wsClient.subscribe(handleProgress);
+    return () => wsClient.unsubscribe(handleProgress);
+  }, [scanningProgress]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,29 +68,26 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
       // Automatically scan the dataset after creation
       try {
         setScanningProgress(0);
+        setScanningMessage("Starting scan...");
 
-        // Start scanning
-        await scanDataset(newDataset.id);
+        // Ensure WebSocket is connected
+        wsClient.connect();
 
-        // Poll for progress (simplified: just show indeterminate progress)
-        // In a real implementation, you'd poll a status endpoint
-        const pollInterval = setInterval(async () => {
-          // This is a placeholder - we'll implement proper progress reporting later
-          setScanningProgress((prev) => (prev !== null && prev < 90 ? prev + 10 : 90));
-        }, 500);
-
-        // Wait a bit for scan to complete (simplified)
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        clearInterval(pollInterval);
-
-        setScanningProgress(100);
-
-        // Fetch updated dataset
+        // Start scanning (this will send progress via WebSocket)
         const scanResult = await scanDataset(newDataset.id);
+
+        // Scan complete
+        setScanningProgress(100);
+        setScanningMessage("Scan complete!");
+
+        // Small delay to show completion
+        await new Promise(resolve => setTimeout(resolve, 500));
+
         onCreate(scanResult.dataset); // Return scanned dataset with updated counts
       } catch (scanErr) {
         console.error("Failed to scan dataset:", scanErr);
         setScanningProgress(null);
+        setScanningMessage("");
         onCreate(newDataset); // Return dataset even if scan fails
       }
     } catch (err: any) {
@@ -209,7 +223,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
                 />
               </div>
               <p className="text-xs text-gray-400 mt-2">
-                Scanning images and captions in the dataset directory...
+                {scanningMessage || "Scanning images and captions in the dataset directory..."}
               </p>
             </div>
           )}

@@ -304,6 +304,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setShowAdvancedCFG(true);
       }
 
+      // Load attention type from global settings
+      const savedAttentionType = localStorage.getItem('attention_type');
+      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+        setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
+      }
+
       // Load custom presets
       const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
       if (savedAspectRatioPresets) {

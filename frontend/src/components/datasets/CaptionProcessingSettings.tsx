@@ -236,7 +236,7 @@ export default function CaptionProcessingSettings({
             <span className="text-sm text-gray-300">Normalize Tags to Standard Format</span>
           </label>
           <p className="text-xs text-gray-500">
-            Standardize tag format to <code className="text-gray-400 bg-gray-800 px-1 rounded">tag_name \(qualifier\)</code> for consistency.
+            Standardize tag format to <code className="text-gray-400 bg-gray-800 px-1 rounded">tag name \(qualifier\)</code> for consistency.
             Handles various patterns: underscore format (<code className="text-gray-400 bg-gray-800 px-1 rounded">tag_(qualifier)</code>),
             space format (<code className="text-gray-400 bg-gray-800 px-1 rounded">tag (qualifier)</code>),
             escaped/over-escaped parentheses.

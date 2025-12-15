@@ -3161,6 +3161,9 @@ class LoRATrainer:
                     if self.debug_vram:
                         print_vram_usage("After moving VAE to CPU")
 
+                # Mark latent cache phase as complete
+                update_phase_progress("latent_cache", 100.0, "Latent cache generation complete")
+
                 # Save cache metadata for each dataset
                 for unique_id, cache in latent_caches.items():
                     # Count images for this dataset
@@ -3344,6 +3347,9 @@ class LoRATrainer:
                 self.vae.to('cpu')
                 torch.cuda.empty_cache()
 
+                # Mark latent cache phase as complete
+                update_phase_progress("latent_cache", 100.0, "Latent cache generation complete")
+
                 # Move Transformer/UNet back to GPU after VAE cache generation
                 if self.is_zimage:
                     print(f"{self.log_prefix} Moving Transformer back to GPU...")
@@ -3363,6 +3369,9 @@ class LoRATrainer:
             print(f"{self.log_prefix} Z-Image detected: Pre-encoding captions...")
             print(f"{self.log_prefix} is_zimage flag: {self.is_zimage}")
             print(f"{'='*80}\n")
+
+            # Update phase to text_encoder_cache
+            update_phase_progress("text_encoder_cache", 0.0, "Starting caption encoding...")
 
             # Move Text Encoder to GPU for encoding
             print(f"{self.log_prefix} Moving Text Encoder (Qwen3) to GPU for caption encoding...")
@@ -3475,6 +3484,8 @@ class LoRATrainer:
                 sys.stdout.flush()
                 print(f"[CaptionCache] Caption encoding complete: {len(caption_cache)} caption(s)")
 
+                # Mark text encoder cache phase as complete
+                update_phase_progress("text_encoder_cache", 100.0, f"Encoded {len(captions_to_encode)}/{len(unique_captions)} captions")
 
             # Save newly encoded captions to disk
             if len(captions_to_encode) > 0 and dataset_unique_ids and len(dataset_unique_ids) > 0:

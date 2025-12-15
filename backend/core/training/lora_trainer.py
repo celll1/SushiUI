@@ -2881,7 +2881,9 @@ class LoRATrainer:
 
                 # Debug: Log first 3 images to verify width/height are correct
                 if idx < 3:
-                    print(f"{self.log_prefix} Image {idx}: {width}x{height} - {item['image_path']}")
+                    # Encode path safely for console output (handles Unicode characters)
+                    safe_path = item['image_path'].encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+                    print(f"{self.log_prefix} Image {idx}: {width}x{height} - {safe_path}")
 
                 bucket_manager.assign_image_to_bucket(
                     image_path=item["image_path"],

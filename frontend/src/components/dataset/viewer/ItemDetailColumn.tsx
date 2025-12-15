@@ -106,6 +106,41 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     }
   }, [item, loadItemDetails]);
 
+  // Build tag_data with categories for backend
+  const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
+    const tagData: Array<{ tag: string; category: string }> = [];
+
+    for (const tag of tags) {
+      // Try to get category from cache first
+      const normalizedTag = normalizeTagForMatching(tag);
+      let category = tagCategoryCache[normalizedTag];
+
+      // If not in cache, search via tagSuggestions
+      if (!category) {
+        try {
+          const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
+          if (results.length > 0) {
+            const normalizedUserTag = normalizeTagForMatching(tag);
+            const normalizedResultTag = normalizeTagForMatching(results[0].tag);
+            if (normalizedUserTag === normalizedResultTag) {
+              category = results[0].category;
+            }
+          }
+        } catch (err) {
+          console.error(`[ItemDetailColumn] Failed to get category for tag "${tag}":`, err);
+        }
+      }
+
+      // Default to "General" if category not found
+      tagData.push({
+        tag,
+        category: category || "General",
+      });
+    }
+
+    return tagData;
+  };
+
   const pushHistory = async (newTags: string[]) => {
     setHistory({
       past: [...history.past, history.present],
@@ -119,9 +154,11 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     if (item) {
       try {
         const content = newTags.join(", ");
+        const tag_data = await buildTagData(newTags);
         await updateItemCaption(item.id, {
           caption_type: "tags",
           content,
+          tag_data,
         });
         console.log("[ItemDetailColumn] Tags saved to DB immediately");
       } catch (err) {
@@ -148,9 +185,11 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     if (item) {
       try {
         const content = previous.join(", ");
+        const tag_data = await buildTagData(previous);
         await updateItemCaption(item.id, {
           caption_type: "tags",
           content,
+          tag_data,
         });
         console.log("[ItemDetailColumn] Undo saved to DB immediately");
       } catch (err) {
@@ -177,9 +216,11 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     if (item) {
       try {
         const content = next.join(", ");
+        const tag_data = await buildTagData(next);
         await updateItemCaption(item.id, {
           caption_type: "tags",
           content,
+          tag_data,
         });
         console.log("[ItemDetailColumn] Redo saved to DB immediately");
       } catch (err) {

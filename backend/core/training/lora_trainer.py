@@ -3008,15 +3008,17 @@ class LoRATrainer:
             if len(caches_to_generate) > 0:
                 print(f"\n{'='*80}")
                 print(f"[LatentCache] Cache validation failed for {len(caches_to_generate)} dataset(s)")
-                print(f"[LatentCache] Regenerating cache (this will take some time but significantly reduces VRAM during training)")
+                print(f"[LatentCache] Generating missing latents (existing cache files will be preserved)")
                 print(f"[LatentCache] Model: {self.model_path}")
                 print(f"[LatentCache] Model type: {model_type}")
                 print(f"{'='*80}\n")
 
-                # Clear old caches
+                # Do NOT clear caches - preserve existing latents
+                # Only generate missing items (cache.save_latent will skip existing files)
                 for unique_id, cache in caches_to_generate:
-                    print(f"[LatentCache] Clearing old cache for dataset {unique_id[:8]}...")
-                    cache.clear()
+                    # Count existing latents
+                    existing_count = len(list(cache.latents_dir.glob("*.pt")))
+                    print(f"[LatentCache] Dataset {unique_id[:8]}... has {existing_count} existing latents (will reuse)")
 
                 # Move VAE to GPU for encoding
                 print(f"{self.log_prefix} Moving VAE to GPU for cache generation...")
@@ -3078,10 +3080,14 @@ class LoRATrainer:
                                 # Move latents to CPU immediately to prevent VRAM accumulation
                                 latents_cpu = latents.cpu()
                                 del latents
-                                cache.save_latent(
+                                # save_latent returns True if saved (new), False if skipped (existing)
+                                was_saved = cache.save_latent(
                                     image_path, target_width, target_height, latents_cpu
                                 )
-                                total_new_cached += 1
+                                if was_saved:
+                                    total_new_cached += 1
+                                else:
+                                    total_existing_cached += 1
                             except Exception as e:
                                 print(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
                         else:

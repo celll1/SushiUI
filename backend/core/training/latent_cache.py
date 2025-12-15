@@ -117,7 +117,8 @@ class LatentCache:
         image_path: str,
         width: int,
         height: int,
-        latents: torch.Tensor
+        latents: torch.Tensor,
+        skip_existing: bool = True
     ):
         """
         Save VAE latents to cache.
@@ -127,9 +128,17 @@ class LatentCache:
             width: Target width
             height: Target height
             latents: Latent tensor [1, 4, H/8, W/8]
+            skip_existing: If True, skip if cache file already exists (default: True)
+
+        Returns:
+            True if saved (new file), False if skipped (existing file)
         """
         cache_hash = self.compute_image_hash(image_path, width, height)
         cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        # Skip if file already exists
+        if skip_existing and cache_path.exists():
+            return False
 
         torch.save({
             'latents': latents.cpu(),
@@ -138,6 +147,7 @@ class LatentCache:
             'height': height,
             'created_at': datetime.utcnow().isoformat(),
         }, cache_path)
+        return True
 
     def load_latent(
         self,

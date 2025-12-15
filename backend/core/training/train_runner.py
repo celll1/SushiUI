@@ -67,13 +67,18 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         if run_id is None:
             return
         try:
-            run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
-            if run:
-                run.phase = phase
-                run.phase_progress = progress
-                if detail:
-                    run.phase_detail = detail
-                db.commit()
+            # Create separate training DB session (db is for datasets.db)
+            training_db = next(get_training_db())
+            try:
+                run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+                if run:
+                    run.phase = phase
+                    run.phase_progress = progress
+                    if detail:
+                        run.phase_detail = detail
+                    training_db.commit()
+            finally:
+                training_db.close()
         except Exception as e:
             print(f"[TrainRunner] Warning: Failed to update phase progress: {e}")
 

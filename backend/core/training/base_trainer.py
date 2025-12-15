@@ -1043,8 +1043,12 @@ class BaseTrainer(ABC):
             device=self.device,
         ).long()
 
-        # Add noise to latents
-        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
+        # Add noise to latents using Flow Matching interpolation
+        # Flow Matching: x_t = (1 - t) * x_0 + t * noise
+        # Normalize timesteps to [0, 1]
+        sigmas = timesteps.float() / self.scheduler.config.num_train_timesteps
+        sigmas = sigmas.view(-1, 1, 1, 1).to(latents.device, latents.dtype)
+        noisy_latents = (1 - sigmas) * latents + sigmas * noise
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] Before Transformer forward")

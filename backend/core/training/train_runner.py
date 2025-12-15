@@ -105,49 +105,59 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             progress_pct = ((idx + 1) / total_items) * 100.0
             print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({progress_pct:.1f}%)")
 
-        # Get caption: prioritize pre-ordered if category ordering is enabled
-        primary_caption = None
-        if has_category_order:
-            # Try to get pre-ordered caption first
-            primary_caption = db.query(DatasetCaption).filter(
-                DatasetCaption.item_id == item.id,
-                DatasetCaption.caption_type == "tags_ordered"
-            ).first()
-
-        # Fallback to original tags if pre-ordered not found
-        if not primary_caption:
-            primary_caption = db.query(DatasetCaption).filter(
-                DatasetCaption.item_id == item.id,
-                DatasetCaption.caption_type == "tags"
-            ).first()
+        # Get caption
+        primary_caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == "tags"
+        ).first()
 
         raw_caption = primary_caption.content if primary_caption else ""
-        is_preordered = primary_caption and primary_caption.caption_type == "tags_ordered"
 
-        # Apply caption processing (dropout, shuffle, etc.)
-        # Skip category_order if using pre-ordered caption (already ordered)
-        processed_caption = process_caption(
-            caption=raw_caption,
-            epoch_num=epoch_num,
-            item_path=item.image_path,
-            normalize_tags=False if is_preordered else caption_config.get("normalize_tags", True),
-            category_order=None if is_preordered else caption_config.get("category_order", None),
-            caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
-            token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
-            keep_tokens=caption_config.get("keep_tokens", 0),
-            shuffle_tokens=caption_config.get("shuffle_tokens", False),
-            shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
-            shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
-            shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
-            shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
-            tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
-            exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
-            tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
-            tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
-            tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
-            tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
-            tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
-        )
+        # Check if tag_data is available (pre-categorized tags for fast processing)
+        tag_data_available = primary_caption and primary_caption.tag_data
+
+        if tag_data_available:
+            # Fast path: Use pre-categorized tag_data
+            import json
+            try:
+                tag_data = json.loads(primary_caption.tag_data)
+            except:
+                tag_data = None
+                tag_data_available = False
+
+        if tag_data_available and tag_data:
+            # Fast per-epoch shuffle/dropout using pre-categorized tags
+            from core.training.caption_processor import process_caption_with_tag_data
+            processed_caption = process_caption_with_tag_data(
+                tag_data=tag_data,
+                epoch_num=epoch_num,
+                item_path=item.image_path,
+                caption_config=caption_config,
+            )
+        else:
+            # Legacy path: Use process_caption with category lookup
+            processed_caption = process_caption(
+                caption=raw_caption,
+                epoch_num=epoch_num,
+                item_path=item.image_path,
+                normalize_tags=caption_config.get("normalize_tags", True),
+                category_order=caption_config.get("category_order", None),
+                caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+                token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+                keep_tokens=caption_config.get("keep_tokens", 0),
+                shuffle_tokens=caption_config.get("shuffle_tokens", False),
+                shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+                shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+                shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+                shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+                tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+                exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+                tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+                tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+                tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+                tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+                tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+            )
 
         dataset_items.append({
             "image_path": item.image_path,

@@ -341,6 +341,10 @@ class DatasetCaption(DatasetBase):
     caption_subtype = Column(String, nullable=True)
     content = Column(Text, nullable=False)
 
+    # Tag data with categories (for per-epoch shuffle/dropout optimization)
+    # JSON format: [{"tag": "1girl", "category": "General"}, {"tag": "long_hair", "category": "General"}, ...]
+    tag_data = Column(Text, nullable=True)  # Stored as JSON string
+
     # Metadata
     language = Column(String, nullable=True)
     source = Column(String, default="manual", index=True)
@@ -355,7 +359,7 @@ class DatasetCaption(DatasetBase):
     item = relationship("DatasetItem", back_populates="captions")
 
     def to_dict(self):
-        return {
+        result = {
             "id": self.id,
             "item_id": self.item_id,
             "caption_type": self.caption_type,
@@ -368,6 +372,18 @@ class DatasetCaption(DatasetBase):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+        # Parse tag_data if present
+        if self.tag_data:
+            import json
+            try:
+                result["tag_data"] = json.loads(self.tag_data)
+            except:
+                result["tag_data"] = None
+        else:
+            result["tag_data"] = None
+
+        return result
 
 
 class TagDictionary(DatasetBase):

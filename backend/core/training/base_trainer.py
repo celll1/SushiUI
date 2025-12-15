@@ -1466,8 +1466,13 @@ class BaseTrainer(ABC):
         total_items = sum(len(dataset.items) for dataset in datasets)
         processed_items = 0
 
-        # Move VAE to GPU
-        self.vae.to(self.device)
+        # Move VAE to GPU (only if not already there)
+        vae_current_device = next(self.vae.parameters()).device
+        if vae_current_device != self.device:
+            print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
+            self.vae.to(self.device)
+        else:
+            print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
 
         for dataset in datasets:
             cache = latent_caches[dataset.unique_id]

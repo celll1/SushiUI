@@ -178,7 +178,7 @@ def update_training_progress(
     Args:
         db: Database session
         run_id: Training run ID
-        phase: Current phase ("initializing", "latent_cache", "training")
+        phase: Current phase ("initializing", "latent_cache", "text_encoder_cache", "training")
         step: Current step within phase
         total: Total steps in phase
         epoch: Current epoch (training phase only)
@@ -199,6 +199,8 @@ def update_training_progress(
             run.phase_detail = f"Loading dataset: {step}/{total} items"
         elif phase == "latent_cache":
             run.phase_detail = f"Generating latent cache: {step}/{total} items"
+        elif phase == "text_encoder_cache":
+            run.phase_detail = f"Encoding captions: {step}/{total} captions"
         elif phase == "training":
             run.phase_detail = f"Epoch {epoch}, Step {step}/{total}"
             run.current_step = step

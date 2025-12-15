@@ -3568,6 +3568,9 @@ async def create_training_run(
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
 
+        # Get resume setting from request
+        resume_from_checkpoint = request.resume_from_checkpoint
+
         # Generate YAML config
         config_generator = TrainingConfigGenerator()
 

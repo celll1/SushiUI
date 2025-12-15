@@ -1632,8 +1632,8 @@ class BaseTrainer(ABC):
 
         # Setup bucketing
         if enable_bucketing:
-            from core.training.bucketing import ResolutionBucket
-            bucket_manager = ResolutionBucket(
+            from core.training.bucketing import BucketManager
+            bucket_manager = BucketManager(
                 min_resolution=min_bucket_resolution,
                 max_resolution=max_bucket_resolution,
                 step=bucket_step,

@@ -798,6 +798,9 @@ class BaseTrainer(ABC):
                 latents = self.vae.encode(image_tensor).latent_dist.sample()
                 latents = latents * self.vae.config.scaling_factor
 
+        # Convert to training dtype
+        latents = latents.to(dtype=self.training_dtype)
+
         return latents
 
     # ============================================================
@@ -1466,11 +1469,13 @@ class BaseTrainer(ABC):
         total_items = sum(len(dataset.items) for dataset in datasets)
         processed_items = 0
 
-        # Move VAE to CPU for encoding (to avoid VRAM leak)
+        # Move VAE to GPU (only if not already there)
         vae_current_device = next(self.vae.parameters()).device
-        print(f"{self.log_prefix} Moving VAE from {vae_current_device} to CPU for latent cache generation...")
-        self.vae.to("cpu")
-        torch.cuda.empty_cache()
+        if vae_current_device != self.device:
+            print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
+            self.vae.to(self.device)
+        else:
+            print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
 
         iteration_count = 0
         for dataset in datasets:
@@ -1663,6 +1668,30 @@ class BaseTrainer(ABC):
             lr_scheduler_type=lr_scheduler_type,
             total_steps=total_steps,
         )
+
+        # Apply bucketing to datasets
+        if bucket_manager:
+            print(f"{self.log_prefix} Assigning images to buckets...")
+            for dataset in datasets:
+                for item in dataset.items:
+                    width = item.get("width", 1024)
+                    height = item.get("height", 1024)
+                    bucket, image_info = bucket_manager.assign_image_to_bucket(
+                        image_path=item["image_path"],
+                        width=width,
+                        height=height,
+                        caption=item.get("caption", ""),
+                        dataset_unique_id=dataset.unique_id
+                    )
+                    # Update item with bucket dimensions
+                    item["width"] = image_info["bucket_width"]
+                    item["height"] = image_info["bucket_height"]
+
+            # Print bucket statistics
+            bucket_counts = bucket_manager.get_bucket_counts()
+            print(f"{self.log_prefix} Bucket distribution:")
+            for bucket_size, count in sorted(bucket_counts.items()):
+                print(f"  {bucket_size}: {count} images")
 
         # Setup latent caches
         latent_caches = self._setup_latent_caches(datasets)

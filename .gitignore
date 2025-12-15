@@ -83,6 +83,18 @@ cache/datasets/
 debug_*.py
 patch_torch_dll.py
 
+# テスト・スクリプト・バックアップ
+tests/*
+!tests/README.md
+scripts/*
+!scripts/README.md
+backend/backups/*
+!backend/backups/README.md
+*_backup.py
+verify_*.py
+check_*.py
+update_*_logs.py
+
 # 設定ファイル
 last_model.json
 model_hash_cache.json

@@ -514,6 +514,8 @@ def main():
                 bucket_step=64,
                 gradient_accumulation_steps=1,
                 max_grad_norm=1.0,
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
                 progress_callback=progress_callback,
             )
 
@@ -663,6 +665,8 @@ def main():
                 bucket_step=64,
                 gradient_accumulation_steps=1,
                 max_grad_norm=1.0,
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
                 progress_callback=progress_callback,
             )
 

@@ -10,7 +10,7 @@ import yaml
 import os
 import signal
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 
 # Add backend directory to path for imports (extensions, database, etc.)

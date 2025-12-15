@@ -1415,12 +1415,13 @@ class BaseTrainer(ABC):
         from core.training.latent_cache import LatentCache
 
         latent_caches = {}
+        base_cache_dir = self.output_dir / "latent_cache"
         for dataset in datasets:
-            cache_dir = self.output_dir / "latent_cache" / dataset.unique_id
             latent_caches[dataset.unique_id] = LatentCache(
-                cache_dir=str(cache_dir),
-                dtype=self.training_dtype,
+                dataset_unique_id=dataset.unique_id,
+                base_cache_dir=str(base_cache_dir),
             )
+            cache_dir = base_cache_dir / dataset.unique_id
             print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.name}': {cache_dir}")
 
         return latent_caches
@@ -1585,9 +1586,9 @@ class BaseTrainer(ABC):
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
-        min_bucket_resolution: int = 256,
-        max_bucket_resolution: int = 1024,
-        bucket_step: int = 64,
+        base_resolutions: Optional[List[int]] = None,
+        bucket_strategy: str = "resize",
+        multi_resolution_mode: str = "max",
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
         debug_latents: bool = False,
@@ -1607,9 +1608,9 @@ class BaseTrainer(ABC):
             optimizer_type: Optimizer type
             lr_scheduler_type: LR scheduler type
             enable_bucketing: Enable resolution bucketing
-            min_bucket_resolution: Minimum bucket resolution
-            max_bucket_resolution: Maximum bucket resolution
-            bucket_step: Bucket resolution step
+            base_resolutions: List of base resolutions (e.g., [512, 768, 1024])
+            bucket_strategy: Bucketing strategy ("resize", "crop", "random_crop")
+            multi_resolution_mode: Multi-resolution mode ("max", "random")
             gradient_accumulation_steps: Gradient accumulation steps
             max_grad_norm: Max gradient norm for clipping
             debug_latents: Enable debug latent saving
@@ -1633,12 +1634,18 @@ class BaseTrainer(ABC):
         # Setup bucketing
         if enable_bucketing:
             from core.training.bucketing import BucketManager
+
+            # Default to [1024] if not specified
+            if base_resolutions is None:
+                base_resolutions = [1024]
+
             bucket_manager = BucketManager(
-                min_resolution=min_bucket_resolution,
-                max_resolution=max_bucket_resolution,
-                step=bucket_step,
+                base_resolutions=base_resolutions,
+                divisibility=8,
+                strategy=bucket_strategy,
+                multi_resolution_mode=multi_resolution_mode
             )
-            print(f"{self.log_prefix} Bucketing enabled: {min_bucket_resolution}-{max_bucket_resolution} (step {bucket_step})")
+            print(f"{self.log_prefix} Bucketing enabled: base_resolutions={base_resolutions}, strategy={bucket_strategy}, mode={multi_resolution_mode}")
         else:
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")

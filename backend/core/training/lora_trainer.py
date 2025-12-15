@@ -3008,43 +3008,30 @@ class LoRATrainer:
             if len(caches_to_generate) > 0:
                 print(f"\n{'='*80}")
                 print(f"[LatentCache] Cache validation failed for {len(caches_to_generate)} dataset(s)")
-                print(f"[LatentCache] Generating missing latents (existing cache files will be preserved)")
+                print(f"[LatentCache] Collecting missing images (existing cache files will be preserved)")
                 print(f"[LatentCache] Model: {self.model_path}")
                 print(f"[LatentCache] Model type: {model_type}")
                 print(f"{'='*80}\n")
 
                 # Do NOT clear caches - preserve existing latents
-                # Only generate missing items (cache.save_latent will skip existing files)
+                # Collect missing images by checking cache for each image
                 for unique_id, cache in caches_to_generate:
                     # Count existing latents
                     existing_count = len(list(cache.latents_dir.glob("*.pt")))
                     print(f"[LatentCache] Dataset {unique_id[:8]}... has {existing_count} existing latents (will reuse)")
 
-                # Move VAE to GPU for encoding
-                print(f"{self.log_prefix} Moving VAE to GPU for cache generation...")
-                self.vae.to(self.device)
-
-                # Generate cache for all images
+                # Collect missing images
                 total_images = sum(len(batch) for batch in batches)
-                total_new_cached = 0
+                missing_images = []
                 total_existing_cached = 0
 
-                # Progress tracking (print every 10%)
-                import sys
-                processed_images = 0
-                last_progress_percent = 0
-
-                print(f"[LatentCache] Encoding {total_images} images...")
-                update_phase_progress("latent_cache", 0.0, f"Processing 0/{total_images} images")
-
+                print(f"[LatentCache] Checking {total_images} images for existing cache...")
                 for batch in batches:
                     for item in batch:
                         image_path = item["image_path"]
                         dataset_unique_id = item.get("dataset_unique_id")
 
                         if not dataset_unique_id or dataset_unique_id not in latent_caches:
-                            print(f"[LatentCache] WARNING: No cache for image {image_path}")
-                            processed_images += 1
                             continue
 
                         # Get target dimensions
@@ -3060,65 +3047,119 @@ class LoRATrainer:
 
                         # Check if already cached
                         cached_latent = cache.load_latent(
-                            image_path, target_width, target_height, device=self.device
+                            image_path, target_width, target_height, device='cpu'  # CPU check only
                         )
 
                         if cached_latent is None:
-                            if not os.path.exists(image_path):
-                                print(f"[LatentCache] WARNING: Image not found: {image_path}")
-                                processed_images += 1
-                                continue
-
-                            try:
-                                image = Image.open(image_path)
-                                image.verify()
-                                image = Image.open(image_path)
-
-                                latents = self.encode_image(
-                                    image, target_width=target_width, target_height=target_height
-                                )
-                                # Move latents to CPU immediately to prevent VRAM accumulation
-                                latents_cpu = latents.cpu()
-                                del latents
-                                # save_latent returns True if saved (new), False if skipped (existing)
-                                was_saved = cache.save_latent(
-                                    image_path, target_width, target_height, latents_cpu
-                                )
-                                if was_saved:
-                                    total_new_cached += 1
-                                else:
-                                    total_existing_cached += 1
-                            except Exception as e:
-                                print(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+                            missing_images.append(item)
                         else:
                             total_existing_cached += 1
 
-                        processed_images += 1
+                print(f"[LatentCache] Cache check complete:")
+                print(f"[LatentCache]   Existing cache: {total_existing_cached} images")
+                print(f"[LatentCache]   Missing: {len(missing_images)} images")
+                print(f"[LatentCache]   Total: {total_images} images")
 
-                        # Print progress every 10% and update phase progress every 10 images
-                        current_progress_percent = (processed_images * 100) // total_images
-                        if current_progress_percent >= last_progress_percent + 10:
-                            print(f"[LatentCache] Progress: {current_progress_percent}% ({processed_images}/{total_images} images)")
-                            sys.stdout.flush()
-                            last_progress_percent = current_progress_percent
+                # Generate cache for missing images
+                if len(missing_images) > 0:
+                    print(f"{self.log_prefix} Generating cache for {len(missing_images)} missing image(s)...")
+
+                    # Log device status before VAE move
+                    from core.vram_optimization import log_device_status
+                    log_device_status(
+                        "Before moving VAE to GPU (for cache generation)",
+                        pipeline=None,
+                        show_details=False,
+                        zimage_components={
+                            "text_encoder": self.text_encoder,
+                            "transformer": self.transformer if self.is_zimage else None,
+                            "vae": self.vae
+                        } if self.is_zimage else None
+                    )
+
+                    # Move VAE to GPU
+                    print(f"{self.log_prefix} Moving VAE to GPU for cache generation...")
+                    self.vae.to(self.device)
+
+                    if self.debug_vram:
+                        print_vram_usage("After moving VAE to GPU")
+
+                    # Update phase progress
+                    update_phase_progress("latent_cache", 0.0, f"Processing 0/{len(missing_images)} images")
+
+                    import sys
+                    cache_pbar = tqdm(
+                        total=len(missing_images),
+                        desc="[LatentCache] Encoding missing images",
+                        unit="img",
+                        ncols=100,
+                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                        file=sys.stdout,
+                        dynamic_ncols=False,
+                        mininterval=0.1
+                    )
+                    sys.stdout.flush()
+
+                    newly_cached = 0
+                    for idx, item in enumerate(missing_images):
+                        image_path = item["image_path"]
+                        dataset_unique_id = item.get("dataset_unique_id")
+
+                        if not dataset_unique_id or dataset_unique_id not in latent_caches:
+                            cache_pbar.update(1)
+                            continue
+
+                        # Get target dimensions
+                        if "bucket_width" in item and "bucket_height" in item:
+                            target_width = item["bucket_width"]
+                            target_height = item["bucket_height"]
+                        else:
+                            target_width = item.get("width", 1024)
+                            target_height = item.get("height", 1024)
+
+                        cache = latent_caches[dataset_unique_id]
+
+                        if not os.path.exists(image_path):
+                            cache_pbar.write(f"[LatentCache] WARNING: Image not found: {image_path}")
+                            cache_pbar.update(1)
+                            continue
+
+                        try:
+                            image = Image.open(image_path)
+                            image.verify()
+                            image = Image.open(image_path)
+
+                            latents = self.encode_image(
+                                image, target_width=target_width, target_height=target_height
+                            )
+                            # Move latents to CPU immediately to prevent VRAM accumulation
+                            latents_cpu = latents.cpu()
+                            del latents
+                            cache.save_latent(
+                                image_path, target_width, target_height, latents_cpu
+                            )
+                            newly_cached += 1
+                        except Exception as e:
+                            cache_pbar.write(f"[LatentCache] ERROR: Failed to encode {image_path}: {e}")
+
+                        cache_pbar.update(1)
 
                         # Update phase progress every 10 images
-                        if processed_images % 10 == 0 or processed_images == total_images:
-                            progress_pct = (processed_images / total_images) * 100.0
-                            update_phase_progress("latent_cache", progress_pct, f"Processing {processed_images}/{total_images} images")
+                        if (idx + 1) % 10 == 0 or (idx + 1) == len(missing_images):
+                            progress_pct = ((idx + 1) / len(missing_images)) * 100.0
+                            update_phase_progress("latent_cache", progress_pct, f"Processing {idx + 1}/{len(missing_images)} images")
 
-                        # Clear VRAM every 100 images to prevent accumulation
-                        if processed_images % 100 == 0:
-                            torch.cuda.empty_cache()
+                        sys.stdout.flush()
 
-                # Print 100% completion
-                if last_progress_percent < 100:
-                    print(f"[LatentCache] Progress: 100% ({processed_images}/{total_images} images)")
+                    cache_pbar.close()
                     sys.stdout.flush()
-                print(f"[LatentCache] Cache generation complete:")
-                print(f"[LatentCache]   Existing cache used: {total_existing_cached} images")
-                print(f"[LatentCache]   Newly cached: {total_new_cached} images")
-                print(f"[LatentCache]   Total: {total_existing_cached + total_new_cached} images")
+                    print(f"[LatentCache] Generated cache for {newly_cached} new image(s)")
+
+                    print(f"{self.log_prefix} Moving VAE to CPU (will stay on CPU during training)")
+                    self.vae.to('cpu')
+                    torch.cuda.empty_cache()
+                    if self.debug_vram:
+                        print_vram_usage("After moving VAE to CPU")
 
                 # Save cache metadata for each dataset
                 for unique_id, cache in latent_caches.items():
@@ -3135,13 +3176,6 @@ class LoRATrainer:
                         item_count=dataset_image_count,
                         training_dtype=dtype_str
                     )
-
-                # Move VAE back to CPU to free VRAM
-                print(f"{self.log_prefix} Moving VAE to CPU (will stay on CPU during training)")
-                self.vae.to('cpu')
-                torch.cuda.empty_cache()
-                if self.debug_vram:
-                    print_vram_usage("After moving VAE to CPU")
             else:
                 print(f"{self.log_prefix} Using existing latent cache(s)")
 

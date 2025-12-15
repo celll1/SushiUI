@@ -587,8 +587,8 @@ def main():
                     all_items.extend(items)
                 return all_items
 
-            # Start training
-            trainer.train(
+            # Start training (using legacy interface for backward compatibility)
+            trainer.train_legacy(
                 dataset_items=dataset_items,
                 num_epochs=num_epochs,
                 target_steps=total_steps_config,

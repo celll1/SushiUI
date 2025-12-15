@@ -2651,11 +2651,11 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
 
 async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_steps: int = 0, current_step: int = 0) -> dict:
     """
-    Compute tag statistics for a dataset: tag counts only (no categories)
-    Returns: {"tag": {"count": N}, ...}
+    Compute tag statistics for a dataset with categories.
+    Returns: {"tag": {"count": N, "category": "..."}, ...}
 
-    Note: Categories are determined by frontend (tagSuggestions.ts) to maintain consistency.
-    Backend only counts tag occurrences.
+    Categories are extracted from tag_data (pre-categorized tags from migration).
+    If tag_data is not available, category defaults to "Unknown".
 
     Optimized for large datasets (streaming processing, no full data load).
     """
@@ -2669,6 +2669,7 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
 
     # Stream captions in batches to avoid loading all into memory
     tag_counts: dict[str, int] = {}
+    tag_categories: dict[str, str] = {}  # tag -> category
     batch_size = 1000
     offset = 0
     processed = 0
@@ -2687,12 +2688,39 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
 
         # Process batch
         for caption in batch:
-            if caption.content:
-                tags = caption.content.split(",")
-                for tag in tags:
-                    tag = tag.strip()
-                    if tag:
-                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            # Extract categories from tag_data if available
+            if caption.tag_data:
+                import json
+                try:
+                    tag_data = json.loads(caption.tag_data)
+                    for item in tag_data:
+                        tag = item.get("tag", "").strip()
+                        category = item.get("category", "Unknown")
+                        if tag:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                            # Store category (first occurrence wins)
+                            if tag not in tag_categories:
+                                tag_categories[tag] = category
+                except:
+                    # Fallback: parse from content (no category info)
+                    if caption.content:
+                        tags = caption.content.split(",")
+                        for tag in tags:
+                            tag = tag.strip()
+                            if tag:
+                                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                                if tag not in tag_categories:
+                                    tag_categories[tag] = "Unknown"
+            else:
+                # No tag_data: parse from content (no category info)
+                if caption.content:
+                    tags = caption.content.split(",")
+                    for tag in tags:
+                        tag = tag.strip()
+                        if tag:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                            if tag not in tag_categories:
+                                tag_categories[tag] = "Unknown"
 
         processed += len(batch)
         offset += batch_size
@@ -2713,11 +2741,12 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
 
     print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
 
-    # Build final statistics (count only, categories added by frontend)
+    # Build final statistics with categories
     statistics = {}
     for tag, count in tag_counts.items():
         statistics[tag] = {
-            "count": count
+            "count": count,
+            "category": tag_categories.get(tag, "Unknown")
         }
 
     print(f"[Dataset] Tag statistics computed: {len(statistics)} tags")
@@ -3262,9 +3291,16 @@ async def update_item_caption(
                 if tag in tag_statistics:
                     tag_statistics[tag]["count"] += 1
                 else:
-                    # New tag - no category determination (frontend handles it)
+                    # New tag - get category from tag_data if available
+                    category = "Unknown"
+                    if request.tag_data:
+                        for item in request.tag_data:
+                            if item.get("tag") == tag:
+                                category = item.get("category", "Unknown")
+                                break
                     tag_statistics[tag] = {
-                        "count": 1
+                        "count": 1,
+                        "category": category
                     }
 
             # Save updated statistics

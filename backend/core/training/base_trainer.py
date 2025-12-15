@@ -1422,7 +1422,7 @@ class BaseTrainer(ABC):
                 base_cache_dir=str(base_cache_dir),
             )
             cache_dir = base_cache_dir / dataset.unique_id
-            print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.name}': {cache_dir}")
+            print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.unique_id}': {cache_dir}")
 
         return latent_caches
 
@@ -1451,7 +1451,7 @@ class BaseTrainer(ABC):
             is_valid = cache.validate_cache(dataset.items)
 
             if not is_valid:
-                print(f"{self.log_prefix} Latent cache invalid for dataset '{dataset.name}'")
+                print(f"{self.log_prefix} Latent cache invalid for dataset '{dataset.unique_id}'")
                 all_valid = False
 
         if not all_valid:
@@ -1490,7 +1490,7 @@ class BaseTrainer(ABC):
         for dataset in datasets:
             cache = latent_caches[dataset.unique_id]
 
-            for item in tqdm(dataset.items, desc=f"Caching {dataset.name}"):
+            for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}"):
                 # Check if already cached
                 if cache.has_latent(item.image_path, item.width, item.height):
                     processed_items += 1

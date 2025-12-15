@@ -793,13 +793,18 @@ class BaseTrainer(ABC):
                 latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
                 shift_factor = self.vae.config.shift_factor if self.vae.config.shift_factor is not None else 0.0
                 latents = self.vae.config.scaling_factor * (latents - shift_factor)
+                # Clean up intermediate tensors
+                del h, mean, logvar
             else:
                 # SD/SDXL VAE
                 latents = self.vae.encode(image_tensor).latent_dist.sample()
                 latents = latents * self.vae.config.scaling_factor
 
-        # Convert to training dtype
-        latents = latents.to(dtype=self.training_dtype)
+        # Clean up image_tensor before moving latents to CPU
+        del image_tensor
+
+        # Convert to training dtype and move to CPU immediately to free VRAM
+        latents = latents.to(dtype=self.training_dtype, device='cpu')
 
         return latents
 
@@ -1494,33 +1499,35 @@ class BaseTrainer(ABC):
                 # Load and encode image
                 try:
                     image = Image.open(image_path)
-                    orig_size = image.size
 
-                    # Debug: Log every iteration to detect infinite loop
-                    print(f"{self.log_prefix} [Iter {iteration_count}] Encoding: {os.path.basename(image_path)}")
-                    print(f"{self.log_prefix}   Original: {orig_size[0]}x{orig_size[1]}, Target: {width}x{height}")
-                    print(f"{self.log_prefix} [Iter {iteration_count}] Image loaded, starting VAE encode...")
                     latent = self.encode_image(
                         image=image,
                         target_width=width,
                         target_height=height,
                     )
-                    print(f"{self.log_prefix} [Iter {iteration_count}] VAE encode complete, latent shape: {latent.shape}")
 
                     # Save to cache
-                    print(f"{self.log_prefix} [Iter {iteration_count}] Saving to cache...")
                     cache.save_latent(
                         image_path=image_path,
                         width=width,
                         height=height,
                         latents=latent,
                     )
-                    print(f"{self.log_prefix} [Iter {iteration_count}] Cache save complete")
 
                     iteration_count += 1
 
                 except Exception as e:
                     print(f"{self.log_prefix} ERROR encoding {image_path}: {e}")
+                finally:
+                    # Clean up to prevent VRAM accumulation
+                    if 'image' in locals():
+                        image.close()
+                        del image
+                    if 'latent' in locals():
+                        del latent
+                    # Clear CUDA cache periodically (every 50 images)
+                    if iteration_count % 50 == 0:
+                        torch.cuda.empty_cache()
 
                 processed_items += 1
 

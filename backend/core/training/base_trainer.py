@@ -1488,26 +1488,28 @@ class BaseTrainer(ABC):
 
                 # Load and encode image
                 try:
-                    # Debug: Log VRAM every 10 iterations
-                    if iteration_count % 10 == 0 and torch.cuda.is_available():
-                        vram_allocated = torch.cuda.memory_allocated() / 1024**3
-                        vram_reserved = torch.cuda.memory_reserved() / 1024**3
-                        print(f"{self.log_prefix} [Iter {iteration_count}] VRAM: {vram_allocated:.2f}GB allocated, {vram_reserved:.2f}GB reserved")
+                    # Debug: Log every iteration to detect infinite loop
+                    print(f"{self.log_prefix} [Iter {iteration_count}] Encoding: {os.path.basename(image_path)} ({width}x{height})")
 
                     image = Image.open(image_path)
+
+                    print(f"{self.log_prefix} [Iter {iteration_count}] Image loaded, starting VAE encode...")
                     latent = self.encode_image(
                         image=image,
                         target_width=width,
                         target_height=height,
                     )
+                    print(f"{self.log_prefix} [Iter {iteration_count}] VAE encode complete, latent shape: {latent.shape}")
 
                     # Save to cache
+                    print(f"{self.log_prefix} [Iter {iteration_count}] Saving to cache...")
                     cache.save_latent(
                         image_path=image_path,
                         width=width,
                         height=height,
                         latents=latent,
                     )
+                    print(f"{self.log_prefix} [Iter {iteration_count}] Cache save complete")
 
                     iteration_count += 1
 

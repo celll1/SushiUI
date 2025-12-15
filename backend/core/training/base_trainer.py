@@ -1773,3 +1773,126 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Training complete!")
         self.writer.close()
+
+    # ============================================================
+    # Legacy Interface (Backward Compatibility)
+    # ============================================================
+
+    def train_legacy(
+        self,
+        dataset_items: List[Dict],
+        num_epochs: int,
+        batch_size: int,
+        save_every: int,
+        save_every_unit: str,
+        sample_every: int,
+        sample_prompts: Optional[List[Dict]] = None,
+        sample_config: Optional[Dict] = None,
+        progress_callback: Optional[Callable] = None,
+        update_total_steps_callback: Optional[Callable] = None,
+        reload_dataset_callback: Optional[Callable] = None,
+        resume_from_checkpoint: Optional[str] = None,
+        debug_latents: bool = False,
+        debug_latents_every: int = 50,
+        enable_bucketing: bool = False,
+        base_resolutions: List[int] = None,
+        bucket_strategy: str = "resize",
+        multi_resolution_mode: str = "max",
+        cache_latents_to_disk: bool = True,
+        dataset_unique_ids: List[str] = None,
+        force_recache: bool = False,
+        max_step_saves_to_keep: Optional[int] = None,
+        run_id: Optional[int] = None,
+        target_steps: Optional[int] = None,
+        **kwargs
+    ):
+        """
+        Legacy training interface for backward compatibility with train_runner.py.
+
+        This method converts the old dataset_items format to the new datasets format
+        and calls the new train() method.
+
+        Args:
+            dataset_items: List of dataset item dictionaries (old format)
+            num_epochs: Number of training epochs
+            batch_size: Batch size per step
+            save_every: Save checkpoint frequency
+            save_every_unit: Unit for save_every ("steps" or "epochs")
+            sample_every: Sample generation frequency
+            sample_prompts: List of sample prompts
+            sample_config: Sample generation config
+            progress_callback: Progress callback function
+            update_total_steps_callback: Callback to update total steps
+            reload_dataset_callback: Callback to reload dataset for each epoch
+            resume_from_checkpoint: Path to checkpoint to resume from
+            debug_latents: Enable latent debugging
+            debug_latents_every: Debug latents every N steps
+            enable_bucketing: Enable resolution bucketing
+            base_resolutions: Base resolutions for bucketing
+            bucket_strategy: Bucketing strategy ("resize" or "crop")
+            multi_resolution_mode: Multi-resolution mode ("max" or "min")
+            cache_latents_to_disk: Cache latents to disk
+            dataset_unique_ids: List of dataset unique IDs
+            force_recache: Force recache latents
+            max_step_saves_to_keep: Maximum number of step checkpoints to keep
+            run_id: Training run ID
+            target_steps: Target training steps (overrides num_epochs)
+            **kwargs: Additional arguments (ignored for compatibility)
+        """
+        print(f"{self.log_prefix} Using legacy training interface")
+        print(f"{self.log_prefix} Converting dataset_items to datasets format...")
+
+        # Create simple Dataset objects from dataset_items
+        # Group items by dataset_unique_id
+        from collections import defaultdict
+        items_by_dataset = defaultdict(list)
+
+        for item in dataset_items:
+            unique_id = item.get("dataset_unique_id", "default")
+            items_by_dataset[unique_id].append(item)
+
+        # Create Dataset objects
+        class SimpleDataset:
+            """Simple dataset wrapper for legacy interface"""
+            def __init__(self, unique_id: str, items: List[Dict]):
+                self.unique_id = unique_id
+                self.items = items
+                self.cache_dir = Path(f"./latent_cache/{unique_id}")
+                self.caption_config = {
+                    "normalize_tags": items[0].get("normalize_tags", True) if items else True,
+                    "shuffle_tokens": items[0].get("shuffle_tokens", True) if items else True,
+                    "category_order": items[0].get("category_order", []) if items else [],
+                }
+
+        datasets = [SimpleDataset(uid, items) for uid, items in items_by_dataset.items()]
+
+        print(f"{self.log_prefix} Created {len(datasets)} dataset objects from {len(dataset_items)} items")
+
+        # Convert save_every from steps/epochs to steps only
+        if save_every_unit == "epochs":
+            steps_per_epoch = (len(dataset_items) + batch_size - 1) // batch_size
+            save_every_n_steps = save_every * steps_per_epoch
+        else:
+            save_every_n_steps = save_every
+
+        # Convert sample_prompts format
+        sample_prompt = sample_prompts[0]["positive"] if sample_prompts else "a beautiful landscape"
+
+        # Call new train() method
+        self.train(
+            datasets=datasets,
+            num_epochs=num_epochs,
+            batch_size=batch_size,
+            save_every_n_steps=save_every_n_steps,
+            sample_every_n_steps=sample_every,
+            sample_prompt=sample_prompt,
+            optimizer_type="adamw8bit",  # TODO: get from config
+            lr_scheduler_type="constant",  # TODO: get from config
+            enable_bucketing=enable_bucketing,
+            min_bucket_resolution=min(base_resolutions) if base_resolutions else 256,
+            max_bucket_resolution=max(base_resolutions) if base_resolutions else 1024,
+            bucket_step=64,
+            gradient_accumulation_steps=1,
+            max_grad_norm=1.0,
+            progress_callback=progress_callback,
+        )

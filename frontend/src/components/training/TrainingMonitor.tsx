@@ -43,22 +43,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const interval = setInterval(async () => {
       try {
         const status = await getTrainingStatus(currentRun.id);
-        setCurrentRun((prev) => ({
-          ...prev,
-          progress: status.progress,
-          current_step: status.current_step,
-          loss: status.loss,
-          learning_rate: status.learning_rate,
-          status: status.status,
-        }));
-        onStatusChange({
+        const updatedRun = {
           ...currentRun,
           progress: status.progress,
           current_step: status.current_step,
           loss: status.loss,
           learning_rate: status.learning_rate,
           status: status.status,
-        });
+          phase: status.phase,
+          phase_progress: status.phase_progress,
+          phase_detail: status.phase_detail,
+        };
+        setCurrentRun(updatedRun);
+        onStatusChange(updatedRun);
       } catch (err) {
         console.error("[TrainingMonitor] Failed to fetch training status:", err);
       }

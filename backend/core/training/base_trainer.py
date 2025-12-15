@@ -798,9 +798,6 @@ class BaseTrainer(ABC):
                 latents = self.vae.encode(image_tensor).latent_dist.sample()
                 latents = latents * self.vae.config.scaling_factor
 
-        # Convert to training dtype
-        latents = latents.to(dtype=self.training_dtype)
-
         return latents
 
     # ============================================================

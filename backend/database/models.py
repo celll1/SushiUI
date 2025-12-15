@@ -439,10 +439,15 @@ class TrainingRun(TrainingBase):
     
     # Status
     status = Column(String, default="pending", index=True)  # 'pending', 'running', 'paused', 'completed', 'failed'
-    progress = Column(Float, default=0.0)  # 0.0 - 1.0
+    progress = Column(Float, default=0.0)  # 0.0 - 100.0 (training phase progress)
     current_step = Column(Integer, default=0)
     total_steps = Column(Integer, nullable=False)
-    
+
+    # Phase tracking (for detailed progress during startup)
+    phase = Column(String, default="initializing")  # 'initializing', 'latent_cache', 'text_encoder_cache', 'training'
+    phase_progress = Column(Float, default=0.0)  # 0.0 - 100.0 (current phase progress)
+    phase_detail = Column(String, nullable=True)  # Detailed status message (e.g., "Processing 500/1000 images")
+
     # Performance metrics
     loss = Column(Float, nullable=True)
     learning_rate = Column(Float, nullable=True)
@@ -483,6 +488,9 @@ class TrainingRun(TrainingBase):
             "progress": self.progress,
             "current_step": self.current_step,
             "total_steps": self.total_steps,
+            "phase": self.phase,
+            "phase_progress": self.phase_progress,
+            "phase_detail": self.phase_detail,
             "loss": self.loss,
             "learning_rate": self.learning_rate,
             "output_dir": self.output_dir,

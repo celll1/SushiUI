@@ -150,6 +150,10 @@ def update_training_progress(
         run.loss = loss
         run.learning_rate = lr
         run.progress = (step / total_steps) * 100.0
+        # Update phase to "training" and sync phase_progress with overall progress
+        run.phase = "training"
+        run.phase_progress = run.progress
+        run.phase_detail = f"Step {step}/{total_steps}"
         db.commit()
 
 

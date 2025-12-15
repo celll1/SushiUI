@@ -2823,6 +2823,30 @@ class LoRATrainer:
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
         print(f"{self.log_prefix} Bucketing: {enable_bucketing}")
 
+        # Phase progress callback helper
+        def update_phase_progress(phase: str, progress: float, detail: str = None):
+            """Update training phase progress in database"""
+            if run_id is None:
+                return
+
+            try:
+                from database import get_training_db
+                from database.models import TrainingRun
+
+                db = next(get_training_db())
+                try:
+                    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+                    if run:
+                        run.phase = phase
+                        run.phase_progress = progress
+                        if detail:
+                            run.phase_detail = detail
+                        db.commit()
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"[PhaseProgress] Warning: Failed to update phase progress: {e}")
+
         # Create debug directory if debug mode is enabled
         debug_dir = None
         if debug_latents:
@@ -3007,6 +3031,7 @@ class LoRATrainer:
                 last_progress_percent = 0
 
                 print(f"[LatentCache] Encoding {total_images} images...")
+                update_phase_progress("latent_cache", 0.0, f"Processing 0/{total_images} images")
 
                 for batch in batches:
                     for item in batch:
@@ -3062,12 +3087,17 @@ class LoRATrainer:
 
                         processed_images += 1
 
-                        # Print progress every 10%
+                        # Print progress every 10% and update phase progress every 10 images
                         current_progress_percent = (processed_images * 100) // total_images
                         if current_progress_percent >= last_progress_percent + 10:
                             print(f"[LatentCache] Progress: {current_progress_percent}% ({processed_images}/{total_images} images)")
                             sys.stdout.flush()
                             last_progress_percent = current_progress_percent
+
+                        # Update phase progress every 10 images
+                        if processed_images % 10 == 0 or processed_images == total_images:
+                            progress_pct = (processed_images / total_images) * 100.0
+                            update_phase_progress("latent_cache", progress_pct, f"Processing {processed_images}/{total_images} images")
 
                         # Clear VRAM every 100 images to prevent accumulation
                         if processed_images % 100 == 0:
@@ -3355,8 +3385,10 @@ class LoRATrainer:
             captions_to_encode = [c for c in unique_captions if c not in caption_cache]
             if len(captions_to_encode) == 0:
                 print(f"[CaptionCache] All {len(unique_captions)} captions already cached, skipping encoding")
+                update_phase_progress("text_encoder_cache", 100.0, f"All {len(unique_captions)} captions cached")
             else:
                 print(f"[CaptionCache] Encoding {len(captions_to_encode)}/{len(unique_captions)} captions...")
+                update_phase_progress("text_encoder_cache", 0.0, f"Encoding 0/{len(captions_to_encode)} captions")
             if len(captions_to_encode) > 0:
                 import sys
                 caption_pbar = tqdm(
@@ -3371,7 +3403,7 @@ class LoRATrainer:
                 )
                 sys.stdout.flush()
 
-                for caption in captions_to_encode:
+                for idx, caption in enumerate(captions_to_encode):
                     try:
                         embeds, mask = self.encode_prompt_zimage(caption)
                         # Store on CPU to save VRAM
@@ -3391,6 +3423,11 @@ class LoRATrainer:
 
                     caption_pbar.update(1)
                     sys.stdout.flush()
+
+                    # Update phase progress every 10 captions
+                    if (idx + 1) % 10 == 0 or (idx + 1) == len(captions_to_encode):
+                        progress_pct = ((idx + 1) / len(captions_to_encode)) * 100.0
+                        update_phase_progress("text_encoder_cache", progress_pct, f"Encoding {idx + 1}/{len(captions_to_encode)} captions")
 
                 caption_pbar.close()
                 sys.stdout.flush()
@@ -3504,6 +3541,7 @@ class LoRATrainer:
             print(f"{self.log_prefix} Starting training from beginning")
 
         # Training loop
+        update_phase_progress("training", 0.0, "Starting training...")
         try:
             for epoch in range(start_epoch, num_epochs):
                 # Reload dataset for this epoch if callback is provided

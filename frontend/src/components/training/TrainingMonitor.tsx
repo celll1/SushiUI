@@ -211,14 +211,36 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             <div className="mb-2">
               <div className="flex justify-between text-xs text-gray-400 mb-1">
                 <span>
-                  Step {currentRun.current_step} / {currentRun.total_steps}
+                  {/* Phase-based display */}
+                  {currentRun.phase === "latent_cache" && "Latent Cache"}
+                  {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
+                  {currentRun.phase === "training" && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
+                  {currentRun.phase === "initializing" && "Initializing..."}
+                  {!currentRun.phase && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
                 </span>
-                <span>{currentRun.progress.toFixed(1)}%</span>
+                <span>
+                  {currentRun.phase === "training" || !currentRun.phase
+                    ? `${currentRun.progress.toFixed(1)}%`
+                    : `${(currentRun.phase_progress || 0).toFixed(1)}%`
+                  }
+                </span>
               </div>
+
+              {/* Detail message */}
+              {currentRun.phase_detail && currentRun.phase !== "training" && (
+                <div className="text-xs text-gray-500 mb-1">
+                  {currentRun.phase_detail}
+                </div>
+              )}
+
               <div className="w-full bg-gray-700 rounded-full h-2">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
-                  style={{ width: `${currentRun.progress}%` }}
+                  style={{
+                    width: currentRun.phase === "training" || !currentRun.phase
+                      ? `${currentRun.progress}%`
+                      : `${currentRun.phase_progress || 0}%`
+                  }}
                 />
               </div>
             </div>

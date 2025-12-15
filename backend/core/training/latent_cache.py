@@ -149,6 +149,27 @@ class LatentCache:
         }, cache_path)
         return True
 
+    def has_latent(
+        self,
+        image_path: str,
+        width: int,
+        height: int,
+    ) -> bool:
+        """
+        Check if latent exists in cache WITHOUT loading it.
+
+        Args:
+            image_path: Source image path
+            width: Target width
+            height: Target height
+
+        Returns:
+            True if latent is cached, False otherwise
+        """
+        cache_hash = self.compute_image_hash(image_path, width, height)
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+        return cache_path.exists()
+
     def load_latent(
         self,
         image_path: str,

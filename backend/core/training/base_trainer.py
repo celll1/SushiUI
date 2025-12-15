@@ -1499,7 +1499,7 @@ class BaseTrainer(ABC):
                         image_path=image_path,
                         width=width,
                         height=height,
-                        latent=latent,
+                        latents=latent,
                     )
 
                 except Exception as e:

@@ -1381,16 +1381,20 @@ class BaseTrainer(ABC):
         Returns:
             Dictionary mapping dataset_unique_id to LatentCache instance
         """
-        from core.training.latent_cache import LatentCache
+        from core.training.latent_cache import LatentCache, get_cache_base_dir
 
         latent_caches = {}
-        base_cache_dir = self.output_dir / "latent_cache"
+        # Use global cache directory (shared across all training runs)
+        # This allows cache reuse when training the same dataset multiple times
+        base_cache_dir = get_cache_base_dir()
+        print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
+
         for dataset in datasets:
             latent_caches[dataset.unique_id] = LatentCache(
                 dataset_unique_id=dataset.unique_id,
                 base_cache_dir=str(base_cache_dir),
             )
-            cache_dir = base_cache_dir / dataset.unique_id
+            cache_dir = Path(base_cache_dir) / dataset.unique_id
             print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.unique_id}': {cache_dir}")
 
         return latent_caches

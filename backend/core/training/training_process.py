@@ -116,7 +116,20 @@ class TrainingProcess:
         try:
             # Use async iteration for non-blocking I/O
             while True:
-                line_bytes = await self.process.stdout.readline()
+                try:
+                    line_bytes = await self.process.stdout.readline()
+                except asyncio.LimitOverrunError:
+                    # Line too long (exceeds buffer limit)
+                    # This can happen with very long progress bars or debug output
+                    # Read and discard the oversized line
+                    print("[Training] Warning: Skipping oversized log line (exceeds 1MB buffer)")
+                    # Read in chunks until we find a newline
+                    while True:
+                        chunk = await self.process.stdout.read(8192)
+                        if not chunk or b'\n' in chunk:
+                            break
+                    continue
+
                 if not line_bytes:
                     break
 

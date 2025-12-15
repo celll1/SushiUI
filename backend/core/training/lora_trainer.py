@@ -3048,8 +3048,11 @@ class LoRATrainer:
                                 latents = self.encode_image(
                                     image, target_width=target_width, target_height=target_height
                                 )
+                                # Move latents to CPU immediately to prevent VRAM accumulation
+                                latents_cpu = latents.cpu()
+                                del latents
                                 cache.save_latent(
-                                    image_path, target_width, target_height, latents
+                                    image_path, target_width, target_height, latents_cpu
                                 )
                                 total_new_cached += 1
                             except Exception as e:
@@ -3065,6 +3068,10 @@ class LoRATrainer:
                             print(f"[LatentCache] Progress: {current_progress_percent}% ({processed_images}/{total_images} images)")
                             sys.stdout.flush()
                             last_progress_percent = current_progress_percent
+
+                        # Clear VRAM every 100 images to prevent accumulation
+                        if processed_images % 100 == 0:
+                            torch.cuda.empty_cache()
 
                 # Print 100% completion
                 if last_progress_percent < 100:
@@ -3244,8 +3251,11 @@ class LoRATrainer:
                             if latents.shape[2] * 8 != target_height or latents.shape[3] * 8 != target_width:
                                 cache_pbar.write(f"[LatentCache] ERROR: Latent size mismatch! Expected {target_height//8}x{target_width//8}, got {latents.shape[2]}x{latents.shape[3]}")
 
+                            # Move latents to CPU immediately to prevent VRAM accumulation
+                            latents_cpu = latents.cpu()
+                            del latents
                             cache.save_latent(
-                                image_path, target_width, target_height, latents
+                                image_path, target_width, target_height, latents_cpu
                             )
                             newly_cached += 1
                         except Exception as e:

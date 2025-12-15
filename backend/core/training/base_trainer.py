@@ -1488,11 +1488,12 @@ class BaseTrainer(ABC):
 
                 # Load and encode image
                 try:
-                    # Debug: Log every iteration to detect infinite loop
-                    print(f"{self.log_prefix} [Iter {iteration_count}] Encoding: {os.path.basename(image_path)} ({width}x{height})")
-
                     image = Image.open(image_path)
+                    orig_size = image.size
 
+                    # Debug: Log every iteration to detect infinite loop
+                    print(f"{self.log_prefix} [Iter {iteration_count}] Encoding: {os.path.basename(image_path)}")
+                    print(f"{self.log_prefix}   Original: {orig_size[0]}x{orig_size[1]}, Target: {width}x{height}")
                     print(f"{self.log_prefix} [Iter {iteration_count}] Image loaded, starting VAE encode...")
                     latent = self.encode_image(
                         image=image,

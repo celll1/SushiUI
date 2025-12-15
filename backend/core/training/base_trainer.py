@@ -1031,24 +1031,18 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] Start")
 
-        # Sample noise
+        # Flow Matching: Sample random timesteps from [0, 1]
+        batch_size = latents.shape[0]
+        timesteps = torch.rand(batch_size, device=self.device)
+
+        # Flow Matching: Sample noise (standard normal distribution)
         noise = torch.randn_like(latents)
 
-        # Sample random timestep
-        batch_size = latents.shape[0]
-        timesteps = torch.randint(
-            0,
-            self.scheduler.config.num_train_timesteps,
-            (batch_size,),
-            device=self.device,
-        ).long()
-
-        # Add noise to latents using Flow Matching interpolation
-        # Flow Matching: x_t = (1 - t) * x_0 + t * noise
-        # Normalize timesteps to [0, 1]
-        sigmas = timesteps.float() / self.scheduler.config.num_train_timesteps
-        sigmas = sigmas.view(-1, 1, 1, 1).to(latents.device, latents.dtype)
-        noisy_latents = (1 - sigmas) * latents + sigmas * noise
+        # Flow Matching: Interpolate between noise and data
+        # x_t = (1 - t) * noise + t * data
+        # Reshape timesteps for broadcasting: [B] -> [B, 1, 1, 1]
+        t = timesteps[:, None, None, None]
+        noisy_latents = (1.0 - t) * noise + t * latents
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] Before Transformer forward")
@@ -1078,46 +1072,20 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")
 
-        # Get target
-        prediction_type = self.scheduler.config.prediction_type
-        target = get_target_from_prediction_type(
-            self.scheduler,
-            prediction_type,
-            latents,
-            noise,
-            timesteps,
-        )
+        # Flow Matching target: velocity = data - noise
+        target = latents - noise
 
         # Calculate loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
-        # Apply Min-SNR gamma weighting
-        if self.min_snr_gamma > 0:
-            loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.scheduler, self.min_snr_gamma)
-        else:
-            loss_per_sample_weighted = loss_per_sample
-
-        loss = loss_per_sample_weighted.mean()
+        # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
+        loss = loss_per_sample.mean()
 
         # Calculate reconstruction loss
+        # For Flow Matching, reconstruct using: x_0 = x_t + (1-t) * v_pred
         with torch.no_grad():
-            alphas_cumprod = self.scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
-            alpha_bar_t = alphas_cumprod[timesteps]
-            while alpha_bar_t.dim() < latents.dim():
-                alpha_bar_t = alpha_bar_t.unsqueeze(-1)
-            sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
-            sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
-
-            if prediction_type == "epsilon":
-                predicted_latent_for_recon = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
-            elif prediction_type == "v_prediction":
-                predicted_latent_for_recon = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
-            elif prediction_type == "sample":
-                predicted_latent_for_recon = model_pred
-            else:
-                predicted_latent_for_recon = noisy_latents - model_pred
-
+            predicted_latent_for_recon = noisy_latents + (1.0 - t) * model_pred
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
             recon_loss = recon_loss_per_sample.mean()
@@ -1131,36 +1099,28 @@ class BaseTrainer(ABC):
             timestep_value = timesteps[0].item()
 
             with torch.no_grad():
-                if prediction_type == "epsilon":
-                    predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
-                elif prediction_type == "v_prediction":
-                    predicted_latent = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
-                elif prediction_type == "sample":
-                    predicted_latent = model_pred
-                else:
-                    predicted_latent = noisy_latents - model_pred
+                predicted_latent = noisy_latents + (1.0 - t) * model_pred
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
                 'noisy_latents': noisy_latents[0:1].detach().cpu(),
-                'predicted_noise': model_pred[0:1].detach().cpu(),
-                'actual_noise': noise[0:1].detach().cpu(),
+                'predicted_velocity': model_pred[0:1].detach().cpu(),
+                'actual_velocity': target[0:1].detach().cpu(),
                 'predicted_latent': predicted_latent[0:1].detach().cpu(),
                 'timestep': timestep_value,
-                'loss': loss_per_sample_weighted[0].item(),
+                'loss': loss_per_sample[0].item(),
                 'loss_batch_mean': loss.item(),
-                'loss_unweighted': loss_per_sample[0].item(),
                 'recon_loss': recon_loss_per_sample[0].item(),
                 'recon_loss_batch_mean': recon_loss.item(),
                 'batch_size': batch_size,
-                'min_snr_gamma': self.min_snr_gamma,
+                'scheduler_type': 'FlowMatching',
             }
 
             if debug_captions is not None and len(debug_captions) > 0:
                 debug_data['caption'] = debug_captions[0]
                 debug_data['all_captions'] = debug_captions
 
-            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent
 
         return loss.item()

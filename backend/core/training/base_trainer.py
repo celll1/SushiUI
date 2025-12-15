@@ -1548,12 +1548,17 @@ class BaseTrainer(ABC):
         # VAE stays on CPU (already there)
         print(f"{self.log_prefix} Latent cache generation complete ({iteration_count} images encoded)")
 
-    def _setup_text_encoder_cache(self, datasets: List[Any]) -> Optional[Dict[str, torch.Tensor]]:
+    def _setup_text_encoder_cache(
+        self,
+        datasets: List[Any],
+        progress_callback: Optional[Callable] = None
+    ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Setup text encoder cache for Z-Image (caption pre-encoding).
 
         Args:
             datasets: List of dataset objects
+            progress_callback: Progress callback function
 
         Returns:
             Dictionary mapping caption to (prompt_embeds, attention_mask)
@@ -1577,9 +1582,20 @@ class BaseTrainer(ABC):
         text_encoder_cache = {}
         self.text_encoder.to(self.device)
 
-        for caption in tqdm(unique_captions, desc="Encoding captions"):
+        unique_captions_list = list(unique_captions)
+        total_captions = len(unique_captions_list)
+
+        for idx, caption in enumerate(tqdm(unique_captions_list, desc="Encoding captions")):
             prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
             text_encoder_cache[caption] = (prompt_embeds.cpu(), attention_mask.cpu())
+
+            # Progress callback
+            if progress_callback:
+                progress_callback(
+                    phase="text_encoder_cache",
+                    step=idx + 1,
+                    total=total_captions,
+                )
 
         # Move text encoder back to CPU
         self.text_encoder.to("cpu")
@@ -1712,7 +1728,7 @@ class BaseTrainer(ABC):
         self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback)
 
         # Setup text encoder cache (Z-Image only)
-        text_encoder_cache = self._setup_text_encoder_cache(datasets) if self.is_zimage else None
+        text_encoder_cache = self._setup_text_encoder_cache(datasets, progress_callback) if self.is_zimage else None
 
         # Training loop
         global_step = 0

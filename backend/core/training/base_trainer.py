@@ -1477,29 +1477,33 @@ class BaseTrainer(ABC):
 
             for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}"):
                 # Check if already cached
-                if cache.has_latent(item.image_path, item.width, item.height):
+                image_path = item["image_path"]
+                width = item["width"]
+                height = item["height"]
+
+                if cache.has_latent(image_path, width, height):
                     processed_items += 1
                     continue
 
                 # Load and encode image
                 try:
-                    image = Image.open(item.image_path)
+                    image = Image.open(image_path)
                     latent = self.encode_image(
                         image=image,
-                        target_width=item.width,
-                        target_height=item.height,
+                        target_width=width,
+                        target_height=height,
                     )
 
                     # Save to cache
                     cache.save_latent(
-                        image_path=item.image_path,
-                        width=item.width,
-                        height=item.height,
+                        image_path=image_path,
+                        width=width,
+                        height=height,
                         latent=latent,
                     )
 
                 except Exception as e:
-                    print(f"{self.log_prefix} ERROR encoding {item.image_path}: {e}")
+                    print(f"{self.log_prefix} ERROR encoding {image_path}: {e}")
 
                 processed_items += 1
 

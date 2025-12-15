@@ -90,7 +90,18 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
         });
         setHasChanges(false);
 
-        // Categories are loaded from cache via useEffect (Line 59-69)
+        // Load categories from tag_data if available (fast path)
+        if (tagCaption.tag_data && tagCaption.tag_data.length > 0) {
+          const categories: Record<string, string> = {};
+          for (const item of tagCaption.tag_data) {
+            categories[item.tag] = item.category;
+          }
+          setTagCategories(categories);
+          console.log(`[ItemDetailColumn] Loaded ${Object.keys(categories).length} categories from tag_data (fast path)`);
+        } else {
+          // Fallback: categories will be loaded from cache via useEffect (Line 62-72)
+          console.log("[ItemDetailColumn] No tag_data, using tagCategoryCache (legacy path)");
+        }
       } else {
         setTags([]);
         setHistory({ past: [], present: [], future: [] });
@@ -98,7 +109,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     } catch (err) {
       console.error("Failed to load item details:", err);
     }
-  }, [item, datasetId, tagSuggestionsContext]);
+  }, [item, datasetId]);
 
   useEffect(() => {
     if (item) {

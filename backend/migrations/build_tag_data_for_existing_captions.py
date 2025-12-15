@@ -15,17 +15,104 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 
-def load_tag_dictionary(conn: sqlite3.Connection) -> Dict[str, str]:
+def normalize_tag_for_matching(tag: str) -> str:
     """
-    Load tag dictionary from database.
+    Normalize tag for matching (same logic as frontend normalizeTagForMatching).
+
+    Handles various escape patterns:
+    - character_name_(series) → character name (series)
+    - character name (series) → character name (series)
+    - character name \\(series\\) → character name (series)
+    - character_name_\\(series\\) → character name (series)
+
+    Args:
+        tag: Tag string in any format
 
     Returns:
-        Dictionary mapping tag -> category
+        Normalized tag (lowercase, spaces, no escapes)
     """
-    cursor = conn.cursor()
-    cursor.execute("SELECT tag, category FROM tag_dictionary")
-    tag_dict = {row[0]: row[1] for row in cursor.fetchall()}
-    print(f"[BuildTagData] Loaded {len(tag_dict)} tags from tag_dictionary")
+    normalized = tag.strip()
+
+    # Remove excessive escaping: \\ → nothing
+    normalized = normalized.replace("\\\\", "")
+    normalized = normalized.replace("\\", "")
+
+    # Normalize underscores to spaces
+    normalized = normalized.replace("_", " ")
+
+    # Lowercase for matching
+    normalized = normalized.lower()
+
+    return normalized
+
+
+def load_tag_dictionary_from_json() -> Dict[str, str]:
+    """
+    Load tag dictionary from taglist JSON files.
+
+    Returns:
+        Dictionary mapping normalized_tag -> category
+    """
+    taglist_dir = Path(__file__).parent.parent.parent / "taglist"
+
+    if not taglist_dir.exists():
+        print(f"[BuildTagData] ERROR: taglist directory not found at {taglist_dir}")
+        return {}
+
+    category_map = {
+        "General": "General",
+        "Character": "Character",
+        "Artist": "Artist",
+        "Copyright": "Copyright",
+        "Meta": "Meta",
+        "Model": "Model"
+    }
+
+    tag_dict = {}
+
+    for category_name, category_key in category_map.items():
+        json_path = taglist_dir / f"{category_name}.json"
+
+        if not json_path.exists():
+            print(f"[BuildTagData] WARNING: {category_name}.json not found, skipping")
+            continue
+
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                tags_data = json.load(f)
+
+            # tags_data is a dict: {tag: count}
+            for tag in tags_data.keys():
+                # Normalize tag using the same logic as frontend
+                normalized_tag = normalize_tag_for_matching(tag)
+                tag_dict[normalized_tag] = category_key
+
+            print(f"[BuildTagData] Loaded {len(tags_data)} tags from {category_name}.json")
+
+        except Exception as e:
+            print(f"[BuildTagData] ERROR loading {category_name}.json: {e}")
+
+    # Add special tags (Rating and Quality)
+    # These are not in category JSON files but need special handling
+    special_tags = {
+        # Rating tags
+        "general": "Rating",
+        "sensitive": "Rating",
+        "questionable": "Rating",
+        "explicit": "Rating",
+
+        # Quality tags
+        "masterpiece": "Quality",
+        "best quality": "Quality",  # Normalized form
+        "high quality": "Quality",
+        "normal quality": "Quality",
+        "low quality": "Quality",
+        "worst quality": "Quality",
+    }
+
+    tag_dict.update(special_tags)
+
+    print(f"[BuildTagData] Total tags loaded: {len(tag_dict)} (including {len(special_tags)} special tags)")
     return tag_dict
 
 
@@ -35,7 +122,7 @@ def build_tag_data_from_content(content: str, tag_dict: Dict[str, str]) -> List[
 
     Args:
         content: Comma-separated tags (e.g., "1girl, long_hair, smile")
-        tag_dict: Dictionary mapping tag -> category
+        tag_dict: Dictionary mapping normalized_tag -> category
 
     Returns:
         List of {"tag": "1girl", "category": "General"}
@@ -47,14 +134,14 @@ def build_tag_data_from_content(content: str, tag_dict: Dict[str, str]) -> List[
     tag_data = []
 
     for tag in tags:
-        # Normalize tag for lookup (lowercase, replace spaces with underscores)
-        normalized_tag = tag.lower().replace(" ", "_")
+        # Normalize tag for lookup using the same logic as frontend
+        normalized_tag = normalize_tag_for_matching(tag)
 
-        # Look up category
-        category = tag_dict.get(normalized_tag, "General")  # Default to "General" if not found
+        # Look up category (return "Unknown" if not found)
+        category = tag_dict.get(normalized_tag, "Unknown")
 
         tag_data.append({
-            "tag": tag,  # Use original tag (preserve casing)
+            "tag": tag,  # Use original tag (preserve casing and format)
             "category": category
         })
 
@@ -72,8 +159,8 @@ def build_tag_data_for_existing_captions(db_path: str):
     conn = sqlite3.connect(db_path)
 
     try:
-        # Load tag dictionary
-        tag_dict = load_tag_dictionary(conn)
+        # Load tag dictionary from JSON files
+        tag_dict = load_tag_dictionary_from_json()
 
         # Get all "tags" captions without tag_data
         cursor = conn.cursor()

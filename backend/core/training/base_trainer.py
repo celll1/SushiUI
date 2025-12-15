@@ -1590,6 +1590,8 @@ class BaseTrainer(ABC):
         bucket_step: int = 64,
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
+        debug_latents: bool = False,
+        debug_latents_every: int = 50,
         progress_callback: Optional[Callable] = None,
     ):
         """
@@ -1610,6 +1612,8 @@ class BaseTrainer(ABC):
             bucket_step: Bucket resolution step
             gradient_accumulation_steps: Gradient accumulation steps
             max_grad_norm: Max gradient norm for clipping
+            debug_latents: Enable debug latent saving
+            debug_latents_every: Save debug latents every N steps
             progress_callback: Progress callback function
         """
         print(f"{self.log_prefix} Starting training...")
@@ -1617,6 +1621,14 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Epochs: {num_epochs}")
         print(f"{self.log_prefix} Batch size: {batch_size}")
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
+        print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+
+        # Setup debug directory
+        debug_dir = None
+        if debug_latents:
+            debug_dir = self.output_dir / "debug"
+            debug_dir.mkdir(exist_ok=True)
+            print(f"{self.log_prefix} Debug latents will be saved to: {debug_dir}")
 
         # Setup bucketing
         if enable_bucketing:
@@ -1706,6 +1718,14 @@ class BaseTrainer(ABC):
                 latents = torch.cat(latents_list, dim=0)
                 text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
 
+                # Collect batch captions for debug output
+                batch_captions = [item.caption for item, dataset in batch]
+
+                # Determine if we should save debug latents
+                debug_save_path = None
+                if debug_dir is not None and global_step % debug_latents_every == 0:
+                    debug_save_path = debug_dir / f"step_{global_step:06d}"
+
                 # Training step
                 if self.is_zimage:
                     attention_mask = torch.stack(attention_masks_list, dim=0)
@@ -1713,6 +1733,8 @@ class BaseTrainer(ABC):
                         latents=latents,
                         prompt_embeds=text_embeddings,
                         attention_mask=attention_mask,
+                        debug_save_path=debug_save_path,
+                        debug_captions=batch_captions,
                         profile_vram=self.debug_vram,
                     )
                 else:
@@ -1721,6 +1743,8 @@ class BaseTrainer(ABC):
                         latents=latents,
                         text_embeddings=text_embeddings,
                         pooled_embeddings=pooled_embeddings,
+                        debug_save_path=debug_save_path,
+                        debug_captions=batch_captions,
                         profile_vram=self.debug_vram,
                     )
 

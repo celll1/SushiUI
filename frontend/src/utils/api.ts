@@ -1148,6 +1148,7 @@ export interface DatasetCaptionData {
   source: string;
   created_at: string;
   updated_at: string;
+  tag_data?: Array<{ tag: string; category: string }>; // Pre-categorized tags
 }
 
 export interface DatasetItemListResponse {

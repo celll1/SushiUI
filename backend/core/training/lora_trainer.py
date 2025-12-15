@@ -3024,14 +3024,18 @@ class LoRATrainer:
                 total_images = sum(len(batch) for batch in batches)
                 missing_images = []
                 total_existing_cached = 0
+                checked_images = 0
 
                 print(f"[LatentCache] Checking {total_images} images for existing cache...")
+                update_phase_progress("latent_cache", 0.0, f"Checking cache: 0/{total_images} images")
+
                 for batch in batches:
                     for item in batch:
                         image_path = item["image_path"]
                         dataset_unique_id = item.get("dataset_unique_id")
 
                         if not dataset_unique_id or dataset_unique_id not in latent_caches:
+                            checked_images += 1
                             continue
 
                         # Get target dimensions
@@ -3055,6 +3059,15 @@ class LoRATrainer:
                         else:
                             total_existing_cached += 1
 
+                        checked_images += 1
+
+                        # Update progress every 1000 images
+                        if checked_images % 1000 == 0:
+                            progress_pct = (checked_images / total_images) * 100.0
+                            update_phase_progress("latent_cache", progress_pct, f"Checking cache: {checked_images}/{total_images} images")
+
+                # Mark check complete
+                update_phase_progress("latent_cache", 100.0, f"Cache check complete: {total_existing_cached} cached, {len(missing_images)} missing")
                 print(f"[LatentCache] Cache check complete:")
                 print(f"[LatentCache]   Existing cache: {total_existing_cached} images")
                 print(f"[LatentCache]   Missing: {len(missing_images)} images")
@@ -3084,8 +3097,8 @@ class LoRATrainer:
                     if self.debug_vram:
                         print_vram_usage("After moving VAE to GPU")
 
-                    # Update phase progress
-                    update_phase_progress("latent_cache", 0.0, f"Processing 0/{len(missing_images)} images")
+                    # Update phase progress (reset to 0% for encoding phase)
+                    update_phase_progress("latent_cache", 0.0, f"Encoding 0/{len(missing_images)} missing images")
 
                     import sys
                     cache_pbar = tqdm(
@@ -3147,7 +3160,7 @@ class LoRATrainer:
                         # Update phase progress every 10 images
                         if (idx + 1) % 10 == 0 or (idx + 1) == len(missing_images):
                             progress_pct = ((idx + 1) / len(missing_images)) * 100.0
-                            update_phase_progress("latent_cache", progress_pct, f"Processing {idx + 1}/{len(missing_images)} images")
+                            update_phase_progress("latent_cache", progress_pct, f"Encoding {idx + 1}/{len(missing_images)} missing images")
 
                         sys.stdout.flush()
 
@@ -3162,7 +3175,7 @@ class LoRATrainer:
                         print_vram_usage("After moving VAE to CPU")
 
                 # Mark latent cache phase as complete
-                update_phase_progress("latent_cache", 100.0, "Latent cache generation complete")
+                update_phase_progress("latent_cache", 100.0, f"Complete: {total_existing_cached} cached, {len(missing_images)} encoded")
 
                 # Save cache metadata for each dataset
                 for unique_id, cache in latent_caches.items():
@@ -3348,7 +3361,7 @@ class LoRATrainer:
                 torch.cuda.empty_cache()
 
                 # Mark latent cache phase as complete
-                update_phase_progress("latent_cache", 100.0, "Latent cache generation complete")
+                update_phase_progress("latent_cache", 100.0, f"Complete: {total_existing_cached} cached, {newly_cached} encoded")
 
                 # Move Transformer/UNet back to GPU after VAE cache generation
                 if self.is_zimage:

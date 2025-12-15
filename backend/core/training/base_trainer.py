@@ -1466,14 +1466,13 @@ class BaseTrainer(ABC):
         total_items = sum(len(dataset.items) for dataset in datasets)
         processed_items = 0
 
-        # Move VAE to GPU (only if not already there)
+        # Move VAE to CPU for encoding (to avoid VRAM leak)
         vae_current_device = next(self.vae.parameters()).device
-        if vae_current_device != self.device:
-            print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
-            self.vae.to(self.device)
-        else:
-            print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
+        print(f"{self.log_prefix} Moving VAE from {vae_current_device} to CPU for latent cache generation...")
+        self.vae.to("cpu")
+        torch.cuda.empty_cache()
 
+        iteration_count = 0
         for dataset in datasets:
             cache = latent_caches[dataset.unique_id]
 
@@ -1489,6 +1488,12 @@ class BaseTrainer(ABC):
 
                 # Load and encode image
                 try:
+                    # Debug: Log VRAM every 10 iterations
+                    if iteration_count % 10 == 0 and torch.cuda.is_available():
+                        vram_allocated = torch.cuda.memory_allocated() / 1024**3
+                        vram_reserved = torch.cuda.memory_reserved() / 1024**3
+                        print(f"{self.log_prefix} [Iter {iteration_count}] VRAM: {vram_allocated:.2f}GB allocated, {vram_reserved:.2f}GB reserved")
+
                     image = Image.open(image_path)
                     latent = self.encode_image(
                         image=image,
@@ -1504,6 +1509,8 @@ class BaseTrainer(ABC):
                         latents=latent,
                     )
 
+                    iteration_count += 1
+
                 except Exception as e:
                     print(f"{self.log_prefix} ERROR encoding {image_path}: {e}")
 
@@ -1517,11 +1524,8 @@ class BaseTrainer(ABC):
                         total=total_items,
                     )
 
-        # Move VAE back to CPU
-        self.vae.to("cpu")
-        torch.cuda.empty_cache()
-
-        print(f"{self.log_prefix} Latent cache generation complete")
+        # VAE stays on CPU (already there)
+        print(f"{self.log_prefix} Latent cache generation complete ({iteration_count} images encoded)")
 
     def _setup_text_encoder_cache(self, datasets: List[Any]) -> Optional[Dict[str, torch.Tensor]]:
         """

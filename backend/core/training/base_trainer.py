@@ -1774,7 +1774,10 @@ class BaseTrainer(ABC):
                 for item, dataset in batch:
                     # Load latent from cache
                     cache = latent_caches[dataset.unique_id]
-                    latent = cache.load_latent(item["image_path"], item["width"], item["height"])
+                    # BucketManager stores bucket_width/bucket_height, not width/height
+                    width = item.get("width") or item.get("bucket_width")
+                    height = item.get("height") or item.get("bucket_height")
+                    latent = cache.load_latent(item["image_path"], width, height)
                     latents_list.append(latent)
 
                     # Encode caption

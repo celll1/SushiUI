@@ -165,22 +165,50 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
 def update_training_progress(
     db: Session,
     run_id: int,
+    phase: str,
     step: int,
-    loss: float,
-    lr: float,
-    total_steps: int
+    total: int,
+    epoch: int = 0,
+    loss: float = None,
+    lr: float = None,
 ):
-    """Update training run progress in database."""
+    """
+    Update training run progress in database with phase-based progress.
+
+    Args:
+        db: Database session
+        run_id: Training run ID
+        phase: Current phase ("initializing", "latent_cache", "training")
+        step: Current step within phase
+        total: Total steps in phase
+        epoch: Current epoch (training phase only)
+        loss: Current loss (training phase only)
+        lr: Learning rate (training phase only)
+    """
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if run:
-        run.current_step = step
-        run.loss = loss
-        run.learning_rate = lr
-        run.progress = (step / total_steps) * 100.0
-        # Update phase to "training" and sync phase_progress with overall progress
-        run.phase = "training"
-        run.phase_progress = run.progress
-        run.phase_detail = f"Step {step}/{total_steps}"
+        # Update phase
+        run.phase = phase
+
+        # Calculate phase progress
+        phase_progress = (step / total * 100.0) if total > 0 else 0.0
+        run.phase_progress = phase_progress
+
+        # Update phase detail
+        if phase == "initializing":
+            run.phase_detail = f"Loading dataset: {step}/{total} items"
+        elif phase == "latent_cache":
+            run.phase_detail = f"Generating latent cache: {step}/{total} items"
+        elif phase == "training":
+            run.phase_detail = f"Epoch {epoch}, Step {step}/{total}"
+            run.current_step = step
+            if loss is not None:
+                run.loss = loss
+            if lr is not None:
+                run.learning_rate = lr
+            # Overall progress = phase_progress during training
+            run.progress = phase_progress
+
         db.commit()
 
 
@@ -427,8 +455,10 @@ def main():
                 num_epochs = 1
 
             # Progress callback (update DB only, no print to avoid cluttering tqdm output)
-            def progress_callback(step: int, loss: float, lr: float):
-                update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+                # Get current learning rate from optimizer (if available)
+                lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') and trainer.optimizer else None
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
 
             # Total steps callback (called once when actual total_steps is determined)
             def update_total_steps_callback(total_steps: int):
@@ -580,8 +610,10 @@ def main():
                 num_epochs = 1
 
             # Progress callback
-            def progress_callback(step: int, loss: float, lr: float):
-                update_training_progress(training_db, run_id, step, loss, lr, run.total_steps)
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+                # Get current learning rate from optimizer (if available)
+                lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') and trainer.optimizer else None
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
 
             # Total steps callback
             def update_total_steps_callback(total_steps: int):

@@ -214,6 +214,12 @@ def update_training_progress(
 
 def main():
     """Main training entry point."""
+    # Fix Windows cp932 encoding issue: force UTF-8 for stdout/stderr
+    if sys.platform == 'win32':
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
     if len(sys.argv) < 3:
         print("Usage: python -m core.train_runner <config_path> <run_id>")
         sys.exit(1)

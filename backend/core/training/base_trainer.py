@@ -1517,7 +1517,13 @@ class BaseTrainer(ABC):
                     iteration_count += 1
 
                 except Exception as e:
-                    print(f"{self.log_prefix} ERROR encoding {image_path}: {e}")
+                    # Use repr() to avoid UnicodeEncodeError on Windows (cp932)
+                    safe_path = os.path.basename(image_path)
+                    try:
+                        print(f"{self.log_prefix} ERROR encoding {safe_path}: {e}")
+                    except UnicodeEncodeError:
+                        # Fallback: encode-safe output
+                        print(f"{self.log_prefix} ERROR encoding image (path contains non-ASCII chars): {e}")
                 finally:
                     # Clean up to prevent VRAM accumulation
                     if 'image' in locals():

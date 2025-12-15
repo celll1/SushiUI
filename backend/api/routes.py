@@ -3957,6 +3957,9 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
         "total_steps": run.total_steps,
         "loss": run.loss,
         "learning_rate": run.learning_rate,
+        "phase": run.phase,
+        "phase_progress": run.phase_progress,
+        "phase_detail": run.phase_detail,
         "process_status": process_status
     }
 

@@ -65,15 +65,10 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
     # Check if category_order is enabled
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
 
-    # Check if pre-ordered captions are available
+    # Note: Pre-ordered captions (tags_ordered) will be used automatically if available
+    # This happens on a per-item basis in the loop below to avoid SQLite parameter limits
     if has_category_order and epoch_num == 0:
-        preordered_count = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id.in_([item.id for item in items]),
-            DatasetCaption.caption_type == "tags_ordered"
-        ).count()
-        print(f"[TrainRunner] Using pre-ordered captions: {preordered_count}/{total_items} items")
-        if preordered_count > 0:
-            print(f"[TrainRunner] Skipping category ordering for pre-ordered captions (faster training start)")
+        print(f"[TrainRunner] Category ordering enabled - will use pre-ordered captions if available")
 
     for idx, item in enumerate(items):
         # Progress log every 1000 items

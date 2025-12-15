@@ -3868,16 +3868,21 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    if run.status != "running":
-        raise HTTPException(status_code=400, detail="Training run is not running")
+    # Allow stopping if status is "running" or "starting" (in case of early failure)
+    if run.status not in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail=f"Cannot stop training with status '{run.status}'")
 
     try:
         # Get training process
         process = training_process_manager.get_process(run_id)
 
         if process:
+            print(f"[API] Stopping training process for run {run_id}")
             await process.stop()
             await training_process_manager.remove_process(run_id)
+        else:
+            # Process doesn't exist (likely crashed during startup)
+            print(f"[API] No active process found for run {run_id}, updating status only")
 
         # Update run status
         run.status = "stopped"

@@ -296,3 +296,125 @@ def get_default_caption_processing_config() -> Dict[str, any]:
         "tag_dropout_category_rates": {},
         "tag_dropout_exclude_person_count": False,
     }
+
+
+def process_caption_with_tag_data(
+    tag_data: List[Dict[str, str]],
+    epoch_num: int,
+    item_path: str,
+    caption_config: Dict,
+) -> str:
+    """
+    Fast per-epoch caption processing using pre-categorized tag_data.
+
+    Args:
+        tag_data: List of {"tag": "1girl", "category": "General"} dicts
+        epoch_num: Current epoch number (for per-epoch shuffle/dropout seed)
+        item_path: Image path (for per-epoch shuffle/dropout seed)
+        caption_config: Caption processing configuration
+
+    Returns:
+        Processed caption string (comma-separated tags)
+    """
+    # Extract tags with categories
+    tags_with_categories = [(item["tag"], item.get("category", "")) for item in tag_data]
+
+    # Apply tag dropout (category-aware)
+    tag_dropout_rate = caption_config.get("tag_dropout_rate", 0.0)
+    tag_dropout_per_epoch = caption_config.get("tag_dropout_per_epoch", False)
+    tag_dropout_keep_first_n = caption_config.get("tag_dropout_keep_first_n", 0)
+    tag_dropout_category_rates = caption_config.get("tag_dropout_category_rates", {})
+    tag_dropout_exclude_person_count = caption_config.get("tag_dropout_exclude_person_count", False)
+
+    if tag_dropout_rate > 0:
+        # Determine random seed
+        if tag_dropout_per_epoch:
+            seed_str = f"{item_path}_tag_dropout_epoch{epoch_num}"
+            seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+            random.seed(seed)
+
+        filtered_tags = []
+        for idx, (tag, category) in enumerate(tags_with_categories):
+            # Keep first N tags
+            if idx < tag_dropout_keep_first_n:
+                filtered_tags.append((tag, category))
+                continue
+
+            # Exclude person count tags if enabled
+            if tag_dropout_exclude_person_count and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
+                filtered_tags.append((tag, category))
+                continue
+
+            # Category-specific dropout rate
+            category_rate = tag_dropout_category_rates.get(category, tag_dropout_rate)
+
+            if random.random() >= category_rate:
+                filtered_tags.append((tag, category))
+
+        tags_with_categories = filtered_tags
+
+    # Apply shuffle (category-aware)
+    shuffle_tokens = caption_config.get("shuffle_tokens", False)
+    shuffle_per_epoch = caption_config.get("shuffle_per_epoch", False)
+    shuffle_keep_first_n = caption_config.get("shuffle_keep_first_n", 0)
+    shuffle_tag_groups = caption_config.get("shuffle_tag_groups", None)
+    shuffle_groups_together = caption_config.get("shuffle_groups_together", False)
+    exclude_person_count_from_shuffle = caption_config.get("exclude_person_count_from_shuffle", False)
+
+    if shuffle_tokens:
+        # Determine random seed
+        if shuffle_per_epoch:
+            seed_str = f"{item_path}_shuffle_epoch{epoch_num}"
+            seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+            random.seed(seed)
+
+        # Split into kept and shuffled parts
+        kept_tags = tags_with_categories[:shuffle_keep_first_n]
+        tags_to_shuffle = tags_with_categories[shuffle_keep_first_n:]
+
+        if shuffle_tag_groups and len(shuffle_tag_groups) > 0:
+            # Category-aware shuffle
+            groups_dict = {group: [] for group in shuffle_tag_groups}
+            excluded_tags = []
+
+            for tag, category in tags_to_shuffle:
+                # Exclude person count tags if enabled
+                if exclude_person_count_from_shuffle and category == "General" and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
+                    excluded_tags.append((tag, category))
+                elif category in groups_dict:
+                    groups_dict[category].append((tag, category))
+                else:
+                    excluded_tags.append((tag, category))
+
+            # Shuffle each group
+            shuffled_tags = []
+            if shuffle_groups_together:
+                # Shuffle all groups together
+                all_group_tags = []
+                for group_tags in groups_dict.values():
+                    all_group_tags.extend(group_tags)
+                random.shuffle(all_group_tags)
+                shuffled_tags.extend(all_group_tags)
+            else:
+                # Shuffle within each group
+                for group in shuffle_tag_groups:
+                    group_tags = groups_dict[group]
+                    random.shuffle(group_tags)
+                    shuffled_tags.extend(group_tags)
+
+            shuffled_tags.extend(excluded_tags)
+            tags_with_categories = kept_tags + shuffled_tags
+        else:
+            # Simple shuffle
+            random.shuffle(tags_to_shuffle)
+            tags_with_categories = kept_tags + tags_to_shuffle
+
+    # Extract tags only (discard categories)
+    tags = [tag for tag, _ in tags_with_categories]
+
+    # Apply caption dropout
+    caption_dropout_rate = caption_config.get("caption_dropout_rate", 0.0)
+    if caption_dropout_rate > 0 and random.random() < caption_dropout_rate:
+        return ""
+
+    return ", ".join(tags)

@@ -3184,6 +3184,7 @@ async def get_random_caption(
 class CaptionUpdateRequest(BaseModel):
     caption_type: str = "tags"
     content: str
+    tag_data: Optional[List[Dict[str, str]]] = None  # [{"tag": "1girl", "category": "General"}, ...]
 
 @router.patch("/datasets/items/{item_id}/captions")
 async def update_item_caption(
@@ -3208,13 +3209,23 @@ async def update_item_caption(
         old_content = caption.content
         # Update existing caption
         caption.content = request.content
+        # Update tag_data if provided
+        if request.tag_data is not None:
+            import json
+            caption.tag_data = json.dumps(request.tag_data)
         caption.updated_at = datetime.utcnow()
     else:
         # Create new caption
+        tag_data_json = None
+        if request.tag_data is not None:
+            import json
+            tag_data_json = json.dumps(request.tag_data)
+
         caption = DatasetCaption(
             item_id=item_id,
             caption_type=request.caption_type,
             content=request.content,
+            tag_data=tag_data_json,
             source="manual"
         )
         db.add(caption)

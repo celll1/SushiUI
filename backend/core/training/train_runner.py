@@ -30,7 +30,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
+def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: int = None) -> list:
     """
     Get all items from dataset with caption processing applied.
 
@@ -38,6 +38,7 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
         db: Database session
         dataset_id: Dataset ID
         epoch_num: Current epoch number (for per-epoch shuffle/dropout)
+        run_id: Training run ID (for phase progress updates)
 
     Returns:
         List of dataset items with processed captions
@@ -61,6 +62,21 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
     total_items = len(items)
     print(f"[TrainRunner] Processing {total_items} items from dataset {dataset_id}...")
 
+    # Helper function to update phase progress
+    def update_phase_progress(phase: str, progress: float, detail: str = None):
+        if run_id is None:
+            return
+        try:
+            run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+            if run:
+                run.phase = phase
+                run.phase_progress = progress
+                if detail:
+                    run.phase_detail = detail
+                db.commit()
+        except Exception as e:
+            print(f"[TrainRunner] Warning: Failed to update phase progress: {e}")
+
     dataset_items = []
     # Check if category_order is enabled
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
@@ -70,10 +86,19 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
     if has_category_order and epoch_num == 0:
         print(f"[TrainRunner] Category ordering enabled - will use pre-ordered captions if available")
 
+    # Update phase to "initializing" for dataset loading
+    update_phase_progress("initializing", 0.0, f"Loading dataset: 0/{total_items} items")
+
     for idx, item in enumerate(items):
-        # Progress log every 1000 items
+        # Phase update every 1000 items (for UI responsiveness)
         if (idx + 1) % 1000 == 0:
-            print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({(idx + 1) / total_items * 100:.1f}%)")
+            progress_pct = ((idx + 1) / total_items) * 100.0
+            update_phase_progress("initializing", progress_pct, f"Loading dataset: {idx + 1}/{total_items} items")
+
+        # Console log every 10000 items (to reduce log spam)
+        if (idx + 1) % 10000 == 0:
+            progress_pct = ((idx + 1) / total_items) * 100.0
+            print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({progress_pct:.1f}%)")
 
         # Get caption: prioritize pre-ordered if category ordering is enabled
         primary_caption = None
@@ -126,6 +151,8 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0) -> list:
             "height": item.height,
         })
 
+    # Mark dataset loading as complete
+    update_phase_progress("initializing", 100.0, f"Loaded {total_items}/{total_items} items")
     print(f"[TrainRunner] Completed processing {total_items} items from dataset {dataset_id}")
     return dataset_items
 
@@ -219,7 +246,7 @@ def main():
             dataset_unique_ids.append(dataset.unique_id)
 
             # Get dataset items and tag with dataset_unique_id for cache management
-            dataset_items = get_dataset_items(datasets_db, dataset_id)
+            dataset_items = get_dataset_items(datasets_db, dataset_id, run_id=run_id)
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
 
             # Add dataset_unique_id to each item for cache management
@@ -381,7 +408,7 @@ def main():
                         print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
                         continue
 
-                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
 
                     # Add dataset_unique_id to each item for cache management
                     for item in items:
@@ -546,7 +573,7 @@ def main():
                         print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
                         continue
 
-                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num)
+                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
 
                     # Add dataset_unique_id to each item for cache management
                     for item in items:

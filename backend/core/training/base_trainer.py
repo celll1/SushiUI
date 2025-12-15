@@ -1567,8 +1567,9 @@ class BaseTrainer(ABC):
         unique_captions = set()
         for dataset in datasets:
             for item in dataset.items:
-                if item.caption:
-                    unique_captions.add(item.caption)
+                caption = item.get("caption", "")
+                if caption:
+                    unique_captions.add(caption)
 
         print(f"{self.log_prefix} Found {len(unique_captions)} unique captions")
 
@@ -1740,25 +1741,26 @@ class BaseTrainer(ABC):
                 for item, dataset in batch:
                     # Load latent from cache
                     cache = latent_caches[dataset.unique_id]
-                    latent = cache.load_latent(item.image_path, item.width, item.height)
+                    latent = cache.load_latent(item["image_path"], item["width"], item["height"])
                     latents_list.append(latent)
 
                     # Encode caption
+                    caption = item.get("caption", "")
                     if self.is_zimage:
-                        if text_encoder_cache and item.caption in text_encoder_cache:
-                            prompt_embeds, attention_mask = text_encoder_cache[item.caption]
+                        if text_encoder_cache and caption in text_encoder_cache:
+                            prompt_embeds, attention_mask = text_encoder_cache[caption]
                             text_embeddings_list.append(prompt_embeds.to(self.device))
                             attention_masks_list.append(attention_mask.to(self.device))
                         else:
-                            prompt_embeds, attention_mask = self.encode_prompt_zimage(item.caption)
+                            prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
                             text_embeddings_list.append(prompt_embeds)
                             attention_masks_list.append(attention_mask)
                     elif self.is_sdxl:
-                        text_emb, pooled_emb = self.encode_prompt(item.caption, requires_grad=True)
+                        text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=True)
                         text_embeddings_list.append(text_emb)
                         pooled_embeddings_list.append(pooled_emb)
                     else:
-                        text_emb = self.encode_prompt(item.caption, requires_grad=True)
+                        text_emb = self.encode_prompt(caption, requires_grad=True)
                         text_embeddings_list.append(text_emb)
 
                 # Stack batch
@@ -1766,7 +1768,7 @@ class BaseTrainer(ABC):
                 text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
 
                 # Collect batch captions for debug output
-                batch_captions = [item.caption for item, dataset in batch]
+                batch_captions = [item.get("caption", "") for item, dataset in batch]
 
                 # Determine if we should save debug latents
                 debug_save_path = None

@@ -275,7 +275,86 @@ def main():
         network_config = process_config.get('network', {})
         model_config = process_config.get('model', {})
 
-        # Determine training method
+        # ============================================================
+        # Dataset Wrapper Class for New Interface
+        # ============================================================
+        class TrainRunnerDataset:
+            """
+            Dataset wrapper for train_runner.py to use new BaseTrainer.train() interface.
+
+            This wrapper converts the old dataset_items format (list of dicts) to
+            the new Dataset object format expected by BaseTrainer.train().
+            """
+            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict):
+                self.unique_id = unique_id
+                self.items = items
+                self.dataset_config = dataset_config
+                self.cache_dir = Path(f"./latent_cache/{unique_id}")
+
+                # Extract caption configuration from first item (all items share same config)
+                if items:
+                    self.caption_config = {
+                        "normalize_tags": items[0].get("normalize_tags", True),
+                        "shuffle_tokens": items[0].get("shuffle_tokens", True),
+                        "category_order": items[0].get("category_order", []),
+                    }
+                else:
+                    self.caption_config = {
+                        "normalize_tags": True,
+                        "shuffle_tokens": True,
+                        "category_order": [],
+                    }
+
+            def reload_for_epoch(self, epoch_num: int, run_id: int) -> List[Dict]:
+                """
+                Reload dataset items with caption processing for the current epoch.
+
+                This method is called by the trainer at the start of each epoch to
+                get freshly processed captions (with shuffling, etc.).
+                """
+                dataset_id = self.dataset_config["dataset_id"]
+                items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
+
+                # Add dataset_unique_id for cache management
+                for item in items:
+                    item["dataset_unique_id"] = self.unique_id
+
+                return items
+
+        # ============================================================
+        # Prepare Datasets for New Interface
+        # ============================================================
+        print(f"[TrainRunner] Preparing {len(dataset_configs)} dataset(s) for training...")
+
+        # Convert dataset_items to Dataset objects, grouped by unique_id
+        from collections import defaultdict
+        items_by_dataset = defaultdict(lambda: {"items": [], "config": None})
+
+        for item in dataset_items:
+            unique_id = item.get("dataset_unique_id", "default")
+            items_by_dataset[unique_id]["items"].append(item)
+
+        # Match dataset configs to items
+        for ds_config in dataset_configs:
+            dataset_id = ds_config["dataset_id"]
+            dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if dataset and dataset.unique_id in items_by_dataset:
+                items_by_dataset[dataset.unique_id]["config"] = ds_config
+
+        # Create Dataset wrapper objects
+        training_datasets = [
+            TrainRunnerDataset(unique_id, data["items"], data["config"])
+            for unique_id, data in items_by_dataset.items()
+            if data["config"] is not None
+        ]
+
+        print(f"[TrainRunner] Created {len(training_datasets)} dataset wrapper(s)")
+        for ds in training_datasets:
+            print(f"  Dataset {ds.unique_id}: {len(ds.items)} items")
+
+        # ============================================================
+        # Determine Training Method
+        # ============================================================
         network_type = network_config.get('type', 'lora')
 
         if network_type == 'lora':
@@ -402,56 +481,40 @@ def main():
                 cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
                 force_recache = process_config['datasets'][0].get('force_recache', False)
 
-            # Create reload_dataset_callback for per-epoch caption processing
-            def reload_dataset_for_epoch(epoch_num: int) -> list:
-                """Reload all datasets with caption processing for the current epoch"""
-                all_items = []
-                for ds_config in dataset_configs:
-                    dataset_id = ds_config["dataset_id"]
-                    dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
-                    if not dataset:
-                        print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
-                        continue
+            # Convert save_every parameters to new interface (save_every_n_steps)
+            save_every_unit = process_config['save'].get('save_every_unit', 'steps')
+            save_every = process_config['save'].get('save_every', 100)
 
-                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
+            if save_every_unit == 'epochs':
+                # Calculate steps per epoch (approximate, will be recalculated by trainer)
+                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
+                save_every_n_steps = save_every * steps_per_epoch
+                print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
+            else:
+                save_every_n_steps = save_every
 
-                    # Add dataset_unique_id to each item for cache management
-                    for item in items:
-                        item["dataset_unique_id"] = dataset.unique_id
+            # Convert sample_prompts to single sample_prompt
+            sample_prompt = "a beautiful landscape"
+            if sample_prompts and len(sample_prompts) > 0:
+                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
 
-                    all_items.extend(items)
-                return all_items
-
-            # Start training
+            # Start training with new interface
             trainer.train(
-                dataset_items=dataset_items,
-                num_epochs=num_epochs,
-                target_steps=total_steps_config,  # Pass target steps for dynamic epoch calculation
+                datasets=training_datasets,
+                num_epochs=num_epochs if num_epochs else 1,
                 batch_size=train_config.get('batch_size', 1),
-                save_every=process_config['save'].get('save_every', 100),
-                save_every_unit=process_config['save'].get('save_every_unit', 'steps'),
-                sample_every=process_config['sample'].get('sample_every', 100),
-                sample_prompts=sample_prompts if sample_prompts else None,
-                sample_config=sample_config if sample_prompts else None,
-                progress_callback=progress_callback,
-                update_total_steps_callback=update_total_steps_callback,
-                reload_dataset_callback=reload_dataset_for_epoch,  # Reload dataset per epoch for caption processing
-                resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
-                debug_latents=debug_latents,
-                debug_latents_every=debug_latents_every,
-                # Bucketing parameters
+                save_every_n_steps=save_every_n_steps,
+                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_prompt=sample_prompt,
+                optimizer_type=optimizer_type,
+                lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
-                base_resolutions=base_resolutions,
-                bucket_strategy=bucket_strategy,
-                multi_resolution_mode=multi_resolution_mode,
-                # Latent caching
-                cache_latents_to_disk=cache_latents_to_disk,
-                dataset_unique_ids=dataset_unique_ids,
-                force_recache=force_recache,
-                # Checkpoint management
-                max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
-                # DB tracking
-                run_id=run_id,
+                min_bucket_resolution=min(base_resolutions) if base_resolutions else 256,
+                max_bucket_resolution=max(base_resolutions) if base_resolutions else 1024,
+                bucket_step=64,
+                gradient_accumulation_steps=1,
+                max_grad_norm=1.0,
+                progress_callback=progress_callback,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -567,56 +630,40 @@ def main():
                 cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
                 force_recache = process_config['datasets'][0].get('force_recache', False)
 
-            # Create reload_dataset_callback for per-epoch caption processing
-            def reload_dataset_for_epoch(epoch_num: int) -> list:
-                """Reload all datasets with caption processing for the current epoch"""
-                all_items = []
-                for ds_config in dataset_configs:
-                    dataset_id = ds_config["dataset_id"]
-                    dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
-                    if not dataset:
-                        print(f"[TrainRunner] ERROR: Dataset {dataset_id} not found during reload")
-                        continue
+            # Convert save_every parameters to new interface (save_every_n_steps)
+            save_every_unit = process_config['save'].get('save_every_unit', 'steps')
+            save_every = process_config['save'].get('save_every', 100)
 
-                    items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
+            if save_every_unit == 'epochs':
+                # Calculate steps per epoch (approximate, will be recalculated by trainer)
+                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
+                save_every_n_steps = save_every * steps_per_epoch
+                print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
+            else:
+                save_every_n_steps = save_every
 
-                    # Add dataset_unique_id to each item for cache management
-                    for item in items:
-                        item["dataset_unique_id"] = dataset.unique_id
+            # Convert sample_prompts to single sample_prompt
+            sample_prompt = "a beautiful landscape"
+            if sample_prompts and len(sample_prompts) > 0:
+                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
 
-                    all_items.extend(items)
-                return all_items
-
-            # Start training (using legacy interface for backward compatibility)
-            trainer.train_legacy(
-                dataset_items=dataset_items,
-                num_epochs=num_epochs,
-                target_steps=total_steps_config,
+            # Start training with new interface
+            trainer.train(
+                datasets=training_datasets,
+                num_epochs=num_epochs if num_epochs else 1,
                 batch_size=train_config.get('batch_size', 1),
-                save_every=process_config['save'].get('save_every', 100),
-                save_every_unit=process_config['save'].get('save_every_unit', 'steps'),
-                sample_every=process_config['sample'].get('sample_every', 100),
-                sample_prompts=sample_prompts if sample_prompts else None,
-                sample_config=sample_config if sample_prompts else None,
-                progress_callback=progress_callback,
-                update_total_steps_callback=update_total_steps_callback,
-                reload_dataset_callback=reload_dataset_for_epoch,
-                resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
-                debug_latents=debug_latents,
-                debug_latents_every=debug_latents_every,
-                # Bucketing parameters
+                save_every_n_steps=save_every_n_steps,
+                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_prompt=sample_prompt,
+                optimizer_type=optimizer_type,
+                lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
-                base_resolutions=base_resolutions,
-                bucket_strategy=bucket_strategy,
-                multi_resolution_mode=multi_resolution_mode,
-                # Latent caching
-                cache_latents_to_disk=cache_latents_to_disk,
-                dataset_unique_ids=dataset_unique_ids,
-                force_recache=force_recache,
-                # Checkpoint management
-                max_step_saves_to_keep=process_config['save'].get('max_step_saves_to_keep'),
-                # DB tracking
-                run_id=run_id,
+                min_bucket_resolution=min(base_resolutions) if base_resolutions else 256,
+                max_bucket_resolution=max(base_resolutions) if base_resolutions else 1024,
+                bucket_step=64,
+                gradient_accumulation_steps=1,
+                max_grad_norm=1.0,
+                progress_callback=progress_callback,
             )
 
             print("[TrainRunner] Training completed successfully!")

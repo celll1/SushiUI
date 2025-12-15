@@ -1431,38 +1431,23 @@ class BaseTrainer(ABC):
         datasets: List[Any],
         latent_caches: Dict[str, Any],
         progress_callback: Optional[Callable] = None,
-    ) -> bool:
+    ):
         """
-        Validate latent caches and generate missing ones.
+        Check latent caches and generate missing ones.
 
         Args:
             datasets: List of dataset objects
             latent_caches: Dictionary of latent caches
             progress_callback: Progress callback function
-
-        Returns:
-            True if all caches are valid, False if regeneration needed
         """
-        print(f"{self.log_prefix} Validating latent caches...")
+        print(f"{self.log_prefix} Checking and generating missing latent caches...")
 
-        all_valid = True
-        for dataset in datasets:
-            cache = latent_caches[dataset.unique_id]
-            is_valid = cache.validate_cache(dataset.items)
-
-            if not is_valid:
-                print(f"{self.log_prefix} Latent cache invalid for dataset '{dataset.unique_id}'")
-                all_valid = False
-
-        if not all_valid:
-            print(f"{self.log_prefix} Regenerating latent caches...")
-            self._generate_missing_latents_with_model_offload(
-                datasets=datasets,
-                latent_caches=latent_caches,
-                progress_callback=progress_callback,
-            )
-
-        return all_valid
+        # Generate missing latents (this will skip already cached items)
+        self._generate_missing_latents_with_model_offload(
+            datasets=datasets,
+            latent_caches=latent_caches,
+            progress_callback=progress_callback,
+        )
 
     def _generate_missing_latents_with_model_offload(
         self,

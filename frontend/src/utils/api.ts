@@ -1525,6 +1525,7 @@ export const deleteTrainingPreset = async (id: number): Promise<void> => {
 export interface CaptionUpdateRequest {
   caption_type: string;
   content: string;
+  tag_data?: Array<{ tag: string; category: string }>;
 }
 
 export const updateItemCaption = async (

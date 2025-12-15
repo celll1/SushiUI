@@ -1738,7 +1738,24 @@ class BaseTrainer(ABC):
 
             # Create batches
             if bucket_manager:
-                batches = bucket_manager.create_batches(datasets, batch_size)
+                # BucketManager only manages items, we need to pair with datasets
+                # Build mapping from image_path to dataset
+                path_to_dataset = {}
+                for dataset in datasets:
+                    for item in dataset.items:
+                        path_to_dataset[item["image_path"]] = dataset
+
+                # Get batches from bucket manager
+                item_batches = bucket_manager.build_batch_indices(batch_size)
+
+                # Convert to (item, dataset) tuples
+                batches = []
+                for item_batch in item_batches:
+                    batch_with_dataset = [
+                        (item, path_to_dataset[item["image_path"]])
+                        for item in item_batch
+                    ]
+                    batches.append(batch_with_dataset)
             else:
                 # Simple sequential batching
                 all_items = []

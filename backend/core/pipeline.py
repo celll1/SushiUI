@@ -1291,17 +1291,25 @@ class DiffusionPipelineManager:
             # Add noise to init_latents at the starting timestep
             noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
 
-            # Flow Matching noise addition
+            # Prepare mask for noise addition (move to device)
+            mask_latent_device = mask_latent.to(device=device, dtype=torch.float32)
+
+            # Flow Matching noise addition - ONLY to masked area
             if hasattr(scheduler, 'add_noise'):
                 print(f"[Z-Image] Using scheduler.add_noise() for noise addition")
-                noised_latents = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
+                noised_full = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
+                # Apply noise only to masked area
+                noised_latents = mask_latent_device * noised_full + (1.0 - mask_latent_device) * init_latents
             else:
                 # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
                 t_normalized = timesteps_inpaint[0].item() / 1000.0
                 print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_inpaint[0].item():.1f}, t_norm={t_normalized:.3f}")
-                noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
+                noised_full = (1.0 - t_normalized) * init_latents + t_normalized * noise
+                # Apply noise only to masked area (non-masked area keeps original latents)
+                noised_latents = mask_latent_device * noised_full + (1.0 - mask_latent_device) * init_latents
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
+            print(f"[Z-Image] Mask applied: masked area noised, non-masked area preserved")
 
             # ============================================================
             # Stage 4: Denoising Loop with Mask Blending

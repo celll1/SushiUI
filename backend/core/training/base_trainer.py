@@ -1435,8 +1435,11 @@ class BaseTrainer(ABC):
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+                # Z-Image flow matching: negate prediction (same as inference pipeline)
+                noise_pred = -noise_pred
+
                 # Denoise step
-                latents = scheduler.step(noise_pred, t, latents).prev_sample
+                latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
         return latents
 

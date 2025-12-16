@@ -1399,7 +1399,12 @@ class BaseTrainer(ABC):
 
                 # Predict noise (use original transformer for single-image inference)
                 # Use inference interface: List[Tensor] format, positional args only (no cap_mask)
-                timestep = t.to(self.device)
+
+                # Prepare timestep (expand to batch size, same as inference pipeline)
+                timestep = t.to(self.device).expand(latent_input.shape[0])
+
+                # Normalize timestep to [0, 1] (Z-Image expects normalized timesteps)
+                timestep = (1000 - timestep) / 1000
 
                 # Add channel dimension and convert to list (same as inference pipeline)
                 latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]

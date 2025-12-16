@@ -402,8 +402,9 @@ def process_caption_with_tag_data(
                     group_tags = groups_dict[group]
                     random.shuffle(group_tags)
 
-                    # If this is the General group, prepend person count tags
+                    # If this is the General group, prepend person count tags (shuffled)
                     if group == "General" and person_count_tags:
+                        random.shuffle(person_count_tags)  # Shuffle person count tags among themselves
                         shuffled_tags.extend(person_count_tags)
                         person_count_tags = []  # Clear to avoid duplicates
 
@@ -411,6 +412,7 @@ def process_caption_with_tag_data(
 
                 # If General group was not in shuffle_tag_groups, append person count tags at the end
                 if person_count_tags:
+                    random.shuffle(person_count_tags)  # Shuffle person count tags among themselves
                     shuffled_tags.extend(person_count_tags)
 
             shuffled_tags.extend(other_excluded_tags)

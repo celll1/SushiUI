@@ -346,8 +346,9 @@ class TagGroupManager:
             person_count_inserted = False
 
             for group in groups_to_shuffle:
-                # If this is the General group, prepend person count tags
+                # If this is the General group, prepend person count tags (shuffled)
                 if group == "General" and person_count_tokens and not person_count_inserted:
+                    rng.shuffle(person_count_tokens)  # Shuffle person count tags among themselves
                     shuffled_parts.extend(person_count_tokens)
                     person_count_inserted = True
 
@@ -358,6 +359,7 @@ class TagGroupManager:
 
             # If General group was not in shuffle_tag_groups, append person count tags at the end
             if person_count_tokens and not person_count_inserted:
+                rng.shuffle(person_count_tokens)  # Shuffle person count tags among themselves
                 shuffled_parts.extend(person_count_tokens)
 
             return fixed_tokens + shuffled_parts + non_shuffleable

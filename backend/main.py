@@ -135,13 +135,12 @@ if os.path.exists(settings.thumbnails_dir):
 else:
     print(f"[Static] WARNING: thumbnails_dir does not exist: {settings.thumbnails_dir}")
 
-# Mount training directory
-training_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "training")
-if os.path.exists(training_dir):
-    print(f"[Static] Mounting /training -> {training_dir}")
-    app.mount("/training", StaticFiles(directory=training_dir), name="training")
+# Mount training directory (use settings.training_dir for user-configured path)
+if os.path.exists(settings.training_dir):
+    print(f"[Static] Mounting /training -> {settings.training_dir}")
+    app.mount("/training", StaticFiles(directory=settings.training_dir), name="training")
 else:
-    print(f"[Static] WARNING: training directory does not exist: {training_dir}")
+    print(f"[Static] WARNING: training directory does not exist: {settings.training_dir}")
 
 @app.get("/")
 async def root():

@@ -1025,7 +1025,16 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
             del predicted_latent
 
-        return loss.item()
+        # Return both prediction loss and reconstruction loss
+        loss_value = loss.item()
+        recon_loss_value = recon_loss.item()
+
+        # Free intermediate tensors explicitly to reduce VRAM usage
+        del noise, noisy_latents, model_pred, loss, recon_loss
+        if self.is_sdxl and added_cond_kwargs is not None:
+            del added_cond_kwargs
+
+        return loss_value, recon_loss_value
 
     def train_step_zimage(
         self,
@@ -1151,7 +1160,14 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent
 
-        return loss.item()
+        # Return both prediction loss and reconstruction loss
+        loss_value = loss.item()
+        recon_loss_value = recon_loss.item()
+
+        # Free intermediate tensors explicitly to reduce VRAM usage
+        del noise, noisy_latents, noisy_latents_4d, model_pred, target, loss, recon_loss
+
+        return loss_value, recon_loss_value
 
     # ============================================================
     # Sample Generation (to be continued in next section)
@@ -1810,7 +1826,7 @@ class BaseTrainer(ABC):
                 # Training step
                 if self.is_zimage:
                     attention_mask = torch.stack(attention_masks_list, dim=0)
-                    loss = self.train_step_zimage(
+                    loss, recon_loss = self.train_step_zimage(
                         latents=latents,
                         prompt_embeds=text_embeddings,
                         attention_mask=attention_mask,
@@ -1820,7 +1836,7 @@ class BaseTrainer(ABC):
                     )
                 else:
                     pooled_embeddings = torch.stack(pooled_embeddings_list, dim=0) if pooled_embeddings_list else None
-                    loss = self.train_step(
+                    loss, recon_loss = self.train_step(
                         latents=latents,
                         text_embeddings=text_embeddings,
                         pooled_embeddings=pooled_embeddings,
@@ -1848,6 +1864,7 @@ class BaseTrainer(ABC):
 
                     # Logging
                     self.writer.add_scalar("train/loss", loss, global_step)
+                    self.writer.add_scalar("train/recon_loss", recon_loss, global_step)
                     self.writer.add_scalar("train/lr", self.lr_scheduler.get_last_lr()[0], global_step)
 
                     # Save checkpoint

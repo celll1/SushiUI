@@ -1322,13 +1322,19 @@ class BaseTrainer(ABC):
         try:
             # Encode prompt
             prompt_embeds, attention_mask = self.encode_prompt_zimage(prompt)
-            uncond_embeds, uncond_mask = self.encode_prompt_zimage("")
+
+            # Encode unconditional prompt only if CFG is enabled
+            if guidance_scale > 1.0:
+                uncond_embeds, uncond_mask = self.encode_prompt_zimage("")
+            else:
+                uncond_embeds, uncond_mask = None, None
 
             # Add batch dimension
             prompt_embeds = prompt_embeds.unsqueeze(0)
             attention_mask = attention_mask.unsqueeze(0)
-            uncond_embeds = uncond_embeds.unsqueeze(0)
-            uncond_mask = uncond_mask.unsqueeze(0)
+            if uncond_embeds is not None:
+                uncond_embeds = uncond_embeds.unsqueeze(0)
+                uncond_mask = uncond_mask.unsqueeze(0)
 
             # Prepare latents
             latent_height = height // 8
@@ -1440,10 +1446,11 @@ class BaseTrainer(ABC):
         shift_factor = self.vae.config.shift_factor if self.vae.config.shift_factor is not None else 0.0
         latents = (latents / self.vae.config.scaling_factor) + shift_factor
 
-        # Decode
+        # Decode (convert to VAE dtype to match decoder weights)
         with torch.no_grad():
+            latents = latents.to(self.vae.dtype)
             if self.vae.post_quant_conv is not None:
-                latents = self.vae.post_quant_conv(latents.to(self.vae.dtype))
+                latents = self.vae.post_quant_conv(latents)
             image = self.vae.decoder(latents)
 
         # Convert to PIL
@@ -1670,6 +1677,8 @@ class BaseTrainer(ABC):
         save_every_n_steps: int = 500,
         sample_every_n_steps: int = 500,
         sample_prompt: str = "a beautiful landscape",
+        sample_guidance_scale: float = 3.5,
+        sample_steps: int = 28,
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
@@ -1916,9 +1925,17 @@ class BaseTrainer(ABC):
                     # Generate sample
                     if global_step % sample_every_n_steps == 0:
                         if self.is_zimage:
-                            sample = self._generate_sample_zimage(prompt=sample_prompt)
+                            sample = self._generate_sample_zimage(
+                                prompt=sample_prompt,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale
+                            )
                         else:
-                            sample = self.generate_sample(prompt=sample_prompt)
+                            sample = self.generate_sample(
+                                prompt=sample_prompt,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale
+                            )
 
                         sample_path = self.output_dir / "samples" / f"step_{global_step}.png"
                         sample_path.parent.mkdir(parents=True, exist_ok=True)

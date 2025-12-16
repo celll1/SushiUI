@@ -3962,18 +3962,19 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
         if not config_yaml:
             raise HTTPException(status_code=400, detail="config_yaml is required")
 
-        # Update config_yaml
+        # Update config_yaml in database
         run.config_yaml = config_yaml
 
-        # Also update the YAML file on disk if it exists
+        # Update the original config file on disk ({run_name}_config.yaml)
         import yaml
         from pathlib import Path
 
-        config_path = Path(run.output_dir) / "config.yaml"
+        config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
         if config_path.parent.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, 'w', encoding='utf-8') as f:
                 f.write(config_yaml)
+            print(f"[Training] Updated config file: {config_path}")
 
         db.commit()
 

@@ -1339,9 +1339,13 @@ class BaseTrainer(ABC):
                 dtype=self.training_dtype,
             )
 
-            # Setup scheduler
-            from diffusers import FlowMatchEulerDiscreteScheduler
-            inference_scheduler = FlowMatchEulerDiscreteScheduler.from_config(self.scheduler.config)
+            # Setup scheduler (create new instance with same config)
+            # Note: We cannot use from_config() because Z-Image scheduler.config is not a standard ConfigMixin
+            inference_scheduler = type(self.scheduler)(
+                num_train_timesteps=self.scheduler.config.get("num_train_timesteps", 1000),
+                shift=self.scheduler.config.get("shift", 1.0),
+                use_dynamic_shifting=self.scheduler.config.get("use_dynamic_shifting", False),
+            )
             inference_scheduler.set_timesteps(num_inference_steps)
 
             # Denoising loop

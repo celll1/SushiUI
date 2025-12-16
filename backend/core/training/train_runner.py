@@ -532,6 +532,7 @@ def main():
             # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
+            max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
             if save_every_unit == 'epochs':
                 # Calculate steps per epoch (approximate, will be recalculated by trainer)
@@ -540,6 +541,8 @@ def main():
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
             else:
                 save_every_n_steps = save_every
+
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
             # Convert sample_prompts to single sample_prompt
             sample_prompt = "a beautiful landscape"
@@ -590,6 +593,7 @@ def main():
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
+                max_step_saves_to_keep=max_step_saves_to_keep,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -710,6 +714,7 @@ def main():
             # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
+            max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
             if save_every_unit == 'epochs':
                 # Calculate steps per epoch (approximate, will be recalculated by trainer)
@@ -718,6 +723,8 @@ def main():
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
             else:
                 save_every_n_steps = save_every
+
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
             # Convert sample_prompts to single sample_prompt
             sample_prompt = "a beautiful landscape"
@@ -768,6 +775,7 @@ def main():
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
+                max_step_saves_to_keep=max_step_saves_to_keep,
             )
 
             print("[TrainRunner] Training completed successfully!")

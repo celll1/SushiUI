@@ -54,6 +54,10 @@ class ControlNetManager:
         self.loaded_controlnets: Dict[str, ControlNetModel] = {}
         self.loaded_lllites: Dict[str, Any] = {}
 
+        # Cache for validated ControlNet files (to avoid re-validation on every API call)
+        self._controlnet_cache: Optional[List[str]] = None
+        self._cache_timestamp: float = 0.0
+
         # Track patched layers for cleanup
         self.lllite_patched_layers: List[tuple] = []  # [(layer, original_forward), ...]
 
@@ -65,6 +69,8 @@ class ControlNetManager:
         """Set additional directories to scan for ControlNets"""
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[ControlNetManager] Additional directories set: {self.additional_dirs}")
+        # Invalidate cache when directories change
+        self._controlnet_cache = None
 
     def _resolve_controlnet_path(self, controlnet_path: str) -> Optional[Path]:
         """Resolve controlnet path, checking default and additional directories"""
@@ -164,8 +170,27 @@ class ControlNetManager:
 
         return True
 
-    def get_available_controlnets(self) -> List[str]:
-        """Get list of available ControlNet models from default and additional directories"""
+    def get_available_controlnets(self, force_rescan: bool = False) -> List[str]:
+        """
+        Get list of available ControlNet models from default and additional directories.
+
+        Uses cache to avoid expensive validation on every API call.
+
+        Args:
+            force_rescan: Force re-scanning and validation (ignores cache)
+
+        Returns:
+            List of valid ControlNet file paths
+        """
+        import time
+
+        # Return cached result if available and not forcing rescan
+        if not force_rescan and self._controlnet_cache is not None:
+            return self._controlnet_cache
+
+        print(f"[ControlNetManager] Scanning and validating ControlNet files...")
+        scan_start = time.time()
+
         controlnets = []
 
         # Combine default directory with additional directories
@@ -185,8 +210,22 @@ class ControlNetManager:
                         relative_path = file.relative_to(controlnet_dir)
                         controlnets.append(str(relative_path))
 
-        print(f"[ControlNetManager] Total valid ControlNet models found: {len(controlnets)}")
-        return sorted(list(set(controlnets)))  # Remove duplicates
+        result = sorted(list(set(controlnets)))  # Remove duplicates
+        scan_duration = time.time() - scan_start
+
+        print(f"[ControlNetManager] Total valid ControlNet models found: {len(result)}")
+        print(f"[ControlNetManager] Scan completed in {scan_duration:.2f}s")
+
+        # Cache result
+        self._controlnet_cache = result
+        self._cache_timestamp = time.time()
+
+        return result
+
+    def invalidate_cache(self):
+        """Invalidate cached ControlNet list (call when files are added/removed)"""
+        print(f"[ControlNetManager] Cache invalidated")
+        self._controlnet_cache = None
 
     def is_lllite_model(self, controlnet_path: str) -> bool:
         """Check if a ControlNet model is LLLite format

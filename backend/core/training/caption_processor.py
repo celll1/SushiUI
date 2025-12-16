@@ -375,16 +375,17 @@ def process_caption_with_tag_data(
         if shuffle_tag_groups and len(shuffle_tag_groups) > 0:
             # Category-aware shuffle
             groups_dict = {group: [] for group in shuffle_tag_groups}
-            excluded_tags = []
+            person_count_tags = []  # Person count tags (1girl, 2boys, etc.)
+            other_excluded_tags = []  # Non-group tags (not in shuffle_tag_groups)
 
             for tag, category in tags_to_shuffle:
-                # Exclude person count tags if enabled
+                # Exclude person count tags if enabled (will be placed at the start of General group)
                 if exclude_person_count_from_shuffle and category == "General" and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
-                    excluded_tags.append((tag, category))
+                    person_count_tags.append((tag, category))
                 elif category in groups_dict:
                     groups_dict[category].append((tag, category))
                 else:
-                    excluded_tags.append((tag, category))
+                    other_excluded_tags.append((tag, category))
 
             # Shuffle each group
             shuffled_tags = []
@@ -396,13 +397,23 @@ def process_caption_with_tag_data(
                 random.shuffle(all_group_tags)
                 shuffled_tags.extend(all_group_tags)
             else:
-                # Shuffle within each group
+                # Shuffle within each group, and insert person count tags at the start of General group
                 for group in shuffle_tag_groups:
                     group_tags = groups_dict[group]
                     random.shuffle(group_tags)
+
+                    # If this is the General group, prepend person count tags
+                    if group == "General" and person_count_tags:
+                        shuffled_tags.extend(person_count_tags)
+                        person_count_tags = []  # Clear to avoid duplicates
+
                     shuffled_tags.extend(group_tags)
 
-            shuffled_tags.extend(excluded_tags)
+                # If General group was not in shuffle_tag_groups, append person count tags at the end
+                if person_count_tags:
+                    shuffled_tags.extend(person_count_tags)
+
+            shuffled_tags.extend(other_excluded_tags)
             tags_with_categories = kept_tags + shuffled_tags
         else:
             # Simple shuffle

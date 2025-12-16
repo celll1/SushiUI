@@ -302,6 +302,7 @@ class TagGroupManager:
 
         # Categorize tokens by group
         categorized = {}
+        person_count_tokens = []  # Person count tags (1girl, 2boys, etc.)
         non_shuffleable = []
 
         for token in working_tokens:
@@ -312,10 +313,13 @@ class TagGroupManager:
 
             group = self.get_tag_group(tag_stripped)
 
+            # Check if this is a person count tag (should be excluded from shuffle)
+            if exclude_person_count and group == "General" and self.is_person_count_tag(tag_stripped):
+                person_count_tokens.append(token)
+                continue
+
             # Check if this tag should be shuffled
             should_shuffle = group in groups_to_shuffle
-            if should_shuffle and exclude_person_count and group == "General":
-                should_shuffle = not self.is_person_count_tag(tag_stripped)
 
             if should_shuffle:
                 if group not in categorized:
@@ -325,7 +329,7 @@ class TagGroupManager:
                 non_shuffleable.append(token)
 
         # No tags to shuffle
-        if not categorized:
+        if not categorized and not person_count_tokens:
             return tokens
 
         # Shuffle
@@ -337,13 +341,24 @@ class TagGroupManager:
             rng.shuffle(all_shuffleable)
             return fixed_tokens + all_shuffleable + non_shuffleable
         else:
-            # Shuffle within each group, then reconstruct
+            # Shuffle within each group, and insert person count tags at the start of General group
             shuffled_parts = []
+            person_count_inserted = False
+
             for group in groups_to_shuffle:
+                # If this is the General group, prepend person count tags
+                if group == "General" and person_count_tokens and not person_count_inserted:
+                    shuffled_parts.extend(person_count_tokens)
+                    person_count_inserted = True
+
                 if group in categorized:
                     group_tokens = categorized[group]
                     rng.shuffle(group_tokens)
                     shuffled_parts.extend(group_tokens)
+
+            # If General group was not in shuffle_tag_groups, append person count tags at the end
+            if person_count_tokens and not person_count_inserted:
+                shuffled_parts.extend(person_count_tokens)
 
             return fixed_tokens + shuffled_parts + non_shuffleable
 

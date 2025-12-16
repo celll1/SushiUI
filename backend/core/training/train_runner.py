@@ -549,7 +549,10 @@ def main():
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
             sample_steps = process_config['sample'].get('sample_steps', 28)
-            print(f"[TrainRunner] Sample generation config: guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}")
+            sample_width = process_config['sample'].get('width', 1024)
+            sample_height = process_config['sample'].get('height', 1024)
+            sample_seed = process_config['sample'].get('seed', -1)
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
 
             # Start training with new interface
             trainer.train(
@@ -561,6 +564,9 @@ def main():
                 sample_prompt=sample_prompt,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
+                sample_width=sample_width,
+                sample_height=sample_height,
+                sample_seed=sample_seed,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -709,7 +715,10 @@ def main():
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
             sample_steps = process_config['sample'].get('sample_steps', 28)
-            print(f"[TrainRunner] Sample generation config: guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}")
+            sample_width = process_config['sample'].get('width', 1024)
+            sample_height = process_config['sample'].get('height', 1024)
+            sample_seed = process_config['sample'].get('seed', -1)
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
 
             # Start training with new interface
             trainer.train(
@@ -721,6 +730,9 @@ def main():
                 sample_prompt=sample_prompt,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
+                sample_width=sample_width,
+                sample_height=sample_height,
+                sample_seed=sample_seed,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,

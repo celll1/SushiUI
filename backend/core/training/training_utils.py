@@ -13,7 +13,7 @@ def get_training_base_dir() -> str:
 
     Priority:
     1. UserSettings.training_dir (if set in database)
-    2. settings.training_dir (default from config/settings.py)
+    2. Default: {root_dir}/training
 
     Returns:
         Base training directory path
@@ -34,11 +34,12 @@ def get_training_base_dir() -> str:
         # Fallback to default if database query fails
         print(f"[Training] Warning: Failed to get training_dir from UserSettings: {e}")
 
-    # Default training directory (from config/settings.py)
+    # Default training directory
     try:
         from config.settings import settings
-        return settings.training_dir
+        import os
+        return os.path.join(settings.root_dir, "training")
     except Exception as e:
-        print(f"[Training] Warning: Failed to get training_dir from settings: {e}")
+        print(f"[Training] Warning: Failed to get root_dir from settings: {e}")
         # Ultimate fallback
         return "training"

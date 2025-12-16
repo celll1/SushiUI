@@ -554,6 +554,15 @@ def main():
             sample_seed = process_config['sample'].get('seed', -1)
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
 
+            # Get resume from checkpoint setting
+            resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+            if resume_from_checkpoint:
+                print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
+
+            # Log force_recache setting
+            if force_recache:
+                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -578,6 +587,9 @@ def main():
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
                 progress_callback=progress_callback,
+                run_id=run_id,
+                resume_from_checkpoint=resume_from_checkpoint,
+                force_recache=force_recache,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -720,6 +732,15 @@ def main():
             sample_seed = process_config['sample'].get('seed', -1)
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
 
+            # Get resume from checkpoint setting
+            resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+            if resume_from_checkpoint:
+                print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
+
+            # Log force_recache setting
+            if force_recache:
+                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -744,6 +765,9 @@ def main():
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
                 progress_callback=progress_callback,
+                run_id=run_id,
+                resume_from_checkpoint=resume_from_checkpoint,
+                force_recache=force_recache,
             )
 
             print("[TrainRunner] Training completed successfully!")

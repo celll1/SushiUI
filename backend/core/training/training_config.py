@@ -181,7 +181,6 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 10,
                         },
-                        **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         "datasets": datasets_array,
                         "train": {
                             "batch_size": batch_size,
@@ -211,6 +210,7 @@ class TrainingConfigGenerator:
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
                             "min_snr_gamma": min_snr_gamma,
+                            **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         },
                         "model": {
                             "name_or_path": base_model_path,
@@ -330,6 +330,7 @@ class TrainingConfigGenerator:
             "min_snr_gamma": min_snr_gamma,
             "debug_latents": debug_latents,
             "debug_latents_every": debug_latents_every,
+            **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
         }
 
         # Add component-specific learning rates if specified
@@ -401,7 +402,6 @@ class TrainingConfigGenerator:
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
                         },
-                        **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         "datasets": datasets_array,
                         "train": train_config,
                         "model": {

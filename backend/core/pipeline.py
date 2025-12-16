@@ -991,8 +991,8 @@ class DiffusionPipelineManager:
                 noised_latents = scheduler.add_noise(init_latents, noise, timesteps_img2img[0:1])
             else:
                 # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
-                # Normalize timestep to [0, 1] range
-                t_normalized = (1000 - timesteps_img2img[0].item()) / 1000.0
+                # Normalize timestep to [0, 1] range (Z-Image: 1000=start/noisy, 0=end/clean)
+                t_normalized = timesteps_img2img[0].item() / 1000.0
                 print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_img2img[0].item():.1f}, t_norm={t_normalized:.3f}")
                 noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
 

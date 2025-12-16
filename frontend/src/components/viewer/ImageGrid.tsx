@@ -291,17 +291,17 @@ export default function ImageGrid() {
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)
 
+    // Build params object by merging prompt and parameters
+    const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+
     // Send prompt if checked
     if (sendPrompt) {
-      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
       txt2imgParams.prompt = image.prompt;
       txt2imgParams.negative_prompt = image.negative_prompt;
-      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
       txt2imgParams.steps = image.steps;
       txt2imgParams.cfg_scale = image.cfg_scale;
       txt2imgParams.sampler = image.parameters?.sampler || "euler";
@@ -341,8 +341,13 @@ export default function ImageGrid() {
       } else {
         txt2imgParams.nag_enable = false;
       }
+    }
 
+    // Save merged params once (only if sendPrompt or sendParameters is checked)
+    if (sendPrompt || sendParameters) {
       localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+      // Dispatch custom event for same-tab localStorage change detection
+      window.dispatchEvent(new Event("txt2img_params_updated"));
     }
 
     router.push("/generate");
@@ -378,17 +383,20 @@ export default function ImageGrid() {
       }
     }
 
+    // Build params object by merging prompt and parameters
+    const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
+    console.log("[ImageGrid] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[ImageGrid] sendToImg2Img - image.prompt:", image.prompt);
+
     // Send prompt if checked
     if (sendPrompt) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
       img2imgParams.prompt = image.prompt;
       img2imgParams.negative_prompt = image.negative_prompt;
-      localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      console.log("[ImageGrid] sendToImg2Img - Set prompt to:", img2imgParams.prompt);
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
       img2imgParams.steps = image.steps;
       img2imgParams.cfg_scale = image.cfg_scale;
       img2imgParams.sampler = image.parameters?.sampler || "euler";
@@ -419,7 +427,25 @@ export default function ImageGrid() {
         img2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
+      // Add NAG parameters
+      if (image.nag_enable === 'True') {
+        img2imgParams.nag_enable = true;
+        img2imgParams.nag_scale = parseFloat(image.nag_scale || "5.0");
+        img2imgParams.nag_tau = parseFloat(image.nag_tau || "3.5");
+        img2imgParams.nag_alpha = parseFloat(image.nag_alpha || "0.25");
+        img2imgParams.nag_sigma_end = parseFloat(image.nag_sigma_end || "3.0");
+      } else {
+        img2imgParams.nag_enable = false;
+      }
+    }
+
+    // Save merged params once (only if sendPrompt or sendParameters is checked)
+    if (sendPrompt || sendParameters) {
+      console.log("[ImageGrid] sendToImg2Img - Saving merged params:", img2imgParams);
       localStorage.setItem("img2img_params", JSON.stringify(img2imgParams));
+      // Dispatch custom event for same-tab localStorage change detection
+      window.dispatchEvent(new Event("img2img_params_updated"));
+      console.log("[ImageGrid] sendToImg2Img - Dispatched img2img_params_updated event");
     }
 
     router.push("/generate?tab=img2img");
@@ -456,17 +482,17 @@ export default function ImageGrid() {
       }
     }
 
+    // Build params object by merging prompt and parameters
+    const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
+
     // Send prompt if checked
     if (sendPrompt) {
-      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
       inpaintParams.prompt = image.prompt;
       inpaintParams.negative_prompt = image.negative_prompt;
-      localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
     }
 
     // Send parameters if checked
     if (sendParameters) {
-      const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
       inpaintParams.steps = image.steps;
       inpaintParams.cfg_scale = image.cfg_scale;
       inpaintParams.sampler = image.parameters?.sampler || "euler";
@@ -497,7 +523,23 @@ export default function ImageGrid() {
         inpaintParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
+      // Add NAG parameters
+      if (image.nag_enable === 'True') {
+        inpaintParams.nag_enable = true;
+        inpaintParams.nag_scale = parseFloat(image.nag_scale || "5.0");
+        inpaintParams.nag_tau = parseFloat(image.nag_tau || "3.5");
+        inpaintParams.nag_alpha = parseFloat(image.nag_alpha || "0.25");
+        inpaintParams.nag_sigma_end = parseFloat(image.nag_sigma_end || "3.0");
+      } else {
+        inpaintParams.nag_enable = false;
+      }
+    }
+
+    // Save merged params once (only if sendPrompt or sendParameters is checked)
+    if (sendPrompt || sendParameters) {
       localStorage.setItem("inpaint_params", JSON.stringify(inpaintParams));
+      // Dispatch custom event for same-tab localStorage change detection
+      window.dispatchEvent(new Event("inpaint_params_updated"));
     }
 
     router.push("/generate?tab=inpaint");

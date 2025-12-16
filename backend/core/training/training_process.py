@@ -118,16 +118,20 @@ class TrainingProcess:
             while True:
                 try:
                     line_bytes = await self.process.stdout.readline()
-                except asyncio.LimitOverrunError:
+                except (asyncio.LimitOverrunError, ValueError) as e:
                     # Line too long (exceeds buffer limit)
                     # This can happen with very long progress bars or debug output
-                    # Read and discard the oversized line
-                    print("[Training] Warning: Skipping oversized log line (exceeds 1MB buffer)")
-                    # Read in chunks until we find a newline
-                    while True:
-                        chunk = await self.process.stdout.read(8192)
-                        if not chunk or b'\n' in chunk:
-                            break
+                    # ValueError is raised as a wrapper for LimitOverrunError in some Python versions
+                    print(f"[Training] Warning: Skipping oversized log line (buffer overflow: {type(e).__name__})")
+                    # Read and discard the oversized line in chunks until we find a newline
+                    try:
+                        while True:
+                            chunk = await self.process.stdout.read(8192)
+                            if not chunk or b'\n' in chunk:
+                                break
+                    except Exception as read_error:
+                        print(f"[Training] Warning: Error while discarding oversized line: {read_error}")
+                        # If we can't even read chunks, skip and continue
                     continue
 
                 if not line_bytes:

@@ -60,6 +60,10 @@ router = APIRouter()
 # Thread pool for running blocking operations
 executor = ThreadPoolExecutor(max_workers=1)
 
+# Cache for model list (to avoid re-scanning on every API call)
+_models_cache: Optional[Dict[str, Any]] = None
+_models_cache_timestamp: float = 0.0
+
 # Pydantic models for requests
 class LoginRequest(BaseModel):
     username: str
@@ -1107,8 +1111,28 @@ async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
     return {"success": True}
 
 @router.get("/models")
-async def get_models(db: Session = Depends(get_gallery_db)):
-    """Get list of available models from default and user-configured directories"""
+async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
+    """
+    Get list of available models from default and user-configured directories.
+
+    Uses cache to avoid expensive scanning on every API call.
+
+    Args:
+        force_rescan: Force re-scanning (ignores cache)
+
+    Returns:
+        Dictionary with "models" key containing list of model info
+    """
+    import time
+    global _models_cache, _models_cache_timestamp
+
+    # Return cached result if available and not forcing rescan
+    if not force_rescan and _models_cache is not None:
+        return _models_cache
+
+    print(f"[Models] Scanning model directories...")
+    scan_start = time.time()
+
     from core.model_loader import ModelLoader
 
     models = []
@@ -1155,8 +1179,17 @@ async def get_models(db: Session = Depends(get_gallery_db)):
                     "architecture": architecture
                 })
 
+    result = {"models": models}
+    scan_duration = time.time() - scan_start
+
     print(f"[Models] Found {len(models)} models total")
-    return {"models": models}
+    print(f"[Models] Scan completed in {scan_duration:.2f}s")
+
+    # Cache result
+    _models_cache = result
+    _models_cache_timestamp = time.time()
+
+    return result
 
 @router.post("/models/load")
 async def load_model(

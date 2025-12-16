@@ -67,6 +67,10 @@ class LoRAManager:
         self.additional_dirs: List[Path] = []  # User-configured additional directories
         self.loaded_loras: List[LoRAConfig] = []
 
+        # Cache for validated LoRA files (to avoid re-validation on every API call)
+        self._lora_cache: Optional[List[str]] = None
+        self._cache_timestamp: float = 0.0
+
         # Add training directory to search paths (for trained LoRAs)
         training_dir = Path(settings.root_dir) / "training"
         if training_dir.exists():
@@ -79,6 +83,8 @@ class LoRAManager:
         """Set additional directories to scan for LoRAs"""
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[LoRAManager] Additional directories set: {self.additional_dirs}")
+        # Invalidate cache when directories change
+        self._lora_cache = None
 
     def _resolve_lora_path(self, lora_path: str) -> Optional[Path]:
         """Resolve LoRA path, checking default and additional directories"""
@@ -216,8 +222,27 @@ class LoRAManager:
 
         return True
 
-    def get_available_loras(self) -> List[str]:
-        """Get list of available LoRA files from default and additional directories"""
+    def get_available_loras(self, force_rescan: bool = False) -> List[str]:
+        """
+        Get list of available LoRA files from default and additional directories.
+
+        Uses cache to avoid expensive validation on every API call.
+
+        Args:
+            force_rescan: Force re-scanning and validation (ignores cache)
+
+        Returns:
+            List of valid LoRA file paths
+        """
+        import time
+
+        # Return cached result if available and not forcing rescan
+        if not force_rescan and self._lora_cache is not None:
+            return self._lora_cache
+
+        print(f"[LoRAManager] Scanning and validating LoRA files...")
+        scan_start = time.time()
+
         lora_files = []
 
         # Combine default directory with additional directories
@@ -244,8 +269,22 @@ class LoRAManager:
                     if self._is_valid_lora_file(f):
                         lora_files.append(str(f.relative_to(lora_dir)))
 
-        print(f"[LoRAManager] Total valid LoRA files found: {len(lora_files)}")
-        return sorted(list(set(lora_files)))  # Remove duplicates
+        result = sorted(list(set(lora_files)))  # Remove duplicates
+        scan_duration = time.time() - scan_start
+
+        print(f"[LoRAManager] Total valid LoRA files found: {len(result)}")
+        print(f"[LoRAManager] Scan completed in {scan_duration:.2f}s")
+
+        # Cache result
+        self._lora_cache = result
+        self._cache_timestamp = time.time()
+
+        return result
+
+    def invalidate_cache(self):
+        """Invalidate cached LoRA list (call when files are added/removed)"""
+        print(f"[LoRAManager] Cache invalidated")
+        self._lora_cache = None
 
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:
         """

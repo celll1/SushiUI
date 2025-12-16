@@ -1310,45 +1310,62 @@ class BaseTrainer(ABC):
         """
         print(f"{self.log_prefix} Generating Z-Image sample: {prompt[:50]}...")
 
-        # Encode prompt
-        prompt_embeds, attention_mask = self.encode_prompt_zimage(prompt)
-        uncond_embeds, uncond_mask = self.encode_prompt_zimage("")
+        # Move text encoder and VAE to GPU for inference
+        text_encoder_device = next(self.text_encoder.parameters()).device
+        vae_device = next(self.vae.parameters()).device
 
-        # Add batch dimension
-        prompt_embeds = prompt_embeds.unsqueeze(0)
-        attention_mask = attention_mask.unsqueeze(0)
-        uncond_embeds = uncond_embeds.unsqueeze(0)
-        uncond_mask = uncond_mask.unsqueeze(0)
+        if text_encoder_device != self.device:
+            self.text_encoder.to(self.device)
+        if vae_device != self.device:
+            self.vae.to(self.device)
 
-        # Prepare latents
-        latent_height = height // 8
-        latent_width = width // 8
-        latents = torch.randn(
-            (1, self.vae.config.latent_channels, latent_height, latent_width),
-            device=self.device,
-            dtype=self.training_dtype,
-        )
+        try:
+            # Encode prompt
+            prompt_embeds, attention_mask = self.encode_prompt_zimage(prompt)
+            uncond_embeds, uncond_mask = self.encode_prompt_zimage("")
 
-        # Setup scheduler
-        from diffusers import FlowMatchEulerDiscreteScheduler
-        inference_scheduler = FlowMatchEulerDiscreteScheduler.from_config(self.scheduler.config)
-        inference_scheduler.set_timesteps(num_inference_steps)
+            # Add batch dimension
+            prompt_embeds = prompt_embeds.unsqueeze(0)
+            attention_mask = attention_mask.unsqueeze(0)
+            uncond_embeds = uncond_embeds.unsqueeze(0)
+            uncond_mask = uncond_mask.unsqueeze(0)
 
-        # Denoising loop
-        latents = self._run_zimage_denoising_loop(
-            latents=latents,
-            prompt_embeds=prompt_embeds,
-            attention_mask=attention_mask,
-            uncond_embeds=uncond_embeds,
-            uncond_mask=uncond_mask,
-            guidance_scale=guidance_scale,
-            scheduler=inference_scheduler,
-        )
+            # Prepare latents
+            latent_height = height // 8
+            latent_width = width // 8
+            latents = torch.randn(
+                (1, self.vae.config.latent_channels, latent_height, latent_width),
+                device=self.device,
+                dtype=self.training_dtype,
+            )
 
-        # Decode latents
-        image = self._decode_zimage_latents(latents)
+            # Setup scheduler
+            from diffusers import FlowMatchEulerDiscreteScheduler
+            inference_scheduler = FlowMatchEulerDiscreteScheduler.from_config(self.scheduler.config)
+            inference_scheduler.set_timesteps(num_inference_steps)
 
-        return image
+            # Denoising loop
+            latents = self._run_zimage_denoising_loop(
+                latents=latents,
+                prompt_embeds=prompt_embeds,
+                attention_mask=attention_mask,
+                uncond_embeds=uncond_embeds,
+                uncond_mask=uncond_mask,
+                guidance_scale=guidance_scale,
+                scheduler=inference_scheduler,
+            )
+
+            # Decode latents
+            image = self._decode_zimage_latents(latents)
+
+            return image
+
+        finally:
+            # Move text encoder and VAE back to original devices
+            if text_encoder_device != self.device:
+                self.text_encoder.to(text_encoder_device)
+            if vae_device != self.device:
+                self.vae.to(vae_device)
 
     def _run_zimage_denoising_loop(
         self,

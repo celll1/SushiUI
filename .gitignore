@@ -72,6 +72,9 @@ tmp/
 temp/
 .cache/
 
+# アーカイブ
+.archive/
+
 # トレーニングキャッシュ
 backend/cache/
 cache/datasets/

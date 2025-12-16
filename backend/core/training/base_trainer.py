@@ -1936,6 +1936,7 @@ class BaseTrainer(ABC):
 
                     # Generate sample
                     if global_step % sample_every_n_steps == 0:
+                        print(f"{self.log_prefix} Generating sample with guidance_scale={sample_guidance_scale}, steps={sample_steps}")
                         if self.is_zimage:
                             sample = self._generate_sample_zimage(
                                 prompt=sample_prompt,

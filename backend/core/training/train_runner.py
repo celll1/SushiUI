@@ -549,6 +549,7 @@ def main():
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
             sample_steps = process_config['sample'].get('sample_steps', 28)
+            print(f"[TrainRunner] Sample generation config: guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}")
 
             # Start training with new interface
             trainer.train(
@@ -708,6 +709,7 @@ def main():
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
             sample_steps = process_config['sample'].get('sample_steps', 28)
+            print(f"[TrainRunner] Sample generation config: guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}")
 
             # Start training with new interface
             trainer.train(

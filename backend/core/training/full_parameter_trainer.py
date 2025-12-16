@@ -167,6 +167,25 @@ class FullParameterTrainer(BaseTrainer):
         if len(param_groups) == 0:
             raise ValueError("No trainable parameters found. Enable train_unet or train_text_encoder.")
 
+        # Set model modes
+        # VAE is always in eval mode (never trained)
+        self.vae.eval()
+
+        if self.is_zimage:
+            # Z-Image: Transformer in train mode, Text Encoder in eval mode (frozen)
+            self.transformer.train()
+            self.text_encoder.eval()
+            print(f"{self.specific_log_prefix} Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
+        else:
+            # SD/SDXL: U-Net and Text Encoders in train mode
+            if self.train_unet:
+                self.unet.train()
+            if self.train_text_encoder:
+                self.text_encoder.train()
+                if self.text_encoder_2 is not None:
+                    self.text_encoder_2.train()
+            print(f"{self.specific_log_prefix} Models set to train mode for gradient checkpointing")
+
         return param_groups
 
     def save_checkpoint(self, step: int, epoch: int = 0):

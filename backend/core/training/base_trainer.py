@@ -369,7 +369,8 @@ class BaseTrainer(ABC):
         # Move Transformer to GPU
         print(f"{self.log_prefix} Moving Transformer to {self.device}...")
         self.transformer_original.to(self.device)
-        self.transformer.to(self.device)
+        # Note: self.transformer.transformer is the same object as self.transformer_original
+        # No need to call self.transformer.to(device) again
 
         print(f"{self.log_prefix} Z-Image model loaded successfully")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
@@ -1025,16 +1026,18 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
             del predicted_latent
 
-        # Return both prediction loss and reconstruction loss
-        loss_value = loss.item()
+        # Return loss tensor (with gradient) and reconstruction loss value
+        # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
+        # The training loop will call .backward() on the loss tensor.
         recon_loss_value = recon_loss.item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
-        del noise, noisy_latents, model_pred, loss, recon_loss
+        # But keep 'loss' tensor for backward pass
+        del noise, noisy_latents, model_pred, recon_loss
         if self.is_sdxl and added_cond_kwargs is not None:
             del added_cond_kwargs
 
-        return loss_value, recon_loss_value
+        return loss, recon_loss_value
 
     def train_step_zimage(
         self,
@@ -1160,14 +1163,16 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent
 
-        # Return both prediction loss and reconstruction loss
-        loss_value = loss.item()
+        # Return loss tensor (with gradient) and reconstruction loss value
+        # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
+        # The training loop will call .backward() on the loss tensor.
         recon_loss_value = recon_loss.item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
-        del noise, noisy_latents, noisy_latents_4d, model_pred, target, loss, recon_loss
+        # But keep 'loss' tensor for backward pass
+        del noise, noisy_latents, noisy_latents_4d, model_pred, target, recon_loss
 
-        return loss_value, recon_loss_value
+        return loss, recon_loss_value
 
     # ============================================================
     # Sample Generation (to be continued in next section)
@@ -1180,6 +1185,7 @@ class BaseTrainer(ABC):
         width: int = 512,
         num_inference_steps: int = 28,
         guidance_scale: float = 3.5,
+        seed: int = -1,
     ) -> Image.Image:
         """
         Generate sample image during training (SD/SDXL).
@@ -1190,6 +1196,7 @@ class BaseTrainer(ABC):
             width: Image width
             num_inference_steps: Number of denoising steps
             guidance_scale: CFG scale
+            seed: Random seed (-1 for random)
 
         Returns:
             PIL Image
@@ -1207,13 +1214,17 @@ class BaseTrainer(ABC):
             pooled_embeddings = None
             uncond_pooled = None
 
-        # Prepare latents
+        # Prepare latents with seed
         latent_height = height // 8
         latent_width = width // 8
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
         latents = torch.randn(
             (1, self.unet.config.in_channels, latent_height, latent_width),
             device=self.device,
             dtype=self.training_dtype,
+            generator=generator,
         )
 
         # Setup scheduler for inference
@@ -1294,6 +1305,7 @@ class BaseTrainer(ABC):
         width: int = 1024,
         num_inference_steps: int = 28,
         guidance_scale: float = 3.5,
+        seed: int = -1,
     ) -> Image.Image:
         """
         Generate sample image during training (Z-Image).
@@ -1304,22 +1316,54 @@ class BaseTrainer(ABC):
             width: Image width
             num_inference_steps: Number of denoising steps
             guidance_scale: CFG scale
+            seed: Random seed (-1 for random)
 
         Returns:
             PIL Image
         """
         print(f"{self.log_prefix} Generating Z-Image sample: {prompt[:50]}...")
 
-        # Move text encoder and VAE to GPU for inference
+        # Set models to eval mode for inference (same as lora_trainer.py.backup:2481-2484)
+        self.transformer.eval()
+        self.transformer_original.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+
+        # Store original devices for restoration
         text_encoder_device = next(self.text_encoder.parameters()).device
         vae_device = next(self.vae.parameters()).device
-
-        if text_encoder_device != self.device:
-            self.text_encoder.to(self.device)
-        if vae_device != self.device:
-            self.vae.to(self.device)
+        transformer_device = next(self.transformer_original.parameters()).device
 
         try:
+            # ============================================================
+            # Stage 0: Offload Transformer AND Optimizer State to CPU
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
+
+            # Move Transformer to CPU
+            self.transformer_original.to("cpu")
+
+            # CRITICAL: Move Optimizer state (gradients, momentum) to CPU
+            # Optimizer state (exp_avg, exp_avg_sq) stays on GPU even after model.to(cpu)
+            # This can consume 2x model size in VRAM (for AdamW: exp_avg + exp_avg_sq)
+            optimizer_state_dict = self.optimizer.state_dict()
+            for param_id, state in optimizer_state_dict['state'].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == 'cuda':
+                        state[key] = value.cpu()
+            self.optimizer.load_state_dict(optimizer_state_dict)
+
+            torch.cuda.empty_cache()
+            print(f"{self.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
+
+            # ============================================================
+            # Stage 1: Text Encoding (Sequential Offloading Pattern)
+            # ============================================================
+            # Move Text Encoder to GPU for encoding
+            if text_encoder_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
+                self.text_encoder.to(self.device)
+
             # Encode prompt
             prompt_embeds, attention_mask = self.encode_prompt_zimage(prompt)
 
@@ -1329,6 +1373,19 @@ class BaseTrainer(ABC):
             else:
                 uncond_embeds, uncond_mask = None, None
 
+            # Move Text Encoder back to CPU to free VRAM
+            if text_encoder_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving Text Encoder back to CPU")
+                self.text_encoder.to(text_encoder_device)
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 1.5: Move Transformer back to GPU for denoising
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Moving Transformer to GPU for denoising")
+            self.transformer_original.to(transformer_device)
+            torch.cuda.empty_cache()
+
             # Add batch dimension
             prompt_embeds = prompt_embeds.unsqueeze(0)
             attention_mask = attention_mask.unsqueeze(0)
@@ -1336,13 +1393,22 @@ class BaseTrainer(ABC):
                 uncond_embeds = uncond_embeds.unsqueeze(0)
                 uncond_mask = uncond_mask.unsqueeze(0)
 
-            # Prepare latents
+            # ============================================================
+            # Stage 2: Denoising Loop (Transformer already on GPU from training)
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
+
+            # Prepare latents with seed
             latent_height = height // 8
             latent_width = width // 8
+            generator = None
+            if seed >= 0:
+                generator = torch.Generator(device=self.device).manual_seed(seed)
             latents = torch.randn(
                 (1, self.vae.config.latent_channels, latent_height, latent_width),
                 device=self.device,
                 dtype=self.training_dtype,
+                generator=generator,
             )
 
             # Setup scheduler (create new instance with same config)
@@ -1352,7 +1418,21 @@ class BaseTrainer(ABC):
                 shift=self.scheduler.config.get("shift", 1.0),
                 use_dynamic_shifting=self.scheduler.config.get("use_dynamic_shifting", False),
             )
-            inference_scheduler.set_timesteps(num_inference_steps)
+
+            # Calculate dynamic shift for flow matching (same as pipeline.py:964-981)
+            from core.zimage_utils import calculate_shift
+            image_seq_len = (latent_height // 2) * (latent_width // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                self.scheduler.config.get("base_image_seq_len", 256),
+                self.scheduler.config.get("max_image_seq_len", 4096),
+                self.scheduler.config.get("base_shift", 0.5),
+                self.scheduler.config.get("max_shift", 1.15),
+            )
+
+            # Set scheduler parameters (same as pipeline.py:977-981)
+            inference_scheduler.sigma_min = 0.0
+            inference_scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
 
             # Denoising loop
             latents = self._run_zimage_denoising_loop(
@@ -1365,17 +1445,67 @@ class BaseTrainer(ABC):
                 scheduler=inference_scheduler,
             )
 
+            # Free prompt embeddings
+            del prompt_embeds, attention_mask
+            if uncond_embeds is not None:
+                del uncond_embeds, uncond_mask
+
+            # ============================================================
+            # Stage 3: Offload Transformer to CPU, move VAE to GPU
+            # ============================================================
+            # Move Transformer to CPU to free VRAM for VAE decode
+            print(f"{self.log_prefix} [Sample] Moving Transformer to CPU to free VRAM")
+            self.transformer_original.to("cpu")
+            torch.cuda.empty_cache()
+
+            # Move VAE to GPU for decoding
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving VAE to GPU for decoding")
+                self.vae.to(self.device)
+
             # Decode latents
             image = self._decode_zimage_latents(latents)
+
+            # Move VAE back to CPU
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving VAE back to CPU")
+                self.vae.to(vae_device)
+
+            # Free latents
+            del latents
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 4: Restore Transformer and Optimizer State to GPU
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Restoring Transformer and Optimizer state to GPU")
+
+            # Move Transformer back to GPU
+            self.transformer_original.to(transformer_device)
+
+            # CRITICAL: Move Optimizer state back to GPU
+            # Optimizer state must be on the same device as model parameters for training
+            optimizer_state_dict = self.optimizer.state_dict()
+            for param_id, state in optimizer_state_dict['state'].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
+                        state[key] = value.to(transformer_device)
+            self.optimizer.load_state_dict(optimizer_state_dict)
+
+            torch.cuda.empty_cache()
+            print(f"{self.log_prefix} [Sample] Transformer and Optimizer state restored to GPU")
 
             return image
 
         finally:
-            # Move text encoder and VAE back to original devices
-            if text_encoder_device != self.device:
-                self.text_encoder.to(text_encoder_device)
-            if vae_device != self.device:
-                self.vae.to(vae_device)
+            # Ensure all models are back to their original devices (safety fallback)
+            # Text Encoder and VAE should already be on CPU from sequential offloading
+            # Transformer should already be on GPU from restoration
+            # But we check anyway in case of exceptions during sample generation
+
+            # Restore models to train mode (same as lora_trainer.py.backup:2638-2639)
+            self.transformer.train()
+            self.transformer_original.train()
 
     def _run_zimage_denoising_loop(
         self,
@@ -1392,7 +1522,11 @@ class BaseTrainer(ABC):
         Note: Uses transformer_original (not batched wrapper) for single-image inference.
         """
         with torch.no_grad():
-            for t in tqdm(scheduler.timesteps, desc="Generating"):
+            for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
+                # Skip last step if t=0 (flow matching termination, same as pipeline.py:1001-1004)
+                if t == 0 and i == len(scheduler.timesteps) - 1:
+                    continue
+
                 # Prepare input
                 if guidance_scale > 1.0:
                     latent_input = torch.cat([latents] * 2)
@@ -1695,6 +1829,9 @@ class BaseTrainer(ABC):
         sample_prompt: str = "a beautiful landscape",
         sample_guidance_scale: float = 3.5,
         sample_steps: int = 28,
+        sample_width: int = 1024,
+        sample_height: int = 1024,
+        sample_seed: int = -1,
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
@@ -1863,9 +2000,12 @@ class BaseTrainer(ABC):
                     caption = item.get("caption", "")
                     if self.is_zimage:
                         if text_encoder_cache and caption in text_encoder_cache:
-                            prompt_embeds, attention_mask = text_encoder_cache[caption]
-                            text_embeddings_list.append(prompt_embeds.to(self.device))
-                            attention_masks_list.append(attention_mask.to(self.device))
+                            prompt_embeds_cpu, attention_mask_cpu = text_encoder_cache[caption]
+                            # Use non_blocking transfer and clone to avoid keeping reference to cache tensor
+                            prompt_embeds = prompt_embeds_cpu.to(self.device, non_blocking=True).clone()
+                            attention_mask = attention_mask_cpu.to(self.device, non_blocking=True).clone()
+                            text_embeddings_list.append(prompt_embeds)
+                            attention_masks_list.append(attention_mask)
                         else:
                             prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
                             text_embeddings_list.append(prompt_embeds)
@@ -1913,8 +2053,20 @@ class BaseTrainer(ABC):
                     )
 
                 # Backward pass
-                loss_tensor = torch.tensor(loss, requires_grad=True)
-                loss_tensor.backward()
+                # loss is already a tensor with computation graph from train_step/train_step_zimage
+                loss.backward()
+
+                # Free batch tensors immediately after backward to prevent VRAM accumulation
+                del latents, text_embeddings
+                if self.is_zimage:
+                    del attention_mask
+                if self.is_sdxl and pooled_embeddings_list:
+                    del pooled_embeddings
+                del latents_list, text_embeddings_list
+                if attention_masks_list is not None:
+                    del attention_masks_list
+                if pooled_embeddings_list is not None:
+                    del pooled_embeddings_list
 
                 # Gradient accumulation
                 if (batch_idx + 1) % gradient_accumulation_steps == 0:
@@ -1929,10 +2081,14 @@ class BaseTrainer(ABC):
 
                     global_step += 1
 
-                    # Logging
-                    self.writer.add_scalar("train/loss", loss, global_step)
+                    # Logging (convert loss tensor to float for logging)
+                    loss_value = loss.item()
+                    self.writer.add_scalar("train/loss", loss_value, global_step)
                     self.writer.add_scalar("train/recon_loss", recon_loss, global_step)
                     self.writer.add_scalar("train/lr", self.lr_scheduler.get_last_lr()[0], global_step)
+
+                    # Free loss tensor after logging
+                    del loss
 
                     # Save checkpoint
                     if global_step % save_every_n_steps == 0:
@@ -1940,18 +2096,24 @@ class BaseTrainer(ABC):
 
                     # Generate sample
                     if global_step % sample_every_n_steps == 0:
-                        print(f"{self.log_prefix} Generating sample with guidance_scale={sample_guidance_scale}, steps={sample_steps}")
+                        print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
                         if self.is_zimage:
                             sample = self._generate_sample_zimage(
                                 prompt=sample_prompt,
+                                width=sample_width,
+                                height=sample_height,
                                 num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed
                             )
                         else:
                             sample = self.generate_sample(
                                 prompt=sample_prompt,
+                                width=sample_width,
+                                height=sample_height,
                                 num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed
                             )
 
                         # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
@@ -1965,6 +2127,10 @@ class BaseTrainer(ABC):
                         image_tensor = torchvision.transforms.ToTensor()(sample)
                         self.writer.add_image("samples/sample_0", image_tensor, global_step=global_step)
 
+                        # Free sample-related tensors and clear VRAM cache
+                        del sample, image_tensor
+                        torch.cuda.empty_cache()
+
                     # Progress callback
                     if progress_callback:
                         progress_callback(
@@ -1972,8 +2138,11 @@ class BaseTrainer(ABC):
                             step=global_step,
                             total=total_steps,
                             epoch=epoch,
-                            loss=loss,
+                            loss=loss_value,
                         )
+                else:
+                    # Gradient accumulation: Free loss tensor but don't do optimizer step yet
+                    del loss
 
         print(f"{self.log_prefix} Training complete!")
         self.writer.close()

@@ -165,9 +165,29 @@ class LoRATrainer(BaseTrainer):
         if self.is_zimage:
             # Z-Image: Apply LoRA to Transformer only (Text Encoder is frozen)
             self._apply_lora_zimage()
+
+            # Set VAE to eval mode (never trained)
+            self.vae.eval()
+
+            # Transformer must be in train mode for gradient checkpointing to work
+            # Text Encoder remains in eval mode (frozen)
+            self.transformer.train()
+            self.text_encoder.eval()
+            print(f"{self.log_prefix} Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
         else:
             # SD/SDXL: Apply LoRA to U-Net and Text Encoder
             self._apply_lora()
+
+            # Set VAE to eval mode (never trained)
+            self.vae.eval()
+
+            # U-Net and Text Encoders must be in train mode for gradient checkpointing to work (sd-scripts approach)
+            # This is required according to Diffusers TI example
+            self.unet.train()
+            self.text_encoder.train()
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.train()
+            print(f"{self.log_prefix} U-Net and Text Encoders set to train mode for gradient checkpointing")
 
     def _apply_lora(self):
         """Apply LoRA layers to SD/SDXL model modules."""

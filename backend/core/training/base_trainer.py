@@ -1398,13 +1398,20 @@ class BaseTrainer(ABC):
                     mask_input = attention_mask
 
                 # Predict noise (use original transformer for single-image inference)
+                # Add channel dimension for Z-Image (expects 5D: [B, C, F, H, W])
                 timestep = t.to(self.device)
-                noise_pred = self.transformer_original(
-                    hidden_states=latent_input,
-                    encoder_hidden_states=embeds_input,
-                    timestep=timestep,
-                    encoder_attention_mask=mask_input,
-                ).sample
+                latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
+
+                # Call transformer (same interface as training)
+                model_pred, _ = self.transformer_original(
+                    x=latent_input_5d,
+                    t=timestep,
+                    cap_feats=embeds_input,
+                    cap_mask=mask_input,
+                )
+
+                # Remove channel dimension
+                noise_pred = model_pred.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
 
                 # CFG
                 if guidance_scale > 1.0:

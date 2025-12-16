@@ -1950,10 +1950,16 @@ class BaseTrainer(ABC):
                                 guidance_scale=sample_guidance_scale
                             )
 
-                        sample_path = self.output_dir / "samples" / f"step_{global_step}.png"
+                        # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
+                        sample_path = self.output_dir / "samples" / f"step_{global_step:06d}_sample_0.png"
                         sample_path.parent.mkdir(parents=True, exist_ok=True)
                         sample.save(sample_path)
                         print(f"{self.log_prefix} Saved sample to {sample_path}")
+
+                        # Log to TensorBoard (same as stable version)
+                        import torchvision
+                        image_tensor = torchvision.transforms.ToTensor()(sample)
+                        self.writer.add_image("samples/sample_0", image_tensor, global_step=global_step)
 
                     # Progress callback
                     if progress_callback:

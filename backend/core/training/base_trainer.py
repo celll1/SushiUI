@@ -538,39 +538,44 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
+    def load_checkpoint(self, checkpoint_path: str) -> int:
         """
-        Load training checkpoint.
+        Load training checkpoint (must be implemented by subclass).
 
         Args:
             checkpoint_path: Path to checkpoint file
 
         Returns:
-            Dictionary with checkpoint state (step, epoch, etc.)
+            Step number from checkpoint
         """
-        pass
+        raise NotImplementedError("load_checkpoint() must be implemented by subclass")
 
-    def find_latest_checkpoint(self) -> Optional[str]:
+    def find_latest_checkpoint(self) -> Optional[Tuple[str, int]]:
         """
         Find the latest checkpoint in output directory.
 
         Returns:
-            Path to latest checkpoint, or None if no checkpoints exist
+            Tuple of (checkpoint_path, step) or None if no checkpoints exist
         """
-        # Default implementation (can be overridden)
-        checkpoint_files = list(self.output_dir.glob("checkpoint-*.safetensors"))
+        # Search for checkpoint files with pattern: {run_name}_step_{step}.safetensors
+        checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
         if not checkpoint_files:
+            print(f"{self.log_prefix} No checkpoints found in {self.output_dir}")
             return None
 
         # Sort by step number
         def get_step(path):
             try:
-                return int(path.stem.split("-")[-1])
-            except:
+                # Extract step number from filename: {run_name}_step_{step}.safetensors
+                step_str = path.stem.split("_step_")[-1]
+                return int(step_str)
+            except (ValueError, IndexError):
                 return 0
 
         latest = max(checkpoint_files, key=get_step)
-        return str(latest)
+        step = get_step(latest)
+        print(f"{self.log_prefix} Found latest checkpoint: {latest.name} (step {step})")
+        return (str(latest), step)
 
     # ============================================================
     # Optimizer Setup
@@ -1647,6 +1652,7 @@ class BaseTrainer(ABC):
         datasets: List[Any],
         latent_caches: Dict[str, Any],
         progress_callback: Optional[Callable] = None,
+        force_recache: bool = False,
     ):
         """
         Check latent caches and generate missing ones.
@@ -1655,14 +1661,19 @@ class BaseTrainer(ABC):
             datasets: List of dataset objects
             latent_caches: Dictionary of latent caches
             progress_callback: Progress callback function
+            force_recache: Force regenerate all caches even if they exist
         """
-        print(f"{self.log_prefix} Checking and generating missing latent caches...")
+        if force_recache:
+            print(f"{self.log_prefix} Force recache enabled: regenerating all latent caches...")
+        else:
+            print(f"{self.log_prefix} Checking and generating missing latent caches...")
 
-        # Generate missing latents (this will skip already cached items)
+        # Generate missing latents (this will skip already cached items unless force_recache=True)
         self._generate_missing_latents_with_model_offload(
             datasets=datasets,
             latent_caches=latent_caches,
             progress_callback=progress_callback,
+            force_recache=force_recache,
         )
 
     def _generate_missing_latents_with_model_offload(
@@ -1670,6 +1681,7 @@ class BaseTrainer(ABC):
         datasets: List[Any],
         latent_caches: Dict[str, Any],
         progress_callback: Optional[Callable] = None,
+        force_recache: bool = False,
     ):
         """
         Generate missing latents with model offloading for memory efficiency.
@@ -1698,12 +1710,12 @@ class BaseTrainer(ABC):
             cache = latent_caches[dataset.unique_id]
 
             for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}"):
-                # Check if already cached
+                # Check if already cached (skip if force_recache is False)
                 image_path = item["image_path"]
                 width = item["width"]
                 height = item["height"]
 
-                if cache.has_latent(image_path, width, height):
+                if not force_recache and cache.has_latent(image_path, width, height):
                     processed_items += 1
                     continue
 
@@ -1759,10 +1771,120 @@ class BaseTrainer(ABC):
         # VAE stays on CPU (already there)
         print(f"{self.log_prefix} Latent cache generation complete ({iteration_count} images encoded)")
 
+    def _regenerate_single_latent(
+        self,
+        image_path: str,
+        width: int,
+        height: int,
+        cache: Any,
+        latent_caches: Dict[str, Any],
+    ) -> torch.Tensor:
+        """
+        Regenerate a single latent on-the-fly during training with model offloading.
+
+        This is called when latent cache is corrupted or has shape mismatch.
+        Offloads training components temporarily and loads VAE to GPU.
+
+        Args:
+            image_path: Path to source image
+            width: Target width
+            height: Target height
+            cache: LatentCache object
+            latent_caches: Dictionary of all latent caches (unused, for future use)
+
+        Returns:
+            Regenerated latent tensor
+        """
+        print(f"{self.log_prefix} [Latent Regeneration] Offloading models...")
+
+        # Save current device states
+        if self.is_zimage:
+            transformer_device = next(self.transformer.parameters()).device
+            text_encoder_device = next(self.text_encoder.parameters()).device
+        else:
+            unet_device = next(self.unet.parameters()).device
+            if self.text_encoder:
+                text_encoder_device = next(self.text_encoder.parameters()).device
+            if self.is_sdxl and self.text_encoder_2:
+                text_encoder_2_device = next(self.text_encoder_2.parameters()).device
+
+        vae_device = next(self.vae.parameters()).device
+
+        try:
+            # Offload training components to CPU
+            if self.is_zimage:
+                if transformer_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving Transformer to CPU...")
+                    self.transformer.to('cpu')
+                if text_encoder_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder to CPU...")
+                    self.text_encoder.to('cpu')
+            else:
+                if unet_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving U-Net to CPU...")
+                    self.unet.to('cpu')
+                if self.text_encoder and text_encoder_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder to CPU...")
+                    self.text_encoder.to('cpu')
+                if self.is_sdxl and self.text_encoder_2 and text_encoder_2_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder 2 to CPU...")
+                    self.text_encoder_2.to('cpu')
+
+            torch.cuda.empty_cache()
+
+            # Move VAE to GPU
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Latent Regeneration] Moving VAE to GPU...")
+                self.vae.to(self.device)
+
+            # Load and encode image
+            print(f"{self.log_prefix} [Latent Regeneration] Encoding image: {image_path}")
+            image = Image.open(image_path)
+            latent = self.encode_image(
+                image=image,
+                target_width=width,
+                target_height=height,
+            )
+            image.close()
+
+            # Save to cache
+            cache.save_latent(
+                image_path=image_path,
+                width=width,
+                height=height,
+                latents=latent,
+            )
+            print(f"{self.log_prefix} [Latent Regeneration] Latent regenerated and saved to cache")
+
+        finally:
+            # Restore original device states
+            print(f"{self.log_prefix} [Latent Regeneration] Restoring models...")
+            if self.is_zimage:
+                if transformer_device != torch.device('cpu'):
+                    self.transformer.to(transformer_device)
+                if text_encoder_device != torch.device('cpu'):
+                    self.text_encoder.to(text_encoder_device)
+            else:
+                if unet_device != torch.device('cpu'):
+                    self.unet.to(unet_device)
+                if self.text_encoder and text_encoder_device != torch.device('cpu'):
+                    self.text_encoder.to(text_encoder_device)
+                if self.is_sdxl and self.text_encoder_2 and text_encoder_2_device != torch.device('cpu'):
+                    self.text_encoder_2.to(text_encoder_2_device)
+
+            if vae_device != self.device:
+                self.vae.to(vae_device)
+
+            torch.cuda.empty_cache()
+            print(f"{self.log_prefix} [Latent Regeneration] Models restored")
+
+        return latent
+
     def _setup_text_encoder_cache(
         self,
         datasets: List[Any],
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        epoch_num: Optional[int] = None
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Setup text encoder cache for Z-Image (caption pre-encoding).
@@ -1770,6 +1892,7 @@ class BaseTrainer(ABC):
         Args:
             datasets: List of dataset objects
             progress_callback: Progress callback function
+            epoch_num: Current epoch number (for logging)
 
         Returns:
             Dictionary mapping caption to (prompt_embeds, attention_mask)
@@ -1777,7 +1900,8 @@ class BaseTrainer(ABC):
         if not self.is_zimage:
             return None
 
-        print(f"{self.log_prefix} Setting up text encoder cache (Z-Image)...")
+        epoch_info = f" (Epoch {epoch_num + 1})" if epoch_num is not None else ""
+        print(f"{self.log_prefix} Setting up text encoder cache (Z-Image){epoch_info}...")
 
         # Collect unique captions
         unique_captions = set()
@@ -1787,7 +1911,7 @@ class BaseTrainer(ABC):
                 if caption:
                     unique_captions.add(caption)
 
-        print(f"{self.log_prefix} Found {len(unique_captions)} unique captions")
+        print(f"{self.log_prefix} Found {len(unique_captions)} unique captions{epoch_info}")
 
         # Encode all captions
         text_encoder_cache = {}
@@ -1843,6 +1967,9 @@ class BaseTrainer(ABC):
         debug_latents: bool = False,
         debug_latents_every: int = 50,
         progress_callback: Optional[Callable] = None,
+        run_id: Optional[int] = None,
+        resume_from_checkpoint: Optional[str] = None,
+        force_recache: bool = False,
     ):
         """
         Main training loop.
@@ -1941,16 +2068,68 @@ class BaseTrainer(ABC):
 
         # Setup latent caches
         latent_caches = self._setup_latent_caches(datasets)
-        self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback)
+        self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
 
-        # Setup text encoder cache (Z-Image only)
-        text_encoder_cache = self._setup_text_encoder_cache(datasets, progress_callback) if self.is_zimage else None
+        # Text encoder cache will be rebuilt per epoch (Z-Image only, for shuffle/dropout per epoch)
+        text_encoder_cache = None
 
         # Training loop
         global_step = 0
+        start_epoch = 0
 
-        for epoch in range(num_epochs):
+        # Resume from checkpoint if requested
+        if resume_from_checkpoint:
+            if resume_from_checkpoint.lower() == "latest":
+                # Auto-detect latest checkpoint
+                checkpoint_result = self.find_latest_checkpoint()
+                if checkpoint_result is not None:
+                    checkpoint_path, checkpoint_step = checkpoint_result
+                    print(f"{self.log_prefix} Resuming from latest checkpoint: {checkpoint_path}")
+                    loaded_step = self.load_checkpoint(checkpoint_path)
+                    global_step = loaded_step
+
+                    # Calculate which epoch to start from
+                    start_epoch = global_step // steps_per_epoch
+                    print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
+
+                    # Fast-forward lr_scheduler to match the checkpoint
+                    for _ in range(global_step):
+                        self.lr_scheduler.step()
+                else:
+                    print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
+            else:
+                # User specified a specific checkpoint file
+                checkpoint_path = self.output_dir / resume_from_checkpoint
+                if checkpoint_path.exists():
+                    print(f"{self.log_prefix} Resuming from specified checkpoint: {checkpoint_path}")
+                    loaded_step = self.load_checkpoint(str(checkpoint_path))
+                    global_step = loaded_step
+
+                    # Calculate which epoch to start from
+                    start_epoch = global_step // steps_per_epoch
+                    print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
+
+                    # Fast-forward lr_scheduler to match the checkpoint
+                    for _ in range(global_step):
+                        self.lr_scheduler.step()
+                else:
+                    print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
+                    print(f"{self.log_prefix} Starting from scratch")
+
+        for epoch in range(start_epoch, num_epochs):
             print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
+
+            # Reload datasets for per-epoch shuffle/dropout
+            # (This regenerates captions with different shuffle/dropout based on epoch_num)
+            for dataset in datasets:
+                if hasattr(dataset, 'reload_for_epoch'):
+                    dataset.items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
+                    print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
+
+            # Rebuild text encoder cache for new captions (Z-Image only)
+            # This ensures cache hits for all captions generated by shuffle/dropout per epoch
+            if self.is_zimage:
+                text_encoder_cache = self._setup_text_encoder_cache(datasets, progress_callback, epoch_num=epoch)
 
             # Create batches
             if bucket_manager:
@@ -1993,7 +2172,24 @@ class BaseTrainer(ABC):
                     # BucketManager stores bucket_width/bucket_height, not width/height
                     width = item.get("width") or item.get("bucket_width")
                     height = item.get("height") or item.get("bucket_height")
+
                     latent = cache.load_latent(item["image_path"], width, height)
+
+                    # On-the-fly regeneration if cache is corrupted or incompatible
+                    if latent is None:
+                        print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
+                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
+                    # Validate latent shape
+                    expected_latent_height = height // 8
+                    expected_latent_width = width // 8
+                    if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
+                        print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
+                        print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
+                        print(f"{self.log_prefix}   Got: {list(latent.shape)}")
+                        print(f"{self.log_prefix}   Regenerating latent...")
+                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
                     latents_list.append(latent)
 
                     # Encode caption

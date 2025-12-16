@@ -260,7 +260,7 @@ class FullParameterTrainer(BaseTrainer):
 
         print(f"{self.specific_log_prefix} Checkpoint saved: {save_path}")
 
-    def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
+    def load_checkpoint(self, checkpoint_path: str) -> int:
         """
         Load full model checkpoint from safetensors file.
 
@@ -268,7 +268,7 @@ class FullParameterTrainer(BaseTrainer):
             checkpoint_path: Path to checkpoint file
 
         Returns:
-            Dictionary with checkpoint state (step, epoch)
+            Step number from checkpoint
         """
         print(f"{self.specific_log_prefix} Loading checkpoint from {checkpoint_path}")
 
@@ -367,7 +367,7 @@ class FullParameterTrainer(BaseTrainer):
 
         print(f"{self.specific_log_prefix} Checkpoint loaded (step {step}, epoch {epoch})")
 
-        return {"step": step, "epoch": epoch}
+        return step
 
     def find_latest_checkpoint(self) -> Optional[str]:
         """

@@ -1412,6 +1412,10 @@ class BaseTrainer(ABC):
                 # Normalize timestep to [0, 1] (Z-Image expects normalized timesteps)
                 timestep = (1000 - timestep) / 1000
 
+                # Convert latents to transformer dtype (same as inference pipeline:1037-1046)
+                transformer_dtype = next(self.transformer_original.parameters()).dtype
+                latent_input = latent_input.to(transformer_dtype)
+
                 # Add channel dimension and convert to list (same as inference pipeline)
                 latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
                 latent_input_list = list(latent_input_5d.unbind(dim=0))  # List of [C, 1, H, W]

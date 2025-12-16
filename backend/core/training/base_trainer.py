@@ -349,6 +349,11 @@ class BaseTrainer(ABC):
         if self.use_flash_attention:
             self._setup_flash_attention_zimage()
 
+        # Move Transformer to GPU
+        print(f"{self.log_prefix} Moving Transformer to {self.device}...")
+        self.transformer_original.to(self.device)
+        self.transformer.to(self.device)
+
         print(f"{self.log_prefix} Z-Image model loaded successfully")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")

@@ -1398,20 +1398,26 @@ class BaseTrainer(ABC):
                     mask_input = attention_mask
 
                 # Predict noise (use original transformer for single-image inference)
-                # Add channel dimension for Z-Image (expects 5D: [B, C, F, H, W])
+                # Use inference interface: List[Tensor] format, positional args only (no cap_mask)
                 timestep = t.to(self.device)
+
+                # Add channel dimension and convert to list (same as inference pipeline)
                 latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
+                latent_input_list = list(latent_input_5d.unbind(dim=0))  # List of [C, 1, H, W]
 
-                # Call transformer (same interface as training)
-                model_pred, _ = self.transformer_original(
-                    x=latent_input_5d,
-                    t=timestep,
-                    cap_feats=embeds_input,
-                    cap_mask=mask_input,
-                )
+                # Convert embeddings to list (each item: [seq_len, 2560])
+                embeds_input_list = list(embeds_input.unbind(dim=0))
 
-                # Remove channel dimension
-                noise_pred = model_pred.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
+                # Call transformer (inference interface: positional args, List format)
+                model_out_list = self.transformer_original(
+                    latent_input_list,
+                    timestep,
+                    embeds_input_list,
+                )[0]
+
+                # Stack back to tensor and remove channel dimension
+                model_pred = torch.stack(model_out_list, dim=0)  # [B, C, 1, H, W]
+                noise_pred = model_pred.squeeze(2)  # [B, C, H, W]
 
                 # CFG
                 if guidance_scale > 1.0:

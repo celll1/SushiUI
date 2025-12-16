@@ -1725,13 +1725,29 @@ class DiffusionPipelineManager:
             noise_pred = -noise_pred.squeeze(2)
             latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
-            # Inpaint mask blending: blend denoised latents with original latents
+            # Inpaint mask blending: blend denoised latents with noised original latents
             if mask_latent is not None and original_latents is not None:
-                # mask_latent: 1 = inpaint (use denoised), 0 = keep (use original)
-                # latents = mask * denoised + (1 - mask) * original
+                # For inpaint, non-masked area should also be noised at current timestep
+                # then blended with denoised latents
                 original_latents_device = original_latents.to(device=latents.device, dtype=latents.dtype)
                 mask_latent_device = mask_latent.to(device=latents.device, dtype=latents.dtype)
-                latents = mask_latent_device * latents + (1.0 - mask_latent_device) * original_latents_device
+
+                # Add noise to original latents at current timestep
+                # This ensures non-masked area follows the same noise schedule
+                if i < len(timesteps) - 1:  # Not the last step
+                    next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
+                    # Generate noise for original latents
+                    noise_for_original = torch.randn_like(original_latents_device)
+
+                    # Flow Matching: add noise at next timestep level
+                    t_next_normalized = next_t.item() / 1000.0
+                    noised_original = (1.0 - t_next_normalized) * original_latents_device + t_next_normalized * noise_for_original
+                else:
+                    # Last step: use clean original latents
+                    noised_original = original_latents_device
+
+                # Blend: mask * denoised + (1 - mask) * noised_original
+                latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original
 
             if actual_step % 5 == 1 or actual_step == num_inference_steps:
                 print(f"[Z-Image] Step {actual_step}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")

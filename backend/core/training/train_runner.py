@@ -546,6 +546,10 @@ def main():
             if sample_prompts and len(sample_prompts) > 0:
                 sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
 
+            # Get sample generation settings
+            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
+            sample_steps = process_config['sample'].get('sample_steps', 28)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -554,6 +558,8 @@ def main():
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
                 sample_prompt=sample_prompt,
+                sample_guidance_scale=sample_guidance_scale,
+                sample_steps=sample_steps,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -699,6 +705,10 @@ def main():
             if sample_prompts and len(sample_prompts) > 0:
                 sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
 
+            # Get sample generation settings
+            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
+            sample_steps = process_config['sample'].get('sample_steps', 28)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -707,6 +717,8 @@ def main():
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
                 sample_prompt=sample_prompt,
+                sample_guidance_scale=sample_guidance_scale,
+                sample_steps=sample_steps,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,

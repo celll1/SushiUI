@@ -2200,6 +2200,13 @@ class BaseTrainer(ABC):
 
                 # Training loop
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}")):
+                    # Check for stop flag (user-requested stop from frontend)
+                    stop_flag_file = self.output_dir / ".stop_training"
+                    if stop_flag_file.exists():
+                        print(f"\n{self.log_prefix} Stop flag detected, stopping training...")
+                        stop_flag_file.unlink()  # Clean up flag file
+                        raise KeyboardInterrupt("Training stopped by user")
+
                     # Prepare batch data
                     latents_list = []
                     text_embeddings_list = []

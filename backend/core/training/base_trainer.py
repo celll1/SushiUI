@@ -1381,7 +1381,10 @@ class BaseTrainer(ABC):
         guidance_scale: float,
         scheduler,
     ) -> torch.Tensor:
-        """Run Z-Image denoising loop."""
+        """Run Z-Image denoising loop for sample generation.
+
+        Note: Uses transformer_original (not batched wrapper) for single-image inference.
+        """
         with torch.no_grad():
             for t in tqdm(scheduler.timesteps, desc="Generating"):
                 # Prepare input
@@ -1394,9 +1397,9 @@ class BaseTrainer(ABC):
                     embeds_input = prompt_embeds
                     mask_input = attention_mask
 
-                # Predict noise
+                # Predict noise (use original transformer for single-image inference)
                 timestep = t.to(self.device)
-                noise_pred = self.transformer(
+                noise_pred = self.transformer_original(
                     hidden_states=latent_input,
                     encoder_hidden_states=embeds_input,
                     timestep=timestep,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
@@ -21,7 +22,7 @@ import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getSch
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
-import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -74,6 +75,7 @@ interface Txt2ImgPanelProps {
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
   const { modelLoaded, isBackendReady } = useStartup();
+  const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -188,7 +190,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
-    console.clear();
+    // console.clear(); // Temporarily disabled for debugging
     console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
 
@@ -291,6 +293,81 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
 
   }, []);
+
+  // Listen for localStorage changes from Gallery/Preview (send to feature)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      // Only react to changes in our storage key from other tabs/windows
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          console.log("[Txt2Img] Received params from Gallery via storage event:", {
+            prompt_length: parsed.prompt?.length || 0,
+            steps: parsed.steps,
+            cfg_scale: parsed.cfg_scale,
+          });
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+        } catch (error) {
+          console.error("[Txt2Img] Failed to parse storage change:", error);
+        }
+      }
+    };
+
+    // Custom event for same-tab localStorage changes (Gallery -> Generate panel)
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Txt2Img] Received params from Gallery via custom event:", {
+            prompt_length: parsed.prompt?.length || 0,
+            steps: parsed.steps,
+            cfg_scale: parsed.cfg_scale,
+          });
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+        } catch (error) {
+          console.error("[Txt2Img] Failed to parse custom storage change:", error);
+        }
+      }
+    };
+
+    // storage event only fires for changes from OTHER tabs/windows
+    window.addEventListener('storage', handleStorageChange);
+    // Custom event for same-tab changes (triggered by ImageGrid)
+    window.addEventListener('txt2img_params_updated', handleCustomStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('txt2img_params_updated', handleCustomStorageChange);
+    };
+  }, []);
+
+  // Reload params from localStorage when navigating to /generate (from Gallery)
+  useEffect(() => {
+    if (pathname === "/generate" && isMounted) {
+      console.log("[Txt2Img] Page navigated to /generate, reloading params from localStorage");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Txt2Img] Params reloaded:", {
+            prompt_length: fixed.prompt?.length || 0,
+            steps: fixed.steps,
+            cfg_scale: fixed.cfg_scale,
+          });
+        } catch (error) {
+          console.error("[Txt2Img] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, isMounted]);
 
   // Reload images when backend becomes ready
   useEffect(() => {
@@ -412,15 +489,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Use generated image params if available, otherwise fall back to current UI params
     const sourceParams = generatedImageParams || params;
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "img2img_params");
-    }
+    console.log("[Txt2Img] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Txt2Img] sendToImg2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "img2img_params");
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "img2img_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: false,
+      dispatchEvent: "img2img_params_updated"
+    });
+
+    console.log("[Txt2Img] sendToImg2Img - Sent to panel");
 
     // Navigate to img2img tab
     if (onTabChange) {
@@ -446,15 +526,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Use generated image params if available, otherwise fall back to current UI params
     const sourceParams = generatedImageParams || params;
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "inpaint_params");
-    }
+    console.log("[Txt2Img] sendToInpaint - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Txt2Img] sendToInpaint - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "inpaint_params");
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "inpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: false,
+      dispatchEvent: "inpaint_params_updated"
+    });
+
+    console.log("[Txt2Img] sendToInpaint - Sent to panel");
 
     // Navigate to inpaint tab
     if (onTabChange) {

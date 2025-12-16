@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import logging
 from PIL import Image
+from sqlalchemy.orm import Session
 
 # Remove PIL image size limit for large images
 # Reference: https://kakashibata.hatenablog.jp/entry/2022/03/27/232553
@@ -135,12 +136,9 @@ if os.path.exists(settings.thumbnails_dir):
 else:
     print(f"[Static] WARNING: thumbnails_dir does not exist: {settings.thumbnails_dir}")
 
-# Mount training directory (use settings.training_dir for user-configured path)
-if os.path.exists(settings.training_dir):
-    print(f"[Static] Mounting /training -> {settings.training_dir}")
-    app.mount("/training", StaticFiles(directory=settings.training_dir), name="training")
-else:
-    print(f"[Static] WARNING: training directory does not exist: {settings.training_dir}")
+# Note: Training files (samples, checkpoints, etc.) are served via API endpoints
+# using run.output_dir, not static file mounting. This allows training_dir changes
+# without breaking access to old training runs.
 
 @app.get("/")
 async def root():

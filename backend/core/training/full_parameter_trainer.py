@@ -6,7 +6,7 @@ Inherits from BaseTrainer and implements full parameter-specific logic.
 """
 
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import torch
 from safetensors.torch import save_file, load_file
 
@@ -369,12 +369,12 @@ class FullParameterTrainer(BaseTrainer):
 
         return step
 
-    def find_latest_checkpoint(self) -> Optional[str]:
+    def find_latest_checkpoint(self) -> Optional[Tuple[str, int]]:
         """
         Find the latest valid checkpoint in output directory.
 
         Returns:
-            Path to latest checkpoint, or None if no checkpoints exist
+            Tuple of (checkpoint_path, step) or None if no checkpoints exist
         """
         # Find all safetensors files
         checkpoint_files = list(self.output_dir.glob("*.safetensors"))
@@ -432,7 +432,7 @@ class FullParameterTrainer(BaseTrainer):
         else:
             print(f"{self.specific_log_prefix} Latest checkpoint: {latest_ckpt} (step {latest_step}, no optimizer state)")
 
-        return latest_ckpt
+        return (latest_ckpt, latest_step)
 
     def _cleanup_old_checkpoints(self, current_step: int, max_to_keep: int, save_every: int):
         """

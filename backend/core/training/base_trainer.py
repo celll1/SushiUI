@@ -1426,17 +1426,26 @@ class BaseTrainer(ABC):
                     embeds_input_list,
                 )[0]
 
-                # Stack back to tensor and remove channel dimension
-                model_pred = torch.stack(model_out_list, dim=0)  # [B, C, 1, H, W]
-                noise_pred = model_pred.squeeze(2)  # [B, C, H, W]
-
-                # CFG
+                # Apply CFG if enabled (same as stable lora_trainer.py:2474-2492)
+                batch_size = latents.shape[0]
                 if guidance_scale > 1.0:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    # CFG output order matches input: [negative, positive]
+                    neg_out = model_out_list[:batch_size]  # negative (uncond)
+                    pos_out = model_out_list[batch_size:]  # positive (cond)
+                    noise_pred = []
+                    for j in range(batch_size):
+                        neg = neg_out[j].float()
+                        pos = pos_out[j].float()
+                        # Standard CFG formula (consistent with stable version)
+                        # pred = uncond + guidance_scale * (cond - uncond)
+                        pred = neg + guidance_scale * (pos - neg)
+                        noise_pred.append(pred)
+                    noise_pred = torch.stack(noise_pred, dim=0)
+                else:
+                    noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
 
-                # Z-Image flow matching: negate prediction (same as inference pipeline)
-                noise_pred = -noise_pred
+                # Remove frames dimension for scheduler (5D → 4D) and negate (same as stable version)
+                noise_pred = -noise_pred.squeeze(2)
 
                 # Denoise step
                 latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]

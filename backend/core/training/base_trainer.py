@@ -1052,22 +1052,28 @@ class BaseTrainer(ABC):
         prompt_embeds.requires_grad_(True)
         # Note: attention_mask is bool type, does not need gradients
 
-        # Predict noise using Transformer
+        # Add frame dimension for Z-Image: [B, C, H, W] -> [B, C, 1, H, W]
+        noisy_latents_4d = noisy_latents.unsqueeze(2)
+
+        # Predict velocity using Z-Image Transformer
         if self.mixed_precision:
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                model_pred = self.transformer(
-                    hidden_states=noisy_latents,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep=timesteps,
-                    encoder_attention_mask=attention_mask,
-                ).sample
+                model_pred, _ = self.transformer(
+                    x=noisy_latents_4d,
+                    t=timesteps,
+                    cap_feats=prompt_embeds,
+                    cap_mask=attention_mask,
+                )
         else:
-            model_pred = self.transformer(
-                hidden_states=noisy_latents,
-                encoder_hidden_states=prompt_embeds,
-                timestep=timesteps,
-                encoder_attention_mask=attention_mask,
-            ).sample
+            model_pred, _ = self.transformer(
+                x=noisy_latents_4d,
+                t=timesteps,
+                cap_feats=prompt_embeds,
+                cap_mask=attention_mask,
+            )
+
+        # Remove frame dimension: [B, C, 1, H, W] -> [B, C, H, W]
+        model_pred = model_pred.squeeze(2)
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")

@@ -1082,6 +1082,313 @@ class DiffusionPipelineManager:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image img2img generation failed: {str(e)}")
 
+    def _generate_inpaint_zimage(
+        self, params: dict, init_image, mask_image, progress_callback=None, step_callback=None
+    ) -> tuple:
+        """
+        Generate inpainted image using Z-Image model.
+
+        Inpaint = img2img + mask blending
+        - Encode init_image to latents
+        - Add noise based on denoising_strength
+        - Denoise with mask blending at each step
+        - Decode back to image
+
+        Args:
+            params: Generation parameters (prompt, steps, cfg_scale, etc.)
+            init_image: PIL Image (area to inpaint)
+            mask_image: PIL Image (white = inpaint, black = keep)
+            progress_callback: Progress callback function
+            step_callback: Step callback function
+
+        Returns:
+            (generated_image, seed)
+        """
+        try:
+            # Get components
+            text_encoder = self.zimage_components["text_encoder"]
+            tokenizer = self.zimage_components["tokenizer"]
+            transformer = self.zimage_components["transformer"]
+            vae = self.zimage_components["vae"]
+            scheduler = self.zimage_components["scheduler"]
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 8)
+            guidance_scale = params.get("cfg_scale", 3.5)
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            seed = params.get("seed", -1)
+            denoising_strength = params.get("denoising_strength", 0.75)
+            mask_blur = params.get("mask_blur", 0)
+            max_sequence_length = params.get("max_sequence_length", 256)
+
+            # Generate seed
+            if seed == -1:
+                seed = torch.randint(0, 2**32, (1,)).item()
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+
+            print(f"[Z-Image] Starting inpaint generation")
+            print(f"[Z-Image] Generating {width}x{height} inpainted image")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")
+            print(f"[Z-Image] Mask blur: {mask_blur}")
+            print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")
+            text_encoder_quantization = params.get("text_encoder_quantization")
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
+                self._zimage_encode_prompt(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    guidance_scale, max_sequence_length, text_encoder_quantization
+                )
+
+            # Offload Text Encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: VAE Encode Input Image and Mask
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE encode (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # Resize input image and mask if needed
+            if init_image.size != (width, height):
+                print(f"[Z-Image] Resizing input image from {init_image.size} to {width}x{height}")
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            if mask_image.size != (width, height):
+                print(f"[Z-Image] Resizing mask from {mask_image.size} to {width}x{height}")
+                mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Apply mask blur if requested
+            if mask_blur > 0:
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+                print(f"[Z-Image] Applied Gaussian blur to mask (radius={mask_blur})")
+
+            # Prepare image tensor
+            import numpy as np
+            image_array = np.array(init_image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Prepare mask tensor (white = 1 = inpaint, black = 0 = keep)
+            mask_array = np.array(mask_image.convert('L')).astype(np.float32) / 255.0  # Grayscale
+            mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)  # 1CHW
+            mask_tensor = mask_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Encode input image to latent space
+            with torch.no_grad():
+                h = vae.encoder(image_tensor)
+                if vae.quant_conv is not None:
+                    h = vae.quant_conv(h)
+                mean, logvar = torch.chunk(h, 2, dim=1)
+                std = torch.exp(0.5 * logvar)
+
+                # Generate noise with generator
+                noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
+                init_latents = mean + std * noise
+
+                # Z-Image VAE scaling factor
+                if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
+                    init_latents = init_latents * vae.config.scaling_factor
+                else:
+                    init_latents = init_latents * 0.13025
+
+                # Store original latents for mask blending
+                original_latents = init_latents.clone()
+
+                # Clean up intermediate tensors
+                del h, mean, logvar, std
+
+            # Resize mask to latent dimensions (downsample by VAE scale factor)
+            # Z-Image VAE: 8x downsampling -> latent is 1/8 of image size
+            latent_height = init_latents.shape[2]
+            latent_width = init_latents.shape[3]
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor, size=(latent_height, latent_width), mode='nearest'
+            )
+
+            print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
+            print(f"[Z-Image] Mask latent shape: {mask_latent.shape}")
+
+            # Offload VAE to CPU after encoding
+            move_zimage_vae_to_cpu(vae)
+
+            # ============================================================
+            # Stage 3: Add Noise to Latents (Flow Matching Style)
+            # ============================================================
+            device = torch.device(self.device)
+
+            # Calculate VAE scale factor for dynamic shift
+            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+            else:
+                vae_scale_factor = 8
+
+            # Calculate dynamic shift
+            from core.zimage_utils import calculate_shift
+            image_seq_len = (init_latents.shape[2] // 2) * (init_latents.shape[3] // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                scheduler.config.get("base_image_seq_len", 256),
+                scheduler.config.get("max_image_seq_len", 4096),
+                scheduler.config.get("base_shift", 0.5),
+                scheduler.config.get("max_shift", 1.15),
+            )
+
+            # Set scheduler parameters
+            scheduler.sigma_min = 0.0
+            scheduler_kwargs = {"mu": mu}
+
+            # Prepare full timesteps first
+            scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+            timesteps = scheduler.timesteps
+
+            # Calculate timestep to start from (based on strength)
+            init_timestep = int(num_inference_steps * denoising_strength)
+            t_start = max(num_inference_steps - init_timestep, 0)
+
+            # Get partial timesteps for inpaint
+            timesteps_inpaint = timesteps[t_start:]
+
+            print(f"[Z-Image] inpaint: Using {len(timesteps_inpaint)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
+
+            # Add noise to init_latents at the starting timestep
+            noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
+
+            # Flow Matching noise addition
+            if hasattr(scheduler, 'add_noise'):
+                print(f"[Z-Image] Using scheduler.add_noise() for noise addition")
+                noised_latents = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
+            else:
+                # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
+                t_normalized = timesteps_inpaint[0].item() / 1000.0
+                print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_inpaint[0].item():.1f}, t_norm={t_normalized:.3f}")
+                noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
+
+            print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
+
+            # ============================================================
+            # Stage 4: Denoising Loop with Mask Blending
+            # ============================================================
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 20)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+
+            if not enable_block_swap:
+                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                log_device_status("Ready for Z-Image denoising loop (inpaint)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+            else:
+                print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
+                from core.memory_management import create_block_offloader_for_model
+                block_offloader = create_block_offloader_for_model(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory
+                )
+                transformer._block_offloader = block_offloader
+                block_offloader.prepare_block_devices_before_forward()
+                log_device_status("Ready for Z-Image denoising loop (Block Swap enabled, inpaint)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+
+            # Run denoising loop with mask blending
+            latents = self._zimage_denoising_loop(
+                transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+                height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+                generator, progress_callback, step_callback,
+                init_latents=noised_latents,
+                timesteps_override=timesteps_inpaint,
+                mask_latent=mask_latent,
+                original_latents=original_latents
+            )
+
+            # Offload Transformer to CPU
+            move_zimage_transformer_to_cpu(transformer)
+            log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 5: VAE Decode
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            images = self._zimage_decode_latents(vae, latents)
+
+            # Offload VAE to CPU after decoding
+            move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors
+            del prompt_embeds_list, negative_prompt_embeds_list, init_latents, original_latents, noised_latents, mask_latent, latents
+            torch.cuda.empty_cache()
+
+            log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            print("[Z-Image] inpaint generation completed")
+
+            return images[0], seed
+
+        except Exception as e:
+            print(f"[Z-Image] inpaint generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Z-Image inpaint generation failed: {str(e)}")
+
     def _zimage_encode_prompt(
         self, text_encoder, tokenizer, prompt, negative_prompt,
         guidance_scale, max_sequence_length, text_encoder_quantization=None
@@ -1221,7 +1528,9 @@ class DiffusionPipelineManager:
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
         generator, progress_callback, step_callback,
         init_latents: Optional[torch.Tensor] = None,
-        timesteps_override: Optional[torch.Tensor] = None
+        timesteps_override: Optional[torch.Tensor] = None,
+        mask_latent: Optional[torch.Tensor] = None,
+        original_latents: Optional[torch.Tensor] = None
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1229,8 +1538,10 @@ class DiffusionPipelineManager:
         Transformer is on GPU when this is called, and will be moved to CPU after.
 
         Args:
-            init_latents: Optional initial latents for img2img (already noised)
-            timesteps_override: Optional timesteps for img2img (partial timesteps from t_start)
+            init_latents: Optional initial latents for img2img/inpaint (already noised)
+            timesteps_override: Optional timesteps for img2img/inpaint (partial timesteps from t_start)
+            mask_latent: Optional mask for inpainting (1 = inpaint, 0 = keep original)
+            original_latents: Optional original unnoised latents for inpaint blending
 
         Returns:
             latents: Denoised latents (torch.Tensor)
@@ -1405,6 +1716,14 @@ class DiffusionPipelineManager:
             # Scheduler step (flow matching)
             noise_pred = -noise_pred.squeeze(2)
             latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+
+            # Inpaint mask blending: blend denoised latents with original latents
+            if mask_latent is not None and original_latents is not None:
+                # mask_latent: 1 = inpaint (use denoised), 0 = keep (use original)
+                # latents = mask * denoised + (1 - mask) * original
+                original_latents_device = original_latents.to(device=latents.device, dtype=latents.dtype)
+                mask_latent_device = mask_latent.to(device=latents.device, dtype=latents.dtype)
+                latents = mask_latent_device * latents + (1.0 - mask_latent_device) * original_latents_device
 
             if actual_step % 5 == 1 or actual_step == num_inference_steps:
                 print(f"[Z-Image] Step {actual_step}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
@@ -3039,9 +3358,9 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
-        # Z-Image inpaint support (Phase 2 - not yet implemented)
+        # Z-Image inpaint support
         if self.is_zimage_model:
-            raise RuntimeError("Z-Image inpaint is not yet implemented (Phase 2). Please use img2img or txt2img instead.")
+            return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:

@@ -1291,25 +1291,17 @@ class DiffusionPipelineManager:
             # Add noise to init_latents at the starting timestep
             noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
 
-            # Prepare mask for noise addition (move to device)
-            mask_latent_device = mask_latent.to(device=device, dtype=torch.float32)
-
-            # Flow Matching noise addition - ONLY to masked area
+            # Flow Matching noise addition (apply to entire image, mask blending happens in loop)
             if hasattr(scheduler, 'add_noise'):
                 print(f"[Z-Image] Using scheduler.add_noise() for noise addition")
-                noised_full = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
-                # Apply noise only to masked area
-                noised_latents = mask_latent_device * noised_full + (1.0 - mask_latent_device) * init_latents
+                noised_latents = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
             else:
                 # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
                 t_normalized = timesteps_inpaint[0].item() / 1000.0
                 print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_inpaint[0].item():.1f}, t_norm={t_normalized:.3f}")
-                noised_full = (1.0 - t_normalized) * init_latents + t_normalized * noise
-                # Apply noise only to masked area (non-masked area keeps original latents)
-                noised_latents = mask_latent_device * noised_full + (1.0 - mask_latent_device) * init_latents
+                noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
-            print(f"[Z-Image] Mask applied: masked area noised, non-masked area preserved")
 
             # ============================================================
             # Stage 4: Denoising Loop with Mask Blending
@@ -1733,18 +1725,13 @@ class DiffusionPipelineManager:
                 mask_latent_device = mask_latent.to(device=latents.device, dtype=latents.dtype)
 
                 # Add noise to original latents at current timestep
-                # This ensures non-masked area follows the same noise schedule
-                if i < len(timesteps) - 1:  # Not the last step
-                    next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
-                    # Generate noise for original latents
-                    noise_for_original = torch.randn_like(original_latents_device)
+                # Use CURRENT timestep t (not next), as we're blending with current denoised latents
+                # Generate noise for original latents
+                noise_for_original = torch.randn_like(original_latents_device)
 
-                    # Flow Matching: add noise at next timestep level
-                    t_next_normalized = next_t.item() / 1000.0
-                    noised_original = (1.0 - t_next_normalized) * original_latents_device + t_next_normalized * noise_for_original
-                else:
-                    # Last step: use clean original latents
-                    noised_original = original_latents_device
+                # Flow Matching: add noise at current timestep level
+                # t_norm is already calculated above (line 1643)
+                noised_original = (1.0 - t_norm) * original_latents_device + t_norm * noise_for_original
 
                 # Blend: mask * denoised + (1 - mask) * noised_original
                 latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original

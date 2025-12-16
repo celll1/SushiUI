@@ -21,8 +21,12 @@ def get_cache_base_dir() -> str:
     """
     Get the base cache directory from user settings.
 
+    Priority:
+    1. UserSettings.cache_dir (if set in database)
+    2. settings.cache_dir (default from config/settings.py)
+
     Returns:
-        Base cache directory path (default: "cache/datasets")
+        Base cache directory path with /datasets suffix
     """
     try:
         from database import get_gallery_db
@@ -30,18 +34,24 @@ def get_cache_base_dir() -> str:
 
         db = next(get_gallery_db())
         try:
-            settings = db.query(UserSettings).first()
-            if settings and settings.cache_dir:
-                # User configured cache directory
-                return str(Path(settings.cache_dir) / "datasets")
+            user_settings = db.query(UserSettings).first()
+            if user_settings and user_settings.cache_dir:
+                # User configured cache directory (from database)
+                return str(Path(user_settings.cache_dir) / "datasets")
         finally:
             db.close()
     except Exception as e:
         # Fallback to default if database query fails
-        print(f"[Cache] Warning: Failed to get cache_dir from settings: {e}")
+        print(f"[Cache] Warning: Failed to get cache_dir from UserSettings: {e}")
 
-    # Default cache directory
-    return "cache/datasets"
+    # Default cache directory (from config/settings.py)
+    try:
+        from config.settings import settings
+        return str(Path(settings.cache_dir) / "datasets")
+    except Exception as e:
+        print(f"[Cache] Warning: Failed to get cache_dir from settings: {e}")
+        # Ultimate fallback
+        return "cache/datasets"
 
 
 class LatentCache:

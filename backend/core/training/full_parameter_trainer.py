@@ -434,47 +434,6 @@ class FullParameterTrainer(BaseTrainer):
 
         return (latest_ckpt, latest_step)
 
-    def _cleanup_old_checkpoints(self, current_step: int, max_to_keep: int, save_every: int):
-        """
-        Remove old checkpoints to keep only the latest N checkpoints.
-
-        Args:
-            current_step: Current training step
-            max_to_keep: Maximum number of checkpoints to keep
-            save_every: Save interval (used to calculate which checkpoint to delete)
-        """
-        # Calculate which step to remove
-        remove_step = current_step - (save_every * max_to_keep)
-
-        if remove_step < save_every:
-            return
-
-        # Extract short name from run_name
-        import re
-        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
-        if match:
-            short_name = match.group(1)
-        else:
-            short_name = self.run_name
-
-        # Remove checkpoint at remove_step
-        checkpoint_path = self.output_dir / f"{short_name}_step_{remove_step}.safetensors"
-        optimizer_path = self.output_dir / f"{short_name}_step_{remove_step}.pt"
-
-        if checkpoint_path.exists():
-            try:
-                checkpoint_path.unlink()
-                print(f"{self.specific_log_prefix} Removed old checkpoint: {checkpoint_path}")
-            except Exception as e:
-                print(f"{self.specific_log_prefix} WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
-
-        if optimizer_path.exists():
-            try:
-                optimizer_path.unlink()
-                print(f"{self.specific_log_prefix} Removed old optimizer state: {optimizer_path}")
-            except Exception as e:
-                print(f"{self.specific_log_prefix} WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
-
     def merge_and_save(self, output_path: str):
         """
         Save full model directly (no merge needed).

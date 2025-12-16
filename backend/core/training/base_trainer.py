@@ -1050,7 +1050,7 @@ class BaseTrainer(ABC):
         # Enable gradients for gradient checkpointing
         noisy_latents.requires_grad_(True)
         prompt_embeds.requires_grad_(True)
-        attention_mask.requires_grad_(True)
+        # Note: attention_mask is bool type, does not need gradients
 
         # Predict noise using Transformer
         if self.mixed_precision:

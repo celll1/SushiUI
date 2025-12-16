@@ -4453,11 +4453,7 @@ async def get_training_samples(
     samples_by_step = {}
     pattern = re.compile(r"step_(\d+)_sample_(\d+)\.png")
 
-    # Get absolute path of training directory (project root / training)
-    import os
-    project_root = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    training_base = (project_root / "training").resolve()
-
+    # Build sample file list using run.output_dir (not UserSettings.training_dir)
     for file in sample_files:
         match = pattern.match(file.name)
         if match:
@@ -4467,18 +4463,9 @@ async def get_training_samples(
             if step not in samples_by_step:
                 samples_by_step[step] = []
 
-            # Convert absolute path to relative path from training directory
-            # e.g., /path/to/training/20251130_220607_28dee11d/samples/step_000100_sample_0.png
-            # -> 20251130_220607_28dee11d/samples/step_000100_sample_0.png
-            file_abs = file.resolve()
-            try:
-                relative_path = file_abs.relative_to(training_base)
-                path_url = f"/training/{relative_path.as_posix()}"
-            except ValueError:
-                # Fallback: if not under training directory, construct path from output_dir
-                # This should not happen but handle gracefully
-                relative_to_output = file.relative_to(output_dir)
-                path_url = f"/training/{output_dir.name}/{relative_to_output.as_posix()}"
+            # Use API endpoint to serve sample images (not static files)
+            # This ensures compatibility even if UserSettings.training_dir changes
+            path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}"
 
             samples_by_step[step].append({
                 "sample_index": sample_idx,
@@ -4494,6 +4481,40 @@ async def get_training_samples(
         })
 
     return {"samples": samples}
+
+@router.get("/training/runs/{run_id}/samples/{filename}")
+async def get_training_sample_image(
+    run_id: int,
+    filename: str,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Serve a specific sample image file from run.output_dir
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    output_dir = Path(run.output_dir)
+    samples_dir = output_dir / "samples"
+    file_path = samples_dir / filename
+
+    # Security check: ensure file is within samples directory
+    try:
+        file_path = file_path.resolve()
+        samples_dir = samples_dir.resolve()
+        if not str(file_path).startswith(str(samples_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Sample image not found")
+
+    # Return image file
+    from fastapi.responses import FileResponse
+    return FileResponse(file_path, media_type="image/png")
 
 
 # ============================================================

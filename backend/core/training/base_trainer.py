@@ -349,6 +349,23 @@ class BaseTrainer(ABC):
         if self.use_flash_attention:
             self._setup_flash_attention_zimage()
 
+        # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
+        if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+            self.transformer.enable_gradient_checkpointing()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
+        else:
+            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
+
+        # Enable gradient checkpointing for Text Encoder
+        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
+
+        # Freeze all base weights (full parameter training will unfreeze specific layers later)
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
         # Move Transformer to GPU
         print(f"{self.log_prefix} Moving Transformer to {self.device}...")
         self.transformer_original.to(self.device)

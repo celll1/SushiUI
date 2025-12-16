@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
@@ -22,7 +23,7 @@ import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInp
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -192,6 +193,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -233,7 +238,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
-    console.clear();
+    // console.clear(); // Temporarily disabled for debugging
     console.log("=== InpaintPanel mounted ===");
     setIsMounted(true);
 
@@ -400,6 +405,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           console.error('Failed to parse loop generation config:', e);
         }
       }
+
+      // Mark initial load as complete
+      setIsInitialLoad(false);
+      console.log("[Inpaint] Initial load complete");
     };
 
     loadInitialData();
@@ -532,19 +541,89 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   }, [inputImagePreview]);
 
-  // Save params to localStorage whenever they change (but only after mounted)
+  // Save params to localStorage whenever they change (but only after mounted and initial load complete)
   useEffect(() => {
-    if (isMounted) {
-      // ControlNet images are now managed by ControlNetSelector via tempImageStorage
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
-      console.log('[Inpaint] Saving params to localStorage:', {
-        loras: params.loras?.length || 0,
-        controlnets: params.controlnets?.length || 0,
-        prompt_length: params.prompt?.length || 0,
-        // Don't log full params to avoid base64 spam
-      });
+    if (isMounted && !isInitialLoad) {
+      // Only save if params are different from what's in localStorage
+      // This prevents overwriting params sent from Gallery/other panels
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const savedParams = saved ? JSON.parse(saved) : null;
+      const currentParamsStr = JSON.stringify(params);
+      const savedParamsStr = savedParams ? JSON.stringify(savedParams) : null;
+
+      if (currentParamsStr !== savedParamsStr) {
+        console.log('[Inpaint] Params changed by user, saving to localStorage:', {
+          loras: params.loras?.length || 0,
+          controlnets: params.controlnets?.length || 0,
+          prompt_length: params.prompt?.length || 0,
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+      }
     }
-  }, [params, isMounted]);
+  }, [params, isMounted, isInitialLoad]);
+
+  // Listen for localStorage changes from Gallery/Preview (send to feature)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Inpaint] Params updated from storage event (cross-tab)");
+        } catch (error) {
+          console.error("[Inpaint] Failed to parse storage change:", error);
+        }
+      }
+    };
+
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Inpaint] Params updated from custom storage event (same-tab)");
+        } catch (error) {
+          console.error("[Inpaint] Failed to parse custom storage change:", error);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('inpaint_params_updated', handleCustomStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('inpaint_params_updated', handleCustomStorageChange);
+    };
+  }, []);
+
+  // Reload params from localStorage when navigating to /generate?tab=inpaint (from Gallery)
+  useEffect(() => {
+    if (pathname === "/generate" && searchParams.get('tab') === 'inpaint' && isMounted) {
+      console.log("[Inpaint] Page navigated to inpaint tab, reloading params from localStorage");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Inpaint] Params reloaded:", {
+            prompt_length: fixed.prompt?.length || 0,
+            steps: fixed.steps,
+            cfg_scale: fixed.cfg_scale,
+          });
+        } catch (error) {
+          console.error("[Inpaint] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, searchParams, isMounted]);
 
   // Save preview image to localStorage whenever it changes
   useEffect(() => {
@@ -847,15 +926,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       }
     }
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "img2img_params");
-    }
+    console.log("[Inpaint] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Inpaint] sendToImg2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "img2img_params", true);
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "img2img_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "img2img_params_updated"
+    });
+
+    console.log("[Inpaint] sendToImg2Img - Sent to panel");
 
     // Navigate to img2img tab
     if (onTabChange) {

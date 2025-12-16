@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
@@ -23,7 +24,7 @@ import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetC
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -175,6 +176,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -216,7 +221,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
-    console.clear();
+    // console.clear(); // Temporarily disabled for debugging
     console.log("=== Img2ImgPanel mounted ===");
     setIsMounted(true);
 
@@ -348,6 +353,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           console.error('Failed to parse loop generation config:', e);
         }
       }
+
+      // Mark initial load as complete
+      setIsInitialLoad(false);
+      console.log("[Img2Img] Initial load complete");
     };
 
     loadInitialData();
@@ -481,19 +490,96 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     };
   }, []);
 
-  // Save params to localStorage whenever they change (but only after mounted)
+  // Save params to localStorage whenever they change (but only after mounted and initial load complete)
   useEffect(() => {
-    if (isMounted) {
-      // ControlNet images are now managed by ControlNetSelector via tempImageStorage
-      console.log("[Img2Img] Saving params to localStorage:", {
-        loras: params.loras?.length || 0,
-        controlnets: params.controlnets?.length || 0,
-        prompt_length: params.prompt?.length || 0,
-        // Don't log full params to avoid base64 spam
-      });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+    if (isMounted && !isInitialLoad) {
+      // Only save if params are different from what's in localStorage
+      // This prevents overwriting params sent from Gallery/other panels
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const savedParams = saved ? JSON.parse(saved) : null;
+      const currentParamsStr = JSON.stringify(params);
+      const savedParamsStr = savedParams ? JSON.stringify(savedParams) : null;
+
+      if (currentParamsStr !== savedParamsStr) {
+        console.log("[Img2Img] Params changed by user, saving to localStorage:", {
+          loras: params.loras?.length || 0,
+          controlnets: params.controlnets?.length || 0,
+          prompt_length: params.prompt?.length || 0,
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+      }
     }
-  }, [params, isMounted]);
+  }, [params, isMounted, isInitialLoad]);
+
+  // Listen for localStorage changes from Gallery/Preview (send to feature)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Img2Img] Params updated from storage event (cross-tab)");
+        } catch (error) {
+          console.error("[Img2Img] Failed to parse storage change:", error);
+        }
+      }
+    };
+
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      console.log("[Img2Img] handleCustomStorageChange - saved:", saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Img2Img] handleCustomStorageChange - parsed:", parsed);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          console.log("[Img2Img] handleCustomStorageChange - merged prompt:", merged.prompt);
+          setParams(fixed);
+          console.log("[Img2Img] Params updated from custom storage event (same-tab)");
+        } catch (error) {
+          console.error("[Img2Img] Failed to parse custom storage change:", error);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('img2img_params_updated', handleCustomStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('img2img_params_updated', handleCustomStorageChange);
+    };
+  }, []);
+
+  // Reload params from localStorage when navigating to /generate?tab=img2img (from Gallery)
+  useEffect(() => {
+    if (pathname === "/generate" && searchParams.get('tab') === 'img2img' && isMounted) {
+      console.log("[Img2Img] Page navigated to img2img tab, reloading params from localStorage");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      console.log("[Img2Img] Navigation reload - saved:", saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Img2Img] Navigation reload - parsed:", parsed);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          console.log("[Img2Img] Navigation reload - merged prompt:", merged.prompt);
+          setParams(fixed);
+          console.log("[Img2Img] Params reloaded:", {
+            prompt_length: fixed.prompt?.length || 0,
+            prompt: fixed.prompt,
+            steps: fixed.steps,
+            cfg_scale: fixed.cfg_scale,
+          });
+        } catch (error) {
+          console.error("[Img2Img] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, searchParams, isMounted]);
 
   // Save preview image to localStorage whenever it changes
   useEffect(() => {
@@ -740,15 +826,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, STORAGE_KEY);
-    }
+    console.log("[Img2Img] sendToTxt2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Img2Img] sendToTxt2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, STORAGE_KEY, true);
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, STORAGE_KEY, {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "txt2img_params_updated"
+    });
+
+    console.log("[Img2Img] sendToTxt2Img - Sent to panel");
   };
 
   const sendToInpaint = async () => {
@@ -769,15 +858,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "inpaint_params");
-    }
+    console.log("[Img2Img] sendToInpaint - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Img2Img] sendToInpaint - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "inpaint_params", true);
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "inpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "inpaint_params_updated"
+    });
+
+    console.log("[Img2Img] sendToInpaint - Sent to panel");
 
     // Navigate to inpaint tab
     if (onTabChange) {

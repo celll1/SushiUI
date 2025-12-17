@@ -1918,6 +1918,43 @@ class BaseTrainer(ABC):
 
         return latent
 
+    def _load_caption_embedding_from_disk(self, caption: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Load caption embedding from disk cache.
+
+        Similar to LatentCache.load_latent(), but searches across multiple dataset
+        cache directories since captions can be shared between datasets.
+
+        Args:
+            caption: Caption text
+
+        Returns:
+            (prompt_embeds, attention_mask) tuple or None if not cached
+        """
+        import hashlib
+
+        if not hasattr(self, 'text_encoder_cache_dirs') or not self.text_encoder_cache_dirs:
+            return None
+
+        # Compute caption hash (same method as LatentCache.compute_caption_hash)
+        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+
+        # Try to find caption in any cache directory (multi-dataset support)
+        # Unlike latent cache (per-dataset), text embeddings can be shared across datasets
+        for cache_dir in self.text_encoder_cache_dirs:
+            embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
+            mask_path = cache_dir / f"{caption_hash}_mask.pt"
+            if embeds_path.exists() and mask_path.exists():
+                try:
+                    embeds = torch.load(embeds_path, map_location="cpu")
+                    mask = torch.load(mask_path, map_location="cpu")
+                    return (embeds, mask)
+                except Exception as e:
+                    print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
+                    continue
+
+        return None
+
     def _setup_text_encoder_cache(
         self,
         datasets: List[Any],
@@ -1985,14 +2022,10 @@ class BaseTrainer(ABC):
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
                     mask_path = cache_dir / f"{caption_hash}_mask.pt"
                     if embeds_path.exists() and mask_path.exists():
-                        try:
-                            embeds = torch.load(embeds_path, map_location="cpu")
-                            mask = torch.load(mask_path, map_location="cpu")
-                            text_encoder_cache[caption] = (embeds, mask)
-                            caption_cache_loaded += 1
-                            break  # Found in this cache, no need to check others
-                        except Exception as e:
-                            print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
+                        # Mark as cached (don't load into memory, just verify it exists)
+                        text_encoder_cache[caption] = True
+                        caption_cache_loaded += 1
+                        break  # Found in this cache, no need to check others
 
             if caption_cache_loaded > 0:
                 print(f"{self.log_prefix} Loaded {caption_cache_loaded}/{len(unique_captions)} cached caption embeddings from disk")
@@ -2018,9 +2051,6 @@ class BaseTrainer(ABC):
                 embeds_cpu = prompt_embeds.cpu()
                 mask_cpu = attention_mask.cpu()
 
-                # Store in memory cache for this training session
-                text_encoder_cache[caption] = (embeds_cpu, mask_cpu)
-
                 # Save immediately to disk to avoid memory accumulation
                 if save_cache_dir:
                     caption_hash = hashlib.md5(caption.encode()).hexdigest()
@@ -2030,6 +2060,9 @@ class BaseTrainer(ABC):
                         torch.save(embeds_cpu, embeds_path)
                         torch.save(mask_cpu, mask_path)
                         saved_count += 1
+
+                        # Mark as cached (store True instead of embeddings to save memory)
+                        text_encoder_cache[caption] = True
 
                         # Free memory immediately after saving
                         del embeds_cpu, mask_cpu
@@ -2053,6 +2086,10 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Saved {saved_count} caption embeddings to disk: {save_cache_dir}")
 
         print(f"{self.log_prefix} Text encoder cache setup complete: {len(text_encoder_cache)} captions in cache")
+
+        # Store cache directories for use during training
+        self.text_encoder_cache_dirs = cache_dirs
+
         return text_encoder_cache
 
     # ============================================================
@@ -2320,14 +2357,17 @@ class BaseTrainer(ABC):
                         # Encode caption
                         caption = item.get("caption", "")
                         if self.is_zimage:
-                            if text_encoder_cache and caption in text_encoder_cache:
-                                prompt_embeds_cpu, attention_mask_cpu = text_encoder_cache[caption]
-                                # Use non_blocking transfer and clone to avoid keeping reference to cache tensor
-                                prompt_embeds = prompt_embeds_cpu.to(self.device, non_blocking=True).clone()
-                                attention_mask = attention_mask_cpu.to(self.device, non_blocking=True).clone()
+                            # Try to load from disk cache first
+                            cached_result = self._load_caption_embedding_from_disk(caption)
+                            if cached_result is not None:
+                                prompt_embeds_cpu, attention_mask_cpu = cached_result
+                                # Use non_blocking transfer (embeddings loaded from disk)
+                                prompt_embeds = prompt_embeds_cpu.to(self.device, non_blocking=True)
+                                attention_mask = attention_mask_cpu.to(self.device, non_blocking=True)
                                 text_embeddings_list.append(prompt_embeds)
                                 attention_masks_list.append(attention_mask)
                             else:
+                                # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
                                 prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
                                 text_embeddings_list.append(prompt_embeds)
                                 attention_masks_list.append(attention_mask)

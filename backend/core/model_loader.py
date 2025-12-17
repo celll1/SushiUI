@@ -3,7 +3,7 @@ import os
 import sys
 import json
 import torch
-from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
+from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, AutoencoderKL
 from safetensors.torch import load_file
 from pathlib import Path
 
@@ -95,6 +95,35 @@ class ModelLoader:
         except Exception as e:
             print(f"[ModelLoader] Warning: Could not detect v-prediction status: {e}")
             return False
+
+    @staticmethod
+    def has_embedded_vae(model_path: str) -> bool:
+        """Detect if a safetensors model has an embedded VAE
+
+        Returns:
+            True if VAE is embedded in the model, False otherwise
+        """
+        try:
+            if model_path.endswith('.safetensors'):
+                from safetensors import safe_open
+                with safe_open(model_path, framework="pt", device="cpu") as f:
+                    keys = list(f.keys())
+                    # Check for VAE decoder keys
+                    vae_keys = [k for k in keys if k.startswith('first_stage_model.') or k.startswith('vae.')]
+                    has_vae = len(vae_keys) > 0
+
+                    if has_vae:
+                        print(f"[ModelLoader] Detected embedded VAE in model (found {len(vae_keys)} VAE keys)")
+                    else:
+                        print(f"[ModelLoader] No embedded VAE detected in model")
+
+                    return has_vae
+
+            return True  # Assume diffusers format has VAE
+
+        except Exception as e:
+            print(f"[ModelLoader] Warning: Could not detect VAE status: {e}")
+            return True  # Default to True to avoid unnecessary VAE loading
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
@@ -535,6 +564,25 @@ class ModelLoader:
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
+        # Check if VAE is embedded
+        has_vae = ModelLoader.has_embedded_vae(file_path)
+
+        # Load external VAE for SDXL if not embedded
+        external_vae = None
+        if model_type == "sdxl" and not has_vae:
+            print(f"[ModelLoader] SDXL model without embedded VAE detected")
+            print(f"[ModelLoader] Loading external VAE: madebyollin/sdxl-vae-fp16-fix")
+            try:
+                external_vae = AutoencoderKL.from_pretrained(
+                    "madebyollin/sdxl-vae-fp16-fix",
+                    torch_dtype=torch_dtype
+                )
+                print(f"[ModelLoader] External VAE loaded successfully")
+            except Exception as e:
+                print(f"[ModelLoader] Warning: Failed to load external VAE: {e}")
+                print(f"[ModelLoader] Will use default VAE from diffusers")
+                external_vae = None
+
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
@@ -543,6 +591,7 @@ class ModelLoader:
                     file_path,
                     torch_dtype=torch_dtype,
                     use_safetensors=True,
+                    vae=external_vae,
                 )
             else:
                 pipeline = StableDiffusionPipeline.from_single_file(
@@ -554,10 +603,17 @@ class ModelLoader:
             # Fallback: try with float32
             print(f"Failed to load with fp16, trying with fp32: {e}")
             if model_type == "sdxl":
+                # Reload external VAE in fp32 if needed
+                if external_vae is not None:
+                    external_vae = AutoencoderKL.from_pretrained(
+                        "madebyollin/sdxl-vae-fp16-fix",
+                        torch_dtype=torch.float32
+                    )
                 pipeline = StableDiffusionXLPipeline.from_single_file(
                     file_path,
                     torch_dtype=torch.float32,
                     use_safetensors=True,
+                    vae=external_vae,
                 )
             else:
                 pipeline = StableDiffusionPipeline.from_single_file(

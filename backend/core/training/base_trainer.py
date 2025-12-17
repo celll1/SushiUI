@@ -1918,179 +1918,181 @@ class BaseTrainer(ABC):
 
         return latent
 
-    def _load_caption_embedding_from_disk(self, caption: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+    def _setup_text_encoder_caches(self, datasets: List[Any]) -> Dict[str, Path]:
         """
-        Load caption embedding from disk cache.
-
-        Similar to LatentCache.load_latent(), but searches across multiple dataset
-        cache directories since captions can be shared between datasets.
-
-        Args:
-            caption: Caption text
-
-        Returns:
-            (prompt_embeds, attention_mask) tuple or None if not cached
-        """
-        import hashlib
-
-        if not hasattr(self, 'text_encoder_cache_dirs') or not self.text_encoder_cache_dirs:
-            return None
-
-        # Compute caption hash (same method as LatentCache.compute_caption_hash)
-        caption_hash = hashlib.md5(caption.encode()).hexdigest()
-
-        # Try to find caption in any cache directory (multi-dataset support)
-        # Unlike latent cache (per-dataset), text embeddings can be shared across datasets
-        for cache_dir in self.text_encoder_cache_dirs:
-            embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
-            mask_path = cache_dir / f"{caption_hash}_mask.pt"
-            if embeds_path.exists() and mask_path.exists():
-                try:
-                    embeds = torch.load(embeds_path, map_location="cpu")
-                    mask = torch.load(mask_path, map_location="cpu")
-                    return (embeds, mask)
-                except Exception as e:
-                    print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
-                    continue
-
-        return None
-
-    def _setup_text_encoder_cache(
-        self,
-        datasets: List[Any],
-        progress_callback: Optional[Callable] = None,
-        epoch_num: Optional[int] = None
-    ) -> Optional[Dict[str, torch.Tensor]]:
-        """
-        Setup text encoder cache for Z-Image (caption pre-encoding).
-        Uses disk cache to avoid memory overflow with large datasets.
+        Setup per-dataset text encoder cache directories for Z-Image.
+        Similar to _setup_latent_caches(), this only creates directories.
 
         Args:
             datasets: List of dataset objects
-            progress_callback: Progress callback function
-            epoch_num: Current epoch number (for logging)
 
         Returns:
-            Dictionary mapping caption to (prompt_embeds, attention_mask)
+            Dictionary mapping dataset_unique_id to cache directory path
         """
         if not self.is_zimage:
-            return None
+            return {}
 
-        epoch_info = f" (Epoch {epoch_num + 1})" if epoch_num is not None else ""
-        print(f"{self.log_prefix} Setting up text encoder cache (Z-Image){epoch_info}...")
-
-        # Collect unique captions
-        unique_captions = set()
-        for dataset in datasets:
-            for item in dataset.items:
-                caption = item.get("caption", "")
-                if caption:
-                    unique_captions.add(caption)
-
-        print(f"{self.log_prefix} Found {len(unique_captions)} unique captions{epoch_info}")
-
-        # Setup disk cache directories (one per dataset)
-        import hashlib
         from pathlib import Path
         from core.training.latent_cache import get_cache_base_dir
 
         base_dir = Path(get_cache_base_dir())
-        cache_dirs = []
+        text_encoder_caches = {}
+
+        print(f"{self.log_prefix} Setting up text encoder cache directories (Z-Image)...")
+        print(f"{self.log_prefix} Using global cache directory: {base_dir}")
 
         for dataset in datasets:
-            if hasattr(dataset, 'unique_id'):
-                cache_dir = base_dir / dataset.unique_id / "text_embeddings"
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                cache_dirs.append(cache_dir)
+            cache_dir = base_dir / dataset.unique_id / "text_embeddings"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            text_encoder_caches[dataset.unique_id] = cache_dir
+            print(f"{self.log_prefix} Setup text encoder cache for dataset '{dataset.unique_id}': {cache_dir}")
 
-        if cache_dirs:
-            print(f"{self.log_prefix} Using {len(cache_dirs)} cache directories:")
-            for cache_dir in cache_dirs:
-                print(f"{self.log_prefix}   - {cache_dir}")
+        return text_encoder_caches
 
-        # Load existing captions from all dataset cache directories
-        text_encoder_cache = {}
-        caption_cache_loaded = 0
+    def _validate_and_generate_text_encoder_caches(
+        self,
+        datasets: List[Any],
+        text_encoder_caches: Dict[str, Path],
+        progress_callback: Optional[Callable] = None,
+        epoch_num: Optional[int] = None,
+    ):
+        """
+        Check text encoder caches and encode missing captions.
+        Similar to _validate_and_generate_latent_caches(), this generates missing embeddings.
 
-        if cache_dirs:
-            print(f"{self.log_prefix} Loading cached caption embeddings from disk...")
-            for caption in unique_captions:
-                caption_hash = hashlib.md5(caption.encode()).hexdigest()
+        Args:
+            datasets: List of dataset objects
+            text_encoder_caches: Dictionary mapping dataset_unique_id to cache directory
+            progress_callback: Progress callback function
+            epoch_num: Current epoch number (for logging)
+        """
+        if not self.is_zimage:
+            return
 
-                # Try to find caption in any cache directory
-                for cache_dir in cache_dirs:
+        import hashlib
+
+        epoch_info = f" (Epoch {epoch_num + 1})" if epoch_num is not None else ""
+        print(f"{self.log_prefix} Validating and generating text encoder caches{epoch_info}...")
+
+        # Collect captions per dataset
+        dataset_captions = {}
+        total_captions = 0
+
+        for dataset in datasets:
+            unique_captions = set()
+            for item in dataset.items:
+                caption = item.get("caption", "")
+                if caption:
+                    unique_captions.add(caption)
+            dataset_captions[dataset.unique_id] = unique_captions
+            total_captions += len(unique_captions)
+            print(f"{self.log_prefix} Dataset '{dataset.unique_id}': {len(unique_captions)} unique captions")
+
+        print(f"{self.log_prefix} Total unique captions across all datasets: {total_captions}")
+
+        # Encode missing captions for each dataset
+        total_encoded = 0
+        total_cached = 0
+
+        # Move text encoder to GPU for encoding
+        self.text_encoder.to(self.device)
+
+        try:
+            for dataset in datasets:
+                cache_dir = text_encoder_caches[dataset.unique_id]
+                captions = dataset_captions[dataset.unique_id]
+
+                # Check which captions are missing
+                captions_to_encode = []
+                for caption in captions:
+                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
                     mask_path = cache_dir / f"{caption_hash}_mask.pt"
-                    if embeds_path.exists() and mask_path.exists():
-                        # Mark as cached (don't load into memory, just verify it exists)
-                        text_encoder_cache[caption] = True
-                        caption_cache_loaded += 1
-                        break  # Found in this cache, no need to check others
+                    if not (embeds_path.exists() and mask_path.exists()):
+                        captions_to_encode.append(caption)
+                    else:
+                        total_cached += 1
 
-            if caption_cache_loaded > 0:
-                print(f"{self.log_prefix} Loaded {caption_cache_loaded}/{len(unique_captions)} cached caption embeddings from disk")
+                if len(captions_to_encode) == 0:
+                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': All {len(captions)} captions already cached")
+                else:
+                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': Encoding {len(captions_to_encode)}/{len(captions)} captions...")
 
-        # Encode captions that are not cached
-        captions_to_encode = [c for c in unique_captions if c not in text_encoder_cache]
+                    for idx, caption in enumerate(tqdm(captions_to_encode, desc=f"Encoding captions [{dataset.unique_id}]")):
+                        # Encode caption
+                        prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
+                        embeds_cpu = prompt_embeds.cpu()
+                        mask_cpu = attention_mask.cpu()
 
-        if len(captions_to_encode) == 0:
-            print(f"{self.log_prefix} All {len(unique_captions)} captions already cached, skipping encoding")
-        else:
-            print(f"{self.log_prefix} Encoding {len(captions_to_encode)}/{len(unique_captions)} captions...")
+                        # Save immediately to disk to avoid memory accumulation
+                        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                        embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
+                        mask_path = cache_dir / f"{caption_hash}_mask.pt"
+                        try:
+                            torch.save(embeds_cpu, embeds_path)
+                            torch.save(mask_cpu, mask_path)
+                            total_encoded += 1
 
-            # Use first cache directory for saving new embeddings
-            save_cache_dir = cache_dirs[0] if cache_dirs else None
+                            # Free memory immediately after saving
+                            del embeds_cpu, mask_cpu, prompt_embeds, attention_mask
+                        except Exception as e:
+                            print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
 
-            # Move text encoder to GPU for encoding
-            self.text_encoder.to(self.device)
+                        # Progress callback
+                        if progress_callback:
+                            progress_callback(
+                                phase="text_encoder_cache",
+                                step=total_cached + total_encoded,
+                                total=total_captions,
+                            )
 
-            saved_count = 0
-            for idx, caption in enumerate(tqdm(captions_to_encode, desc="Encoding captions")):
-                # Encode caption
-                prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                embeds_cpu = prompt_embeds.cpu()
-                mask_cpu = attention_mask.cpu()
-
-                # Save immediately to disk to avoid memory accumulation
-                if save_cache_dir:
-                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
-                    embeds_path = save_cache_dir / f"{caption_hash}_embeds.pt"
-                    mask_path = save_cache_dir / f"{caption_hash}_mask.pt"
-                    try:
-                        torch.save(embeds_cpu, embeds_path)
-                        torch.save(mask_cpu, mask_path)
-                        saved_count += 1
-
-                        # Mark as cached (store True instead of embeddings to save memory)
-                        text_encoder_cache[caption] = True
-
-                        # Free memory immediately after saving
-                        del embeds_cpu, mask_cpu
-                    except Exception as e:
-                        print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
-
-                # Progress callback
-                if progress_callback:
-                    progress_callback(
-                        phase="text_encoder_cache",
-                        step=caption_cache_loaded + idx + 1,
-                        total=len(unique_captions),
-                    )
-
+        finally:
             # Move text encoder back to CPU
             self.text_encoder.to("cpu")
             torch.cuda.empty_cache()
 
-            print(f"{self.log_prefix} Caption encoding complete: {len(captions_to_encode)} new captions encoded")
-            if saved_count > 0:
-                print(f"{self.log_prefix} Saved {saved_count} caption embeddings to disk: {save_cache_dir}")
+        print(f"{self.log_prefix} Text encoder cache validation complete:")
+        print(f"{self.log_prefix}   - Cached: {total_cached}")
+        print(f"{self.log_prefix}   - Newly encoded: {total_encoded}")
+        print(f"{self.log_prefix}   - Total: {total_cached + total_encoded}")
 
-        print(f"{self.log_prefix} Text encoder cache setup complete: {len(text_encoder_cache)} captions in cache")
+    def _load_caption_embedding_from_disk(
+        self,
+        caption: str,
+        dataset_unique_id: str,
+        text_encoder_caches: Dict[str, Path]
+    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Load caption embedding from disk cache for a specific dataset.
 
-        # Store cache directories for use during training
-        self.text_encoder_cache_dirs = cache_dirs
+        Args:
+            caption: Caption text
+            dataset_unique_id: Dataset unique ID
+            text_encoder_caches: Dictionary mapping dataset_unique_id to cache directory
 
-        return text_encoder_cache
+        Returns:
+            Tuple of (prompt_embeds, attention_mask) if cached, None otherwise
+        """
+        import hashlib
+
+        cache_dir = text_encoder_caches.get(dataset_unique_id)
+        if cache_dir is None:
+            return None
+
+        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+        embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
+        mask_path = cache_dir / f"{caption_hash}_mask.pt"
+
+        if embeds_path.exists() and mask_path.exists():
+            try:
+                prompt_embeds = torch.load(embeds_path, map_location='cpu')
+                attention_mask = torch.load(mask_path, map_location='cpu')
+                return (prompt_embeds, attention_mask)
+            except Exception as e:
+                print(f"{self.log_prefix} WARNING: Failed to load cached embedding for caption '{caption[:30]}...': {e}")
+                return None
+        else:
+            return None
 
     # ============================================================
     # Training Loop Infrastructure
@@ -2224,8 +2226,8 @@ class BaseTrainer(ABC):
         latent_caches = self._setup_latent_caches(datasets)
         self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
 
-        # Text encoder cache will be rebuilt per epoch (Z-Image only, for shuffle/dropout per epoch)
-        text_encoder_cache = None
+        # Setup text encoder caches (Z-Image only)
+        text_encoder_caches = self._setup_text_encoder_caches(datasets)
 
         # Training loop
         global_step = 0
@@ -2281,10 +2283,10 @@ class BaseTrainer(ABC):
                         dataset.items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
                         print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
 
-                # Rebuild text encoder cache for new captions (Z-Image only)
+                # Validate and generate text encoder cache for new captions (Z-Image only)
                 # This ensures cache hits for all captions generated by shuffle/dropout per epoch
                 if self.is_zimage:
-                    text_encoder_cache = self._setup_text_encoder_cache(datasets, progress_callback, epoch_num=epoch)
+                    self._validate_and_generate_text_encoder_caches(datasets, text_encoder_caches, progress_callback, epoch_num=epoch)
 
                 # Create batches
                 if bucket_manager:
@@ -2357,8 +2359,12 @@ class BaseTrainer(ABC):
                         # Encode caption
                         caption = item.get("caption", "")
                         if self.is_zimage:
-                            # Try to load from disk cache first
-                            cached_result = self._load_caption_embedding_from_disk(caption)
+                            # Try to load from disk cache first (per-dataset)
+                            cached_result = self._load_caption_embedding_from_disk(
+                                caption=caption,
+                                dataset_unique_id=dataset.unique_id,
+                                text_encoder_caches=text_encoder_caches
+                            )
                             if cached_result is not None:
                                 prompt_embeds_cpu, attention_mask_cpu = cached_result
                                 # Use non_blocking transfer (embeddings loaded from disk)
@@ -2368,6 +2374,7 @@ class BaseTrainer(ABC):
                                 attention_masks_list.append(attention_mask)
                             else:
                                 # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
+                                print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
                                 prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
                                 text_embeddings_list.append(prompt_embeds)
                                 attention_masks_list.append(attention_mask)

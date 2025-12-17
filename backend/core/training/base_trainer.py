@@ -2229,6 +2229,12 @@ class BaseTrainer(ABC):
         # Setup text encoder caches (Z-Image only)
         text_encoder_caches = self._setup_text_encoder_caches(datasets)
 
+        # Clean up stop flag from previous run (if any)
+        stop_flag_file = self.output_dir / ".stop_training"
+        if stop_flag_file.exists():
+            print(f"{self.log_prefix} Removing stale stop flag from previous run")
+            stop_flag_file.unlink()
+
         # Training loop
         global_step = 0
         start_epoch = 0

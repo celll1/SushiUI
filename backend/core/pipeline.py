@@ -1288,6 +1288,9 @@ class DiffusionPipelineManager:
 
             print(f"[Z-Image] inpaint: Using {len(timesteps_inpaint)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
 
+            # Save original unnoised latents (for mask blending in loop)
+            original_latents = init_latents.clone()
+
             # Add noise to init_latents at the starting timestep
             noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
 
@@ -1725,13 +1728,18 @@ class DiffusionPipelineManager:
                 mask_latent_device = mask_latent.to(device=latents.device, dtype=latents.dtype)
 
                 # Add noise to original latents at current timestep
-                # Use CURRENT timestep t (not next), as we're blending with current denoised latents
-                # Generate noise for original latents
-                noise_for_original = torch.randn_like(original_latents_device)
+                # This ensures non-masked area follows the same noise schedule
+                if i < len(timesteps) - 1:  # Not the last step
+                    next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
+                    # Generate noise for original latents
+                    noise_for_original = torch.randn_like(original_latents_device)
 
-                # Flow Matching: add noise at current timestep level
-                # t_norm is already calculated above (line 1643)
-                noised_original = (1.0 - t_norm) * original_latents_device + t_norm * noise_for_original
+                    # Flow Matching: add noise at next timestep level
+                    t_next_normalized = next_t.item() / 1000.0
+                    noised_original = (1.0 - t_next_normalized) * original_latents_device + t_next_normalized * noise_for_original
+                else:
+                    # Last step: use clean original latents
+                    noised_original = original_latents_device
 
                 # Blend: mask * denoised + (1 - mask) * noised_original
                 latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original

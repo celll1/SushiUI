@@ -575,7 +575,8 @@ class ModelLoader:
             try:
                 external_vae = AutoencoderKL.from_pretrained(
                     "madebyollin/sdxl-vae-fp16-fix",
-                    torch_dtype=torch_dtype
+                    torch_dtype=torch_dtype,
+                    use_safetensors=True
                 )
                 print(f"[ModelLoader] External VAE loaded successfully")
             except Exception as e:
@@ -607,7 +608,8 @@ class ModelLoader:
                 if external_vae is not None:
                     external_vae = AutoencoderKL.from_pretrained(
                         "madebyollin/sdxl-vae-fp16-fix",
-                        torch_dtype=torch.float32
+                        torch_dtype=torch.float32,
+                        use_safetensors=True
                     )
                 pipeline = StableDiffusionXLPipeline.from_single_file(
                     file_path,

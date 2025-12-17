@@ -604,13 +604,8 @@ class ModelLoader:
             # Fallback: try with float32
             print(f"Failed to load with fp16, trying with fp32: {e}")
             if model_type == "sdxl":
-                # Reload external VAE in fp32 if needed
-                if external_vae is not None:
-                    external_vae = AutoencoderKL.from_pretrained(
-                        "madebyollin/sdxl-vae-fp16-fix",
-                        torch_dtype=torch.float32,
-                        use_safetensors=True
-                    )
+                # Note: external_vae (madebyollin/sdxl-vae-fp16-fix) stays in fp16
+                # even when pipeline is loaded in fp32, as it's designed for fp16
                 pipeline = StableDiffusionXLPipeline.from_single_file(
                     file_path,
                     torch_dtype=torch.float32,

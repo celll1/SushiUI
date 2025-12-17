@@ -1952,41 +1952,47 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Found {len(unique_captions)} unique captions{epoch_info}")
 
-        # Get dataset_unique_id for disk cache
-        dataset_unique_id = None
-        if datasets and len(datasets) > 0 and hasattr(datasets[0], 'unique_id'):
-            dataset_unique_id = datasets[0].unique_id
-
-        # Setup disk cache directory
+        # Setup disk cache directories (one per dataset)
         import hashlib
         from pathlib import Path
         from core.training.latent_cache import get_cache_base_dir
 
-        cache_base_dir = None
-        if dataset_unique_id:
-            base_dir = get_cache_base_dir()
-            cache_base_dir = Path(base_dir) / dataset_unique_id / "text_embeddings"
-            cache_base_dir.mkdir(parents=True, exist_ok=True)
-            print(f"{self.log_prefix} Caption cache directory: {cache_base_dir}")
+        base_dir = Path(get_cache_base_dir())
+        cache_dirs = []
 
-        # Load existing captions from disk cache
+        for dataset in datasets:
+            if hasattr(dataset, 'unique_id'):
+                cache_dir = base_dir / dataset.unique_id / "text_embeddings"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_dirs.append(cache_dir)
+
+        if cache_dirs:
+            print(f"{self.log_prefix} Using {len(cache_dirs)} cache directories:")
+            for cache_dir in cache_dirs:
+                print(f"{self.log_prefix}   - {cache_dir}")
+
+        # Load existing captions from all dataset cache directories
         text_encoder_cache = {}
         caption_cache_loaded = 0
 
-        if cache_base_dir and cache_base_dir.exists():
+        if cache_dirs:
             print(f"{self.log_prefix} Loading cached caption embeddings from disk...")
             for caption in unique_captions:
                 caption_hash = hashlib.md5(caption.encode()).hexdigest()
-                embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
-                mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
-                if embeds_path.exists() and mask_path.exists():
-                    try:
-                        embeds = torch.load(embeds_path, map_location="cpu")
-                        mask = torch.load(mask_path, map_location="cpu")
-                        text_encoder_cache[caption] = (embeds, mask)
-                        caption_cache_loaded += 1
-                    except Exception as e:
-                        print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
+
+                # Try to find caption in any cache directory
+                for cache_dir in cache_dirs:
+                    embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
+                    mask_path = cache_dir / f"{caption_hash}_mask.pt"
+                    if embeds_path.exists() and mask_path.exists():
+                        try:
+                            embeds = torch.load(embeds_path, map_location="cpu")
+                            mask = torch.load(mask_path, map_location="cpu")
+                            text_encoder_cache[caption] = (embeds, mask)
+                            caption_cache_loaded += 1
+                            break  # Found in this cache, no need to check others
+                        except Exception as e:
+                            print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
 
             if caption_cache_loaded > 0:
                 print(f"{self.log_prefix} Loaded {caption_cache_loaded}/{len(unique_captions)} cached caption embeddings from disk")
@@ -1999,15 +2005,36 @@ class BaseTrainer(ABC):
         else:
             print(f"{self.log_prefix} Encoding {len(captions_to_encode)}/{len(unique_captions)} captions...")
 
+            # Use first cache directory for saving new embeddings
+            save_cache_dir = cache_dirs[0] if cache_dirs else None
+
             # Move text encoder to GPU for encoding
             self.text_encoder.to(self.device)
 
-            unique_captions_list = captions_to_encode
-            total_captions = len(unique_captions_list)
-
-            for idx, caption in enumerate(tqdm(unique_captions_list, desc="Encoding captions")):
+            saved_count = 0
+            for idx, caption in enumerate(tqdm(captions_to_encode, desc="Encoding captions")):
+                # Encode caption
                 prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                text_encoder_cache[caption] = (prompt_embeds.cpu(), attention_mask.cpu())
+                embeds_cpu = prompt_embeds.cpu()
+                mask_cpu = attention_mask.cpu()
+
+                # Store in memory cache for this training session
+                text_encoder_cache[caption] = (embeds_cpu, mask_cpu)
+
+                # Save immediately to disk to avoid memory accumulation
+                if save_cache_dir:
+                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                    embeds_path = save_cache_dir / f"{caption_hash}_embeds.pt"
+                    mask_path = save_cache_dir / f"{caption_hash}_mask.pt"
+                    try:
+                        torch.save(embeds_cpu, embeds_path)
+                        torch.save(mask_cpu, mask_path)
+                        saved_count += 1
+
+                        # Free memory immediately after saving
+                        del embeds_cpu, mask_cpu
+                    except Exception as e:
+                        print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
 
                 # Progress callback
                 if progress_callback:
@@ -2022,24 +2049,8 @@ class BaseTrainer(ABC):
             torch.cuda.empty_cache()
 
             print(f"{self.log_prefix} Caption encoding complete: {len(captions_to_encode)} new captions encoded")
-
-        # Save newly encoded captions to disk
-        if len(captions_to_encode) > 0 and cache_base_dir:
-            print(f"{self.log_prefix} Saving {len(captions_to_encode)} newly encoded caption embeddings to disk...")
-            saved_count = 0
-            for caption in captions_to_encode:
-                if caption in text_encoder_cache:
-                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
-                    embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
-                    mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
-                    try:
-                        embeds, mask = text_encoder_cache[caption]
-                        torch.save(embeds, embeds_path)
-                        torch.save(mask, mask_path)
-                        saved_count += 1
-                    except Exception as e:
-                        print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
-            print(f"{self.log_prefix} Saved {saved_count} caption embeddings to disk")
+            if saved_count > 0:
+                print(f"{self.log_prefix} Saved {saved_count} caption embeddings to disk: {save_cache_dir}")
 
         print(f"{self.log_prefix} Text encoder cache setup complete: {len(text_encoder_cache)} captions in cache")
         return text_encoder_cache

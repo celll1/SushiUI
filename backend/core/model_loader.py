@@ -108,22 +108,40 @@ class ModelLoader:
                 from safetensors import safe_open
                 with safe_open(model_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
-                    # Check for VAE decoder keys
-                    vae_keys = [k for k in keys if k.startswith('first_stage_model.') or k.startswith('vae.')]
+
+                    # Check for VAE decoder keys (common patterns)
+                    vae_patterns = [
+                        'first_stage_model.decoder',  # Standard SD/SDXL
+                        'vae.decoder',                # Alternative format
+                        'first_stage_model.encoder',  # VAE encoder
+                        'vae.encoder',
+                    ]
+
+                    vae_keys = [k for k in keys if any(pattern in k for pattern in vae_patterns)]
                     has_vae = len(vae_keys) > 0
 
                     if has_vae:
                         print(f"[ModelLoader] Detected embedded VAE in model (found {len(vae_keys)} VAE keys)")
+                        # Show first few keys for debugging
+                        sample_keys = vae_keys[:3]
+                        print(f"[ModelLoader] Sample VAE keys: {sample_keys}")
                     else:
                         print(f"[ModelLoader] No embedded VAE detected in model")
+                        # Show sample of all keys for debugging
+                        print(f"[ModelLoader] Total keys in model: {len(keys)}")
+                        print(f"[ModelLoader] Sample keys: {keys[:5] if len(keys) > 0 else 'none'}")
 
                     return has_vae
 
             return True  # Assume diffusers format has VAE
 
         except Exception as e:
-            print(f"[ModelLoader] Warning: Could not detect VAE status: {e}")
-            return True  # Default to True to avoid unnecessary VAE loading
+            print(f"[ModelLoader] ERROR: Could not detect VAE status: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return False to trigger external VAE loading as a safety measure
+            # Better to load external VAE unnecessarily than to have None VAE
+            return False
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
@@ -565,7 +583,9 @@ class ModelLoader:
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Check if VAE is embedded
+        print(f"[ModelLoader] Checking if model has embedded VAE...")
         has_vae = ModelLoader.has_embedded_vae(file_path)
+        print(f"[ModelLoader] VAE detection result: {'embedded' if has_vae else 'not embedded'}")
 
         # Load external VAE for SDXL if not embedded
         external_vae = None
@@ -580,9 +600,10 @@ class ModelLoader:
                 )
                 print(f"[ModelLoader] External VAE loaded successfully")
             except Exception as e:
-                print(f"[ModelLoader] Warning: Failed to load external VAE: {e}")
-                print(f"[ModelLoader] Will use default VAE from diffusers")
-                external_vae = None
+                print(f"[ModelLoader] ERROR: Failed to load external VAE: {e}")
+                import traceback
+                traceback.print_exc()
+                raise RuntimeError(f"Failed to load external VAE for SDXL model without embedded VAE: {e}")
 
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")

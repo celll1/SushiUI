@@ -1926,6 +1926,7 @@ class BaseTrainer(ABC):
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
         Setup text encoder cache for Z-Image (caption pre-encoding).
+        Uses disk cache to avoid memory overflow with large datasets.
 
         Args:
             datasets: List of dataset objects
@@ -1951,30 +1952,96 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Found {len(unique_captions)} unique captions{epoch_info}")
 
-        # Encode all captions
+        # Get dataset_unique_id for disk cache
+        dataset_unique_id = None
+        if datasets and len(datasets) > 0 and hasattr(datasets[0], 'unique_id'):
+            dataset_unique_id = datasets[0].unique_id
+
+        # Setup disk cache directory
+        import hashlib
+        from pathlib import Path
+        from core.training.latent_cache import get_cache_base_dir
+
+        cache_base_dir = None
+        if dataset_unique_id:
+            base_dir = get_cache_base_dir()
+            cache_base_dir = Path(base_dir) / dataset_unique_id / "text_embeddings"
+            cache_base_dir.mkdir(parents=True, exist_ok=True)
+            print(f"{self.log_prefix} Caption cache directory: {cache_base_dir}")
+
+        # Load existing captions from disk cache
         text_encoder_cache = {}
-        self.text_encoder.to(self.device)
+        caption_cache_loaded = 0
 
-        unique_captions_list = list(unique_captions)
-        total_captions = len(unique_captions_list)
+        if cache_base_dir and cache_base_dir.exists():
+            print(f"{self.log_prefix} Loading cached caption embeddings from disk...")
+            for caption in unique_captions:
+                caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
+                mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
+                if embeds_path.exists() and mask_path.exists():
+                    try:
+                        embeds = torch.load(embeds_path, map_location="cpu")
+                        mask = torch.load(mask_path, map_location="cpu")
+                        text_encoder_cache[caption] = (embeds, mask)
+                        caption_cache_loaded += 1
+                    except Exception as e:
+                        print(f"{self.log_prefix} WARNING: Failed to load cache for caption '{caption[:30]}...': {e}")
 
-        for idx, caption in enumerate(tqdm(unique_captions_list, desc="Encoding captions")):
-            prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-            text_encoder_cache[caption] = (prompt_embeds.cpu(), attention_mask.cpu())
+            if caption_cache_loaded > 0:
+                print(f"{self.log_prefix} Loaded {caption_cache_loaded}/{len(unique_captions)} cached caption embeddings from disk")
 
-            # Progress callback
-            if progress_callback:
-                progress_callback(
-                    phase="text_encoder_cache",
-                    step=idx + 1,
-                    total=total_captions,
-                )
+        # Encode captions that are not cached
+        captions_to_encode = [c for c in unique_captions if c not in text_encoder_cache]
 
-        # Move text encoder back to CPU
-        self.text_encoder.to("cpu")
-        torch.cuda.empty_cache()
+        if len(captions_to_encode) == 0:
+            print(f"{self.log_prefix} All {len(unique_captions)} captions already cached, skipping encoding")
+        else:
+            print(f"{self.log_prefix} Encoding {len(captions_to_encode)}/{len(unique_captions)} captions...")
 
-        print(f"{self.log_prefix} Text encoder cache setup complete")
+            # Move text encoder to GPU for encoding
+            self.text_encoder.to(self.device)
+
+            unique_captions_list = captions_to_encode
+            total_captions = len(unique_captions_list)
+
+            for idx, caption in enumerate(tqdm(unique_captions_list, desc="Encoding captions")):
+                prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
+                text_encoder_cache[caption] = (prompt_embeds.cpu(), attention_mask.cpu())
+
+                # Progress callback
+                if progress_callback:
+                    progress_callback(
+                        phase="text_encoder_cache",
+                        step=caption_cache_loaded + idx + 1,
+                        total=len(unique_captions),
+                    )
+
+            # Move text encoder back to CPU
+            self.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            print(f"{self.log_prefix} Caption encoding complete: {len(captions_to_encode)} new captions encoded")
+
+        # Save newly encoded captions to disk
+        if len(captions_to_encode) > 0 and cache_base_dir:
+            print(f"{self.log_prefix} Saving {len(captions_to_encode)} newly encoded caption embeddings to disk...")
+            saved_count = 0
+            for caption in captions_to_encode:
+                if caption in text_encoder_cache:
+                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                    embeds_path = cache_base_dir / f"{caption_hash}_embeds.pt"
+                    mask_path = cache_base_dir / f"{caption_hash}_mask.pt"
+                    try:
+                        embeds, mask = text_encoder_cache[caption]
+                        torch.save(embeds, embeds_path)
+                        torch.save(mask, mask_path)
+                        saved_count += 1
+                    except Exception as e:
+                        print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
+            print(f"{self.log_prefix} Saved {saved_count} caption embeddings to disk")
+
+        print(f"{self.log_prefix} Text encoder cache setup complete: {len(text_encoder_cache)} captions in cache")
         return text_encoder_cache
 
     # ============================================================

@@ -1980,13 +1980,20 @@ class BaseTrainer(ABC):
 
         for dataset in datasets:
             unique_captions = set()
+            caption_samples = []
             for item in dataset.items:
                 caption = item.get("caption", "")
                 if caption:
                     unique_captions.add(caption)
+                    if len(caption_samples) < 3:
+                        caption_samples.append(caption)
             dataset_captions[dataset.unique_id] = unique_captions
             total_captions += len(unique_captions)
             print(f"{self.log_prefix} Dataset '{dataset.unique_id}': {len(unique_captions)} unique captions")
+            if caption_samples and epoch_num is not None:
+                print(f"{self.log_prefix}   Sample captions (epoch {epoch_num + 1}):")
+                for i, sample in enumerate(caption_samples[:3], 1):
+                    print(f"{self.log_prefix}     [{i}] {sample[:80]}...")
 
         print(f"{self.log_prefix} Total unique captions across all datasets: {total_captions}")
 

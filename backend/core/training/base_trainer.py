@@ -550,6 +550,77 @@ class BaseTrainer(ABC):
         """
         raise NotImplementedError("load_checkpoint() must be implemented by subclass")
 
+    def save_training_state(self, step: int, epoch: int, batch_idx: int):
+        """
+        Save training state (epoch progress, batch index, random state) to JSON file.
+
+        This is saved separately from the model checkpoint to keep checkpoint files lightweight.
+        Enables mid-epoch resume without re-processing already trained batches.
+
+        Args:
+            step: Current global step
+            epoch: Current epoch (0-indexed)
+            batch_idx: Current batch index within epoch (next batch to process)
+        """
+        import json
+        import random
+
+        state_file = self.output_dir / f"checkpoint_step_{step:06d}_state.json"
+
+        state = {
+            "global_step": step,
+            "epoch": epoch,
+            "batch_idx": batch_idx,
+            "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
+        }
+
+        with open(state_file, 'w') as f:
+            # Convert random_state tuple to list for JSON serialization
+            state_serializable = state.copy()
+            random_state = state["random_state"]
+            state_serializable["random_state"] = {
+                "version": random_state[0],
+                "state": list(random_state[1]),  # Convert tuple to list
+                "gauss_next": random_state[2],
+            }
+            json.dump(state_serializable, f, indent=2)
+
+        print(f"{self.log_prefix} Saved training state to {state_file.name}")
+
+    def load_training_state(self, step: int) -> Optional[dict]:
+        """
+        Load training state from JSON file.
+
+        Args:
+            step: Step number to load state for
+
+        Returns:
+            Dict with keys: global_step, epoch, batch_idx, random_state
+            None if state file not found
+        """
+        import json
+        import random
+
+        state_file = self.output_dir / f"checkpoint_step_{step:06d}_state.json"
+
+        if not state_file.exists():
+            print(f"{self.log_prefix} No training state file found: {state_file.name}")
+            return None
+
+        with open(state_file, 'r') as f:
+            state = json.load(f)
+
+        # Restore random_state from serialized format
+        random_state_dict = state["random_state"]
+        state["random_state"] = (
+            random_state_dict["version"],
+            tuple(random_state_dict["state"]),  # Convert list back to tuple
+            random_state_dict["gauss_next"],
+        )
+
+        print(f"{self.log_prefix} Loaded training state: epoch={state['epoch']}, batch_idx={state['batch_idx']}")
+        return state
+
     def find_latest_checkpoint(self) -> Optional[Tuple[str, int]]:
         """
         Find the latest checkpoint in output directory.
@@ -605,8 +676,9 @@ class BaseTrainer(ABC):
         # Delete old checkpoints
         checkpoints_to_delete = checkpoint_files[max_step_saves_to_keep:]
         for checkpoint_path in checkpoints_to_delete:
-            # Also delete associated .pt file (optimizer state)
+            # Also delete associated .pt file (optimizer state) and _state.json file (training state)
             pt_path = checkpoint_path.with_suffix(".pt")
+            state_json_path = checkpoint_path.parent / f"{checkpoint_path.stem}_state.json"
 
             print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}")
             checkpoint_path.unlink()
@@ -614,6 +686,10 @@ class BaseTrainer(ABC):
             if pt_path.exists():
                 print(f"{self.log_prefix} Deleting old optimizer state: {pt_path.name}")
                 pt_path.unlink()
+
+            if state_json_path.exists():
+                print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
+                state_json_path.unlink()
 
     # ============================================================
     # Optimizer Setup
@@ -2427,6 +2503,8 @@ class BaseTrainer(ABC):
         # Training loop
         global_step = 0
         start_epoch = 0
+        resume_batch_idx = 0  # Batch index to resume from within epoch
+        resume_training_state = None  # Training state for mid-epoch resume
 
         # Resume from checkpoint if requested
         if resume_from_checkpoint:
@@ -2439,9 +2517,16 @@ class BaseTrainer(ABC):
                     loaded_step = self.load_checkpoint(checkpoint_path)
                     global_step = loaded_step
 
-                    # Calculate which epoch to start from
-                    start_epoch = global_step // steps_per_epoch
-                    print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
+                    # Try to load training state for mid-epoch resume
+                    resume_training_state = self.load_training_state(loaded_step)
+                    if resume_training_state:
+                        start_epoch = resume_training_state['epoch']
+                        resume_batch_idx = resume_training_state['batch_idx']
+                        print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}")
+                    else:
+                        # No training state file, fall back to epoch-level resume
+                        start_epoch = global_step // steps_per_epoch
+                        print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
                     for _ in range(global_step):
@@ -2456,9 +2541,16 @@ class BaseTrainer(ABC):
                     loaded_step = self.load_checkpoint(str(checkpoint_path))
                     global_step = loaded_step
 
-                    # Calculate which epoch to start from
-                    start_epoch = global_step // steps_per_epoch
-                    print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
+                    # Try to load training state for mid-epoch resume
+                    resume_training_state = self.load_training_state(loaded_step)
+                    if resume_training_state:
+                        start_epoch = resume_training_state['epoch']
+                        resume_batch_idx = resume_training_state['batch_idx']
+                        print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}")
+                    else:
+                        # No training state file, fall back to epoch-level resume
+                        start_epoch = global_step // steps_per_epoch
+                        print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
                     for _ in range(global_step):
@@ -2488,6 +2580,13 @@ class BaseTrainer(ABC):
                 for dataset in datasets:
                     all_items.extend([(item, dataset) for item in dataset.items])
 
+                # Mid-epoch resume: restore random state BEFORE building batches
+                # This ensures batches are shuffled in the same order as the interrupted run
+                if epoch == start_epoch and resume_training_state is not None:
+                    import random
+                    print(f"{self.log_prefix} Restoring random state for mid-epoch resume...")
+                    random.setstate(resume_training_state['random_state'])
+
                 # Create batches
                 if bucket_manager:
                     # BucketManager only manages items, we need to pair with datasets
@@ -2511,6 +2610,15 @@ class BaseTrainer(ABC):
                 else:
                     # Simple sequential batching
                     batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
+
+                # Mid-epoch resume: skip completed batches
+                # (random state was already restored before batch building)
+                if epoch == start_epoch and resume_training_state is not None:
+                    print(f"{self.log_prefix} Skipping {resume_batch_idx} completed batches...")
+                    batches = batches[resume_batch_idx:]
+
+                    # Clear resume state so we don't skip batches in subsequent epochs
+                    resume_training_state = None
 
                 # Initialize swap mode buffer if needed (all architectures)
                 swap_buffer = [] if text_encoding_mode == "swap_onthefly" else None
@@ -2928,6 +3036,8 @@ class BaseTrainer(ABC):
                         # Save checkpoint
                         if global_step % save_every_n_steps == 0:
                             self.save_checkpoint(step=global_step, epoch=epoch)
+                            # Save training state (epoch progress) for mid-epoch resume
+                            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
                             self._cleanup_old_checkpoints(max_step_saves_to_keep)
                             # Clear CUDA cache after checkpoint save to free temporary buffers
                             torch.cuda.empty_cache()
@@ -2986,6 +3096,9 @@ class BaseTrainer(ABC):
             print(f"\n{self.log_prefix} Training interrupted by user")
             print(f"{self.log_prefix} Saving checkpoint at step {global_step}, epoch {epoch}...")
             self.save_checkpoint(step=global_step, epoch=epoch)
+            # Save training state for mid-epoch resume
+            # Note: batch_idx is the current batch being processed, so save batch_idx for resume
+            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx)
             self._cleanup_old_checkpoints(max_step_saves_to_keep)
             print(f"{self.log_prefix} Checkpoint saved, exiting...")
             self.writer.close()

@@ -2526,8 +2526,7 @@ class BaseTrainer(ABC):
                     # Prepare batch data
                     latents_list = []
                     text_embeddings_list = []
-                    pooled_embeddings_list = [] if self.is_sdxl else None
-                    attention_masks_list = [] if self.is_zimage else None
+                    auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
 
                     for item, dataset in batch:
                         # Load latent from cache
@@ -2555,56 +2554,51 @@ class BaseTrainer(ABC):
 
                         latents_list.append(latent)
 
-                        # Encode caption (mode-specific)
+                        # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
-                        if self.is_zimage:
-                            if text_encoding_mode == "swap_onthefly":
-                                # Get from swap buffer
-                                if swap_buffer_idx < len(swap_buffer):
-                                    prompt_embeds_cpu, attention_mask_cpu = swap_buffer[swap_buffer_idx]
-                                    # Transfer to GPU
-                                    prompt_embeds = prompt_embeds_cpu.to(self.device, non_blocking=True)
-                                    attention_mask = attention_mask_cpu.to(self.device, non_blocking=True)
-                                    text_embeddings_list.append(prompt_embeds)
-                                    attention_masks_list.append(attention_mask)
-                                    swap_buffer_idx += 1
-                                else:
-                                    # Shouldn't happen, but fallback to on-the-fly encoding
-                                    print(f"{self.log_prefix} WARNING: Swap buffer exhausted, encoding on-the-fly")
-                                    prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                                    text_embeddings_list.append(prompt_embeds)
-                                    attention_masks_list.append(attention_mask)
-                            elif text_encoding_mode == "pre_encoded_cache":
-                                # Load from disk cache (per-dataset)
-                                cached_result = self._load_caption_embedding_from_disk(
-                                    caption=caption,
-                                    dataset_unique_id=dataset.unique_id,
-                                    text_encoder_caches=text_encoder_caches
-                                )
-                                if cached_result is not None:
-                                    prompt_embeds_cpu, attention_mask_cpu = cached_result
-                                    prompt_embeds = prompt_embeds_cpu.to(self.device, non_blocking=True)
-                                    attention_mask = attention_mask_cpu.to(self.device, non_blocking=True)
-                                    text_embeddings_list.append(prompt_embeds)
-                                    attention_masks_list.append(attention_mask)
-                                else:
-                                    # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
-                                    print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
-                                    prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                                    text_embeddings_list.append(prompt_embeds)
-                                    attention_masks_list.append(attention_mask)
-                            elif text_encoding_mode == "onthefly_gpu":
-                                # Encode on GPU without cache
-                                prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                                text_embeddings_list.append(prompt_embeds)
-                                attention_masks_list.append(attention_mask)
-                        elif self.is_sdxl:
-                            text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=True)
-                            text_embeddings_list.append(text_emb)
-                            pooled_embeddings_list.append(pooled_emb)
-                        else:
-                            text_emb = self.encode_prompt(caption, requires_grad=True)
-                            text_embeddings_list.append(text_emb)
+
+                        if text_encoding_mode == "swap_onthefly":
+                            # Get from swap buffer
+                            if swap_buffer_idx < len(swap_buffer):
+                                embeddings_cpu, auxiliary_cpu = swap_buffer[swap_buffer_idx]
+                                # Transfer to GPU
+                                embeddings = embeddings_cpu.to(self.device, non_blocking=True)
+                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                text_embeddings_list.append(embeddings)
+                                auxiliary_data_list.append(auxiliary)
+                                swap_buffer_idx += 1
+                            else:
+                                # Shouldn't happen, but fallback to on-the-fly encoding
+                                print(f"{self.log_prefix} WARNING: Swap buffer exhausted, encoding on-the-fly")
+                                embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                text_embeddings_list.append(embeddings)
+                                auxiliary_data_list.append(auxiliary)
+
+                        elif text_encoding_mode == "pre_encoded_cache":
+                            # Load from disk cache (per-dataset)
+                            cached_result = self._load_caption_embedding_from_disk(
+                                caption=caption,
+                                dataset_unique_id=dataset.unique_id,
+                                text_encoder_caches=text_encoder_caches
+                            )
+                            if cached_result is not None:
+                                embeddings_cpu, auxiliary_cpu = cached_result
+                                embeddings = embeddings_cpu.to(self.device, non_blocking=True)
+                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                text_embeddings_list.append(embeddings)
+                                auxiliary_data_list.append(auxiliary)
+                            else:
+                                # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
+                                print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
+                                embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                text_embeddings_list.append(embeddings)
+                                auxiliary_data_list.append(auxiliary)
+
+                        elif text_encoding_mode == "onthefly_gpu":
+                            # Encode on GPU without cache
+                            embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                            text_embeddings_list.append(embeddings)
+                            auxiliary_data_list.append(auxiliary)
 
                     # Stack batch
                     latents = torch.cat(latents_list, dim=0)
@@ -2618,9 +2612,10 @@ class BaseTrainer(ABC):
                     if debug_dir is not None and global_step % debug_latents_every == 0:
                         debug_save_path = debug_dir / f"step_{global_step:06d}"
 
-                    # Training step
+                    # Training step (architecture-specific calling convention)
                     if self.is_zimage:
-                        attention_mask = torch.stack(attention_masks_list, dim=0)
+                        # auxiliary_data_list contains attention_mask for Z-Image
+                        attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                         loss, recon_loss = self.train_step_zimage(
                             latents=latents,
                             prompt_embeds=text_embeddings,
@@ -2630,7 +2625,10 @@ class BaseTrainer(ABC):
                             profile_vram=self.debug_vram,
                         )
                     else:
-                        pooled_embeddings = torch.stack(pooled_embeddings_list, dim=0) if pooled_embeddings_list else None
+                        # auxiliary_data_list contains pooled_embeddings for SDXL, None for SD1.5
+                        pooled_embeddings = None
+                        if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
+                            pooled_embeddings = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                         loss, recon_loss = self.train_step(
                             latents=latents,
                             text_embeddings=text_embeddings,
@@ -2648,13 +2646,9 @@ class BaseTrainer(ABC):
                     del latents, text_embeddings
                     if self.is_zimage:
                         del attention_mask
-                    if self.is_sdxl and pooled_embeddings_list:
+                    if self.is_sdxl and pooled_embeddings is not None:
                         del pooled_embeddings
-                    del latents_list, text_embeddings_list
-                    if attention_masks_list is not None:
-                        del attention_masks_list
-                    if pooled_embeddings_list is not None:
-                        del pooled_embeddings_list
+                    del latents_list, text_embeddings_list, auxiliary_data_list
 
                     # Gradient accumulation
                     if (batch_idx + 1) % gradient_accumulation_steps == 0:

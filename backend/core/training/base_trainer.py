@@ -865,7 +865,8 @@ class BaseTrainer(ABC):
         image: Image.Image,
         target_size: int = 512,
         target_width: int = None,
-        target_height: int = None
+        target_height: int = None,
+        bucket_strategy: str = "crop"
     ) -> torch.Tensor:
         """
         Encode image to latents.
@@ -875,6 +876,10 @@ class BaseTrainer(ABC):
             target_size: Square target size (deprecated, use target_width/height)
             target_width: Target width (for bucketing)
             target_height: Target height (for bucketing)
+            bucket_strategy: Strategy for fitting image to target size
+                - "resize": Direct resize (may distort aspect ratio, fastest)
+                - "crop": Aspect ratio preserving resize + center crop (default)
+                - "random_crop": Random crop at original resolution (no downscale, for tiled inference training)
 
         Returns:
             Latent tensor
@@ -887,22 +892,51 @@ class BaseTrainer(ABC):
         else:
             width, height = target_size, target_size
 
-        # Resize with aspect ratio preservation + center crop
         img_width, img_height = image.size
 
         if img_width * img_height > 5000 * 5000:
             print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
 
-        scale = max(width / img_width, height / img_height)
-        new_width = int(img_width * scale)
-        new_height = int(img_height * scale)
+        # Apply bucketing strategy
+        if bucket_strategy == "resize":
+            # Direct resize (may distort aspect ratio)
+            image = image.resize((width, height), Image.LANCZOS)
 
-        image = image.resize((new_width, new_height), Image.LANCZOS)
+        elif bucket_strategy == "crop":
+            # Aspect ratio preserving resize + center crop (default)
+            scale = max(width / img_width, height / img_height)
+            new_width = int(img_width * scale)
+            new_height = int(img_height * scale)
 
-        # Center crop
-        left = (new_width - width) // 2
-        top = (new_height - height) // 2
-        image = image.crop((left, top, left + width, top + height))
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+
+            # Center crop
+            left = (new_width - width) // 2
+            top = (new_height - height) // 2
+            image = image.crop((left, top, left + width, top + height))
+
+        elif bucket_strategy == "random_crop":
+            # Random crop at original resolution (no resize)
+            # Enables model to learn inference on partial regions of large images (for tiled inference)
+            import random
+
+            # If image is smaller than target, resize it first
+            if img_width < width or img_height < height:
+                scale = max(width / img_width, height / img_height)
+                new_width = int(img_width * scale)
+                new_height = int(img_height * scale)
+                image = image.resize((new_width, new_height), Image.LANCZOS)
+                img_width, img_height = new_width, new_height
+
+            # Random crop from original (or upscaled) resolution
+            max_left = img_width - width
+            max_top = img_height - height
+            left = random.randint(0, max_left) if max_left > 0 else 0
+            top = random.randint(0, max_top) if max_top > 0 else 0
+            image = image.crop((left, top, left + width, top + height))
+
+        else:
+            raise ValueError(f"Unknown bucket_strategy: {bucket_strategy}. Must be 'resize', 'crop', or 'random_crop'")
 
         if image.size != (width, height):
             print(f"[encode_image] ERROR: Final image size {image.size} != target {(width, height)}")
@@ -1515,10 +1549,11 @@ class BaseTrainer(ABC):
             generator = None
             if seed >= 0:
                 generator = torch.Generator(device=self.device).manual_seed(seed)
+            # Use FP32 for latents initialization (same as pipeline.py for numerical stability)
             latents = torch.randn(
                 (1, self.vae.config.latent_channels, latent_height, latent_width),
                 device=self.device,
-                dtype=self.training_dtype,
+                dtype=torch.float32,
                 generator=generator,
             )
 
@@ -2486,12 +2521,11 @@ class BaseTrainer(ABC):
                 if swap_buffer is not None:
                     print(f"{self.log_prefix} Pre-filling swap buffer for first {text_encoding_swap_interval} steps...")
                     if progress_callback:
-                        progress_callback({
-                            "status": "encoding_captions",
-                            "message": f"Pre-filling text encoding swap buffer (0-{text_encoding_swap_interval})...",
-                            "current": 0,
-                            "total": text_encoding_swap_interval
-                        })
+                        progress_callback(
+                            phase="text_encoder_cache",
+                            step=0,
+                            total=text_encoding_swap_interval
+                        )
 
                     # Move Text Encoder to GPU for encoding
                     self.move_text_encoder_to_gpu()
@@ -2499,7 +2533,10 @@ class BaseTrainer(ABC):
                     self.move_main_model_to_cpu()
 
                     # Encode captions for first interval
-                    buffer_items = all_items[:text_encoding_swap_interval]
+                    # Use batches (which have bucket info) instead of all_items
+                    buffer_items = []
+                    for batch in batches[:text_encoding_swap_interval]:
+                        buffer_items.extend(batch)
                     for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
                         caption = item.get("caption", "")
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
@@ -2512,12 +2549,11 @@ class BaseTrainer(ABC):
 
                         # Send progress update
                         if progress_callback and idx % 10 == 0:
-                            progress_callback({
-                                "status": "encoding_captions",
-                                "message": f"Pre-filling swap buffer ({idx}/{len(buffer_items)})...",
-                                "current": idx,
-                                "total": len(buffer_items)
-                            })
+                            progress_callback(
+                                phase="text_encoder_cache",
+                                step=idx,
+                                total=len(buffer_items)
+                            )
 
                     # Move Text Encoder back to CPU
                     self.move_text_encoder_to_cpu()
@@ -2536,12 +2572,11 @@ class BaseTrainer(ABC):
                 if latent_swap_buffer is not None:
                     print(f"{self.log_prefix} Pre-filling latent swap buffer for first {latent_encoding_swap_interval} steps...")
                     if progress_callback:
-                        progress_callback({
-                            "status": "encoding_latents",
-                            "message": f"Pre-filling latent swap buffer (0-{latent_encoding_swap_interval})...",
-                            "current": 0,
-                            "total": latent_encoding_swap_interval
-                        })
+                        progress_callback(
+                            phase="latent_cache",
+                            step=0,
+                            total=latent_encoding_swap_interval
+                        )
 
                     # Move VAE to GPU for encoding
                     self.move_vae_to_gpu()
@@ -2549,7 +2584,10 @@ class BaseTrainer(ABC):
                     self.move_main_model_to_cpu()
 
                     # Encode images for first interval
-                    buffer_items = all_items[:latent_encoding_swap_interval]
+                    # Use batches (which have bucket info) instead of all_items
+                    buffer_items = []
+                    for batch in batches[:latent_encoding_swap_interval]:
+                        buffer_items.extend(batch)
                     for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
                         image_path = item["image_path"]
                         width = item.get("width") or item.get("bucket_width")
@@ -2568,12 +2606,11 @@ class BaseTrainer(ABC):
 
                         # Send progress update
                         if progress_callback and idx % 10 == 0:
-                            progress_callback({
-                                "status": "encoding_latents",
-                                "message": f"Pre-filling latent buffer ({idx}/{len(buffer_items)})...",
-                                "current": idx,
-                                "total": len(buffer_items)
-                            })
+                            progress_callback(
+                                phase="latent_cache",
+                                step=idx,
+                                total=len(buffer_items)
+                            )
 
                     # Move VAE back to CPU
                     self.move_vae_to_cpu()
@@ -2596,17 +2633,19 @@ class BaseTrainer(ABC):
                     if swap_buffer is not None and batch_idx >= next_swap_at_step:
                         # Calculate next batch range
                         start_idx = next_swap_at_step
-                        end_idx = min(start_idx + text_encoding_swap_interval, len(all_items))
-                        buffer_items = all_items[start_idx:end_idx]
+                        end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
+                        # Use batches (which have bucket info) instead of all_items
+                        buffer_items = []
+                        for batch in batches[start_idx:end_idx]:
+                            buffer_items.extend(batch)
 
                         print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
                         if progress_callback:
-                            progress_callback({
-                                "status": "encoding_captions",
-                                "message": f"Refilling text encoding swap buffer ({start_idx}-{end_idx})...",
-                                "current": 0,
-                                "total": len(buffer_items)
-                            })
+                            progress_callback(
+                                phase="text_encoder_cache",
+                                step=0,
+                                total=len(buffer_items)
+                            )
 
                         # Move Text Encoder to GPU
                         self.move_text_encoder_to_gpu()
@@ -2626,12 +2665,11 @@ class BaseTrainer(ABC):
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
-                                progress_callback({
-                                    "status": "encoding_captions",
-                                    "message": f"Refilling swap buffer ({idx}/{len(buffer_items)})...",
-                                    "current": idx,
-                                    "total": len(buffer_items)
-                                })
+                                progress_callback(
+                                    phase="text_encoder_cache",
+                                    step=idx,
+                                    total=len(buffer_items)
+                                )
 
                         # Move Text Encoder back to CPU
                         self.move_text_encoder_to_cpu()
@@ -2645,17 +2683,19 @@ class BaseTrainer(ABC):
                     if latent_swap_buffer is not None and batch_idx >= next_latent_swap_at_step:
                         # Calculate next batch range
                         start_idx = next_latent_swap_at_step
-                        end_idx = min(start_idx + latent_encoding_swap_interval, len(all_items))
-                        buffer_items = all_items[start_idx:end_idx]
+                        end_idx = min(start_idx + latent_encoding_swap_interval, len(batches))
+                        # Use batches (which have bucket info) instead of all_items
+                        buffer_items = []
+                        for batch in batches[start_idx:end_idx]:
+                            buffer_items.extend(batch)
 
                         print(f"\n{self.log_prefix} Refilling latent swap buffer (steps {start_idx}-{end_idx})...")
                         if progress_callback:
-                            progress_callback({
-                                "status": "encoding_latents",
-                                "message": f"Refilling latent swap buffer ({start_idx}-{end_idx})...",
-                                "current": 0,
-                                "total": len(buffer_items)
-                            })
+                            progress_callback(
+                                phase="latent_cache",
+                                step=0,
+                                total=len(buffer_items)
+                            )
 
                         # Move VAE to GPU
                         self.move_vae_to_gpu()
@@ -2682,12 +2722,11 @@ class BaseTrainer(ABC):
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
-                                progress_callback({
-                                    "status": "encoding_latents",
-                                    "message": f"Refilling latent buffer ({idx}/{len(buffer_items)})...",
-                                    "current": idx,
-                                    "total": len(buffer_items)
-                                })
+                                progress_callback(
+                                    phase="latent_cache",
+                                    step=idx,
+                                    total=len(buffer_items)
+                                )
 
                         # Move VAE back to CPU
                         self.move_vae_to_cpu()

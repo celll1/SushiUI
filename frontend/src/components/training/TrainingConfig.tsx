@@ -106,6 +106,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
 
+  // Text encoding mode (Z-Image only)
+  const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
+  const [textEncodingSwapInterval, setTextEncodingSwapInterval] = useState<number>(256);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -334,6 +338,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       mixedPrecision,
       useFlashAttention,
       minSnrGamma,
+      textEncodingMode,
+      textEncodingSwapInterval,
     };
   };
 
@@ -409,6 +415,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.mixedPrecision !== undefined) setMixedPrecision(config.mixedPrecision);
     if (config.useFlashAttention !== undefined) setUseFlashAttention(config.useFlashAttention);
     if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
+    if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
+    if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -503,6 +511,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       mixed_precision: mixedPrecision,
       use_flash_attention: useFlashAttention,
       min_snr_gamma: minSnrGamma,
+      text_encoding_mode: textEncodingMode,
+      text_encoding_swap_interval: textEncodingSwapInterval,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1146,6 +1156,53 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps.
           </p>
         </div>
+
+        {/* Text Encoding Mode (Z-Image only) */}
+        {baseModelPath.toLowerCase().includes("zimage") && (
+          <div className="border border-gray-700 rounded p-4 space-y-3">
+            <h3 className="text-sm font-medium text-gray-300 mb-3">Text Encoding Mode (Z-Image only)</h3>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+              <select
+                value={textEncodingMode}
+                onChange={(e) => setTextEncodingMode(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
+                <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+                <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+              </select>
+            </div>
+
+            {textEncodingMode === "swap_onthefly" && (
+              <div>
+                <label htmlFor="text-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                  Swap Interval (steps)
+                </label>
+                <input
+                  type="number"
+                  id="text-encoding-swap-interval"
+                  value={textEncodingSwapInterval}
+                  onChange={(e) => setTextEncodingSwapInterval(parseInt(e.target.value) || 256)}
+                  min={1}
+                  max={1024}
+                  step={1}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Memory usage: ~{Math.ceil(textEncodingSwapInterval * 2 / 1024)}MB DRAM (swap_interval × 2MB)
+                </p>
+              </div>
+            )}
+
+            <div className="text-xs text-gray-500 space-y-1">
+              <p><strong>Swap On-the-Fly:</strong> Text Encoder and Transformer alternate GPU usage. Uses ~512MB DRAM buffer. Recommended for large datasets.</p>
+              <p><strong>Pre-Encoded Cache:</strong> Pre-encode all captions to disk cache. Not recommended if cache size exceeds disk capacity.</p>
+              <p><strong>On-the-Fly GPU:</strong> Encode captions on GPU without cache. Slower, uses more VRAM. Not recommended for Z-Image.</p>
+            </div>
+          </div>
+        )}
 
         {/* Advanced Settings */}
         <div className="border border-gray-700 rounded p-4 space-y-3">

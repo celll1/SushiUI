@@ -566,6 +566,10 @@ def main():
             if force_recache:
                 print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
+            # Get text encoding mode (Z-Image only)
+            text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
+            text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -594,6 +598,8 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                text_encoding_mode=text_encoding_mode,
+                text_encoding_swap_interval=text_encoding_swap_interval,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -748,6 +754,10 @@ def main():
             if force_recache:
                 print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
+            # Get text encoding mode (Z-Image only)
+            text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
+            text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -776,6 +786,8 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                text_encoding_mode=text_encoding_mode,
+                text_encoding_swap_interval=text_encoding_swap_interval,
             )
 
             print("[TrainRunner] Training completed successfully!")

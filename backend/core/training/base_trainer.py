@@ -788,31 +788,62 @@ class BaseTrainer(ABC):
 
         return prompt_embeds[0], attention_mask[0]
 
+    def encode_caption(self, caption: str, requires_grad: bool = False):
+        """
+        Unified caption encoding for all architectures.
+
+        Returns:
+            Tuple of (embeddings, auxiliary_data):
+            - Z-Image: (prompt_embeds, attention_mask)
+            - SD1.5: (text_embeddings, None)
+            - SDXL: (text_embeddings, pooled_embeddings)
+        """
+        if self.is_zimage:
+            return self.encode_prompt_zimage(caption)
+        elif self.is_sdxl:
+            text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=requires_grad)
+            return text_emb, pooled_emb
+        else:
+            text_emb = self.encode_prompt(caption, requires_grad=requires_grad)
+            return text_emb, None
+
     # ============================================================
-    # VRAM Management (Z-Image swap mode)
+    # VRAM Management (swap mode for all architectures)
     # ============================================================
 
     def move_text_encoder_to_gpu(self):
-        """Move Text Encoder to GPU for encoding."""
-        if self.is_zimage and self.text_encoder is not None:
+        """Move Text Encoder(s) to GPU for encoding."""
+        if self.text_encoder is not None:
             self.text_encoder.to(self.device)
+        if self.is_sdxl and self.text_encoder_2 is not None:
+            self.text_encoder_2.to(self.device)
 
     def move_text_encoder_to_cpu(self):
-        """Move Text Encoder to CPU to free VRAM."""
-        if self.is_zimage and self.text_encoder is not None:
+        """Move Text Encoder(s) to CPU to free VRAM."""
+        if self.text_encoder is not None:
             self.text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+        if self.is_sdxl and self.text_encoder_2 is not None:
+            self.text_encoder_2.to("cpu")
+        torch.cuda.empty_cache()
 
-    def move_transformer_to_gpu(self):
-        """Move Transformer to GPU for training."""
-        if self.is_zimage and self.transformer_original is not None:
-            self.transformer_original.to(self.device)
+    def move_main_model_to_gpu(self):
+        """Move main model (U-Net or Transformer) to GPU for training."""
+        if self.is_zimage:
+            if self.transformer_original is not None:
+                self.transformer_original.to(self.device)
+        else:
+            if self.unet is not None:
+                self.unet.to(self.device)
 
-    def move_transformer_to_cpu(self):
-        """Move Transformer to CPU to free VRAM."""
-        if self.is_zimage and self.transformer_original is not None:
-            self.transformer_original.to("cpu")
-            torch.cuda.empty_cache()
+    def move_main_model_to_cpu(self):
+        """Move main model (U-Net or Transformer) to CPU to free VRAM."""
+        if self.is_zimage:
+            if self.transformer_original is not None:
+                self.transformer_original.to("cpu")
+        else:
+            if self.unet is not None:
+                self.unet.to("cpu")
+        torch.cuda.empty_cache()
 
     # ============================================================
     # Image Encoding
@@ -1946,7 +1977,7 @@ class BaseTrainer(ABC):
 
     def _setup_text_encoder_caches(self, datasets: List[Any]) -> Dict[str, Path]:
         """
-        Setup per-dataset text encoder cache directories for Z-Image.
+        Setup per-dataset text encoder cache directories for all architectures.
         Similar to _setup_latent_caches(), this only creates directories.
 
         Args:
@@ -1955,16 +1986,14 @@ class BaseTrainer(ABC):
         Returns:
             Dictionary mapping dataset_unique_id to cache directory path
         """
-        if not self.is_zimage:
-            return {}
-
         from pathlib import Path
         from core.training.latent_cache import get_cache_base_dir
 
         base_dir = Path(get_cache_base_dir())
         text_encoder_caches = {}
 
-        print(f"{self.log_prefix} Setting up text encoder cache directories (Z-Image)...")
+        arch_name = "Z-Image" if self.is_zimage else ("SDXL" if self.is_sdxl else "SD1.5")
+        print(f"{self.log_prefix} Setting up text encoder cache directories ({arch_name})...")
         print(f"{self.log_prefix} Using global cache directory: {base_dir}")
 
         for dataset in datasets:
@@ -2266,22 +2295,24 @@ class BaseTrainer(ABC):
         latent_caches = self._setup_latent_caches(datasets)
         self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
 
-        # Setup text encoder caches (Z-Image only)
+        # Setup text encoder caches (all architectures)
         text_encoder_caches = None
-        if self.is_zimage:
-            print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
-            if text_encoding_mode == "swap_onthefly":
-                print(f"{self.log_prefix} Swap interval: {text_encoding_swap_interval} steps")
+        print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
+        if text_encoding_mode == "swap_onthefly":
+            print(f"{self.log_prefix} Swap interval: {text_encoding_swap_interval} steps")
+            if self.is_zimage:
                 print(f"{self.log_prefix} Text encoder will swap with transformer during training")
-                # No cache setup needed for swap mode
-            elif text_encoding_mode == "pre_encoded_cache":
-                print(f"{self.log_prefix} Using pre-encoded disk cache mode")
-                text_encoder_caches = self._setup_text_encoder_caches(datasets)
-            elif text_encoding_mode == "onthefly_gpu":
-                print(f"{self.log_prefix} Using on-the-fly GPU encoding (no cache)")
-                # No cache setup needed
             else:
-                raise ValueError(f"Invalid text_encoding_mode: {text_encoding_mode}")
+                print(f"{self.log_prefix} Text encoder will swap with U-Net during training")
+            # No cache setup needed for swap mode
+        elif text_encoding_mode == "pre_encoded_cache":
+            print(f"{self.log_prefix} Using pre-encoded disk cache mode")
+            text_encoder_caches = self._setup_text_encoder_caches(datasets)
+        elif text_encoding_mode == "onthefly_gpu":
+            print(f"{self.log_prefix} Using on-the-fly GPU encoding (no cache)")
+            # No cache setup needed
+        else:
+            raise ValueError(f"Invalid text_encoding_mode: {text_encoding_mode}")
 
         # Clean up stop flag from previous run (if any)
         stop_flag_file = self.output_dir / ".stop_training"
@@ -2385,24 +2416,25 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Pre-filling swap buffer for first {text_encoding_swap_interval} steps...")
                     # Move Text Encoder to GPU for encoding
                     self.move_text_encoder_to_gpu()
-                    # Move Transformer to CPU to free VRAM
-                    self.move_transformer_to_cpu()
+                    # Move main model to CPU to free VRAM
+                    self.move_main_model_to_cpu()
 
                     # Encode captions for first interval
                     buffer_items = all_items[:text_encoding_swap_interval]
                     for item, dataset in tqdm(buffer_items, desc="Encoding captions"):
                         caption = item.get("caption", "")
-                        prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
+                        embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                         # Store on CPU to save GPU VRAM
+                        # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
                         swap_buffer.append((
-                            prompt_embeds.cpu(),
-                            attention_mask.cpu()
+                            embeddings.cpu(),
+                            auxiliary_data.cpu() if auxiliary_data is not None else None
                         ))
 
                     # Move Text Encoder back to CPU
                     self.move_text_encoder_to_cpu()
-                    # Move Transformer to GPU for training
-                    self.move_transformer_to_gpu()
+                    # Move main model to GPU for training
+                    self.move_main_model_to_gpu()
 
                     next_swap_at_step = text_encoding_swap_interval
                     print(f"{self.log_prefix} Buffer pre-filled with {len(swap_buffer)} embeddings")
@@ -2426,24 +2458,24 @@ class BaseTrainer(ABC):
                         print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
                         # Move Text Encoder to GPU
                         self.move_text_encoder_to_gpu()
-                        # Move Transformer to CPU
-                        self.move_transformer_to_cpu()
+                        # Move main model to CPU
+                        self.move_main_model_to_cpu()
 
                         # Clear old buffer and encode new captions
                         swap_buffer.clear()
                         swap_buffer_idx = 0
                         for item, dataset in tqdm(buffer_items, desc="Encoding captions", leave=False):
                             caption = item.get("caption", "")
-                            prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
+                            embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                             swap_buffer.append((
-                                prompt_embeds.cpu(),
-                                attention_mask.cpu()
+                                embeddings.cpu(),
+                                auxiliary_data.cpu() if auxiliary_data is not None else None
                             ))
 
                         # Move Text Encoder back to CPU
                         self.move_text_encoder_to_cpu()
-                        # Move Transformer to GPU
-                        self.move_transformer_to_gpu()
+                        # Move main model to GPU
+                        self.move_main_model_to_gpu()
 
                         next_swap_at_step += text_encoding_swap_interval
                         print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")

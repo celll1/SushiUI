@@ -71,9 +71,11 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       const sinceStep = isIncremental && lastStep >= 0 ? lastStep : undefined;
       const data = await getTrainingMetrics(runId, sinceStep);
 
-      // Merge new data with existing data
+      // Merge new data with existing data and limit total points to prevent memory accumulation
+      const MAX_POINTS = 5000; // Limit frontend memory usage for long-duration training
+
       setLossData((prevData) => {
-        const newData = sinceStep !== undefined ? [...prevData, ...data.loss] : data.loss;
+        let newData = sinceStep !== undefined ? [...prevData, ...data.loss] : data.loss;
 
         // Update lastStep
         if (newData.length > 0) {
@@ -81,12 +83,35 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           setLastStep(maxStep);
         }
 
+        // Decimate if too many points (keep recent data dense, old data sparse)
+        if (newData.length > MAX_POINTS) {
+          const keepRecent = Math.floor(MAX_POINTS * 0.3); // Keep last 30% at full resolution
+          const decimateOld = newData.length - keepRecent;
+          const decimationFactor = Math.ceil(decimateOld / (MAX_POINTS - keepRecent));
+
+          const decimatedOld = newData.slice(0, decimateOld).filter((_, i) => i % decimationFactor === 0);
+          const recentData = newData.slice(decimateOld);
+          newData = [...decimatedOld, ...recentData];
+        }
+
         return newData;
       });
 
-      // Update recon_loss data
+      // Update recon_loss data with same decimation
       setReconLossData((prevData) => {
-        const newData = sinceStep !== undefined ? [...prevData, ...(data.recon_loss || [])] : (data.recon_loss || []);
+        let newData = sinceStep !== undefined ? [...prevData, ...(data.recon_loss || [])] : (data.recon_loss || []);
+
+        // Decimate if too many points
+        if (newData.length > MAX_POINTS) {
+          const keepRecent = Math.floor(MAX_POINTS * 0.3);
+          const decimateOld = newData.length - keepRecent;
+          const decimationFactor = Math.ceil(decimateOld / (MAX_POINTS - keepRecent));
+
+          const decimatedOld = newData.slice(0, decimateOld).filter((_, i) => i % decimationFactor === 0);
+          const recentData = newData.slice(decimateOld);
+          newData = [...decimatedOld, ...recentData];
+        }
+
         return newData;
       });
     } catch (err: any) {

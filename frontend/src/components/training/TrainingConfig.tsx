@@ -1158,7 +1158,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Text Encoding Mode (Z-Image only) */}
-        {baseModelPath.toLowerCase().includes("zimage") && (
+        {isZImageModel(baseModelPath) && (
           <div className="border border-gray-700 rounded p-4 space-y-3">
             <h3 className="text-sm font-medium text-gray-300 mb-3">Text Encoding Mode (Z-Image only)</h3>
 

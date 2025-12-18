@@ -106,9 +106,13 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
 
-  // Text encoding mode (Z-Image only)
+  // Text encoding mode
   const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
   const [textEncodingSwapInterval, setTextEncodingSwapInterval] = useState<number>(256);
+
+  // Latent encoding mode
+  const [latentEncodingMode, setLatentEncodingMode] = useState<string>("swap_onthefly");
+  const [latentEncodingSwapInterval, setLatentEncodingSwapInterval] = useState<number>(256);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -513,6 +517,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       min_snr_gamma: minSnrGamma,
       text_encoding_mode: textEncodingMode,
       text_encoding_swap_interval: textEncodingSwapInterval,
+      latent_encoding_mode: latentEncodingMode,
+      latent_encoding_swap_interval: latentEncodingSwapInterval,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1199,6 +1205,51 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             <p><strong>Swap On-the-Fly:</strong> Text Encoder swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer. Recommended for large datasets.</p>
             <p><strong>Pre-Encoded Cache:</strong> Pre-encode all captions to disk cache. Not recommended if cache size exceeds disk capacity.</p>
             <p><strong>On-the-Fly GPU:</strong> Encode captions on GPU without cache. Slower, uses more VRAM.</p>
+          </div>
+        </div>
+
+        {/* Latent Encoding Mode */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+            <select
+              value={latentEncodingMode}
+              onChange={(e) => setLatentEncodingMode(e.target.value)}
+              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
+              <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+              <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+            </select>
+          </div>
+
+          {latentEncodingMode === "swap_onthefly" && (
+            <div>
+              <label htmlFor="latent-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                Swap Interval (steps)
+              </label>
+              <input
+                type="number"
+                id="latent-encoding-swap-interval"
+                value={latentEncodingSwapInterval}
+                onChange={(e) => setLatentEncodingSwapInterval(parseInt(e.target.value) || 256)}
+                min={1}
+                max={1024}
+                step={1}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Memory usage: ~{Math.ceil(latentEncodingSwapInterval * 0.25)}MB DRAM (swap_interval × 256KB)
+              </p>
+            </div>
+          )}
+
+          <div className="text-xs text-gray-500 space-y-1">
+            <p><strong>Swap On-the-Fly:</strong> VAE swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer (~64MB for 256 steps). Recommended for VRAM efficiency.</p>
+            <p><strong>Pre-Encoded Cache:</strong> Pre-encode all images to latents and cache to disk. Uses more disk space but no VRAM for VAE during training.</p>
+            <p><strong>On-the-Fly GPU:</strong> Encode images on GPU without cache. VAE stays on GPU, uses more VRAM.</p>
           </div>
         </div>
 

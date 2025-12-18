@@ -3556,6 +3556,10 @@ class TrainingRunCreateRequest(BaseModel):
     text_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
     text_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
 
+    # Latent encoding settings
+    latent_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
+    latent_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -3699,6 +3703,8 @@ async def create_training_run(
                 min_snr_gamma=request.min_snr_gamma,
                 text_encoding_mode=request.text_encoding_mode,
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
@@ -3747,6 +3753,8 @@ async def create_training_run(
                 min_snr_gamma=request.min_snr_gamma,
                 text_encoding_mode=request.text_encoding_mode,
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,

@@ -2417,9 +2417,9 @@ class BaseTrainer(ABC):
                         dataset.items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
                         print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
 
-                # Validate and generate text encoder cache for new captions (Z-Image only)
+                # Validate and generate text encoder cache for new captions (all architectures)
                 # Only for pre_encoded_cache mode
-                if self.is_zimage and text_encoding_mode == "pre_encoded_cache":
+                if text_encoding_mode == "pre_encoded_cache":
                     self._validate_and_generate_text_encoder_caches(datasets, text_encoder_caches, progress_callback, epoch_num=epoch)
 
                 # Create batches
@@ -2449,8 +2449,8 @@ class BaseTrainer(ABC):
                         all_items.extend([(item, dataset) for item in dataset.items])
                     batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
 
-                # Initialize swap mode buffer if needed
-                swap_buffer = [] if (self.is_zimage and text_encoding_mode == "swap_onthefly") else None
+                # Initialize swap mode buffer if needed (all architectures)
+                swap_buffer = [] if text_encoding_mode == "swap_onthefly" else None
                 swap_buffer_idx = 0
                 next_swap_at_step = 0 if swap_buffer is not None else -1
 

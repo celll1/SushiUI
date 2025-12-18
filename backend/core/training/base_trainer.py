@@ -2422,6 +2422,11 @@ class BaseTrainer(ABC):
                 if text_encoding_mode == "pre_encoded_cache":
                     self._validate_and_generate_text_encoder_caches(datasets, text_encoder_caches, progress_callback, epoch_num=epoch)
 
+                # Create all_items list (needed for swap buffer and batching)
+                all_items = []
+                for dataset in datasets:
+                    all_items.extend([(item, dataset) for item in dataset.items])
+
                 # Create batches
                 if bucket_manager:
                     # BucketManager only manages items, we need to pair with datasets
@@ -2444,9 +2449,6 @@ class BaseTrainer(ABC):
                         batches.append(batch_with_dataset)
                 else:
                     # Simple sequential batching
-                    all_items = []
-                    for dataset in datasets:
-                        all_items.extend([(item, dataset) for item in dataset.items])
                     batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
 
                 # Initialize swap mode buffer if needed (all architectures)

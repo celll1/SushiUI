@@ -310,7 +310,6 @@ def custom_sampling_loop(
 
     # Get components
     unet = pipeline.unet
-    vae = pipeline.vae
     scheduler = pipeline.scheduler
 
     # Check if ControlNet is present
@@ -744,9 +743,9 @@ def custom_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
@@ -850,7 +849,6 @@ def custom_img2img_sampling_loop(
 
     # Get components
     unet = pipeline.unet
-    vae = pipeline.vae
     scheduler = pipeline.scheduler
 
     # Get image dimensions (save before converting to tensor)
@@ -912,7 +910,7 @@ def custom_img2img_sampling_loop(
 
     # Ensure VAE is on GPU for initial encoding
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
-    vae_device = next(vae.parameters()).device
+    vae_device = next(pipeline.vae.parameters()).device
     if vae_device.type != device:
         print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
         move_vae_to_gpu(pipeline)
@@ -925,10 +923,10 @@ def custom_img2img_sampling_loop(
         init_image = init_image * 2.0 - 1.0  # Normalize to [-1, 1]
 
     with torch.no_grad():
-        init_latents = vae.encode(
+        init_latents = pipeline.vae.encode(
             init_image.to(device=device, dtype=dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * vae.config.scaling_factor
+        init_latents = init_latents * pipeline.vae.config.scaling_factor
 
     # Move VAE back to CPU after initial encoding
     print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
@@ -1298,9 +1296,9 @@ def custom_img2img_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
@@ -1446,7 +1444,7 @@ def custom_inpaint_sampling_loop(
 
     # Ensure VAE is on GPU for initial encoding
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
-    vae_device = next(vae.parameters()).device
+    vae_device = next(pipeline.vae.parameters()).device
     if vae_device.type != device:
         print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
         move_vae_to_gpu(pipeline)
@@ -1466,10 +1464,10 @@ def custom_inpaint_sampling_loop(
         mask_tensor = mask_image
 
     with torch.no_grad():
-        init_latents = vae.encode(
+        init_latents = pipeline.vae.encode(
             init_image_tensor.to(device=device, dtype=dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * vae.config.scaling_factor
+        init_latents = init_latents * pipeline.vae.config.scaling_factor
 
     mask_latent = torch.nn.functional.interpolate(
         mask_tensor.to(device=device, dtype=dtype),
@@ -1511,8 +1509,8 @@ def custom_inpaint_sampling_loop(
             print(f"[CustomSampling] Blur applied: kernel_size={kernel_size}, iterations={blur_iterations}, strength={inpaint_blur_strength}")
 
             with torch.no_grad():
-                blurred_latents = vae.encode(blurred).latent_dist.sample(generator)
-                blurred_latents = blurred_latents * vae.config.scaling_factor
+                blurred_latents = pipeline.vae.encode(blurred).latent_dist.sample(generator)
+                blurred_latents = blurred_latents * pipeline.vae.config.scaling_factor
 
             # Mix blurred latents into masked region (mask=1 is inpaint area)
             # Formula: original * (1-mask) + fill * mask * strength + original * mask * (1-strength)
@@ -1879,9 +1877,9 @@ def custom_inpaint_sampling_loop(
     log_device_status("Ready for VAE decode (inpaint)", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)

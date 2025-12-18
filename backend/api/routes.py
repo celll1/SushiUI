@@ -3552,6 +3552,10 @@ class TrainingRunCreateRequest(BaseModel):
     use_flash_attention: bool = False  # Enable Flash Attention for training (faster, lower memory)
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
+    # Text encoding settings
+    text_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
+    text_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -3693,6 +3697,8 @@ async def create_training_run(
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
                 min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
@@ -3739,6 +3745,8 @@ async def create_training_run(
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
                 min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,

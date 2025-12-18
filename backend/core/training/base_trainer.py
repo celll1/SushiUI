@@ -845,6 +845,17 @@ class BaseTrainer(ABC):
                 self.unet.to("cpu")
         torch.cuda.empty_cache()
 
+    def move_vae_to_gpu(self):
+        """Move VAE to GPU for encoding/decoding."""
+        if self.vae is not None:
+            self.vae.to(self.device)
+
+    def move_vae_to_cpu(self):
+        """Move VAE to CPU to free VRAM."""
+        if self.vae is not None:
+            self.vae.to("cpu")
+        torch.cuda.empty_cache()
+
     # ============================================================
     # Image Encoding
     # ============================================================
@@ -2233,6 +2244,8 @@ class BaseTrainer(ABC):
         max_step_saves_to_keep: int = 3,
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
+        latent_encoding_mode: str = "swap_onthefly",
+        latent_encoding_swap_interval: int = 256,
     ):
         """
         Main training loop.

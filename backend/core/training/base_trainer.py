@@ -2850,13 +2850,15 @@ class BaseTrainer(ABC):
                     latents = torch.cat(latents_list, dim=0)
                     text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
 
-                    # Collect batch captions for debug output
-                    batch_captions = [item.get("caption", "") for item, dataset in batch]
-
                     # Determine if we should save debug latents
                     debug_save_path = None
                     if debug_dir is not None and global_step % debug_latents_every == 0:
                         debug_save_path = debug_dir / f"step_{global_step:06d}"
+
+                    # Collect batch captions only when needed for debug (prevents DRAM accumulation)
+                    batch_captions = None
+                    if debug_save_path is not None:
+                        batch_captions = [item.get("caption", "") for item, dataset in batch]
 
                     # Training step (architecture-specific calling convention)
                     if self.is_zimage:
@@ -2915,6 +2917,11 @@ class BaseTrainer(ABC):
                         self.writer.add_scalar("train/recon_loss", recon_loss, global_step)
                         self.writer.add_scalar("train/lr", self.lr_scheduler.get_last_lr()[0], global_step)
 
+                        # Flush TensorBoard writer periodically to prevent DRAM accumulation
+                        # (TensorBoard buffers events internally, can accumulate GBs over long training)
+                        if global_step % 100 == 0:
+                            self.writer.flush()
+
                         # Free loss tensor after logging
                         del loss
 
@@ -2922,6 +2929,8 @@ class BaseTrainer(ABC):
                         if global_step % save_every_n_steps == 0:
                             self.save_checkpoint(step=global_step, epoch=epoch)
                             self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                            # Clear CUDA cache after checkpoint save to free temporary buffers
+                            torch.cuda.empty_cache()
 
                         # Generate sample
                         if global_step % sample_every_n_steps == 0:

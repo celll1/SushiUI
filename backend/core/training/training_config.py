@@ -51,6 +51,9 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Text encoding settings
+        text_encoding_mode: str = "swap_onthefly",
+        text_encoding_swap_interval: int = 256,
         sample_width: int = 1024,
         sample_height: int = 1024,
         sample_steps: int = 28,
@@ -98,6 +101,8 @@ class TrainingConfigGenerator:
             cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
             use_flash_attention: Enable Flash Attention for training (faster, lower memory)
             min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, set to 0 to disable)
+            text_encoding_mode: Text encoding mode ("swap_onthefly", "pre_encoded_cache", "onthefly_gpu")
+            text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256)
 
         Returns:
             YAML configuration string
@@ -210,6 +215,8 @@ class TrainingConfigGenerator:
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
                             "min_snr_gamma": min_snr_gamma,
+                            "text_encoding_mode": text_encoding_mode,
+                            "text_encoding_swap_interval": text_encoding_swap_interval,
                             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         },
                         "model": {
@@ -274,6 +281,9 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Text encoding settings
+        text_encoding_mode: str = "swap_onthefly",
+        text_encoding_swap_interval: int = 256,
         sample_width: int = 1024,
         sample_height: int = 1024,
         sample_steps: int = 28,
@@ -328,6 +338,8 @@ class TrainingConfigGenerator:
             "mixed_precision": mixed_precision,
             "use_flash_attention": use_flash_attention,
             "min_snr_gamma": min_snr_gamma,
+            "text_encoding_mode": text_encoding_mode,
+            "text_encoding_swap_interval": text_encoding_swap_interval,
             "debug_latents": debug_latents,
             "debug_latents_every": debug_latents_every,
             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),

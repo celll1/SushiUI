@@ -2459,6 +2459,14 @@ class BaseTrainer(ABC):
                 # Pre-fill swap buffer for first interval
                 if swap_buffer is not None:
                     print(f"{self.log_prefix} Pre-filling swap buffer for first {text_encoding_swap_interval} steps...")
+                    if progress_callback:
+                        progress_callback({
+                            "status": "encoding_captions",
+                            "message": f"Pre-filling text encoding swap buffer (0-{text_encoding_swap_interval})...",
+                            "current": 0,
+                            "total": text_encoding_swap_interval
+                        })
+
                     # Move Text Encoder to GPU for encoding
                     self.move_text_encoder_to_gpu()
                     # Move main model to CPU to free VRAM
@@ -2466,7 +2474,7 @@ class BaseTrainer(ABC):
 
                     # Encode captions for first interval
                     buffer_items = all_items[:text_encoding_swap_interval]
-                    for item, dataset in tqdm(buffer_items, desc="Encoding captions"):
+                    for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
                         caption = item.get("caption", "")
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                         # Store on CPU to save GPU VRAM
@@ -2475,6 +2483,15 @@ class BaseTrainer(ABC):
                             embeddings.cpu(),
                             auxiliary_data.cpu() if auxiliary_data is not None else None
                         ))
+
+                        # Send progress update
+                        if progress_callback and idx % 10 == 0:
+                            progress_callback({
+                                "status": "encoding_captions",
+                                "message": f"Pre-filling swap buffer ({idx}/{len(buffer_items)})...",
+                                "current": idx,
+                                "total": len(buffer_items)
+                            })
 
                     # Move Text Encoder back to CPU
                     self.move_text_encoder_to_cpu()
@@ -2501,6 +2518,14 @@ class BaseTrainer(ABC):
                         buffer_items = all_items[start_idx:end_idx]
 
                         print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
+                        if progress_callback:
+                            progress_callback({
+                                "status": "encoding_captions",
+                                "message": f"Refilling text encoding swap buffer ({start_idx}-{end_idx})...",
+                                "current": 0,
+                                "total": len(buffer_items)
+                            })
+
                         # Move Text Encoder to GPU
                         self.move_text_encoder_to_gpu()
                         # Move main model to CPU
@@ -2509,13 +2534,22 @@ class BaseTrainer(ABC):
                         # Clear old buffer and encode new captions
                         swap_buffer.clear()
                         swap_buffer_idx = 0
-                        for item, dataset in tqdm(buffer_items, desc="Encoding captions", leave=False):
+                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
                             caption = item.get("caption", "")
                             embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                             swap_buffer.append((
                                 embeddings.cpu(),
                                 auxiliary_data.cpu() if auxiliary_data is not None else None
                             ))
+
+                            # Send progress update
+                            if progress_callback and idx % 10 == 0:
+                                progress_callback({
+                                    "status": "encoding_captions",
+                                    "message": f"Refilling swap buffer ({idx}/{len(buffer_items)})...",
+                                    "current": idx,
+                                    "total": len(buffer_items)
+                                })
 
                         # Move Text Encoder back to CPU
                         self.move_text_encoder_to_cpu()

@@ -587,14 +587,19 @@ class ModelLoader:
         has_vae = ModelLoader.has_embedded_vae(file_path)
         print(f"[ModelLoader] VAE detection result: {'embedded' if has_vae else 'not embedded'}")
 
-        # Load external VAE for SDXL if not embedded
+        # Load external VAE only if not embedded
         external_vae = None
-        if model_type == "sdxl" and not has_vae:
-            print(f"[ModelLoader] SDXL model without embedded VAE detected")
-            print(f"[ModelLoader] Loading external VAE: madebyollin/sdxl-vae-fp16-fix")
+        if not has_vae:
+            if model_type == "sdxl":
+                vae_repo = "madebyollin/sdxl-vae-fp16-fix"
+            else:  # SD1.5
+                vae_repo = "stabilityai/sd-vae-ft-mse-original"
+
+            print(f"[ModelLoader] Model without embedded VAE detected")
+            print(f"[ModelLoader] Loading external VAE: {vae_repo}")
             try:
                 external_vae = AutoencoderKL.from_pretrained(
-                    "madebyollin/sdxl-vae-fp16-fix",
+                    vae_repo,
                     torch_dtype=torch_dtype,
                     use_safetensors=True
                 )
@@ -603,18 +608,27 @@ class ModelLoader:
                 print(f"[ModelLoader] ERROR: Failed to load external VAE: {e}")
                 import traceback
                 traceback.print_exc()
-                raise RuntimeError(f"Failed to load external VAE for SDXL model without embedded VAE: {e}")
+                raise RuntimeError(f"Failed to load external VAE: {e}")
 
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
             if model_type == "sdxl":
-                pipeline = StableDiffusionXLPipeline.from_single_file(
-                    file_path,
-                    torch_dtype=torch_dtype,
-                    use_safetensors=True,
-                    vae=external_vae,
-                )
+                # Only pass vae parameter if external VAE was loaded
+                if external_vae is not None:
+                    pipeline = StableDiffusionXLPipeline.from_single_file(
+                        file_path,
+                        torch_dtype=torch_dtype,
+                        use_safetensors=True,
+                        vae=external_vae,
+                    )
+                else:
+                    # Use embedded VAE (don't pass vae parameter)
+                    pipeline = StableDiffusionXLPipeline.from_single_file(
+                        file_path,
+                        torch_dtype=torch_dtype,
+                        use_safetensors=True,
+                    )
             else:
                 pipeline = StableDiffusionPipeline.from_single_file(
                     file_path,
@@ -625,14 +639,21 @@ class ModelLoader:
             # Fallback: try with float32
             print(f"Failed to load with fp16, trying with fp32: {e}")
             if model_type == "sdxl":
-                # Note: external_vae (madebyollin/sdxl-vae-fp16-fix) stays in fp16
-                # even when pipeline is loaded in fp32, as it's designed for fp16
-                pipeline = StableDiffusionXLPipeline.from_single_file(
-                    file_path,
-                    torch_dtype=torch.float32,
-                    use_safetensors=True,
-                    vae=external_vae,
-                )
+                # Only pass vae parameter if external VAE was loaded
+                if external_vae is not None:
+                    pipeline = StableDiffusionXLPipeline.from_single_file(
+                        file_path,
+                        torch_dtype=torch.float32,
+                        use_safetensors=True,
+                        vae=external_vae,
+                    )
+                else:
+                    # Use embedded VAE (don't pass vae parameter)
+                    pipeline = StableDiffusionXLPipeline.from_single_file(
+                        file_path,
+                        torch_dtype=torch.float32,
+                        use_safetensors=True,
+                    )
             else:
                 pipeline = StableDiffusionPipeline.from_single_file(
                     file_path,
@@ -645,8 +666,43 @@ class ModelLoader:
             print(f"[ModelLoader] Configuring scheduler for v-prediction model")
             ModelLoader._configure_v_prediction_scheduler(pipeline)
 
-        # Move to device
-        pipeline = pipeline.to(device, dtype=torch_dtype)
+        # Move components to device individually (avoid pipeline.to() which can cause issues)
+        print(f"[ModelLoader] Moving pipeline components to {device}...")
+        print(f"[ModelLoader] DEBUG: Before any moves - pipeline.vae is not None: {pipeline.vae is not None}")
+        print(f"[ModelLoader] DEBUG: Before any moves - 'vae' in components: {'vae' in pipeline.components}")
+
+        # Move each component individually
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder...")
+            pipeline.text_encoder.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder_2...")
+            pipeline.text_encoder_2.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder_2 move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+            print(f"[ModelLoader] DEBUG: Moving unet...")
+            pipeline.unet.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After unet move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            print(f"[ModelLoader] DEBUG: Moving vae...")
+            pipeline.vae.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After vae move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        print(f"[ModelLoader] All components moved to {device}")
+        print(f"[ModelLoader] DEBUG: After all moves - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        # Verify VAE exists after moving to device
+        if not hasattr(pipeline, 'vae') or pipeline.vae is None:
+            print(f"[ModelLoader] ERROR: VAE is missing after component move")
+            print(f"[ModelLoader] Pipeline components: {list(pipeline.components.keys())}")
+            raise RuntimeError("VAE is missing after loading model")
+        else:
+            print(f"[ModelLoader] VAE verified: {type(pipeline.vae).__name__}")
+
         return pipeline
 
     @staticmethod
@@ -797,8 +853,43 @@ class ModelLoader:
             print(f"[ModelLoader] Configuring scheduler for v-prediction model")
             ModelLoader._configure_v_prediction_scheduler(pipeline)
 
-        # Move to device
-        pipeline = pipeline.to(device, dtype=torch_dtype)
+        # Move components to device individually (avoid pipeline.to() which can cause issues)
+        print(f"[ModelLoader] Moving pipeline components to {device}...")
+        print(f"[ModelLoader] DEBUG: Before any moves - pipeline.vae is not None: {pipeline.vae is not None}")
+        print(f"[ModelLoader] DEBUG: Before any moves - 'vae' in components: {'vae' in pipeline.components}")
+
+        # Move each component individually
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder...")
+            pipeline.text_encoder.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder_2...")
+            pipeline.text_encoder_2.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder_2 move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+            print(f"[ModelLoader] DEBUG: Moving unet...")
+            pipeline.unet.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After unet move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            print(f"[ModelLoader] DEBUG: Moving vae...")
+            pipeline.vae.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After vae move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        print(f"[ModelLoader] All components moved to {device}")
+        print(f"[ModelLoader] DEBUG: After all moves - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        # Verify VAE exists after moving to device
+        if not hasattr(pipeline, 'vae') or pipeline.vae is None:
+            print(f"[ModelLoader] ERROR: VAE is missing after component move")
+            print(f"[ModelLoader] Pipeline components: {list(pipeline.components.keys())}")
+            raise RuntimeError("VAE is missing after loading model")
+        else:
+            print(f"[ModelLoader] VAE verified: {type(pipeline.vae).__name__}")
+
         return pipeline
 
     @staticmethod
@@ -825,8 +916,43 @@ class ModelLoader:
                 use_safetensors=True,
             )
 
-        # Move to device
-        pipeline = pipeline.to(device, dtype=torch_dtype)
+        # Move components to device individually (avoid pipeline.to() which can cause issues)
+        print(f"[ModelLoader] Moving pipeline components to {device}...")
+        print(f"[ModelLoader] DEBUG: Before any moves - pipeline.vae is not None: {pipeline.vae is not None}")
+        print(f"[ModelLoader] DEBUG: Before any moves - 'vae' in components: {'vae' in pipeline.components}")
+
+        # Move each component individually
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder...")
+            pipeline.text_encoder.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder_2...")
+            pipeline.text_encoder_2.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder_2 move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+            print(f"[ModelLoader] DEBUG: Moving unet...")
+            pipeline.unet.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After unet move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            print(f"[ModelLoader] DEBUG: Moving vae...")
+            pipeline.vae.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After vae move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        print(f"[ModelLoader] All components moved to {device}")
+        print(f"[ModelLoader] DEBUG: After all moves - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        # Verify VAE exists after moving to device
+        if not hasattr(pipeline, 'vae') or pipeline.vae is None:
+            print(f"[ModelLoader] ERROR: VAE is missing after component move")
+            print(f"[ModelLoader] Pipeline components: {list(pipeline.components.keys())}")
+            raise RuntimeError("VAE is missing after loading model")
+        else:
+            print(f"[ModelLoader] VAE verified: {type(pipeline.vae).__name__}")
+
         return pipeline
 
     @staticmethod

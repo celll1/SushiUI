@@ -124,10 +124,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
-  // Helper: Detect if model is Z-Image (path-based, fallback if architecture missing)
+  // Helper: Detect if model is Z-Image (architecture-based)
   const isZImageModel = (modelPath: string): boolean => {
-    const lowerPath = modelPath.toLowerCase();
-    return lowerPath.includes('z-image') || lowerPath.includes('zimage') || lowerPath.includes('z_image');
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "zimage";
   };
 
   // Filter models by architecture

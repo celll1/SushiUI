@@ -2021,13 +2021,11 @@ class BaseTrainer(ABC):
             progress_callback: Progress callback function
             epoch_num: Current epoch number (for logging)
         """
-        if not self.is_zimage:
-            return
-
         import hashlib
 
+        arch_name = "Z-Image" if self.is_zimage else ("SDXL" if self.is_sdxl else "SD1.5")
         epoch_info = f" (Epoch {epoch_num + 1})" if epoch_num is not None else ""
-        print(f"{self.log_prefix} Validating and generating text encoder caches{epoch_info}...")
+        print(f"{self.log_prefix} Validating and generating text encoder caches ({arch_name}){epoch_info}...")
 
         # Collect captions per dataset
         dataset_captions = {}
@@ -2056,8 +2054,8 @@ class BaseTrainer(ABC):
         total_encoded = 0
         total_cached = 0
 
-        # Move text encoder to GPU for encoding
-        self.text_encoder.to(self.device)
+        # Move text encoder(s) to GPU for encoding
+        self.move_text_encoder_to_gpu()
 
         try:
             for dataset in datasets:
@@ -2069,11 +2067,26 @@ class BaseTrainer(ABC):
                 for caption in captions:
                     caption_hash = hashlib.md5(caption.encode()).hexdigest()
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
-                    mask_path = cache_dir / f"{caption_hash}_mask.pt"
-                    if not (embeds_path.exists() and mask_path.exists()):
-                        captions_to_encode.append(caption)
+
+                    # Check auxiliary data file (architecture-specific)
+                    if self.is_zimage:
+                        auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
+                    elif self.is_sdxl:
+                        auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
                     else:
-                        total_cached += 1
+                        auxiliary_path = None  # SD1.5 has no auxiliary data
+
+                    # Check if all required files exist
+                    if auxiliary_path is not None:
+                        if not (embeds_path.exists() and auxiliary_path.exists()):
+                            captions_to_encode.append(caption)
+                        else:
+                            total_cached += 1
+                    else:
+                        if not embeds_path.exists():
+                            captions_to_encode.append(caption)
+                        else:
+                            total_cached += 1
 
                 if len(captions_to_encode) == 0:
                     print(f"{self.log_prefix} Dataset '{dataset.unique_id}': All {len(captions)} captions already cached")
@@ -2081,22 +2094,34 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Dataset '{dataset.unique_id}': Encoding {len(captions_to_encode)}/{len(captions)} captions...")
 
                     for idx, caption in enumerate(tqdm(captions_to_encode, desc=f"Encoding captions [{dataset.unique_id}]")):
-                        # Encode caption
-                        prompt_embeds, attention_mask = self.encode_prompt_zimage(caption)
-                        embeds_cpu = prompt_embeds.cpu()
-                        mask_cpu = attention_mask.cpu()
+                        # Encode caption (unified method)
+                        embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
+                        embeds_cpu = embeddings.cpu()
+                        auxiliary_cpu = auxiliary_data.cpu() if auxiliary_data is not None else None
 
                         # Save immediately to disk to avoid memory accumulation
                         caption_hash = hashlib.md5(caption.encode()).hexdigest()
                         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
-                        mask_path = cache_dir / f"{caption_hash}_mask.pt"
+
                         try:
+                            # Save main embeddings
                             torch.save(embeds_cpu, embeds_path)
-                            torch.save(mask_cpu, mask_path)
+
+                            # Save auxiliary data (architecture-specific)
+                            if self.is_zimage and auxiliary_cpu is not None:
+                                mask_path = cache_dir / f"{caption_hash}_mask.pt"
+                                torch.save(auxiliary_cpu, mask_path)
+                            elif self.is_sdxl and auxiliary_cpu is not None:
+                                pooled_path = cache_dir / f"{caption_hash}_pooled.pt"
+                                torch.save(auxiliary_cpu, pooled_path)
+                            # SD1.5: no auxiliary data to save
+
                             total_encoded += 1
 
                             # Free memory immediately after saving
-                            del embeds_cpu, mask_cpu, prompt_embeds, attention_mask
+                            del embeds_cpu, embeddings
+                            if auxiliary_cpu is not None:
+                                del auxiliary_cpu, auxiliary_data
                         except Exception as e:
                             print(f"{self.log_prefix} WARNING: Failed to save cache for caption '{caption[:30]}...': {e}")
 
@@ -2109,9 +2134,8 @@ class BaseTrainer(ABC):
                             )
 
         finally:
-            # Move text encoder back to CPU
-            self.text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+            # Move text encoder(s) back to CPU
+            self.move_text_encoder_to_cpu()
 
         print(f"{self.log_prefix} Text encoder cache validation complete:")
         print(f"{self.log_prefix}   - Cached: {total_cached}")
@@ -2123,9 +2147,9 @@ class BaseTrainer(ABC):
         caption: str,
         dataset_unique_id: str,
         text_encoder_caches: Dict[str, Path]
-    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """
-        Load caption embedding from disk cache for a specific dataset.
+        Load caption embedding from disk cache for all architectures.
 
         Args:
             caption: Caption text
@@ -2133,7 +2157,10 @@ class BaseTrainer(ABC):
             text_encoder_caches: Dictionary mapping dataset_unique_id to cache directory
 
         Returns:
-            Tuple of (prompt_embeds, attention_mask) if cached, None otherwise
+            Tuple of (embeddings, auxiliary_data) if cached, None otherwise:
+            - Z-Image: (prompt_embeds, attention_mask)
+            - SD1.5: (text_embeddings, None)
+            - SDXL: (text_embeddings, pooled_embeddings)
         """
         import hashlib
 
@@ -2143,17 +2170,33 @@ class BaseTrainer(ABC):
 
         caption_hash = hashlib.md5(caption.encode()).hexdigest()
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
-        mask_path = cache_dir / f"{caption_hash}_mask.pt"
 
-        if embeds_path.exists() and mask_path.exists():
-            try:
-                prompt_embeds = torch.load(embeds_path, map_location='cpu')
-                attention_mask = torch.load(mask_path, map_location='cpu')
-                return (prompt_embeds, attention_mask)
-            except Exception as e:
-                print(f"{self.log_prefix} WARNING: Failed to load cached embedding for caption '{caption[:30]}...': {e}")
+        # Check architecture-specific auxiliary file
+        if self.is_zimage:
+            auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
+        elif self.is_sdxl:
+            auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
+        else:
+            auxiliary_path = None  # SD1.5 has no auxiliary data
+
+        # Check if required files exist
+        if auxiliary_path is not None:
+            if not (embeds_path.exists() and auxiliary_path.exists()):
                 return None
         else:
+            if not embeds_path.exists():
+                return None
+
+        # Load embeddings
+        try:
+            embeddings = torch.load(embeds_path, map_location='cpu')
+            if auxiliary_path is not None:
+                auxiliary_data = torch.load(auxiliary_path, map_location='cpu')
+            else:
+                auxiliary_data = None
+            return (embeddings, auxiliary_data)
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to load cached embedding for caption '{caption[:30]}...': {e}")
             return None
 
     # ============================================================

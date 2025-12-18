@@ -2347,9 +2347,22 @@ class BaseTrainer(ABC):
             for bucket_size, count in sorted(bucket_counts.items()):
                 print(f"  {bucket_size}: {count} images")
 
-        # Setup latent caches
-        latent_caches = self._setup_latent_caches(datasets)
-        self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
+        # Setup latent caches (mode-dependent)
+        latent_caches = None
+        print(f"{self.log_prefix} Latent encoding mode: {latent_encoding_mode}")
+        if latent_encoding_mode == "swap_onthefly":
+            print(f"{self.log_prefix} Latent swap interval: {latent_encoding_swap_interval} steps")
+            print(f"{self.log_prefix} VAE will swap with main model during training")
+            # No cache setup needed for swap mode
+        elif latent_encoding_mode == "pre_encoded_cache":
+            print(f"{self.log_prefix} Using pre-encoded latent disk cache mode")
+            latent_caches = self._setup_latent_caches(datasets)
+            self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
+        elif latent_encoding_mode == "onthefly_gpu":
+            print(f"{self.log_prefix} Using on-the-fly GPU latent encoding (no cache)")
+            # No cache setup needed
+        else:
+            raise ValueError(f"Invalid latent_encoding_mode: {latent_encoding_mode}")
 
         # Setup text encoder caches (all architectures)
         text_encoder_caches = None
@@ -2514,6 +2527,62 @@ class BaseTrainer(ABC):
                     next_swap_at_step = text_encoding_swap_interval
                     print(f"{self.log_prefix} Buffer pre-filled with {len(swap_buffer)} embeddings")
 
+                # Initialize latent swap mode buffer if needed
+                latent_swap_buffer = [] if latent_encoding_mode == "swap_onthefly" else None
+                latent_swap_buffer_idx = 0
+                next_latent_swap_at_step = 0 if latent_swap_buffer is not None else -1
+
+                # Pre-fill latent swap buffer for first interval
+                if latent_swap_buffer is not None:
+                    print(f"{self.log_prefix} Pre-filling latent swap buffer for first {latent_encoding_swap_interval} steps...")
+                    if progress_callback:
+                        progress_callback({
+                            "status": "encoding_latents",
+                            "message": f"Pre-filling latent swap buffer (0-{latent_encoding_swap_interval})...",
+                            "current": 0,
+                            "total": latent_encoding_swap_interval
+                        })
+
+                    # Move VAE to GPU for encoding
+                    self.move_vae_to_gpu()
+                    # Move main model to CPU to free VRAM
+                    self.move_main_model_to_cpu()
+
+                    # Encode images for first interval
+                    buffer_items = all_items[:latent_encoding_swap_interval]
+                    for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
+                        image_path = item["image_path"]
+                        width = item.get("width") or item.get("bucket_width")
+                        height = item.get("height") or item.get("bucket_height")
+
+                        # Load and encode image
+                        image = Image.open(image_path)
+                        latent = self.encode_image(
+                            image=image,
+                            target_width=width,
+                            target_height=height,
+                            bucket_strategy=bucket_strategy
+                        )
+                        # Store on CPU to save GPU VRAM
+                        latent_swap_buffer.append(latent.cpu())
+
+                        # Send progress update
+                        if progress_callback and idx % 10 == 0:
+                            progress_callback({
+                                "status": "encoding_latents",
+                                "message": f"Pre-filling latent buffer ({idx}/{len(buffer_items)})...",
+                                "current": idx,
+                                "total": len(buffer_items)
+                            })
+
+                    # Move VAE back to CPU
+                    self.move_vae_to_cpu()
+                    # Move main model to GPU for training
+                    self.move_main_model_to_gpu()
+
+                    next_latent_swap_at_step = latent_encoding_swap_interval
+                    print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")
+
                 # Training loop
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}")):
                     # Check for stop flag (user-requested stop from frontend)
@@ -2572,36 +2641,125 @@ class BaseTrainer(ABC):
                         next_swap_at_step += text_encoding_swap_interval
                         print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
 
+                    # Check if we need to refill latent swap buffer
+                    if latent_swap_buffer is not None and batch_idx >= next_latent_swap_at_step:
+                        # Calculate next batch range
+                        start_idx = next_latent_swap_at_step
+                        end_idx = min(start_idx + latent_encoding_swap_interval, len(all_items))
+                        buffer_items = all_items[start_idx:end_idx]
+
+                        print(f"\n{self.log_prefix} Refilling latent swap buffer (steps {start_idx}-{end_idx})...")
+                        if progress_callback:
+                            progress_callback({
+                                "status": "encoding_latents",
+                                "message": f"Refilling latent swap buffer ({start_idx}-{end_idx})...",
+                                "current": 0,
+                                "total": len(buffer_items)
+                            })
+
+                        # Move VAE to GPU
+                        self.move_vae_to_gpu()
+                        # Move main model to CPU
+                        self.move_main_model_to_cpu()
+
+                        # Clear old buffer and encode new latents
+                        latent_swap_buffer.clear()
+                        latent_swap_buffer_idx = 0
+                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
+                            image_path = item["image_path"]
+                            width = item.get("width") or item.get("bucket_width")
+                            height = item.get("height") or item.get("bucket_height")
+
+                            # Load and encode image
+                            image = Image.open(image_path)
+                            latent = self.encode_image(
+                                image=image,
+                                target_width=width,
+                                target_height=height,
+                                bucket_strategy=bucket_strategy
+                            )
+                            latent_swap_buffer.append(latent.cpu())
+
+                            # Send progress update
+                            if progress_callback and idx % 10 == 0:
+                                progress_callback({
+                                    "status": "encoding_latents",
+                                    "message": f"Refilling latent buffer ({idx}/{len(buffer_items)})...",
+                                    "current": idx,
+                                    "total": len(buffer_items)
+                                })
+
+                        # Move VAE back to CPU
+                        self.move_vae_to_cpu()
+                        # Move main model to GPU
+                        self.move_main_model_to_gpu()
+
+                        next_latent_swap_at_step += latent_encoding_swap_interval
+                        print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
+
                     # Prepare batch data
                     latents_list = []
                     text_embeddings_list = []
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
 
                     for item, dataset in batch:
-                        # Load latent from cache
-                        cache = latent_caches[dataset.unique_id]
                         # BucketManager stores bucket_width/bucket_height, not width/height
                         width = item.get("width") or item.get("bucket_width")
                         height = item.get("height") or item.get("bucket_height")
 
-                        latent = cache.load_latent(item["image_path"], width, height)
+                        # Load latent (mode-specific)
+                        if latent_encoding_mode == "swap_onthefly":
+                            # Get from swap buffer
+                            if latent_swap_buffer_idx < len(latent_swap_buffer):
+                                latent_cpu = latent_swap_buffer[latent_swap_buffer_idx]
+                                # Transfer to GPU
+                                latent = latent_cpu.to(self.device, non_blocking=True)
+                                latents_list.append(latent)
+                                latent_swap_buffer_idx += 1
+                            else:
+                                # Fallback to on-the-fly encoding
+                                print(f"{self.log_prefix} WARNING: Latent swap buffer exhausted, encoding on-the-fly")
+                                image = Image.open(item["image_path"])
+                                latent = self.encode_image(
+                                    image=image,
+                                    target_width=width,
+                                    target_height=height,
+                                    bucket_strategy=bucket_strategy
+                                )
+                                latents_list.append(latent)
 
-                        # On-the-fly regeneration if cache is corrupted or incompatible
-                        if latent is None:
-                            print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
-                            latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                        elif latent_encoding_mode == "pre_encoded_cache":
+                            # Load from disk cache
+                            cache = latent_caches[dataset.unique_id]
+                            latent = cache.load_latent(item["image_path"], width, height)
 
-                        # Validate latent shape
-                        expected_latent_height = height // 8
-                        expected_latent_width = width // 8
-                        if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
-                            print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
-                            print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
-                            print(f"{self.log_prefix}   Got: {list(latent.shape)}")
-                            print(f"{self.log_prefix}   Regenerating latent...")
-                            latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            # On-the-fly regeneration if cache is corrupted or incompatible
+                            if latent is None:
+                                print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
+                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 
-                        latents_list.append(latent)
+                            # Validate latent shape
+                            expected_latent_height = height // 8
+                            expected_latent_width = width // 8
+                            if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
+                                print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
+                                print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
+                                print(f"{self.log_prefix}   Got: {list(latent.shape)}")
+                                print(f"{self.log_prefix}   Regenerating latent...")
+                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
+                            latents_list.append(latent)
+
+                        elif latent_encoding_mode == "onthefly_gpu":
+                            # Encode on GPU without cache
+                            image = Image.open(item["image_path"])
+                            latent = self.encode_image(
+                                image=image,
+                                target_width=width,
+                                target_height=height,
+                                bucket_strategy=bucket_strategy
+                            )
+                            latents_list.append(latent)
 
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")

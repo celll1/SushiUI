@@ -319,6 +319,33 @@ def process_caption_with_tag_data(
     # Extract tags with categories
     tags_with_categories = [(item["tag"], item.get("category", "")) for item in tag_data]
 
+    # Step 1: Category ordering (reorder tags by category)
+    # This is done FIRST, before dropout and shuffle
+    category_order = caption_config.get("category_order", None)
+    if category_order and len(category_order) > 0:
+        # Group tags by category
+        categorized: Dict[str, List[tuple]] = {}
+        unknown_tags: List[tuple] = []
+
+        for tag, category in tags_with_categories:
+            if category in category_order:
+                if category not in categorized:
+                    categorized[category] = []
+                categorized[category].append((tag, category))
+            else:
+                unknown_tags.append((tag, category))
+
+        # Rebuild tags_with_categories in category order
+        reordered_tags = []
+        for category in category_order:
+            if category in categorized:
+                reordered_tags.extend(categorized[category])
+
+        # Add unknown tags at the end
+        reordered_tags.extend(unknown_tags)
+
+        tags_with_categories = reordered_tags
+
     # Apply tag dropout (category-aware)
     tag_dropout_rate = caption_config.get("tag_dropout_rate", 0.0)
     tag_dropout_per_epoch = caption_config.get("tag_dropout_per_epoch", False)

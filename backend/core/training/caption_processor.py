@@ -401,48 +401,87 @@ def process_caption_with_tag_data(
 
         if shuffle_tag_groups and len(shuffle_tag_groups) > 0:
             # Category-aware shuffle
+            shuffle_tag_groups_set = set(shuffle_tag_groups)  # For O(1) lookup
             groups_dict = {group: [] for group in shuffle_tag_groups}
             person_count_tags = []  # Person count tags (1girl, 2boys, etc.)
-            other_excluded_tags = []  # Non-group tags (not in shuffle_tag_groups)
+            non_shuffled_tags = []  # Tags not in shuffle_tag_groups (preserve category order)
 
             for tag, category in tags_to_shuffle:
                 # Exclude person count tags if enabled (will be placed at the start of General group)
                 if exclude_person_count_from_shuffle and category == "General" and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
                     person_count_tags.append((tag, category))
-                elif category in groups_dict:
+                elif category in shuffle_tag_groups_set:
                     groups_dict[category].append((tag, category))
                 else:
-                    other_excluded_tags.append((tag, category))
+                    # Non-shuffled tags: preserve category order
+                    non_shuffled_tags.append((tag, category))
 
-            # Shuffle each group
+            # Shuffle within each group
+            for group in groups_dict:
+                random.shuffle(groups_dict[group])
+
+            # Rebuild tags in category_order (if available) or original order
             shuffled_tags = []
             if shuffle_groups_together:
-                # Shuffle all groups together
+                # Shuffle all selected groups together
                 all_group_tags = []
                 for group_tags in groups_dict.values():
                     all_group_tags.extend(group_tags)
                 random.shuffle(all_group_tags)
                 shuffled_tags.extend(all_group_tags)
+                # Append non-shuffled tags at the end
+                shuffled_tags.extend(non_shuffled_tags)
             else:
-                # Shuffle within each group, and insert person count tags at the start of General group
-                for group in shuffle_tag_groups:
-                    group_tags = groups_dict[group]
-                    random.shuffle(group_tags)
+                # Preserve category order: iterate through all tags and insert in correct position
+                # Use category_order if available, otherwise use original tag order
+                category_order = caption_config.get("category_order", None)
 
-                    # If this is the General group, prepend person count tags (shuffled)
-                    if group == "General" and person_count_tags:
-                        random.shuffle(person_count_tags)  # Shuffle person count tags among themselves
+                if category_order:
+                    # Rebuild in category_order
+                    for category in category_order:
+                        # Insert person count tags before General group tags
+                        if category == "General" and person_count_tags:
+                            random.shuffle(person_count_tags)
+                            shuffled_tags.extend(person_count_tags)
+                            person_count_tags = []  # Clear to avoid duplicates
+
+                        # Add shuffled tags from this category
+                        if category in groups_dict:
+                            shuffled_tags.extend(groups_dict[category])
+
+                        # Add non-shuffled tags from this category
+                        category_non_shuffled = [t for t in non_shuffled_tags if t[1] == category]
+                        shuffled_tags.extend(category_non_shuffled)
+
+                    # If General was not in category_order, append person count tags at the end
+                    if person_count_tags:
+                        random.shuffle(person_count_tags)
                         shuffled_tags.extend(person_count_tags)
-                        person_count_tags = []  # Clear to avoid duplicates
 
-                    shuffled_tags.extend(group_tags)
+                    # Add any remaining non-shuffled tags (categories not in category_order)
+                    categorized_categories = set(category_order)
+                    remaining_non_shuffled = [t for t in non_shuffled_tags if t[1] not in categorized_categories]
+                    shuffled_tags.extend(remaining_non_shuffled)
+                else:
+                    # No category_order: fallback to original behavior (may break category order)
+                    # Insert person count tags at the start of General group
+                    person_count_inserted = False
+                    for group in shuffle_tag_groups:
+                        if group == "General" and person_count_tags and not person_count_inserted:
+                            random.shuffle(person_count_tags)
+                            shuffled_tags.extend(person_count_tags)
+                            person_count_inserted = True
 
-                # If General group was not in shuffle_tag_groups, append person count tags at the end
-                if person_count_tags:
-                    random.shuffle(person_count_tags)  # Shuffle person count tags among themselves
-                    shuffled_tags.extend(person_count_tags)
+                        shuffled_tags.extend(groups_dict[group])
 
-            shuffled_tags.extend(other_excluded_tags)
+                    # Append person count tags at the end if not inserted
+                    if person_count_tags:
+                        random.shuffle(person_count_tags)
+                        shuffled_tags.extend(person_count_tags)
+
+                    # Append non-shuffled tags
+                    shuffled_tags.extend(non_shuffled_tags)
+
             tags_with_categories = kept_tags + shuffled_tags
         else:
             # Simple shuffle

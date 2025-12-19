@@ -528,19 +528,27 @@ export async function loadAllTags(): Promise<void> {
 }
 
 // Special tags that should always be available
+// Must match backend/core/training/tag_group_utils.py hardcoded tags
 const SPECIAL_TAGS = {
   rating: [
-    { tag: "sensitive", category: "Rating" },
-    { tag: "explicit", category: "Rating" },
-    { tag: "questionable", category: "Rating" },
     { tag: "general", category: "Rating" },
+    { tag: "sensitive", category: "Rating" },
+    { tag: "questionable", category: "Rating" },
+    { tag: "explicit", category: "Rating" },
+    { tag: "rating:general", category: "Rating" },
+    { tag: "rating:sensitive", category: "Rating" },
+    { tag: "rating:questionable", category: "Rating" },
+    { tag: "rating:explicit", category: "Rating" },
   ],
   quality: [
-    { tag: "best_quality", category: "Quality" },
-    { tag: "normal_quality", category: "Quality" },
-    { tag: "bad_quality", category: "Quality" },
-    { tag: "worst_quality", category: "Quality" },
+    { tag: "best quality", category: "Quality" },
+    { tag: "high quality", category: "Quality" },
+    { tag: "great quality", category: "Quality" },
+    { tag: "normal quality", category: "Quality" },
+    { tag: "low quality", category: "Quality" },
+    { tag: "worst quality", category: "Quality" },
     { tag: "masterpiece", category: "Quality" },
+    { tag: "amazing quality", category: "Quality" },
   ],
 };
 

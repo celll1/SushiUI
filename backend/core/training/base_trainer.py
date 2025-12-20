@@ -2449,7 +2449,7 @@ class BaseTrainer(ABC):
             raise ValueError(f"multi_noise_timesteps must be >= 1, got {multi_noise_timesteps}")
 
         # Setup timestep sampler
-        from backend.core.training.timestep_sampler import TimestepSampler
+        from .timestep_sampler import TimestepSampler
 
         if timestep_sampling_config is None:
             # Default: uniform [0, 1]

@@ -2647,12 +2647,16 @@ class BaseTrainer(ABC):
                         buffer_items.extend(batch)
                     for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
                         caption = item.get("caption", "")
+                        image_path = item["image_path"]
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                         # Store on CPU to save GPU VRAM
                         # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
+                        # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
                         swap_buffer.append((
                             embeddings.cpu(),
-                            auxiliary_data.cpu() if auxiliary_data is not None else None
+                            auxiliary_data.cpu() if auxiliary_data is not None else None,
+                            caption,  # String (CPU memory, minimal overhead)
+                            image_path  # String (CPU memory, minimal overhead)
                         ))
 
                         # Send progress update
@@ -2698,6 +2702,7 @@ class BaseTrainer(ABC):
                         buffer_items.extend(batch)
                     for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
                         image_path = item["image_path"]
+                        caption = item.get("caption", "")
                         width = item.get("width") or item.get("bucket_width")
                         height = item.get("height") or item.get("bucket_height")
 
@@ -2710,7 +2715,12 @@ class BaseTrainer(ABC):
                             bucket_strategy=bucket_strategy
                         )
                         # Store on CPU to save GPU VRAM
-                        latent_swap_buffer.append(latent.cpu())
+                        # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
+                        latent_swap_buffer.append((
+                            latent.cpu(),
+                            caption,  # String (CPU memory, minimal overhead)
+                            image_path  # String (CPU memory, minimal overhead)
+                        ))
 
                         # Send progress update
                         if progress_callback and idx % 10 == 0:
@@ -2765,10 +2775,15 @@ class BaseTrainer(ABC):
                         swap_buffer_idx = 0
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
                             caption = item.get("caption", "")
+                            image_path = item["image_path"]
                             embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
+                            # Store on CPU to save GPU VRAM
+                            # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
                             swap_buffer.append((
                                 embeddings.cpu(),
-                                auxiliary_data.cpu() if auxiliary_data is not None else None
+                                auxiliary_data.cpu() if auxiliary_data is not None else None,
+                                caption,  # String (CPU memory, minimal overhead)
+                                image_path  # String (CPU memory, minimal overhead)
                             ))
 
                             # Send progress update
@@ -2815,6 +2830,7 @@ class BaseTrainer(ABC):
                         latent_swap_buffer_idx = 0
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
                             image_path = item["image_path"]
+                            caption = item.get("caption", "")
                             width = item.get("width") or item.get("bucket_width")
                             height = item.get("height") or item.get("bucket_height")
 
@@ -2826,7 +2842,13 @@ class BaseTrainer(ABC):
                                 target_height=height,
                                 bucket_strategy=bucket_strategy
                             )
-                            latent_swap_buffer.append(latent.cpu())
+                            # Store on CPU to save GPU VRAM
+                            # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
+                            latent_swap_buffer.append((
+                                latent.cpu(),
+                                caption,  # String (CPU memory, minimal overhead)
+                                image_path  # String (CPU memory, minimal overhead)
+                            ))
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
@@ -2856,12 +2878,16 @@ class BaseTrainer(ABC):
 
                         # Load latent (mode-specific)
                         if latent_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer
+                            # Get from swap buffer (now 3-tuple: latent, caption, image_path)
                             if latent_swap_buffer_idx < len(latent_swap_buffer):
-                                latent_cpu = latent_swap_buffer[latent_swap_buffer_idx]
+                                latent_cpu, buffer_caption, buffer_image_path = latent_swap_buffer[latent_swap_buffer_idx]
                                 # Transfer to GPU
                                 latent = latent_cpu.to(self.device, non_blocking=True)
                                 latents_list.append(latent)
+                                # Store caption/image_path for later (will be used by text encoding or debug)
+                                # Note: caption will be overridden again if text_encoding_mode == "swap_onthefly"
+                                item["caption"] = buffer_caption
+                                item["image_path"] = buffer_image_path
                                 latent_swap_buffer_idx += 1
                             else:
                                 # Fallback to on-the-fly encoding
@@ -2912,14 +2938,16 @@ class BaseTrainer(ABC):
                         caption = item.get("caption", "")
 
                         if text_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer
+                            # Get from swap buffer (now 4-tuple: embeddings, auxiliary, caption, image_path)
                             if swap_buffer_idx < len(swap_buffer):
-                                embeddings_cpu, auxiliary_cpu = swap_buffer[swap_buffer_idx]
+                                embeddings_cpu, auxiliary_cpu, buffer_caption, buffer_image_path = swap_buffer[swap_buffer_idx]
                                 # Transfer to GPU
                                 embeddings = embeddings_cpu.to(self.device, non_blocking=True)
                                 auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
+                                # Override caption from buffer (correct pairing)
+                                caption = buffer_caption
                                 swap_buffer_idx += 1
                             else:
                                 # Shouldn't happen, but fallback to on-the-fly encoding
@@ -2964,6 +2992,7 @@ class BaseTrainer(ABC):
                         debug_save_path = debug_dir / f"step_{global_step:06d}"
 
                     # Collect batch captions only when needed for debug (prevents DRAM accumulation)
+                    # NOTE: item["caption"] has been overridden from swap buffer (if applicable), ensuring correct pairing
                     batch_captions = None
                     if debug_save_path is not None:
                         batch_captions = [item.get("caption", "") for item, dataset in batch]
@@ -3095,12 +3124,47 @@ class BaseTrainer(ABC):
         except KeyboardInterrupt:
             print(f"\n{self.log_prefix} Training interrupted by user")
             print(f"{self.log_prefix} Saving checkpoint at step {global_step}, epoch {epoch}...")
-            self.save_checkpoint(step=global_step, epoch=epoch)
-            # Save training state for mid-epoch resume
+
+            # Try to save checkpoint (even if it fails, continue to save state)
+            checkpoint_saved = False
+            try:
+                self.save_checkpoint(step=global_step, epoch=epoch)
+                checkpoint_saved = True
+                print(f"{self.log_prefix} Checkpoint saved successfully")
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to save checkpoint: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Try to save training state (independent of checkpoint save)
             # Note: batch_idx is the current batch being processed, so save batch_idx for resume
-            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx)
-            self._cleanup_old_checkpoints(max_step_saves_to_keep)
-            print(f"{self.log_prefix} Checkpoint saved, exiting...")
+            state_saved = False
+            try:
+                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx)
+                state_saved = True
+                print(f"{self.log_prefix} Training state saved successfully")
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to save training state: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Try to cleanup old checkpoints (even if above failed)
+            try:
+                self._cleanup_old_checkpoints(max_step_saves_to_keep)
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to cleanup old checkpoints: {e}")
+                import traceback
+                traceback.print_exc()
+
+            if checkpoint_saved and state_saved:
+                print(f"{self.log_prefix} Checkpoint and state saved successfully, exiting...")
+            elif checkpoint_saved:
+                print(f"{self.log_prefix} Checkpoint saved (but state save failed), exiting...")
+            elif state_saved:
+                print(f"{self.log_prefix} State saved (but checkpoint save failed), exiting...")
+            else:
+                print(f"{self.log_prefix} WARNING: Both checkpoint and state save failed, exiting...")
+
             self.writer.close()
             raise
 

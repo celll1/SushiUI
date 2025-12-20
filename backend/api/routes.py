@@ -3560,6 +3560,10 @@ class TrainingRunCreateRequest(BaseModel):
     latent_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
     latent_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
 
+    # Multi Noise-Timestep (MNT) settings
+    multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
+    timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -3705,6 +3709,8 @@ async def create_training_run(
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
                 latent_encoding_mode=request.latent_encoding_mode,
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
@@ -3755,6 +3761,8 @@ async def create_training_run(
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
                 latent_encoding_mode=request.latent_encoding_mode,
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,

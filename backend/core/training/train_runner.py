@@ -574,6 +574,10 @@ def main():
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
+            # Get Multi Noise-Timestep (MNT) settings
+            multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            timestep_sampling_config = train_config.get('timestep_sampling', None)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -606,6 +610,8 @@ def main():
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
+                multi_noise_timesteps=multi_noise_timesteps,
+                timestep_sampling_config=timestep_sampling_config,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -768,6 +774,10 @@ def main():
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
+            # Get Multi Noise-Timestep (MNT) settings
+            multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            timestep_sampling_config = train_config.get('timestep_sampling', None)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -800,6 +810,8 @@ def main():
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
+                multi_noise_timesteps=multi_noise_timesteps,
+                timestep_sampling_config=timestep_sampling_config,
             )
 
             print("[TrainRunner] Training completed successfully!")

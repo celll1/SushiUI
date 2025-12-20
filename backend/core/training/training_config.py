@@ -67,6 +67,9 @@ class TrainingConfigGenerator:
         resume_from_checkpoint: Optional[str] = None,
         # Caption processing settings
         caption_processing: Optional[Dict[str, Any]] = None,
+        # Multi Noise-Timestep (MNT) settings
+        multi_noise_timesteps: int = 1,
+        timestep_sampling_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -224,6 +227,8 @@ class TrainingConfigGenerator:
                             "text_encoding_swap_interval": text_encoding_swap_interval,
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
+                            "multi_noise_timesteps": multi_noise_timesteps,
+                            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
                             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                         },
                         "model": {
@@ -302,6 +307,9 @@ class TrainingConfigGenerator:
         sample_seed: int = -1,
         resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[dict] = None,
+        # Multi Noise-Timestep (MNT) settings
+        multi_noise_timesteps: int = 1,
+        timestep_sampling_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -354,6 +362,8 @@ class TrainingConfigGenerator:
             "latent_encoding_swap_interval": latent_encoding_swap_interval,
             "debug_latents": debug_latents,
             "debug_latents_every": debug_latents_every,
+            "multi_noise_timesteps": multi_noise_timesteps,
+            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
         }
 

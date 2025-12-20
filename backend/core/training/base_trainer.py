@@ -1275,10 +1275,11 @@ class BaseTrainer(ABC):
         latents: torch.Tensor,
         prompt_embeds: torch.Tensor,
         attention_mask: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
-    ) -> float:
+    ) -> Tuple[torch.Tensor, float]:
         """
         Perform single training step (Z-Image).
 
@@ -1286,19 +1287,22 @@ class BaseTrainer(ABC):
             latents: Image latents [B, C, H, W]
             prompt_embeds: Prompt embeddings [B, seq_len, 2560]
             attention_mask: Attention mask [B, seq_len]
+            timesteps: Timesteps for this batch [B]. If None, sampled uniformly from [0, 1]
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
 
         Returns:
-            Loss value
+            Tuple of (loss tensor, reconstruction loss value)
         """
         if profile_vram:
             print_vram_usage("[train_step_zimage] Start")
 
-        # Flow Matching: Sample random timesteps from [0, 1]
+        # Flow Matching: Sample random timesteps from [0, 1] if not provided
         batch_size = latents.shape[0]
-        timesteps = torch.rand(batch_size, device=self.device)
+        if timesteps is None:
+            # Legacy behavior: uniform sampling from [0, 1]
+            timesteps = torch.rand(batch_size, device=self.device)
 
         # Flow Matching: Sample noise (standard normal distribution)
         noise = torch.randn_like(latents)
@@ -2357,6 +2361,8 @@ class BaseTrainer(ABC):
         multi_resolution_mode: str = "max",
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
+        multi_noise_timesteps: int = 1,
+        timestep_sampling_config: Optional[Dict[str, Any]] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
         progress_callback: Optional[Callable] = None,
@@ -2429,14 +2435,44 @@ class BaseTrainer(ABC):
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")
 
-        # Calculate total steps
+        # Validate MNT parameters
+        if multi_noise_timesteps < 1:
+            raise ValueError(f"multi_noise_timesteps must be >= 1, got {multi_noise_timesteps}")
+
+        # Setup timestep sampler
+        from backend.core.training.timestep_sampler import TimestepSampler
+
+        if timestep_sampling_config is None:
+            # Default: uniform [0, 1]
+            timestep_sampling_config = {
+                "distribution": "uniform",
+                "min_timestep": 0.0,
+                "max_timestep": 1.0,
+            }
+
+        timestep_sampler = TimestepSampler.from_config(timestep_sampling_config)
+        print(f"{self.log_prefix} Timestep sampler: {timestep_sampler.__class__.__name__}")
+        print(f"{self.log_prefix} Timestep range: [{timestep_sampler.min_timestep:.3f}, {timestep_sampler.max_timestep:.3f}]")
+        print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
+
+        if multi_noise_timesteps > 1:
+            print(f"{self.log_prefix} MNT enabled: Each batch will be processed {multi_noise_timesteps} times with different timesteps")
+
+        # Calculate effective gradient accumulation (MNT acts as additional accumulation)
+        effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
+        print(f"{self.log_prefix} Gradient accumulation steps: {gradient_accumulation_steps}")
+        print(f"{self.log_prefix} Effective gradient accumulation (with MNT): {effective_gradient_accumulation}")
+
+        # Calculate total steps (MNT multiplies steps)
         total_items = sum(len(dataset.items) for dataset in datasets)
-        steps_per_epoch = (total_items + batch_size - 1) // batch_size
+        batches_per_epoch = (total_items + batch_size - 1) // batch_size
+        steps_per_epoch = batches_per_epoch * multi_noise_timesteps  # MNT multiplier
         total_steps = steps_per_epoch * num_epochs
 
         print(f"{self.log_prefix} Total items: {total_items}")
-        print(f"{self.log_prefix} Steps per epoch: {steps_per_epoch}")
-        print(f"{self.log_prefix} Total steps: {total_steps}")
+        print(f"{self.log_prefix} Batches per epoch: {batches_per_epoch}")
+        print(f"{self.log_prefix} Steps per epoch (with MNT): {steps_per_epoch}")
+        print(f"{self.log_prefix} Total training steps: {total_steps}")
 
         # Setup optimizer
         self.setup_optimizer(

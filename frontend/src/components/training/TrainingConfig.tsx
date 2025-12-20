@@ -114,6 +114,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [latentEncodingMode, setLatentEncodingMode] = useState<string>("swap_onthefly");
   const [latentEncodingSwapInterval, setLatentEncodingSwapInterval] = useState<number>(256);
 
+  // Multi Noise-Timestep (MNT) settings
+  const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
+  const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
+  const [timestepMin, setTimestepMin] = useState<number>(0.0);
+  const [timestepMax, setTimestepMax] = useState<number>(1.0);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -344,6 +350,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       minSnrGamma,
       textEncodingMode,
       textEncodingSwapInterval,
+      latentEncodingMode,
+      latentEncodingSwapInterval,
+      multiNoiseTimesteps,
+      timestepDistribution,
+      timestepMin,
+      timestepMax,
     };
   };
 
@@ -421,6 +433,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
     if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
     if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
+    if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
+    if (config.latentEncodingSwapInterval !== undefined) setLatentEncodingSwapInterval(config.latentEncodingSwapInterval);
+    if (config.multiNoiseTimesteps !== undefined) setMultiNoiseTimesteps(config.multiNoiseTimesteps);
+    if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
+    if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
+    if (config.timestepMax !== undefined) setTimestepMax(config.timestepMax);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -519,6 +537,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       text_encoding_swap_interval: textEncodingSwapInterval,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
+      multi_noise_timesteps: multiNoiseTimesteps,
+      timestep_sampling: multiNoiseTimesteps > 1 ? {
+        distribution: timestepDistribution,
+        min_timestep: timestepMin,
+        max_timestep: timestepMax,
+      } : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -875,6 +899,23 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 max="16"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Multi Noise-Timesteps (MNT)
+              </label>
+              <input
+                type="number"
+                value={multiNoiseTimesteps}
+                onChange={(e) => setMultiNoiseTimesteps(parseInt(e.target.value))}
+                min="1"
+                max="10"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Process each batch with multiple different timesteps (default: 1)
+              </p>
             </div>
 
             <div>

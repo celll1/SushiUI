@@ -1071,10 +1071,11 @@ class BaseTrainer(ABC):
         latents: torch.Tensor,
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
+        timesteps: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
-    ) -> float:
+    ) -> Tuple[torch.Tensor, float]:
         """
         Perform single training step (SD/SDXL).
 
@@ -1082,12 +1083,13 @@ class BaseTrainer(ABC):
             latents: Image latents [B, C, H, W]
             text_embeddings: Text prompt embeddings
             pooled_embeddings: Pooled text embeddings (SDXL only)
+            timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
 
         Returns:
-            Loss value
+            (loss_tensor, loss_value) - Loss tensor with grad and scalar value
         """
         if profile_vram:
             print_vram_usage("[train_step] Start")
@@ -1098,14 +1100,21 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step] After noise generation")
 
-        # Sample random timestep
+        # Sample random timestep (or use provided timesteps)
         batch_size = latents.shape[0]
-        timesteps = torch.randint(
-            0,
-            self.noise_scheduler.config.num_train_timesteps,
-            (batch_size,),
-            device=self.device,
-        ).long()
+        if timesteps is None:
+            # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+            timesteps = torch.randint(
+                0,
+                self.noise_scheduler.config.num_train_timesteps,
+                (batch_size,),
+                device=self.device,
+            ).long()
+        else:
+            # MNT: convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
+            # timesteps in [0, 1] -> scale to [0, num_train_timesteps)
+            timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
+            timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
 
         # Add noise to latents
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
@@ -3086,6 +3095,7 @@ class BaseTrainer(ABC):
                                 latents=latents,
                                 text_embeddings=text_embeddings,
                                 pooled_embeddings=pooled_embeddings,
+                                timesteps=timesteps,  # Pass sampled timesteps
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions,
                                 profile_vram=self.debug_vram,

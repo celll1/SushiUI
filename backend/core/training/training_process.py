@@ -213,10 +213,11 @@ class TrainingProcess:
             except Exception as e:
                 print(f"[Training] WARNING: Failed to create stop flag file: {e}")
 
-            # Wait for graceful shutdown (up to 30 seconds)
-            print(f"[Training] Waiting for graceful shutdown (max 30 seconds)...")
+            # Wait for graceful shutdown (up to 120 seconds to allow checkpoint save)
+            # Checkpoint save can take 60+ seconds for large models (12GB+ safetensors + optimizer state)
+            print(f"[Training] Waiting for graceful shutdown (max 120 seconds)...")
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=30)
+                await asyncio.wait_for(self.process.wait(), timeout=120)
                 print(f"[Training] Process terminated gracefully")
             except asyncio.TimeoutError:
                 print(f"[Training] Graceful shutdown timeout, terminating process...")

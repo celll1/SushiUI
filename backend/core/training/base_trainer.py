@@ -862,7 +862,14 @@ class BaseTrainer(ABC):
             )
             prompt_embeds = encoder_output.hidden_states[-2]
 
-        return prompt_embeds[0], attention_mask[0]
+        # Extract and detach outputs
+        result_embeds = prompt_embeds[0].detach()
+        result_mask = attention_mask[0].detach()
+
+        # Free intermediate tensors to prevent VRAM accumulation
+        del input_ids, encoder_output, prompt_embeds, attention_mask
+
+        return result_embeds, result_mask
 
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
@@ -1041,8 +1048,11 @@ class BaseTrainer(ABC):
                 del h, mean, logvar
             else:
                 # SD/SDXL VAE
-                latents = self.vae.encode(image_tensor).latent_dist.sample()
+                encoder_output = self.vae.encode(image_tensor)
+                latents = encoder_output.latent_dist.sample()
                 latents = latents * self.vae.config.scaling_factor
+                # Clean up intermediate tensors
+                del encoder_output
 
         # Clean up image_tensor before moving latents to CPU
         del image_tensor
@@ -1391,7 +1401,8 @@ class BaseTrainer(ABC):
 
         # Free intermediate tensors explicitly to reduce VRAM usage
         # But keep 'loss' tensor for backward pass
-        del noise, noisy_latents, noisy_latents_4d, model_pred, target, recon_loss
+        del noise, noisy_latents, noisy_latents_4d, model_pred, target
+        del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
         return loss, recon_loss_value
 
@@ -2799,6 +2810,9 @@ class BaseTrainer(ABC):
                         # Move main model to GPU
                         self.move_main_model_to_gpu()
 
+                        # Clear CUDA cache after model movement to free fragmented memory
+                        torch.cuda.empty_cache()
+
                         next_swap_at_step += text_encoding_swap_interval
                         print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
 
@@ -2862,6 +2876,9 @@ class BaseTrainer(ABC):
                         self.move_vae_to_cpu()
                         # Move main model to GPU
                         self.move_main_model_to_gpu()
+
+                        # Clear CUDA cache after model movement to free fragmented memory
+                        torch.cuda.empty_cache()
 
                         next_latent_swap_at_step += latent_encoding_swap_interval
                         print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")

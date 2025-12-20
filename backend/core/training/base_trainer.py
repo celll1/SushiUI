@@ -1325,10 +1325,10 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] Before Transformer forward")
 
-        # Enable gradients for gradient checkpointing
-        noisy_latents.requires_grad_(True)
-        prompt_embeds.requires_grad_(True)
-        # Note: attention_mask is bool type, does not need gradients
+        # Note: Gradient checkpointing automatically manages requires_grad
+        # No need to manually set requires_grad_(True) - PyTorch handles this
+        # prompt_embeds is always detached (from encode_prompt_zimage with no_grad)
+        # attention_mask is bool type, does not need gradients
 
         # Add frame dimension for Z-Image: [B, C, H, W] -> [B, C, 1, H, W]
         noisy_latents_4d = noisy_latents.unsqueeze(2)

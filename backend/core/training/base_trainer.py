@@ -2919,32 +2919,75 @@ class BaseTrainer(ABC):
                         next_latent_swap_at_step += latent_encoding_swap_interval
                         print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
 
-                    # Prepare batch data
-                    latents_list = []
-                    text_embeddings_list = []
-                    auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
+                    # MNT loop: Process same batch with different noise-timesteps
+                    # Save swap buffer indices for this batch (restore after MNT iterations)
+                    swap_buffer_idx_batch_start = swap_buffer_idx
+                    latent_swap_buffer_idx_batch_start = latent_swap_buffer_idx
 
-                    for item, dataset in batch:
-                        # BucketManager stores bucket_width/bucket_height, not width/height
-                        width = item.get("width") or item.get("bucket_width")
-                        height = item.get("height") or item.get("bucket_height")
+                    for mnt_idx in range(multi_noise_timesteps):
+                        # Restore swap buffer indices for each MNT iteration (reuse same embeddings/latents)
+                        swap_buffer_idx = swap_buffer_idx_batch_start
+                        latent_swap_buffer_idx = latent_swap_buffer_idx_batch_start
 
-                        # Load latent (mode-specific)
-                        if latent_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer (now 3-tuple: latent, caption, image_path)
-                            if latent_swap_buffer_idx < len(latent_swap_buffer):
-                                latent_cpu, buffer_caption, buffer_image_path = latent_swap_buffer[latent_swap_buffer_idx]
-                                # Transfer to GPU
-                                latent = latent_cpu.to(self.device, non_blocking=True)
+                        # Prepare batch data
+                        latents_list = []
+                        text_embeddings_list = []
+                        auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
+
+                        for item, dataset in batch:
+                            # BucketManager stores bucket_width/bucket_height, not width/height
+                            width = item.get("width") or item.get("bucket_width")
+                            height = item.get("height") or item.get("bucket_height")
+
+                            # Load latent (mode-specific)
+                            if latent_encoding_mode == "swap_onthefly":
+                                # Get from swap buffer (now 3-tuple: latent, caption, image_path)
+                                if latent_swap_buffer_idx < len(latent_swap_buffer):
+                                    latent_cpu, buffer_caption, buffer_image_path = latent_swap_buffer[latent_swap_buffer_idx]
+                                    # Transfer to GPU
+                                    latent = latent_cpu.to(self.device, non_blocking=True)
+                                    latents_list.append(latent)
+                                    # Store caption/image_path for later (will be used by text encoding or debug)
+                                    # Note: caption will be overridden again if text_encoding_mode == "swap_onthefly"
+                                    item["caption"] = buffer_caption
+                                    item["image_path"] = buffer_image_path
+                                    latent_swap_buffer_idx += 1
+                                else:
+                                    # Fallback to on-the-fly encoding
+                                    print(f"{self.log_prefix} WARNING: Latent swap buffer exhausted, encoding on-the-fly")
+                                    image = Image.open(item["image_path"])
+                                    latent = self.encode_image(
+                                        image=image,
+                                        target_width=width,
+                                        target_height=height,
+                                        bucket_strategy=bucket_strategy
+                                    )
+                                    latents_list.append(latent)
+
+                            elif latent_encoding_mode == "pre_encoded_cache":
+                                # Load from disk cache
+                                cache = latent_caches[dataset.unique_id]
+                                latent = cache.load_latent(item["image_path"], width, height)
+
+                                # On-the-fly regeneration if cache is corrupted or incompatible
+                                if latent is None:
+                                    print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
+                                # Validate latent shape
+                                expected_latent_height = height // 8
+                                expected_latent_width = width // 8
+                                if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
+                                    print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
+                                    print(f"{self.log_prefix}   Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
                                 latents_list.append(latent)
-                                # Store caption/image_path for later (will be used by text encoding or debug)
-                                # Note: caption will be overridden again if text_encoding_mode == "swap_onthefly"
-                                item["caption"] = buffer_caption
-                                item["image_path"] = buffer_image_path
-                                latent_swap_buffer_idx += 1
-                            else:
-                                # Fallback to on-the-fly encoding
-                                print(f"{self.log_prefix} WARNING: Latent swap buffer exhausted, encoding on-the-fly")
+
+                            elif latent_encoding_mode == "onthefly_gpu":
+                                # Encode on GPU without cache
                                 image = Image.open(item["image_path"])
                                 latent = self.encode_image(
                                     image=image,
@@ -2954,142 +2997,118 @@ class BaseTrainer(ABC):
                                 )
                                 latents_list.append(latent)
 
-                        elif latent_encoding_mode == "pre_encoded_cache":
-                            # Load from disk cache
-                            cache = latent_caches[dataset.unique_id]
-                            latent = cache.load_latent(item["image_path"], width, height)
+                            # Encode caption (mode-specific, architecture-unified)
+                            caption = item.get("caption", "")
 
-                            # On-the-fly regeneration if cache is corrupted or incompatible
-                            if latent is None:
-                                print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
-                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            if text_encoding_mode == "swap_onthefly":
+                                # Get from swap buffer (now 4-tuple: embeddings, auxiliary, caption, image_path)
+                                if swap_buffer_idx < len(swap_buffer):
+                                    embeddings_cpu, auxiliary_cpu, buffer_caption, buffer_image_path = swap_buffer[swap_buffer_idx]
+                                    # Transfer to GPU
+                                    embeddings = embeddings_cpu.to(self.device, non_blocking=True)
+                                    auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                    text_embeddings_list.append(embeddings)
+                                    auxiliary_data_list.append(auxiliary)
+                                    # Override caption from buffer (correct pairing)
+                                    caption = buffer_caption
+                                    swap_buffer_idx += 1
+                                else:
+                                    # Shouldn't happen, but fallback to on-the-fly encoding
+                                    print(f"{self.log_prefix} WARNING: Swap buffer exhausted, encoding on-the-fly")
+                                    embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                    text_embeddings_list.append(embeddings)
+                                    auxiliary_data_list.append(auxiliary)
 
-                            # Validate latent shape
-                            expected_latent_height = height // 8
-                            expected_latent_width = width // 8
-                            if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
-                                print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
-                                print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
-                                print(f"{self.log_prefix}   Got: {list(latent.shape)}")
-                                print(f"{self.log_prefix}   Regenerating latent...")
-                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            elif text_encoding_mode == "pre_encoded_cache":
+                                # Load from disk cache (per-dataset)
+                                cached_result = self._load_caption_embedding_from_disk(
+                                    caption=caption,
+                                    dataset_unique_id=dataset.unique_id,
+                                    text_encoder_caches=text_encoder_caches
+                                )
+                                if cached_result is not None:
+                                    embeddings_cpu, auxiliary_cpu = cached_result
+                                    embeddings = embeddings_cpu.to(self.device, non_blocking=True)
+                                    auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                    text_embeddings_list.append(embeddings)
+                                    auxiliary_data_list.append(auxiliary)
+                                else:
+                                    # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
+                                    print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
+                                    embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                    text_embeddings_list.append(embeddings)
+                                    auxiliary_data_list.append(auxiliary)
 
-                            latents_list.append(latent)
-
-                        elif latent_encoding_mode == "onthefly_gpu":
-                            # Encode on GPU without cache
-                            image = Image.open(item["image_path"])
-                            latent = self.encode_image(
-                                image=image,
-                                target_width=width,
-                                target_height=height,
-                                bucket_strategy=bucket_strategy
-                            )
-                            latents_list.append(latent)
-
-                        # Encode caption (mode-specific, architecture-unified)
-                        caption = item.get("caption", "")
-
-                        if text_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer (now 4-tuple: embeddings, auxiliary, caption, image_path)
-                            if swap_buffer_idx < len(swap_buffer):
-                                embeddings_cpu, auxiliary_cpu, buffer_caption, buffer_image_path = swap_buffer[swap_buffer_idx]
-                                # Transfer to GPU
-                                embeddings = embeddings_cpu.to(self.device, non_blocking=True)
-                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
-                                text_embeddings_list.append(embeddings)
-                                auxiliary_data_list.append(auxiliary)
-                                # Override caption from buffer (correct pairing)
-                                caption = buffer_caption
-                                swap_buffer_idx += 1
-                            else:
-                                # Shouldn't happen, but fallback to on-the-fly encoding
-                                print(f"{self.log_prefix} WARNING: Swap buffer exhausted, encoding on-the-fly")
+                            elif text_encoding_mode == "onthefly_gpu":
+                                # Encode on GPU without cache
                                 embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 
-                        elif text_encoding_mode == "pre_encoded_cache":
-                            # Load from disk cache (per-dataset)
-                            cached_result = self._load_caption_embedding_from_disk(
-                                caption=caption,
-                                dataset_unique_id=dataset.unique_id,
-                                text_encoder_caches=text_encoder_caches
+                        # Stack batch
+                        latents = torch.cat(latents_list, dim=0)
+                        text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
+
+                        # Sample timesteps for this MNT iteration
+                        batch_size = latents.shape[0]
+                        timesteps = timestep_sampler.sample(batch_size, self.device)
+
+                        # Determine if we should save debug latents (only on first MNT iteration)
+                        debug_save_path = None
+                        if mnt_idx == 0 and debug_dir is not None and global_step % debug_latents_every == 0:
+                            debug_save_path = debug_dir / f"step_{global_step:06d}"
+
+                        # Collect batch captions only when needed for debug (prevents DRAM accumulation)
+                        # NOTE: item["caption"] has been overridden from swap buffer (if applicable), ensuring correct pairing
+                        batch_captions = None
+                        if debug_save_path is not None:
+                            batch_captions = [item.get("caption", "") for item, dataset in batch]
+
+                        # Training step (architecture-specific calling convention)
+                        if self.is_zimage:
+                            # auxiliary_data_list contains attention_mask for Z-Image
+                            attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
+                            loss, recon_loss = self.train_step_zimage(
+                                latents=latents,
+                                prompt_embeds=text_embeddings,
+                                attention_mask=attention_mask,
+                                timesteps=timesteps,  # Pass sampled timesteps
+                                debug_save_path=debug_save_path,
+                                debug_captions=batch_captions,
+                                profile_vram=self.debug_vram,
                             )
-                            if cached_result is not None:
-                                embeddings_cpu, auxiliary_cpu = cached_result
-                                embeddings = embeddings_cpu.to(self.device, non_blocking=True)
-                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
-                                text_embeddings_list.append(embeddings)
-                                auxiliary_data_list.append(auxiliary)
-                            else:
-                                # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
-                                print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
-                                embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
-                                text_embeddings_list.append(embeddings)
-                                auxiliary_data_list.append(auxiliary)
+                        else:
+                            # auxiliary_data_list contains pooled_embeddings for SDXL, None for SD1.5
+                            pooled_embeddings = None
+                            if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
+                                pooled_embeddings = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
+                            loss, recon_loss = self.train_step(
+                                latents=latents,
+                                text_embeddings=text_embeddings,
+                                pooled_embeddings=pooled_embeddings,
+                                debug_save_path=debug_save_path,
+                                debug_captions=batch_captions,
+                                profile_vram=self.debug_vram,
+                            )
 
-                        elif text_encoding_mode == "onthefly_gpu":
-                            # Encode on GPU without cache
-                            embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
-                            text_embeddings_list.append(embeddings)
-                            auxiliary_data_list.append(auxiliary)
+                        # Backward pass
+                        # loss is already a tensor with computation graph from train_step/train_step_zimage
+                        loss.backward()
 
-                    # Stack batch
-                    latents = torch.cat(latents_list, dim=0)
-                    text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
+                        # Free batch tensors immediately after backward to prevent VRAM accumulation
+                        del latents, text_embeddings
+                        if self.is_zimage:
+                            del attention_mask
+                        if self.is_sdxl and pooled_embeddings is not None:
+                            del pooled_embeddings
+                        del latents_list, text_embeddings_list, auxiliary_data_list
 
-                    # Determine if we should save debug latents
-                    debug_save_path = None
-                    if debug_dir is not None and global_step % debug_latents_every == 0:
-                        debug_save_path = debug_dir / f"step_{global_step:06d}"
+                        # Increment global step for each MNT iteration
+                        global_step += 1
 
-                    # Collect batch captions only when needed for debug (prevents DRAM accumulation)
-                    # NOTE: item["caption"] has been overridden from swap buffer (if applicable), ensuring correct pairing
-                    batch_captions = None
-                    if debug_save_path is not None:
-                        batch_captions = [item.get("caption", "") for item, dataset in batch]
-
-                    # Training step (architecture-specific calling convention)
-                    if self.is_zimage:
-                        # auxiliary_data_list contains attention_mask for Z-Image
-                        attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
-                        loss, recon_loss = self.train_step_zimage(
-                            latents=latents,
-                            prompt_embeds=text_embeddings,
-                            attention_mask=attention_mask,
-                            debug_save_path=debug_save_path,
-                            debug_captions=batch_captions,
-                            profile_vram=self.debug_vram,
-                        )
-                    else:
-                        # auxiliary_data_list contains pooled_embeddings for SDXL, None for SD1.5
-                        pooled_embeddings = None
-                        if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
-                            pooled_embeddings = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
-                        loss, recon_loss = self.train_step(
-                            latents=latents,
-                            text_embeddings=text_embeddings,
-                            pooled_embeddings=pooled_embeddings,
-                            debug_save_path=debug_save_path,
-                            debug_captions=batch_captions,
-                            profile_vram=self.debug_vram,
-                        )
-
-                    # Backward pass
-                    # loss is already a tensor with computation graph from train_step/train_step_zimage
-                    loss.backward()
-
-                    # Free batch tensors immediately after backward to prevent VRAM accumulation
-                    del latents, text_embeddings
-                    if self.is_zimage:
-                        del attention_mask
-                    if self.is_sdxl and pooled_embeddings is not None:
-                        del pooled_embeddings
-                    del latents_list, text_embeddings_list, auxiliary_data_list
-
-                    # Gradient accumulation
-                    if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                    # Gradient accumulation check (after all MNT iterations)
+                    # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
+                    if global_step % effective_gradient_accumulation == 0:
                         # Gradient clipping
                         if max_grad_norm > 0:
                             torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
@@ -3098,8 +3117,6 @@ class BaseTrainer(ABC):
                         self.optimizer.step()
                         self.lr_scheduler.step()
                         self.optimizer.zero_grad()
-
-                        global_step += 1
 
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()

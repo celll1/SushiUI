@@ -227,6 +227,9 @@ class BaseTrainer(ABC):
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        # Block Swap settings (training VRAM optimization)
+        blocks_to_swap: int = 0,
+        use_pinned_memory: bool = False,
     ):
         """
         Initialize base trainer.
@@ -259,6 +262,10 @@ class BaseTrainer(ABC):
         self.text_encoder_lr = text_encoder_lr if text_encoder_lr is not None else learning_rate
         self.text_encoder_1_lr = text_encoder_1_lr if text_encoder_1_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
         self.text_encoder_2_lr = text_encoder_2_lr if text_encoder_2_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
+
+        # Block Swap settings (training VRAM optimization)
+        self.blocks_to_swap = blocks_to_swap
+        self.use_pinned_memory = use_pinned_memory
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -367,21 +374,18 @@ class BaseTrainer(ABC):
         self.transformer.requires_grad_(False)
 
         # Setup Block Swap if enabled (before moving to GPU)
-        blocks_to_swap = self.config.get("blocks_to_swap", 0)
-        use_pinned_memory = self.config.get("use_pinned_memory", False)
-
-        if blocks_to_swap > 0:
-            print(f"{self.log_prefix} Block Swap enabled for training: {blocks_to_swap} blocks")
-            print(f"{self.log_prefix} Pinned memory: {use_pinned_memory}")
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap enabled for training: {self.blocks_to_swap} blocks")
+            print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
 
             from core.memory_management import create_block_offloader_for_model
 
             block_offloader = create_block_offloader_for_model(
                 transformer=self.transformer_original,
-                blocks_to_swap=blocks_to_swap,
+                blocks_to_swap=self.blocks_to_swap,
                 device=torch.device(self.device),
                 target_dtype=self.dtype,
-                use_pinned_memory=use_pinned_memory,
+                use_pinned_memory=self.use_pinned_memory,
                 supports_backward=True  # Enable backward hooks for training
             )
 

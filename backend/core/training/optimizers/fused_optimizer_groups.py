@@ -100,6 +100,9 @@ class FusedOptimizerGroups:
         print(f"[FusedOptimizerGroups] Registered {hooks_registered} hooks for {len(self.optimizers)} optimizer groups")
         print(f"[FusedOptimizerGroups] Parameters per group: {self.num_parameters_per_group}")
 
+        # Initialize counters after hooks are registered
+        self.reset_counters()
+
     def reset_counters(self):
         """
         Reset counters for next training step.

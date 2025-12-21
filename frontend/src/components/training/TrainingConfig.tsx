@@ -114,6 +114,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [latentEncodingMode, setLatentEncodingMode] = useState<string>("swap_onthefly");
   const [latentEncodingSwapInterval, setLatentEncodingSwapInterval] = useState<number>(256);
 
+  // Block Swap settings (training VRAM optimization)
+  const [blocksToSwap, setBlocksToSwap] = useState<number>(0);
+  const [usePinnedMemory, setUsePinnedMemory] = useState<boolean>(false);
+
   // Multi Noise-Timestep (MNT) settings
   const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
   const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
@@ -352,6 +356,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       textEncodingSwapInterval,
       latentEncodingMode,
       latentEncodingSwapInterval,
+      blocksToSwap,
+      usePinnedMemory,
       multiNoiseTimesteps,
       timestepDistribution,
       timestepMin,
@@ -435,6 +441,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
     if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
     if (config.latentEncodingSwapInterval !== undefined) setLatentEncodingSwapInterval(config.latentEncodingSwapInterval);
+    if (config.blocksToSwap !== undefined) setBlocksToSwap(config.blocksToSwap);
+    if (config.usePinnedMemory !== undefined) setUsePinnedMemory(config.usePinnedMemory);
     if (config.multiNoiseTimesteps !== undefined) setMultiNoiseTimesteps(config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
     if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
@@ -537,6 +545,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       text_encoding_swap_interval: textEncodingSwapInterval,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
+      blocks_to_swap: blocksToSwap,
+      use_pinned_memory: usePinnedMemory,
       multi_noise_timesteps: multiNoiseTimesteps,
       timestep_sampling: multiNoiseTimesteps > 1 ? {
         distribution: timestepDistribution,
@@ -1202,6 +1212,60 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           <p className="text-xs text-gray-500">
             Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps.
           </p>
+        </div>
+
+        {/* Block Swap Settings (VRAM Optimization) */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Block Swap (Training VRAM Optimization)</h3>
+
+          <div className="space-y-3">
+            {/* Blocks to Swap */}
+            <div>
+              <label htmlFor="blocks-to-swap" className="block text-xs text-gray-300 mb-1">
+                Blocks to Swap (0 to disable)
+              </label>
+              <input
+                type="number"
+                id="blocks-to-swap"
+                value={blocksToSwap}
+                onChange={(e) => setBlocksToSwap(parseInt(e.target.value) || 0)}
+                min={0}
+                max={29}
+                step={1}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Number of transformer blocks to swap between GPU and CPU during training. Higher values reduce VRAM usage but may slow training. Default: 0 (disabled). Recommended: 10-20 for large models.
+              </p>
+              {blocksToSwap > 0 && (
+                <p className="text-xs text-blue-400 mt-1">
+                  Estimated VRAM saving: ~{Math.round((blocksToSwap / 30) * 100)}% of transformer parameters
+                </p>
+              )}
+            </div>
+
+            {/* Use Pinned Memory */}
+            {blocksToSwap > 0 && (
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="use-pinned-memory"
+                  checked={usePinnedMemory}
+                  onChange={(e) => setUsePinnedMemory(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="use-pinned-memory" className="text-xs text-gray-300 cursor-pointer">
+                  Use Pinned Memory (faster CPU-GPU transfer)
+                </label>
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-gray-500 space-y-1">
+            <p><strong>Block Swap:</strong> Offloads transformer blocks to CPU during training, reducing VRAM usage. Only active during forward and backward passes.</p>
+            <p><strong>Pinned Memory:</strong> Uses CUDA pinned memory for faster transfer between CPU and GPU. Recommended if you have sufficient system RAM.</p>
+            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts.</p>
+          </div>
         </div>
 
         {/* Text Encoding Mode */}

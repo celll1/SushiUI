@@ -230,6 +230,8 @@ class BaseTrainer(ABC):
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
+        # Fused optimizer groups (for any optimizer with Block Swap)
+        num_optimizer_groups: int = 0,
     ):
         """
         Initialize base trainer.
@@ -267,8 +269,10 @@ class BaseTrainer(ABC):
         self.blocks_to_swap = blocks_to_swap
         self.use_pinned_memory = use_pinned_memory
 
-        # Fused backward pass (for Block Swap compatibility)
-        self.use_fused_backward = False  # Will be enabled when Block Swap is active and optimizer supports it
+        # Fused optimizer settings (for Block Swap compatibility)
+        self.num_optimizer_groups = num_optimizer_groups
+        self.use_fused_backward = False  # Adafactor per-parameter updates
+        self.fused_optimizer_groups = None  # FusedOptimizerGroups instance (for any optimizer)
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -789,9 +793,14 @@ class BaseTrainer(ABC):
             num_training_steps=total_steps,
         )
 
-        # Setup fused backward pass if Block Swap is enabled
-        if self.blocks_to_swap > 0 and optimizer_type.lower() == "adafactor":
-            self._setup_fused_backward_pass()
+        # Setup fused backward/optimizer groups if Block Swap is enabled
+        if self.blocks_to_swap > 0:
+            if self.num_optimizer_groups > 0:
+                # Fused optimizer groups: works with any optimizer
+                self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
+            elif optimizer_type.lower() == "adafactor":
+                # Fused backward pass: Adafactor only
+                self._setup_fused_backward_pass()
 
     def _setup_fused_backward_pass(self):
         """
@@ -840,6 +849,79 @@ class BaseTrainer(ABC):
 
         self.use_fused_backward = True
         print(f"{self.log_prefix} Registered {hooks_registered} fused backward hooks")
+        print(f"{self.log_prefix} Optimizer.step() and zero_grad() will be called by hooks automatically")
+
+    def _setup_fused_optimizer_groups(self, optimizer_type: str, total_steps: int, lr_scheduler_type: str):
+        """
+        Setup fused optimizer groups for Block Swap compatibility.
+
+        Works with ANY optimizer (AdamW, AdamW8bit, Lion8bit, etc.) by dividing
+        parameters into groups and updating each group when all its gradients are ready.
+
+        Args:
+            optimizer_type: Optimizer type (adamw, adamw8bit, etc.)
+            total_steps: Total training steps
+            lr_scheduler_type: LR scheduler type
+        """
+        print(f"{self.log_prefix} Setting up fused optimizer groups...")
+
+        # Check PyTorch version
+        import torch
+        if not hasattr(torch.Tensor, "register_post_accumulate_grad_hook"):
+            print(f"{self.log_prefix} WARNING: PyTorch 2.1+ required for fused optimizer groups")
+            print(f"{self.log_prefix} Current version: {torch.__version__}")
+            print(f"{self.log_prefix} Fused optimizer groups disabled")
+            return
+
+        # Get trainable parameters from current optimizer
+        trainable_params = []
+        for param_group in self.optimizer.param_groups:
+            trainable_params.extend(param_group["params"])
+
+        # Create multiple optimizers by dividing parameters into groups
+        from core.training.optimizers import create_optimizer_groups, FusedOptimizerGroups
+
+        optimizers = create_optimizer_groups(
+            params=trainable_params,
+            optimizer_type=optimizer_type,
+            num_groups=self.num_optimizer_groups,
+            learning_rate=self.learning_rate,
+            weight_decay=0.01,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+        )
+
+        # Replace self.optimizer with first optimizer (for compatibility)
+        self.optimizer = optimizers[0]
+
+        # Create LR schedulers for all optimizers
+        from diffusers.optimization import get_scheduler as get_diffusers_scheduler
+        lr_schedulers = []
+        for optimizer in optimizers:
+            lr_scheduler = get_diffusers_scheduler(
+                lr_scheduler_type,
+                optimizer=optimizer,
+                num_warmup_steps=0,
+                num_training_steps=total_steps,
+            )
+            lr_schedulers.append(lr_scheduler)
+
+        # Replace self.lr_scheduler with first scheduler (for compatibility)
+        self.lr_scheduler = lr_schedulers[0]
+
+        # Store all schedulers for stepping
+        self.lr_schedulers = lr_schedulers
+
+        # Create FusedOptimizerGroups instance
+        self.fused_optimizer_groups = FusedOptimizerGroups(
+            optimizers=optimizers,
+            max_grad_norm=0.0  # Gradient clipping handled by hook
+        )
+
+        # Register hooks
+        self.fused_optimizer_groups.register_hooks()
+
+        print(f"{self.log_prefix} Fused optimizer groups setup complete")
         print(f"{self.log_prefix} Optimizer.step() and zero_grad() will be called by hooks automatically")
 
     # ============================================================
@@ -2934,6 +3016,10 @@ class BaseTrainer(ABC):
 
                 # Training loop
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}")):
+                    # Reset fused optimizer groups counters (start of each step)
+                    if self.fused_optimizer_groups is not None:
+                        self.fused_optimizer_groups.reset_counters()
+
                     # Check for stop flag (user-requested stop from frontend)
                     stop_flag_file = self.output_dir / ".stop_training"
                     if stop_flag_file.exists():
@@ -3257,7 +3343,7 @@ class BaseTrainer(ABC):
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
                     if global_step % effective_gradient_accumulation == 0:
-                        if not self.use_fused_backward:
+                        if not self.use_fused_backward and self.fused_optimizer_groups is None:
                             # Normal flow: optimizer.step() and zero_grad() here
                             # Gradient clipping
                             if max_grad_norm > 0:
@@ -3266,10 +3352,16 @@ class BaseTrainer(ABC):
                             # Optimizer step
                             self.optimizer.step()
                             self.optimizer.zero_grad()
-                        # else: Fused backward flow - step() and zero_grad() already called by hooks
+                        # else: Fused backward/groups flow - step() and zero_grad() already called by hooks
 
-                        # LR scheduler step (always needed)
-                        self.lr_scheduler.step()
+                        # LR scheduler step
+                        if self.fused_optimizer_groups is not None:
+                            # Step all schedulers for optimizer groups
+                            for lr_scheduler in self.lr_schedulers:
+                                lr_scheduler.step()
+                        else:
+                            # Single scheduler
+                            self.lr_scheduler.step()
 
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()

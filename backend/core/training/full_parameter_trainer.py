@@ -40,6 +40,7 @@ class FullParameterTrainer(BaseTrainer):
         text_encoder_2_lr: Optional[float] = None,
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
+        num_optimizer_groups: int = 0,
     ):
         """
         Initialize full parameter trainer.
@@ -90,6 +91,7 @@ class FullParameterTrainer(BaseTrainer):
             text_encoder_2_lr=text_encoder_2_lr,
             blocks_to_swap=blocks_to_swap,
             use_pinned_memory=use_pinned_memory,
+            num_optimizer_groups=num_optimizer_groups,
         )
 
         # Override log prefix

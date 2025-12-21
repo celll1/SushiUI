@@ -117,6 +117,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   // Block Swap settings (training VRAM optimization)
   const [blocksToSwap, setBlocksToSwap] = useState<number>(0);
   const [usePinnedMemory, setUsePinnedMemory] = useState<boolean>(false);
+  const [numOptimizerGroups, setNumOptimizerGroups] = useState<number>(0);
 
   // Multi Noise-Timestep (MNT) settings
   const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
@@ -358,6 +359,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       latentEncodingSwapInterval,
       blocksToSwap,
       usePinnedMemory,
+      numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
       timestepMin,
@@ -443,6 +445,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.latentEncodingSwapInterval !== undefined) setLatentEncodingSwapInterval(config.latentEncodingSwapInterval);
     if (config.blocksToSwap !== undefined) setBlocksToSwap(config.blocksToSwap);
     if (config.usePinnedMemory !== undefined) setUsePinnedMemory(config.usePinnedMemory);
+    if (config.numOptimizerGroups !== undefined) setNumOptimizerGroups(config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) setMultiNoiseTimesteps(config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
     if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
@@ -547,6 +550,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       latent_encoding_swap_interval: latentEncodingSwapInterval,
       blocks_to_swap: blocksToSwap,
       use_pinned_memory: usePinnedMemory,
+      num_optimizer_groups: numOptimizerGroups,
       multi_noise_timesteps: multiNoiseTimesteps,
       timestep_sampling: multiNoiseTimesteps > 1 ? {
         distribution: timestepDistribution,
@@ -1259,13 +1263,36 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 </label>
               </div>
             )}
+
+            {/* Fused Optimizer Groups */}
+            {blocksToSwap > 0 && (
+              <div>
+                <label htmlFor="num-optimizer-groups" className="block text-xs text-gray-300 mb-1">
+                  Fused Optimizer Groups (0 to disable, recommended 4-10)
+                </label>
+                <input
+                  type="number"
+                  id="num-optimizer-groups"
+                  value={numOptimizerGroups}
+                  onChange={(e) => setNumOptimizerGroups(parseInt(e.target.value) || 0)}
+                  min={0}
+                  max={20}
+                  step={1}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Divides parameters into N groups with separate optimizers. Updates each group immediately after gradients are computed. Works with ANY optimizer (AdamW, AdamW8bit, Lion8bit, etc.). Set to 0 to use Fused Backward Pass (Adafactor only).
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="text-xs text-gray-500 space-y-1">
             <p><strong>Block Swap:</strong> Offloads transformer blocks to CPU during training, reducing VRAM usage. Only active during forward and backward passes.</p>
             <p><strong>Pinned Memory:</strong> Uses CUDA pinned memory for faster transfer between CPU and GPU. Recommended if you have sufficient system RAM.</p>
-            <p className="text-blue-500"><strong>Recommended Optimizer:</strong> Use "Adafactor" optimizer for best compatibility. Adafactor with Block Swap uses "fused backward pass" to update parameters immediately after gradients are computed, avoiding device mismatch errors.</p>
-            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts. Requires PyTorch 2.1+ for fused backward pass.</p>
+            <p><strong>Fused Optimizer Groups:</strong> Enables ANY optimizer to work with Block Swap by dividing parameters into groups. Recommended: 4-10 groups for large models.</p>
+            <p className="text-blue-500"><strong>Optimizer Compatibility:</strong> If "Fused Optimizer Groups" is 0, only Adafactor works with Block Swap (uses per-parameter updates). If Fused Optimizer Groups &gt; 0, ANY optimizer works (AdamW, AdamW8bit, Lion8bit, etc.).</p>
+            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts. Requires PyTorch 2.1+ for fused backward/optimizer.</p>
           </div>
         </div>
 

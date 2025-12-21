@@ -3563,6 +3563,7 @@ class TrainingRunCreateRequest(BaseModel):
     # Block Swap settings (training VRAM optimization)
     blocks_to_swap: int = 0  # Number of transformer blocks to swap (0 to disable)
     use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
+    num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)
 
     # Multi Noise-Timestep (MNT) settings
     multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
@@ -3715,6 +3716,7 @@ async def create_training_run(
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
                 blocks_to_swap=request.blocks_to_swap,
                 use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,
@@ -3769,6 +3771,7 @@ async def create_training_run(
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
                 blocks_to_swap=request.blocks_to_swap,
                 use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,

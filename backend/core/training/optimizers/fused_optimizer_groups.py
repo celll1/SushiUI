@@ -85,8 +85,24 @@ class FusedOptimizerGroups:
 
                             # If all parameters in this group are done, step the optimizer
                             if self.optimizer_hooked_count[i] == self.num_parameters_per_group[i]:
+                                # Move parameters to GPU if needed (Block Swap compatibility)
+                                # Collect all parameters for this optimizer group
+                                params_to_move = []
+                                original_devices = []
+                                for param_group in self.optimizers[i].param_groups:
+                                    for p in param_group["params"]:
+                                        if p.device.type == "cpu" and p.grad is not None and p.grad.device.type == "cuda":
+                                            original_devices.append(p.device)
+                                            params_to_move.append(p)
+                                            p.data = p.data.to(p.grad.device)
+
+                                # Step optimizer (parameters now on same device as gradients)
                                 self.optimizers[i].step()
                                 self.optimizers[i].zero_grad(set_to_none=True)
+
+                                # Move parameters back to CPU if they were moved
+                                for p, orig_device in zip(params_to_move, original_devices):
+                                    p.data = p.data.to(orig_device)
 
                         # Register hook
                         handle = parameter.register_post_accumulate_grad_hook(optimizer_hook)

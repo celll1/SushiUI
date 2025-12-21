@@ -1480,6 +1480,12 @@ class BaseTrainer(ABC):
         # Denoising loop
         with torch.no_grad():
             for t in tqdm(inference_scheduler.timesteps, desc="Generating"):
+                # Check for stop flag during sample generation (allow graceful shutdown)
+                stop_flag_file = self.output_dir / ".stop_training"
+                if stop_flag_file.exists():
+                    print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
+                    raise KeyboardInterrupt("Training stopped by user during sample generation")
+
                 # Prepare latent input
                 latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
                 latent_model_input = inference_scheduler.scale_model_input(latent_model_input, t)
@@ -1769,6 +1775,12 @@ class BaseTrainer(ABC):
         """
         with torch.no_grad():
             for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
+                # Check for stop flag during sample generation (allow graceful shutdown)
+                stop_flag_file = self.output_dir / ".stop_training"
+                if stop_flag_file.exists():
+                    print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
+                    raise KeyboardInterrupt("Training stopped by user during sample generation")
+
                 # Skip last step if t=0 (flow matching termination, same as pipeline.py:1001-1004)
                 if t == 0 and i == len(scheduler.timesteps) - 1:
                     continue

@@ -657,6 +657,7 @@ def main():
                 min_snr_gamma=min_snr_gamma,
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
                 use_pinned_memory=train_config.get('use_pinned_memory', False),
+                num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
             )
 
             # Setup optimizer

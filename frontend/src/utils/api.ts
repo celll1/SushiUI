@@ -1310,6 +1310,7 @@ export interface TrainingRunCreateRequest {
   latent_encoding_swap_interval?: number;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
+  num_optimizer_groups?: number;
   multi_noise_timesteps?: number;
   timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
   cache_latents_to_disk?: boolean;

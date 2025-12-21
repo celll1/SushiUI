@@ -54,6 +54,7 @@ class TrainingConfigGenerator:
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
+        num_optimizer_groups: int = 0,
         # Text encoding settings
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
@@ -228,6 +229,7 @@ class TrainingConfigGenerator:
                             "min_snr_gamma": min_snr_gamma,
                             "blocks_to_swap": blocks_to_swap,
                             "use_pinned_memory": use_pinned_memory,
+                            "num_optimizer_groups": num_optimizer_groups,
                             "text_encoding_mode": text_encoding_mode,
                             "text_encoding_swap_interval": text_encoding_swap_interval,
                             "latent_encoding_mode": latent_encoding_mode,
@@ -301,6 +303,7 @@ class TrainingConfigGenerator:
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
+        num_optimizer_groups: int = 0,
         # Text encoding settings
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
@@ -366,6 +369,7 @@ class TrainingConfigGenerator:
             "min_snr_gamma": min_snr_gamma,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "num_optimizer_groups": num_optimizer_groups,
             "text_encoding_mode": text_encoding_mode,
             "text_encoding_swap_interval": text_encoding_swap_interval,
             "latent_encoding_mode": latent_encoding_mode,

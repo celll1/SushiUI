@@ -448,7 +448,7 @@ class LoRATrainer(BaseTrainer):
             betas: Adam beta parameters
             eps: Adam epsilon
         """
-        from core.training.optimizers import OptimizerFactory
+        from .optimizers import OptimizerFactory
 
         print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
 

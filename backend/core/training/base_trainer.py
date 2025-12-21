@@ -763,7 +763,7 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
 
         # Create optimizer using factory
-        from core.training.optimizers import OptimizerFactory
+        from .optimizers import OptimizerFactory
         try:
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,
@@ -822,7 +822,7 @@ class BaseTrainer(ABC):
             return
 
         # Patch Adafactor with step_param method
-        from core.training.optimizers.adafactor_fused import patch_adafactor_fused
+        from .optimizers.adafactor_fused import patch_adafactor_fused
         patch_adafactor_fused(self.optimizer)
 
         # Register hooks for all trainable parameters
@@ -879,7 +879,7 @@ class BaseTrainer(ABC):
             trainable_params.extend(param_group["params"])
 
         # Create multiple optimizers by dividing parameters into groups
-        from core.training.optimizers import create_optimizer_groups, FusedOptimizerGroups
+        from .optimizers.fused_optimizer_groups import create_optimizer_groups, FusedOptimizerGroups
 
         optimizers = create_optimizer_groups(
             params=trainable_params,

@@ -4,6 +4,26 @@ Complete guide for generating, scoring, and training the aesthetic quality model
 
 ## Quick Start
 
+### 0. Configure Storage Paths (Optional)
+
+By default, data is saved to `subapps/aesthetic_scorer/data/`. To use a custom path (e.g., on a larger drive):
+
+```bash
+# Get current settings
+curl http://localhost:8001/api/settings
+
+# Update storage paths
+curl -X PUT http://localhost:8001/api/settings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latents_dir": "E:/aesthetic_scorer_data/latents",
+    "images_dir": "E:/aesthetic_scorer_data/images",
+    "models_dir": "E:/aesthetic_scorer_data/models"
+  }'
+```
+
+**Note**: Directories will be created automatically if they don't exist.
+
 ### 1. Generate Latent Dataset
 
 First, generate predicted latents from your SushiUI training dataset:
@@ -22,8 +42,11 @@ curl -X POST http://localhost:8001/api/generate_latents \
     "model_path": "M:/models/zimage_v1.safetensors",
     "num_samples": 1000,
     "timestep_range": [0.0, 1.0],
-    "shuffle": true
+    "shuffle": true,
+    "output_dir": "E:/aesthetic_scorer_data/latents"
   }'
+
+# Or use default path from settings (omit output_dir)
 ```
 
 **Response**:
@@ -138,6 +161,24 @@ trainer = FullParameterTrainer(
 
 ## API Reference
 
+### Settings
+
+**GET** `/api/settings`
+
+Get current application settings.
+
+**PUT** `/api/settings`
+
+```json
+{
+  "latents_dir": "E:/aesthetic_scorer_data/latents",
+  "images_dir": "E:/aesthetic_scorer_data/images",
+  "models_dir": "E:/aesthetic_scorer_data/models",
+  "default_timestep_range_min": 0.0,
+  "default_timestep_range_max": 1.0
+}
+```
+
 ### Generate Latents
 
 **POST** `/api/generate_latents`
@@ -148,9 +189,12 @@ trainer = FullParameterTrainer(
   "model_path": "path/to/model.safetensors",
   "num_samples": 1000,
   "timestep_range": [0.0, 1.0],
-  "shuffle": true
+  "shuffle": true,
+  "output_dir": "E:/custom/path/latents"
 }
 ```
+
+**Note**: `output_dir` is optional. If omitted, uses path from settings.
 
 ### Get Latent Records
 

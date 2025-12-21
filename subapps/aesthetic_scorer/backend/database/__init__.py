@@ -32,6 +32,32 @@ def get_db() -> Session:
 
 def init_db():
     """Initialize database (create tables)."""
-    from .models import Base
+    from .models import Base, AestheticScorerSettings
     Base.metadata.create_all(bind=engine)
     print(f"[Database] Initialized at {DB_PATH}")
+
+    # Initialize settings if not exists
+    session = SessionLocal()
+    try:
+        settings = session.query(AestheticScorerSettings).first()
+        if not settings:
+            settings = AestheticScorerSettings()
+            session.add(settings)
+            session.commit()
+            print(f"[Database] Created default settings")
+    finally:
+        session.close()
+
+
+def get_settings(db: Session):
+    """Get application settings (create if not exists)."""
+    from .models import AestheticScorerSettings
+
+    settings = db.query(AestheticScorerSettings).first()
+    if not settings:
+        settings = AestheticScorerSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
+    return settings

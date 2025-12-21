@@ -61,6 +61,16 @@ export interface LatentStats {
   scored_percentage: number;
 }
 
+export interface AestheticScorerSettings {
+  id: number;
+  latents_dir: string;
+  images_dir: string;
+  models_dir: string;
+  default_timestep_range_min: number;
+  default_timestep_range_max: number;
+  updated_at: string;
+}
+
 // ============================================================
 // API Functions
 // ============================================================
@@ -71,6 +81,7 @@ export const generateLatents = async (params: {
   num_samples?: number;
   timestep_range?: [number, number];
   shuffle?: boolean;
+  output_dir?: string;
 }) => {
   const response = await api.post("/generate_latents", params);
   return response.data;
@@ -134,6 +145,22 @@ export const getModel = async (modelId: number) => {
 export const activateModel = async (modelId: number) => {
   const response = await api.post(`/models/${modelId}/activate`);
   return response.data;
+};
+
+export const getSettings = async () => {
+  const response = await api.get("/settings");
+  return response.data as AestheticScorerSettings;
+};
+
+export const updateSettings = async (params: {
+  latents_dir?: string;
+  images_dir?: string;
+  models_dir?: string;
+  default_timestep_range_min?: number;
+  default_timestep_range_max?: number;
+}) => {
+  const response = await api.put("/settings", params);
+  return response.data as AestheticScorerSettings;
 };
 
 export default api;

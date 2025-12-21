@@ -931,12 +931,12 @@ class BaseTrainer(ABC):
     def move_vae_to_gpu(self):
         """Move VAE to GPU for encoding/decoding."""
         if self.vae is not None:
-            self.vae.to(self.device)
+            self.vae.to(device=self.device, dtype=self.vae_dtype)
 
     def move_vae_to_cpu(self):
         """Move VAE to CPU to free VRAM."""
         if self.vae is not None:
-            self.vae.to("cpu")
+            self.vae.to(device="cpu", dtype=self.vae_dtype)
         torch.cuda.empty_cache()
 
     # ============================================================
@@ -1713,7 +1713,7 @@ class BaseTrainer(ABC):
             # Move VAE to GPU for decoding
             if vae_device != self.device:
                 print(f"{self.log_prefix} [Sample] Moving VAE to GPU for decoding")
-                self.vae.to(self.device)
+                self.vae.to(device=self.device, dtype=self.vae_dtype)
 
             # Decode latents
             image = self._decode_zimage_latents(latents)
@@ -1721,7 +1721,7 @@ class BaseTrainer(ABC):
             # Move VAE back to CPU
             if vae_device != self.device:
                 print(f"{self.log_prefix} [Sample] Moving VAE back to CPU")
-                self.vae.to(vae_device)
+                self.vae.to(device=vae_device, dtype=self.vae_dtype)
 
             # Free latents
             del latents
@@ -1954,7 +1954,7 @@ class BaseTrainer(ABC):
         vae_current_device = next(self.vae.parameters()).device
         if vae_current_device != self.device:
             print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
-            self.vae.to(self.device)
+            self.vae.to(device=self.device, dtype=self.vae_dtype)
         else:
             print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
 
@@ -2088,7 +2088,7 @@ class BaseTrainer(ABC):
             # Move VAE to GPU
             if vae_device != self.device:
                 print(f"{self.log_prefix} [Latent Regeneration] Moving VAE to GPU...")
-                self.vae.to(self.device)
+                self.vae.to(device=self.device, dtype=self.vae_dtype)
 
             # Load and encode image
             print(f"{self.log_prefix} [Latent Regeneration] Encoding image: {image_path}")
@@ -2126,7 +2126,7 @@ class BaseTrainer(ABC):
                     self.text_encoder_2.to(text_encoder_2_device)
 
             if vae_device != self.device:
-                self.vae.to(vae_device)
+                self.vae.to(device=vae_device, dtype=self.vae_dtype)
 
             torch.cuda.empty_cache()
             print(f"{self.log_prefix} [Latent Regeneration] Models restored")

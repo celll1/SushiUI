@@ -14,6 +14,40 @@ def get_local_now():
     return datetime.now()
 
 
+class AestheticScorerSettings(Base):
+    """
+    Application settings for Aesthetic Scorer.
+
+    Stores user-configurable paths for data storage.
+    """
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True)
+
+    # Data storage paths (user-configurable)
+    latents_dir = Column(String, default="subapps/aesthetic_scorer/data/latents")
+    images_dir = Column(String, default="subapps/aesthetic_scorer/data/images")
+    models_dir = Column(String, default="subapps/aesthetic_scorer/models")
+
+    # Default generation parameters
+    default_timestep_range_min = Column(Float, default=0.0)
+    default_timestep_range_max = Column(Float, default=1.0)
+
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        """Convert to dictionary for API response."""
+        return {
+            "id": self.id,
+            "latents_dir": self.latents_dir,
+            "images_dir": self.images_dir,
+            "models_dir": self.models_dir,
+            "default_timestep_range_min": self.default_timestep_range_min,
+            "default_timestep_range_max": self.default_timestep_range_max,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class LatentRecord(Base):
     """
     Record of a generated predicted latent for scoring.

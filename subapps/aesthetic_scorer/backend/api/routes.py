@@ -12,8 +12,8 @@ import sys
 # Add parent directories to path
 sys.path.append(str(Path(__file__).parent.parent.parent.parent.parent / "backend"))
 
-from subapps.aesthetic_scorer.backend.database import get_db
-from subapps.aesthetic_scorer.backend.database.models import LatentRecord, AestheticModel
+from subapps.aesthetic_scorer.backend.database import get_db, get_settings
+from subapps.aesthetic_scorer.backend.database.models import LatentRecord, AestheticModel, AestheticScorerSettings
 from subapps.aesthetic_scorer.backend.core.latent_generator import LatentGenerator
 from subapps.aesthetic_scorer.backend.core.aesthetic_model import create_aesthetic_model
 from subapps.aesthetic_scorer.backend.core.aesthetic_trainer import AestheticTrainer, create_dataloaders
@@ -52,6 +52,15 @@ class GenerateLatentsRequest(BaseModel):
     num_samples: Optional[int] = None
     timestep_range: tuple[float, float] = (0.0, 1.0)
     shuffle: bool = True
+    output_dir: Optional[str] = None  # Custom output directory
+
+
+class UpdateSettingsRequest(BaseModel):
+    latents_dir: Optional[str] = None
+    images_dir: Optional[str] = None
+    models_dir: Optional[str] = None
+    default_timestep_range_min: Optional[float] = None
+    default_timestep_range_max: Optional[float] = None
 
 
 class ScoreLatentRequest(BaseModel):
@@ -113,8 +122,14 @@ async def generate_latents(
         vae_dtype="fp16",
     )
 
+    # Get output directory (custom or from settings)
+    if request.output_dir:
+        output_dir = Path(request.output_dir)
+    else:
+        settings = get_settings(db)
+        output_dir = Path(settings.latents_dir)
+
     # Generate latents
-    output_dir = Path("subapps/aesthetic_scorer/data/latents")
     generated_records = generator.generate_latents_from_dataset(
         sushiui_db_session=sushiui_db,
         dataset_id=request.dataset_id,
@@ -291,8 +306,11 @@ async def decode_latents(
     if not records:
         raise HTTPException(status_code=404, detail="No records found")
 
+    # Get output directory from settings
+    settings = get_settings(db)
+    output_dir = Path(settings.images_dir)
+
     # Decode
-    output_dir = Path("subapps/aesthetic_scorer/data/images")
     results = batch_decode_latents(
         vae=vae,
         record_ids=[r.id for r in records],
@@ -376,7 +394,10 @@ async def train_model(
         learning_rate=request.learning_rate,
     )
 
-    save_dir = Path("subapps/aesthetic_scorer/models")
+    # Get models directory from settings
+    settings = get_settings(db)
+    save_dir = Path(settings.models_dir)
+
     summary = trainer.train(
         train_loader=train_loader,
         val_loader=val_loader,
@@ -457,3 +478,62 @@ async def activate_model(model_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Model {model_id} activated"}
+
+
+# ============================================================
+# Settings
+# ============================================================
+
+@router.get("/settings")
+async def get_settings_endpoint(db: Session = Depends(get_db)):
+    """
+    Get application settings.
+
+    Returns:
+        Settings dictionary with data storage paths
+    """
+    settings = get_settings(db)
+    return settings.to_dict()
+
+
+@router.put("/settings")
+async def update_settings(
+    request: UpdateSettingsRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Update application settings.
+
+    Args:
+        request: Settings to update
+        db: Database session
+
+    Returns:
+        Updated settings
+    """
+    settings = get_settings(db)
+
+    # Update fields if provided
+    if request.latents_dir is not None:
+        settings.latents_dir = request.latents_dir
+        # Create directory if not exists
+        Path(request.latents_dir).mkdir(parents=True, exist_ok=True)
+
+    if request.images_dir is not None:
+        settings.images_dir = request.images_dir
+        Path(request.images_dir).mkdir(parents=True, exist_ok=True)
+
+    if request.models_dir is not None:
+        settings.models_dir = request.models_dir
+        Path(request.models_dir).mkdir(parents=True, exist_ok=True)
+
+    if request.default_timestep_range_min is not None:
+        settings.default_timestep_range_min = request.default_timestep_range_min
+
+    if request.default_timestep_range_max is not None:
+        settings.default_timestep_range_max = request.default_timestep_range_max
+
+    db.commit()
+    db.refresh(settings)
+
+    return settings.to_dict()

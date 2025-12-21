@@ -129,20 +129,6 @@ class ZImageAttention(nn.Module):
         # Dispatch attention (using local implementation from zimage_utils)
         from core.zimage_utils import dispatch_attention
 
-        # Debug: Log _attention_backend value for first 10 calls (to capture training steps)
-        # Use file logging to bypass gradient checkpointing's stdout suppression
-        if not hasattr(ZImageAttention, '_debug_logged'):
-            ZImageAttention._debug_logged = 0
-        if ZImageAttention._debug_logged < 10:
-            ZImageAttention._debug_logged += 1
-            import sys
-            debug_msg = f"[ZImageAttention DEBUG #{ZImageAttention._debug_logged}] backend = {self._attention_backend} (class var = {ZImageAttention._attention_backend})\n"
-            # Force flush to ensure output is visible
-            sys.stdout.write(debug_msg)
-            sys.stdout.flush()
-            sys.stderr.write(debug_msg)
-            sys.stderr.flush()
-
         hidden_states = dispatch_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False, backend=self._attention_backend
         )

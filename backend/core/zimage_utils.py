@@ -141,10 +141,6 @@ def dispatch_attention(
     backend = backend or "native"
     original_backend = backend  # Track original request for logging
 
-    # Debug: Log backend for first 3 calls to verify correct backend is being used
-    if _attention_call_count <= 3:
-        print(f"[Z-Image Attention DEBUG] Call #{_attention_call_count}: backend={backend}")
-
     if backend == "sage":
         # SageAttention: INT8 quantized attention
         try:
@@ -197,12 +193,6 @@ def dispatch_attention(
             # Flash Attention only supports fp16/bf16, convert if needed
             original_dtype = query.dtype
             needs_conversion = original_dtype not in [torch.float16, torch.bfloat16]
-
-            # Debug: Log dtype info on first call
-            if _attention_call_count == 1:
-                print(f"[Flash Attention DEBUG] Query dtype: {original_dtype}")
-                print(f"[Flash Attention DEBUG] Needs conversion: {needs_conversion}")
-                print(f"[Flash Attention DEBUG] Query shape: {query.shape}")
 
             if needs_conversion:
                 # Convert to bf16 (training dtype) - create new tensors

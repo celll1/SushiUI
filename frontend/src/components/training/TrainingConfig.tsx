@@ -1264,7 +1264,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
           <div className="text-xs text-gray-500 space-y-1">
             <p><strong>Block Swap:</strong> Offloads transformer blocks to CPU during training, reducing VRAM usage. Only active during forward and backward passes.</p>
             <p><strong>Pinned Memory:</strong> Uses CUDA pinned memory for faster transfer between CPU and GPU. Recommended if you have sufficient system RAM.</p>
-            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts.</p>
+            <p className="text-blue-500"><strong>Recommended Optimizer:</strong> Use "Adafactor" optimizer for best compatibility. Adafactor with Block Swap uses "fused backward pass" to update parameters immediately after gradients are computed, avoiding device mismatch errors.</p>
+            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts. Requires PyTorch 2.1+ for fused backward pass.</p>
           </div>
         </div>
 

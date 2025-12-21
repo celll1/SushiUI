@@ -366,11 +366,42 @@ class BaseTrainer(ABC):
         self.text_encoder.requires_grad_(False)
         self.transformer.requires_grad_(False)
 
-        # Move Transformer to GPU
-        print(f"{self.log_prefix} Moving Transformer to {self.device}...")
-        self.transformer_original.to(self.device)
-        # Note: self.transformer.transformer is the same object as self.transformer_original
-        # No need to call self.transformer.to(device) again
+        # Setup Block Swap if enabled (before moving to GPU)
+        blocks_to_swap = self.config.get("blocks_to_swap", 0)
+        use_pinned_memory = self.config.get("use_pinned_memory", False)
+
+        if blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap enabled for training: {blocks_to_swap} blocks")
+            print(f"{self.log_prefix} Pinned memory: {use_pinned_memory}")
+
+            from core.memory_management import create_block_offloader_for_model
+
+            block_offloader = create_block_offloader_for_model(
+                transformer=self.transformer_original,
+                blocks_to_swap=blocks_to_swap,
+                device=torch.device(self.device),
+                target_dtype=self.dtype,
+                use_pinned_memory=use_pinned_memory,
+                supports_backward=True  # Enable backward hooks for training
+            )
+
+            # Attach block offloader to transformer
+            self.transformer_original._block_offloader = block_offloader
+
+            # Prepare block devices (move some blocks to GPU, others keep weights on CPU)
+            block_offloader.prepare_block_devices_before_forward()
+
+            # Register backward hooks for gradient-based block swapping
+            block_offloader.register_backward_hooks()
+
+            print(f"{self.log_prefix} Block Swap initialized successfully")
+        else:
+            print(f"{self.log_prefix} Block Swap disabled (blocks_to_swap=0)")
+            # Move Transformer to GPU normally
+            print(f"{self.log_prefix} Moving Transformer to {self.device}...")
+            self.transformer_original.to(self.device)
+            # Note: self.transformer.transformer is the same object as self.transformer_original
+            # No need to call self.transformer.to(device) again
 
         print(f"{self.log_prefix} Z-Image model loaded successfully")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")

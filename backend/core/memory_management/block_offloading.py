@@ -209,9 +209,11 @@ class TransformerBlockOffloader:
             first_param = next(block.parameters(), None)
             if first_param is not None and first_param.device.type == "cpu":
                 # Block weights are on CPU - move to GPU synchronously
+                print(f"[BlockOffloader DEBUG] Block {block_idx} weights on CPU, moving to GPU synchronously...")
                 weighs_to_device(block, self.device)
                 if self.device.type == "cuda":
                     torch.cuda.synchronize()
+                print(f"[BlockOffloader DEBUG] Block {block_idx} weights moved to GPU")
 
     def submit_move_blocks_forward(self, block_idx: int):
         """

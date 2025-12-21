@@ -175,6 +175,17 @@ class ZImageTransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         adaln_input: Optional[torch.Tensor] = None,
     ):
+        # Block Swap compatibility: ensure weights are on GPU (for gradient checkpointing recomputation)
+        if hasattr(self, 'adaLN_modulation') and self.adaLN_modulation is not None:
+            first_param = next(self.adaLN_modulation[0].parameters(), None)
+            if first_param is not None and first_param.device.type == 'cpu' and x.device.type == 'cuda':
+                # Weights are on CPU but input is on GPU - move weights to GPU synchronously
+                from core.memory_management.block_offloading import weighs_to_device
+                weighs_to_device(self, x.device)
+                if x.device.type == 'cuda':
+                    import torch
+                    torch.cuda.synchronize()
+
         if self.modulation:
             assert adaln_input is not None
             scale_msa, gate_msa, scale_mlp, gate_mlp = (

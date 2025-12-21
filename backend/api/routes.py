@@ -3560,6 +3560,10 @@ class TrainingRunCreateRequest(BaseModel):
     latent_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
     latent_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
 
+    # Block Swap settings (training VRAM optimization)
+    blocks_to_swap: int = 0  # Number of transformer blocks to swap (0 to disable)
+    use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
+
     # Multi Noise-Timestep (MNT) settings
     multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
     timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
@@ -3709,6 +3713,8 @@ async def create_training_run(
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
                 latent_encoding_mode=request.latent_encoding_mode,
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,
@@ -3761,6 +3767,8 @@ async def create_training_run(
                 text_encoding_swap_interval=request.text_encoding_swap_interval,
                 latent_encoding_mode=request.latent_encoding_mode,
                 latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
                 sample_width=request.sample_width,

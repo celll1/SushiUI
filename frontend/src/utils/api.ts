@@ -1297,6 +1297,23 @@ export interface TrainingRunCreateRequest {
   text_encoder_lr?: number | null;
   text_encoder_1_lr?: number | null;
   text_encoder_2_lr?: number | null;
+  weight_dtype?: string;
+  training_dtype?: string;
+  output_dtype?: string;
+  vae_dtype?: string;
+  mixed_precision?: boolean;
+  use_flash_attention?: boolean;
+  min_snr_gamma?: number;
+  text_encoding_mode?: string;
+  text_encoding_swap_interval?: number;
+  latent_encoding_mode?: string;
+  latent_encoding_swap_interval?: number;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
+  multi_noise_timesteps?: number;
+  timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
+  cache_latents_to_disk?: boolean;
+  force_recache?: boolean;
 }
 
 export interface TrainingRunListResponse {

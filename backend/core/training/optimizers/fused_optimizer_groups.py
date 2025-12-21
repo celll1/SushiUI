@@ -85,16 +85,7 @@ class FusedOptimizerGroups:
 
                             # If all parameters in this group are done, step the optimizer
                             if self.optimizer_hooked_count[i] == self.num_parameters_per_group[i]:
-                                # Block Swap compatibility: Move gradients to same device as parameters
-                                # When Block Swap moves parameters to CPU, gradients remain on GPU
-                                # Solution: Move gradients to CPU before optimizer.step()
-                                for param_group in self.optimizers[i].param_groups:
-                                    for p in param_group["params"]:
-                                        if p.grad is not None and p.device != p.grad.device:
-                                            # Move gradient to same device as parameter
-                                            p.grad = p.grad.to(p.device)
-
-                                # Step optimizer (gradients and parameters now on same device)
+                                # Step optimizer
                                 self.optimizers[i].step()
                                 self.optimizers[i].zero_grad(set_to_none=True)
 

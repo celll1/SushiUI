@@ -796,7 +796,17 @@ class BaseTrainer(ABC):
         # Setup fused backward/optimizer groups if Block Swap is enabled
         if self.blocks_to_swap > 0:
             if self.num_optimizer_groups > 0:
-                # Fused optimizer groups: works with any optimizer
+                # Validate compatibility: Block Swap + Fused Optimizer Groups + 8bit optimizer
+                if optimizer_type.lower() in ["adamw8bit", "lion8bit", "adafactor8bit"]:
+                    raise ValueError(
+                        f"Block Swap + Fused Optimizer Groups is incompatible with 8-bit optimizers ({optimizer_type}). "
+                        f"8-bit optimizers cannot handle CPU parameters that Block Swap creates. "
+                        f"Options: (1) Use Adafactor without num_optimizer_groups (fused backward pass), "
+                        f"(2) Use non-8bit optimizer (AdamW, Lion, etc.) with num_optimizer_groups, "
+                        f"(3) Disable Block Swap (blocks_to_swap=0)"
+                    )
+
+                # Fused optimizer groups: works with non-8bit optimizers only
                 self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
             elif optimizer_type.lower() == "adafactor":
                 # Fused backward pass: Adafactor only

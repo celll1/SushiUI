@@ -267,6 +267,9 @@ class BaseTrainer(ABC):
         self.blocks_to_swap = blocks_to_swap
         self.use_pinned_memory = use_pinned_memory
 
+        # Fused backward pass (for Block Swap compatibility)
+        self.use_fused_backward = False  # Will be enabled when Block Swap is active and optimizer supports it
+
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
         self.training_dtype = get_torch_dtype(training_dtype)
@@ -785,6 +788,59 @@ class BaseTrainer(ABC):
             num_warmup_steps=0,
             num_training_steps=total_steps,
         )
+
+        # Setup fused backward pass if Block Swap is enabled
+        if self.blocks_to_swap > 0 and optimizer_type.lower() == "adafactor":
+            self._setup_fused_backward_pass()
+
+    def _setup_fused_backward_pass(self):
+        """
+        Setup fused backward pass for Block Swap compatibility.
+
+        Registers post-accumulate-grad hooks that update parameters immediately
+        after gradients are computed, before Block Swap moves them to CPU.
+
+        Only works with Adafactor optimizer (PyTorch 2.1+).
+        """
+        print(f"{self.log_prefix} Setting up fused backward pass...")
+
+        # Check PyTorch version
+        import torch
+        if not hasattr(torch.Tensor, "register_post_accumulate_grad_hook"):
+            print(f"{self.log_prefix} WARNING: PyTorch 2.1+ required for fused backward pass")
+            print(f"{self.log_prefix} Current version: {torch.__version__}")
+            print(f"{self.log_prefix} Fused backward pass disabled")
+            return
+
+        # Patch Adafactor with step_param method
+        from core.training.optimizers.adafactor_fused import patch_adafactor_fused
+        patch_adafactor_fused(self.optimizer)
+
+        # Register hooks for all trainable parameters
+        hooks_registered = 0
+        for param_group in self.optimizer.param_groups:
+            for parameter in param_group["params"]:
+                if parameter.requires_grad:
+
+                    def __grad_hook(tensor: torch.Tensor, pg=param_group):
+                        """Hook called when gradient is ready for this parameter"""
+                        # Gradient clipping (if enabled)
+                        # Note: We don't use max_grad_norm here because it's set to 0 by default
+                        # and clipping is already handled elsewhere
+
+                        # Update THIS parameter immediately (while on GPU)
+                        self.optimizer.step_param(tensor, pg)
+
+                        # Clear gradient to save memory
+                        tensor.grad = None
+
+                    # Register hook: called when gradient for THIS parameter is ready
+                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                    hooks_registered += 1
+
+        self.use_fused_backward = True
+        print(f"{self.log_prefix} Registered {hooks_registered} fused backward hooks")
+        print(f"{self.log_prefix} Optimizer.step() and zero_grad() will be called by hooks automatically")
 
     # ============================================================
     # Prompt Encoding
@@ -3201,14 +3257,19 @@ class BaseTrainer(ABC):
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
                     if global_step % effective_gradient_accumulation == 0:
-                        # Gradient clipping
-                        if max_grad_norm > 0:
-                            torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                        if not self.use_fused_backward:
+                            # Normal flow: optimizer.step() and zero_grad() here
+                            # Gradient clipping
+                            if max_grad_norm > 0:
+                                torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
 
-                        # Optimizer step
-                        self.optimizer.step()
+                            # Optimizer step
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+                        # else: Fused backward flow - step() and zero_grad() already called by hooks
+
+                        # LR scheduler step (always needed)
                         self.lr_scheduler.step()
-                        self.optimizer.zero_grad()
 
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()

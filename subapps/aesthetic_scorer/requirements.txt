@@ -1,0 +1,22 @@
+# Aesthetic Scorer Backend Requirements
+
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+sqlalchemy==2.0.23
+python-multipart==0.0.6
+
+# Deep Learning
+torch>=2.1.0
+diffusers>=0.25.0
+transformers>=4.36.0
+safetensors>=0.4.1
+
+# Image Processing
+Pillow>=10.1.0
+numpy>=1.24.0
+
+# Progress & Utils
+tqdm>=4.66.0
+
+# Note: These dependencies overlap with SushiUI's main requirements
+# Install in the same venv as SushiUI

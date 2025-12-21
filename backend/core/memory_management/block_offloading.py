@@ -45,7 +45,8 @@ class TransformerBlockOffloader:
         device: torch.device,
         target_dtype: torch.dtype = torch.bfloat16,
         use_pinned_memory: bool = False,
-        transformer: Optional[nn.Module] = None
+        transformer: Optional[nn.Module] = None,
+        supports_backward: bool = False
     ):
         """
         Initialize Block Offloader
@@ -57,6 +58,7 @@ class TransformerBlockOffloader:
             target_dtype: Target dtype for computation
             use_pinned_memory: Use pinned memory for faster transfer
             transformer: Parent transformer (for auxiliary modules)
+            supports_backward: Enable backward pass support (for training)
         """
         self.blocks = blocks
         self.num_blocks = len(blocks)
@@ -65,6 +67,8 @@ class TransformerBlockOffloader:
         self.target_dtype = target_dtype
         self.use_pinned_memory = use_pinned_memory
         self.transformer = transformer
+        self.supports_backward = supports_backward
+        self.forward_only = not supports_backward
 
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.futures = {}
@@ -76,7 +80,11 @@ class TransformerBlockOffloader:
         self.staging_buffer_b = None
         self.pinned_buffer = None
 
-        print(f"[BlockOffloader] Initialized: {self.num_blocks} total blocks, {self.blocks_to_swap} to swap")
+        # Backward hook handles (for training)
+        self.backward_hook_handles = []
+
+        mode_str = "training (backward enabled)" if supports_backward else "inference (forward-only)"
+        print(f"[BlockOffloader] Initialized: {self.num_blocks} total blocks, {self.blocks_to_swap} to swap ({mode_str})")
         print(f"[BlockOffloader] Device: {self.device}, dtype: {self.target_dtype}, pinned_memory: {self.use_pinned_memory}")
 
     def prepare_block_devices_before_forward(self):
@@ -207,11 +215,15 @@ class TransformerBlockOffloader:
 
     def submit_move_blocks_forward(self, block_idx: int):
         """
-        Submit block swap for forward-only offloading
+        Submit block swap for forward pass
 
-        Strategy:
+        Strategy (forward-only mode):
         - First N blocks stay on GPU permanently
         - Last M blocks rotate among swappable slots
+
+        Strategy (backward-enabled mode):
+        - Only swap first blocks_to_swap blocks
+        - Remaining blocks stay on GPU for backward pass
 
         Args:
             block_idx: Current block index (just executed)
@@ -221,17 +233,23 @@ class TransformerBlockOffloader:
 
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 
-        # First N blocks stay on GPU permanently, no swap needed
-        if block_idx < num_blocks_on_gpu:
-            return
+        if not self.forward_only:
+            # Backward-enabled mode: only swap first blocks_to_swap blocks
+            if block_idx >= self.blocks_to_swap:
+                return
+            block_idx_to_cpu = block_idx
+            block_idx_to_gpu = block_idx + 1
+        else:
+            # Forward-only mode: rotate among swappable blocks
+            if block_idx < num_blocks_on_gpu:
+                return
 
-        # For blocks >= num_blocks_on_gpu, rotate among the swappable blocks
-        block_idx_to_cpu = block_idx
-        next_block = block_idx + 1
-        if next_block >= self.num_blocks:
-            next_block = num_blocks_on_gpu
+            block_idx_to_cpu = block_idx
+            next_block = block_idx + 1
+            if next_block >= self.num_blocks:
+                next_block = num_blocks_on_gpu
+            block_idx_to_gpu = next_block
 
-        block_idx_to_gpu = next_block
         self._submit_block_swap(block_idx_to_cpu, block_idx_to_gpu)
 
     def _submit_block_swap(self, block_idx_to_cpu: int, block_idx_to_gpu: int):
@@ -420,3 +438,79 @@ class TransformerBlockOffloader:
             print(f"  VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         print(f"============================================================")
+
+    def register_backward_hooks(self):
+        """
+        Register backward hooks for training-time block swapping
+
+        This method registers hooks that swap blocks during backward pass,
+        moving blocks from GPU to CPU in reverse order to free VRAM.
+        """
+        if not self.supports_backward:
+            print(f"[BlockOffloader] Backward hooks not registered (forward-only mode)")
+            return
+
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+
+        print(f"[BlockOffloader] Registering backward hooks for {self.num_blocks} blocks...")
+
+        hooks_registered = 0
+        for i in range(self.num_blocks):
+            hook = self._create_backward_hook(i)
+            if hook is not None:
+                handle = self.blocks[i].register_full_backward_hook(hook)
+                self.backward_hook_handles.append(handle)
+                hooks_registered += 1
+
+        print(f"[BlockOffloader] Registered {hooks_registered} backward hooks")
+
+    def _create_backward_hook(self, block_index: int):
+        """
+        Create backward hook for specific block
+
+        Args:
+            block_index: Block index to create hook for
+
+        Returns:
+            Hook function or None if hook not needed for this block
+        """
+        # Calculate which blocks need hooks
+        # Backward propagates from last block to first block
+        num_blocks_propagated = self.num_blocks - block_index - 1
+        swapping = num_blocks_propagated > 0 and num_blocks_propagated <= self.blocks_to_swap
+        waiting = block_index > 0 and block_index <= self.blocks_to_swap
+
+        if not swapping and not waiting:
+            return None
+
+        # Calculate indices for swapping
+        block_idx_to_cpu = self.num_blocks - num_blocks_propagated
+        block_idx_to_gpu = self.blocks_to_swap - num_blocks_propagated
+        block_idx_to_wait = block_index - 1
+
+        def backward_hook(module, grad_input, grad_output):
+            """Backward hook: swap blocks as gradients propagate"""
+            if swapping:
+                self._submit_block_swap(block_idx_to_cpu, block_idx_to_gpu)
+            if waiting:
+                self.wait_for_block(block_idx_to_wait)
+            return None
+
+        return backward_hook
+
+    def remove_backward_hooks(self):
+        """
+        Remove all registered backward hooks
+
+        Call this method when switching from training to inference mode.
+        """
+        if not self.backward_hook_handles:
+            return
+
+        for handle in self.backward_hook_handles:
+            handle.remove()
+
+        num_removed = len(self.backward_hook_handles)
+        self.backward_hook_handles = []
+        print(f"[BlockOffloader] Removed {num_removed} backward hooks")

@@ -41,7 +41,8 @@ def create_block_offloader_for_model(
     blocks_to_swap: int,
     device: torch.device,
     target_dtype: Optional[torch.dtype] = None,
-    use_pinned_memory: bool = False
+    use_pinned_memory: bool = False,
+    supports_backward: bool = False
 ) -> TransformerBlockOffloader:
     """
     Create block offloader for transformer model (auto-detect architecture)
@@ -52,6 +53,7 @@ def create_block_offloader_for_model(
         device: Target device
         target_dtype: Target dtype for computation
         use_pinned_memory: Use pinned memory for faster transfer
+        supports_backward: Enable backward pass support (for training)
 
     Returns:
         TransformerBlockOffloader instance
@@ -78,7 +80,8 @@ def create_block_offloader_for_model(
         device=device,
         target_dtype=target_dtype,
         use_pinned_memory=use_pinned_memory,
-        transformer=transformer
+        transformer=transformer,
+        supports_backward=supports_backward
     )
 
     return offloader

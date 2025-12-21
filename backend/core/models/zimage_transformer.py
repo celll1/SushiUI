@@ -129,13 +129,13 @@ class ZImageAttention(nn.Module):
         # Dispatch attention (using local implementation from zimage_utils)
         from core.zimage_utils import dispatch_attention
 
-        # Debug: Log _attention_backend value for first 3 calls
+        # Debug: Log _attention_backend value for first 10 calls (to capture training steps)
         if not hasattr(ZImageAttention, '_debug_logged'):
             ZImageAttention._debug_logged = 0
-        if ZImageAttention._debug_logged < 3:
+        if ZImageAttention._debug_logged < 10:
             ZImageAttention._debug_logged += 1
-            print(f"[ZImageAttention DEBUG] self._attention_backend = {self._attention_backend}")
-            print(f"[ZImageAttention DEBUG] ZImageAttention._attention_backend (class var) = {ZImageAttention._attention_backend}")
+            print(f"[ZImageAttention DEBUG #{ZImageAttention._debug_logged}] self._attention_backend = {self._attention_backend}")
+            print(f"[ZImageAttention DEBUG #{ZImageAttention._debug_logged}] ZImageAttention._attention_backend (class var) = {ZImageAttention._attention_backend}")
 
         hidden_states = dispatch_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False, backend=self._attention_backend

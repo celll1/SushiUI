@@ -454,7 +454,7 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
         # Step 10: Apply main transformer layers
         for layer_idx, layer in enumerate(self.transformer.layers):
-            # Block Swap integration
+            # Block Swap integration: wait for block transfer before execution
             if hasattr(self.transformer, '_block_offloader') and self.transformer._block_offloader is not None:
                 self.transformer._block_offloader.wait_for_block(layer_idx)
 
@@ -470,9 +470,9 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
             else:
                 unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
 
-            # Block Swap integration
+            # Block Swap integration: submit next block transfer after execution
             if hasattr(self.transformer, '_block_offloader') and self.transformer._block_offloader is not None:
-                self.transformer._block_offloader.submit_move_blocks(layer_idx)
+                self.transformer._block_offloader.submit_move_blocks_forward(layer_idx)
 
         # Step 11: Final layer
         unified = self.transformer.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)

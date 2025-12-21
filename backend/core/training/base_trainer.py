@@ -3229,10 +3229,11 @@ class BaseTrainer(ABC):
                 traceback.print_exc()
 
             # Try to save training state (independent of checkpoint save)
-            # Note: batch_idx is the current batch being processed, so save batch_idx for resume
+            # Note: If stopped mid-MNT, skip the current batch and resume from next batch
+            # This is acceptable as MNT iterations are gradient accumulation (can skip partial progress)
             state_saved = False
             try:
-                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx)
+                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
                 state_saved = True
                 print(f"{self.log_prefix} Training state saved successfully")
             except Exception as e:

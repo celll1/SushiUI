@@ -490,15 +490,20 @@ class BaseTrainer(ABC):
     def _setup_flash_attention_zimage(self):
         """Setup Flash Attention for Z-Image models."""
         import sys
-        if 'zimage.transformer' in sys.modules:
-            zimage_transformer_module = sys.modules['zimage.transformer']
+
+        # The transformer is loaded via importlib with module name "zimage_transformer"
+        # We need to access the ACTUAL module used, not core.models.zimage_transformer
+        if 'zimage_transformer' in sys.modules:
+            zimage_transformer_module = sys.modules['zimage_transformer']
             ZImageAttention = zimage_transformer_module.ZImageAttention
             print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
+            print(f"{self.log_prefix} [DEBUG] Module: {zimage_transformer_module.__name__}")
             ZImageAttention._attention_backend = "flash"
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
         else:
+            # Fallback: Try core.models.zimage_transformer (for inference pipeline)
             from core.models.zimage_transformer import ZImageAttention
-            print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
+            print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
             ZImageAttention._attention_backend = "flash"
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
 

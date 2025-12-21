@@ -382,9 +382,12 @@ class ModelLoader:
                 sushiui_transformer_path
             )
             transformer_module = importlib.util.module_from_spec(transformer_spec)
+            # Register in sys.modules BEFORE exec_module (required for Flash Attention setup)
+            _sys.modules['zimage_transformer'] = transformer_module
             transformer_spec.loader.exec_module(transformer_module)
             ZImageTransformer2DModel = transformer_module.ZImageTransformer2DModel
             print(f"[ModelLoader] Loaded SushiUI Z-Image Transformer (Block Swap integrated) from: {sushiui_transformer_path}")
+            print(f"[ModelLoader] Injected 'zimage_transformer' into sys.modules for Flash Attention support")
 
             # Load autoencoder module
             autoencoder_spec = importlib.util.spec_from_file_location(

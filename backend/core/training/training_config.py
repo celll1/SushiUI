@@ -51,6 +51,9 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Block Swap settings (training VRAM optimization)
+        blocks_to_swap: int = 0,
+        use_pinned_memory: bool = False,
         # Text encoding settings
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
@@ -223,6 +226,8 @@ class TrainingConfigGenerator:
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
                             "min_snr_gamma": min_snr_gamma,
+                            "blocks_to_swap": blocks_to_swap,
+                            "use_pinned_memory": use_pinned_memory,
                             "text_encoding_mode": text_encoding_mode,
                             "text_encoding_swap_interval": text_encoding_swap_interval,
                             "latent_encoding_mode": latent_encoding_mode,
@@ -293,6 +298,9 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Block Swap settings (training VRAM optimization)
+        blocks_to_swap: int = 0,
+        use_pinned_memory: bool = False,
         # Text encoding settings
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
@@ -356,6 +364,8 @@ class TrainingConfigGenerator:
             "mixed_precision": mixed_precision,
             "use_flash_attention": use_flash_attention,
             "min_snr_gamma": min_snr_gamma,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
             "text_encoding_mode": text_encoding_mode,
             "text_encoding_swap_interval": text_encoding_swap_interval,
             "latent_encoding_mode": latent_encoding_mode,

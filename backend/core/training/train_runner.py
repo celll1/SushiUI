@@ -655,6 +655,8 @@ def main():
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
                 min_snr_gamma=min_snr_gamma,
+                blocks_to_swap=train_config.get('blocks_to_swap', 0),
+                use_pinned_memory=train_config.get('use_pinned_memory', False),
             )
 
             # Setup optimizer

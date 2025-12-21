@@ -174,7 +174,7 @@ def create_optimizer_groups(
             break
 
         # Create optimizer for this group using factory
-        from ..optimizers import OptimizerFactory
+        from ..optimizer_factory import OptimizerFactory
         optimizer = OptimizerFactory.create_optimizer(
             optimizer_type=optimizer_type,
             params=group_params,

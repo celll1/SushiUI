@@ -763,7 +763,7 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
 
         # Create optimizer using factory
-        from .optimizers import OptimizerFactory
+        from .optimizer_factory import OptimizerFactory
         try:
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,

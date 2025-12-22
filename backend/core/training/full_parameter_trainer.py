@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any, Tuple
 import torch
 from safetensors.torch import save_file, load_file
 
-from core.training.base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer
 
 
 class FullParameterTrainer(BaseTrainer):

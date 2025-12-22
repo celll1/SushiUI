@@ -196,3 +196,38 @@ template __global__ void lion_8bit_blockwise_update_kernel<__half>(
     __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, int);
 template __global__ void lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
     __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, int);
+
+// ============================================================
+// Launcher Functions (MSVC compatibility)
+// ============================================================
+
+template <typename T>
+void launch_lion_8bit_blockwise_update_kernel(
+    T* param,
+    const T* grad,
+    unsigned char* exp_avg,
+    float* absmax,
+    float beta1,
+    float beta2,
+    float eps,
+    float lr,
+    float weight_decay,
+    float gnorm_scale,
+    int step,
+    int N,
+    int blocks,
+    int threads
+) {
+    lion_8bit_blockwise_update_kernel<T><<<blocks, threads>>>(
+        param, grad, exp_avg, absmax,
+        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
+    );
+}
+
+// Explicit instantiations
+template void launch_lion_8bit_blockwise_update_kernel<float>(
+    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+template void launch_lion_8bit_blockwise_update_kernel<__half>(
+    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+template void launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
+    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);

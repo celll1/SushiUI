@@ -31,7 +31,7 @@ Implementation:
 #define THREADS_PER_BLOCK 256
 
 // Quantization map in constant memory (shared across all kernels)
-__constant__ float qmap_signed[256];
+__device__ __constant__ float qmap_signed[256];
 
 // Dequantization: UINT8 code -> FP32 value
 __device__ __forceinline__ float dequantize_code(unsigned char code, float absmax) {

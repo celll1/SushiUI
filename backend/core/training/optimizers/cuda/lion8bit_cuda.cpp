@@ -31,8 +31,7 @@ __global__ void lion_8bit_blockwise_update_kernel(
     int N
 );
 
-// Constant memory symbol (defined in kernel)
-__constant__ extern float qmap_signed[256];
+// Constant memory symbol will be accessed via cudaMemcpyToSymbol
 
 /*
 Initialize Quantization Maps in Constant Memory
@@ -46,8 +45,8 @@ void init_quantization_maps(torch::Tensor qmap_signed_cpu) {
     TORCH_CHECK(qmap_signed_cpu.dtype() == torch::kFloat32,
                 "qmap_signed must be FP32");
 
-    // Copy to constant memory
-    cudaMemcpyToSymbol(qmap_signed, qmap_signed_cpu.data_ptr<float>(),
+    // Copy to constant memory (use string name to avoid extern declaration)
+    cudaMemcpyToSymbol("qmap_signed", qmap_signed_cpu.data_ptr<float>(),
                        256 * sizeof(float), 0, cudaMemcpyHostToDevice);
 
     cudaError_t err = cudaGetLastError();

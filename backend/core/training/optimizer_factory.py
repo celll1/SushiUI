@@ -33,7 +33,7 @@ class OptimizerFactory:
         Returns:
             List of optimizer names
         """
-        optimizers = ["adamw", "adamw8bit", "adafactor", "lion8bit"]
+        optimizers = ["adamw", "adamw8bit", "adamw8bit_ringbuffer", "adafactor", "lion8bit"]
 
         # Check if bitsandbytes is available for paged optimizers
         try:
@@ -121,6 +121,25 @@ class OptimizerFactory:
                 )
                 print(f"[OptimizerFactory] Created Adafactor optimizer (PyTorch native)")
                 return optimizer
+
+        # AdamW8bit Ring Buffer (custom implementation)
+        elif optimizer_type == "adamw8bit_ringbuffer":
+            from ..optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+
+            # Ring Buffer allocator will be provided by trainer
+            get_state_buffer = kwargs.get("get_state_buffer", None)
+
+            optimizer = AdamW8bit_RingBuffer(
+                params,
+                lr=learning_rate,
+                betas=betas,
+                weight_decay=weight_decay,
+                eps=eps,
+                use_8bit=True,
+                get_state_buffer=get_state_buffer,
+            )
+            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer (bitsandbytes-based quantization)")
+            return optimizer
 
         # bitsandbytes optimizers
         elif optimizer_type in ["adamw8bit", "paged_adamw", "paged_adamw8bit", "lion8bit", "paged_lion8bit"]:
@@ -222,6 +241,12 @@ class OptimizerFactory:
                 "name": "AdamW 8bit",
                 "description": "bitsandbytes AdamW optimizer (8-bit quantization)",
                 "requires_bitsandbytes": True,
+                "supports_paging": False,
+            },
+            "adamw8bit_ringbuffer": {
+                "name": "AdamW 8bit (Ring Buffer)",
+                "description": "AdamW 8-bit with Ring Buffer (CPU state allocation, bitsandbytes quantization algorithm)",
+                "requires_bitsandbytes": False,
                 "supports_paging": False,
             },
             "paged_adamw": {

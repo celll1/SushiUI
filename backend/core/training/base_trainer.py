@@ -853,6 +853,14 @@ class BaseTrainer(ABC):
         elif optimizer_type.lower() == "adamw8bit":
             from .optimizers.adamw8bit_fused import patch_adamw8bit_fused
             patch_adamw8bit_fused(self.optimizer)
+        elif optimizer_type.lower() == "adamw8bit_ringbuffer":
+            # AdamW8bit_RingBuffer has built-in hook support via patch_adamw8bit_ringbuffer
+            from .optimizers.adamw8bit_ringbuffer import patch_adamw8bit_ringbuffer
+            # Note: patch_adamw8bit_ringbuffer registers hooks itself, so we don't need the loop below
+            patch_adamw8bit_ringbuffer(self.unet, self.optimizer)
+            self.use_fused_backward = True
+            print(f"{self.log_prefix} AdamW8bit_RingBuffer hooks registered via patch_adamw8bit_ringbuffer")
+            return  # Skip the hook registration loop below
 
         # Register hooks for all trainable parameters
         hooks_registered = 0

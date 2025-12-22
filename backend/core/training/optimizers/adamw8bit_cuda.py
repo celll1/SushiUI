@@ -7,7 +7,9 @@ Supports Windows, Linux, and various CUDA toolkit installations.
 
 import torch
 import os
+import sys
 from pathlib import Path
+from datetime import datetime
 from torch.utils.cpp_extension import load
 
 
@@ -48,12 +50,44 @@ def get_extension():
     build_dir = cuda_dir / "build"
     build_dir.mkdir(exist_ok=True)
 
+    # Setup compilation log file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = build_dir / f"compilation_{timestamp}.log"
+
     print("[AdamW8bit_CUDA] Compiling CUDA extension (this may take a few minutes)...")
     print(f"  Kernel: {kernel_cu}")
     print(f"  Wrapper: {wrapper_cpp}")
     print(f"  Build dir: {build_dir}")
+    print(f"  Log file: {log_file}")
+
+    # Redirect stdout/stderr to log file while also printing to console
+    class TeeLogger:
+        def __init__(self, file_path):
+            self.file = open(file_path, 'w', encoding='utf-8')
+            self.stdout = sys.stdout
+            self.stderr = sys.stderr
+
+        def write(self, message):
+            self.stdout.write(message)
+            self.file.write(message)
+            self.file.flush()
+
+        def flush(self):
+            self.stdout.flush()
+            self.file.flush()
+
+        def close(self):
+            self.file.close()
+
+    logger = TeeLogger(log_file)
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
 
     try:
+        # Redirect output
+        sys.stdout = logger
+        sys.stderr = logger
+
         # JIT compile
         _extension = load(
             name="adamw8bit_cuda_ext",
@@ -68,10 +102,36 @@ def get_extension():
             verbose=True,
         )
 
+        # Restore output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        logger.close()
+
         print("[AdamW8bit_CUDA] CUDA extension compiled successfully")
+        print(f"[AdamW8bit_CUDA] Compilation log saved to: {log_file}")
 
     except Exception as e:
+        # Restore output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        logger.close()
+
         print(f"[AdamW8bit_CUDA] Compilation failed: {e}")
+        print(f"[AdamW8bit_CUDA] Check compilation log for details: {log_file}")
+
+        # Print last 50 lines of log for quick debugging
+        print("\n" + "="*60)
+        print("Last 50 lines of compilation log:")
+        print("="*60)
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for line in lines[-50:]:
+                    print(line.rstrip())
+        except Exception:
+            pass
+        print("="*60 + "\n")
+
         raise RuntimeError(f"Failed to compile CUDA extension: {e}")
 
     return _extension

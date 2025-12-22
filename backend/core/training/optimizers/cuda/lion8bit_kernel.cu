@@ -121,17 +121,7 @@ __global__ void lion_8bit_blockwise_update_kernel(
     // Dequantize momentum (m_{t-1})
     float m_prev = dequantize_code(exp_avg[tid], current_absmax);
 
-    // ============================================================
-    // Lion Update Algorithm
-    // ============================================================
-
-    // 1. Interpolate: c_t = β1 * m_{t-1} + (1 - β1) * g_t
-    float c_t = beta1 * m_prev + (1.0f - beta1) * g;
-
-    // 2. Sign-based update with weight decay
-    float update = (c_t > 0.0f ? 1.0f : -1.0f) + weight_decay * __ldg(&param[tid]);
-
-    // 3. Apply update to parameter
+    // Convert parameter to FP32 first (needed for weight decay calculation)
     float param_val;
     if constexpr (std::is_same<T, float>::value) {
         param_val = param[tid];
@@ -141,6 +131,17 @@ __global__ void lion_8bit_blockwise_update_kernel(
         param_val = __bfloat162float(param[tid]);
     }
 
+    // ============================================================
+    // Lion Update Algorithm
+    // ============================================================
+
+    // 1. Interpolate: c_t = β1 * m_{t-1} + (1 - β1) * g_t
+    float c_t = beta1 * m_prev + (1.0f - beta1) * g;
+
+    // 2. Sign-based update with weight decay
+    float update = (c_t > 0.0f ? 1.0f : -1.0f) + weight_decay * param_val;
+
+    // 3. Apply update to parameter
     param_val -= lr * update;
 
     // 4. Update momentum: m_t = β2 * m_{t-1} + (1 - β2) * g_t

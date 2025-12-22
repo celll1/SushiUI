@@ -1950,17 +1950,23 @@ class BaseTrainer(ABC):
             # Move Transformer back to GPU
             self.transformer_original.to(transformer_device)
 
-            # CRITICAL: Move Optimizer state back to GPU
-            # Optimizer state must be on the same device as model parameters for training
-            optimizer_state_dict = self.optimizer.state_dict()
-            for param_id, state in optimizer_state_dict['state'].items():
-                for key, value in state.items():
-                    if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
-                        state[key] = value.to(transformer_device)
-            self.optimizer.load_state_dict(optimizer_state_dict)
+            # CRITICAL: Move Optimizer state back to GPU (skip for AdamW8bit_RingBuffer)
+            # AdamW8bit_RingBuffer keeps states on CPU intentionally
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+            if not isinstance(self.optimizer, AdamW8bit_RingBuffer):
+                # Optimizer state must be on the same device as model parameters for training
+                optimizer_state_dict = self.optimizer.state_dict()
+                for param_id, state in optimizer_state_dict['state'].items():
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
+                            state[key] = value.to(transformer_device)
+                self.optimizer.load_state_dict(optimizer_state_dict)
+                print(f"{self.log_prefix} [Sample] Optimizer state restored to GPU")
+            else:
+                print(f"{self.log_prefix} [Sample] Optimizer state kept on CPU (AdamW8bit_RingBuffer)")
 
             torch.cuda.empty_cache()
-            print(f"{self.log_prefix} [Sample] Transformer and Optimizer state restored to GPU")
+            print(f"{self.log_prefix} [Sample] Transformer restored to GPU")
 
             return image
 

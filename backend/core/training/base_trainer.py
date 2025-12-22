@@ -820,20 +820,23 @@ class BaseTrainer(ABC):
 
                 # Fused optimizer groups: works with non-8bit optimizers only
                 self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
-            elif optimizer_type.lower() == "adafactor":
-                # Fused backward pass: Adafactor only
-                self._setup_fused_backward_pass()
+            elif optimizer_type.lower() in ["adafactor", "adamw8bit"]:
+                # Fused backward pass: Adafactor or AdamW8bit
+                self._setup_fused_backward_pass(optimizer_type)
 
-    def _setup_fused_backward_pass(self):
+    def _setup_fused_backward_pass(self, optimizer_type: str):
         """
         Setup fused backward pass for Block Swap compatibility.
 
         Registers post-accumulate-grad hooks that update parameters immediately
         after gradients are computed, before Block Swap moves them to CPU.
 
-        Only works with Adafactor optimizer (PyTorch 2.1+).
+        Works with Adafactor or AdamW8bit optimizers (PyTorch 2.1+).
+
+        Args:
+            optimizer_type: Optimizer type ("adafactor" or "adamw8bit")
         """
-        print(f"{self.log_prefix} Setting up fused backward pass...")
+        print(f"{self.log_prefix} Setting up fused backward pass for {optimizer_type}...")
 
         # Check PyTorch version
         import torch
@@ -843,9 +846,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Fused backward pass disabled")
             return
 
-        # Patch Adafactor with step_param method
-        from .optimizers.adafactor_fused import patch_adafactor_fused
-        patch_adafactor_fused(self.optimizer)
+        # Patch optimizer with step_param method
+        if optimizer_type.lower() == "adafactor":
+            from .optimizers.adafactor_fused import patch_adafactor_fused
+            patch_adafactor_fused(self.optimizer)
+        elif optimizer_type.lower() == "adamw8bit":
+            from .optimizers.adamw8bit_fused import patch_adamw8bit_fused
+            patch_adamw8bit_fused(self.optimizer)
 
         # Register hooks for all trainable parameters
         hooks_registered = 0

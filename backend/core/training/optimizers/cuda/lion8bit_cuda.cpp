@@ -135,7 +135,7 @@ void lion_8bit_update(
             beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
         );
     } else if (param_dtype == torch::kFloat16) {
-        lion_8bit_blockwise_update_kernel<at::Half><<<blocks, threads>>>(
+        lion_8bit_blockwise_update_kernel<__half><<<blocks, threads>>>(
             reinterpret_cast<__half*>(param.data_ptr<at::Half>()),
             reinterpret_cast<const __half*>(grad.data_ptr<at::Half>()),
             exp_avg_gpu.data_ptr<unsigned char>(),

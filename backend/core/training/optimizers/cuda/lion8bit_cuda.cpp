@@ -15,8 +15,11 @@ Functions:
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
-// Forward declaration of CUDA kernel (defined in .cu file)
-// Note: Cannot use __global__ in .cpp file with MSVC, use extern "C" wrapper instead
+// Forward declarations of CUDA functions (defined in .cu file)
+extern "C" {
+    void init_quantization_maps(const float* host_qmap_signed);
+}
+
 template <typename T>
 void launch_lion_8bit_blockwise_update_kernel(
     T* param,
@@ -35,28 +38,24 @@ void launch_lion_8bit_blockwise_update_kernel(
     int threads
 );
 
-// Constant memory symbol will be accessed via cudaMemcpyToSymbol
-
 /*
 Initialize Quantization Maps in Constant Memory
 
 Args:
     qmap_signed_cpu: Signed quantization map (256 values)
 */
-void init_quantization_maps(torch::Tensor qmap_signed_cpu) {
+void init_quantization_maps_wrapper(torch::Tensor qmap_signed_cpu) {
     TORCH_CHECK(qmap_signed_cpu.dim() == 1 && qmap_signed_cpu.size(0) == 256,
                 "qmap_signed must be 1D tensor with 256 elements");
     TORCH_CHECK(qmap_signed_cpu.dtype() == torch::kFloat32,
                 "qmap_signed must be FP32");
+    TORCH_CHECK(qmap_signed_cpu.is_contiguous(),
+                "qmap_signed must be contiguous");
+    TORCH_CHECK(qmap_signed_cpu.device().is_cpu(),
+                "qmap_signed must be on CPU");
 
-    // Copy to constant memory (use string name to avoid extern declaration)
-    cudaMemcpyToSymbol("qmap_signed", qmap_signed_cpu.data_ptr<float>(),
-                       256 * sizeof(float), 0, cudaMemcpyHostToDevice);
-
-    cudaError_t err = cudaGetLastError();
-    TORCH_CHECK(err == cudaSuccess,
-                "Failed to copy quantization map to constant memory: ",
-                cudaGetErrorString(err));
+    // Copy to constant memory via extern "C" function
+    init_quantization_maps(qmap_signed_cpu.data_ptr<float>());
 }
 
 /*
@@ -181,7 +180,7 @@ void lion_8bit_update(
 
 // Python bindings
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("init_quantization_maps", &init_quantization_maps,
+    m.def("init_quantization_maps", &init_quantization_maps_wrapper,
           "Initialize quantization maps in constant memory");
     m.def("lion_8bit_update", &lion_8bit_update,
           "Lion 8-bit optimizer update with Ring Buffer support");

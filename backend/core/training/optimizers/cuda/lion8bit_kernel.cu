@@ -31,11 +31,11 @@ Implementation:
 #define THREADS_PER_BLOCK 256
 
 // Quantization map in constant memory (shared across all kernels)
-__device__ __constant__ float qmap_signed[256];
+__device__ __constant__ float d_qmap_signed[256];
 
 // Dequantization: UINT8 code -> FP32 value
 __device__ __forceinline__ float dequantize_code(unsigned char code, float absmax) {
-    return qmap_signed[code] * absmax;
+    return d_qmap_signed[code] * absmax;
 }
 
 // Quantization: FP32 value -> UINT8 code
@@ -46,18 +46,18 @@ __device__ __forceinline__ unsigned char quantize_value(float value, float absma
     int left = 0;
     int right = 255;
     int best = 128;
-    float best_dist = fabsf(normalized - qmap_signed[128]);
+    float best_dist = fabsf(normalized - d_qmap_signed[128]);
 
     while (left <= right) {
         int mid = (left + right) / 2;
-        float dist = fabsf(normalized - qmap_signed[mid]);
+        float dist = fabsf(normalized - d_qmap_signed[mid]);
 
         if (dist < best_dist) {
             best_dist = dist;
             best = mid;
         }
 
-        if (qmap_signed[mid] < normalized) {
+        if (d_qmap_signed[mid] < normalized) {
             left = mid + 1;
         } else {
             right = mid - 1;
@@ -224,3 +224,15 @@ template void launch_lion_8bit_blockwise_update_kernel<__half>(
     __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
 template void launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
     __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+
+// ============================================================
+// Quantization Map Initialization (extern "C" for C++ linkage)
+// ============================================================
+
+extern "C" {
+
+void init_quantization_maps(const float* host_qmap_signed) {
+    cudaMemcpyToSymbol(d_qmap_signed, host_qmap_signed, 256 * sizeof(float));
+}
+
+}  // extern "C"

@@ -16,6 +16,7 @@
 #include <cub/cub.cuh>
 #include <stdint.h>
 #include <stdio.h>
+#include <type_traits>
 
 // Quantization block size (must match bitsandbytes)
 #define QUANTIZATION_BLOCKSIZE 256
@@ -118,7 +119,15 @@ __global__ void adamw_8bit_update_kernel(
     // Step 2: Update momentum (FP32 for numerical stability)
     // ============================================================
 
-    float g = (float)grad[tid] * gnorm_scale;
+    // Convert gradient to FP32 (handles FP32/FP16/BF16)
+    float g;
+    if constexpr (std::is_same<T, float>::value) {
+        g = grad[tid] * gnorm_scale;
+    } else if constexpr (std::is_same<T, __half>::value) {
+        g = __half2float(grad[tid]) * gnorm_scale;
+    } else if constexpr (std::is_same<T, __nv_bfloat16>::value) {
+        g = __bfloat162float(grad[tid]) * gnorm_scale;
+    }
 
     exp_avg = beta1 * exp_avg + (1.0f - beta1) * g;
     exp_avg_sq = beta2 * exp_avg_sq + (1.0f - beta2) * (g * g);
@@ -188,7 +197,15 @@ __global__ void adamw_8bit_update_kernel(
     float denom = corrected_exp_avg_sq_sqrt + eps;
     float update = corrected_exp_avg / denom;
 
-    float param_val = (float)param[tid];
+    // Convert parameter to FP32 (handles FP32/FP16/BF16)
+    float param_val;
+    if constexpr (std::is_same<T, float>::value) {
+        param_val = param[tid];
+    } else if constexpr (std::is_same<T, __half>::value) {
+        param_val = __half2float(param[tid]);
+    } else if constexpr (std::is_same<T, __nv_bfloat16>::value) {
+        param_val = __bfloat162float(param[tid]);
+    }
 
     // Decoupled weight decay (applied to parameter directly)
     if (weight_decay > 0.0f) {
@@ -198,7 +215,14 @@ __global__ void adamw_8bit_update_kernel(
     // Apply AdamW update
     param_val = param_val - lr * update;
 
-    param[tid] = (T)param_val;
+    // Convert back to original dtype
+    if constexpr (std::is_same<T, float>::value) {
+        param[tid] = param_val;
+    } else if constexpr (std::is_same<T, __half>::value) {
+        param[tid] = __float2half(param_val);
+    } else if constexpr (std::is_same<T, __nv_bfloat16>::value) {
+        param[tid] = __float2bfloat16(param_val);
+    }
 }
 
 

@@ -259,10 +259,20 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
         """Create a hook that updates this parameter immediately after grad accumulation."""
 
         def hook(param: nn.Parameter):
+            # Skip parameters on CPU (offloaded by Block Swap)
+            # Update will be applied when layer returns to GPU
+            if not param.is_cuda:
+                return
+
+            # Skip if no gradient
+            if param.grad is None:
+                return
+
             # Find parameter's group
             group = None
             for g in optimizer.param_groups:
-                if param in g['params']:
+                # Use id() comparison to avoid tensor shape mismatch errors
+                if any(id(p) == id(param) for p in g['params']):
                     group = g
                     break
 

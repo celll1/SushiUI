@@ -138,6 +138,13 @@ class LayerOffloadConductor:
 
                 # Move layer to CPU (PyTorch default allocator)
                 layer.to('cpu')
+
+                # CRITICAL: Replace layer parameters with ring buffer allocations
+                # This ensures layer uses custom allocator memory, not PyTorch default
+                for name, param in layer.named_parameters():
+                    if name in cpu_params:
+                        param.data = cpu_params[name]
+
                 self.layer_states[layer_idx] = 'cpu'
 
         self.strategy.print_strategy()

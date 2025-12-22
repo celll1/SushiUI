@@ -968,6 +968,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   <option value="adamw8bit">AdamW 8-bit</option>
                   <option value="adafactor">Adafactor</option>
                 </optgroup>
+                <optgroup label="Ring Buffer (CPU State + 8-bit)">
+                  <option value="adamw8bit_ringbuffer">AdamW 8-bit Ring Buffer</option>
+                  <option value="lion8bit_ringbuffer">Lion 8-bit Ring Buffer</option>
+                </optgroup>
                 <optgroup label="Paged (CPU Offload)">
                   <option value="paged_adamw">Paged AdamW</option>
                   <option value="paged_adamw8bit">Paged AdamW 8-bit</option>
@@ -980,6 +984,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               <p className="text-xs text-gray-500 mt-1">
                 {optimizer === "adafactor" && "Adaptive learning rate, no momentum"}
                 {optimizer === "lion8bit" && "Sign-based momentum"}
+                {optimizer === "adamw8bit_ringbuffer" && "8-bit quantization, CPU state allocation"}
+                {optimizer === "lion8bit_ringbuffer" && "Sign-based momentum, 8-bit quantization, CPU state allocation"}
                 {optimizer.startsWith("paged_") && "CPU offloading when GPU memory is full"}
                 {optimizer === "adamw8bit" && "8-bit quantization"}
                 {optimizer === "adamw" && "32-bit full precision"}

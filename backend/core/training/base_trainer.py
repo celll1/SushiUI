@@ -381,31 +381,43 @@ class BaseTrainer(ABC):
         self.transformer.requires_grad_(False)
 
         # Setup Block Swap if enabled (before moving to GPU)
+        self.layer_offload_conductor = None  # Will be initialized if blocks_to_swap > 0
+
         if self.blocks_to_swap > 0:
             print(f"{self.log_prefix} Block Swap enabled for training: {self.blocks_to_swap} blocks")
+            print(f"{self.log_prefix} Using LayerOffloadConductor (Ring Buffer implementation)")
             print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
 
-            from core.memory_management import create_block_offloader_for_model
+            # Import new ring buffer implementation
+            from core.memory_management import LayerOffloadConductor
 
-            block_offloader = create_block_offloader_for_model(
-                transformer=self.transformer_original,
+            # Check if transformer has layers attribute
+            if not hasattr(self.transformer_original, 'layers'):
+                raise ValueError(
+                    f"Transformer must have 'layers' attribute for Block Swap. "
+                    f"Found: {type(self.transformer_original)}"
+                )
+
+            # Initialize Layer Offload Conductor
+            self.layer_offload_conductor = LayerOffloadConductor(
+                layers=self.transformer_original.layers,
                 blocks_to_swap=self.blocks_to_swap,
-                device=torch.device(self.device),
-                target_dtype=self.dtype,
+                device=self.device,
                 use_pinned_memory=self.use_pinned_memory,
-                supports_backward=True  # Enable backward hooks for training
+                cpu_buffer_size_mb=8192,  # 8GB CPU buffer for layer params
+                activation_buffer_size_mb=4096,  # 4GB CPU buffer for activations
+                enable_prefetch=True,  # Enable prefetching next layer
+                enable_activation_offload=False  # Disable for now (experimental)
             )
 
-            # Attach block offloader to transformer
-            self.transformer_original._block_offloader = block_offloader
+            # Attach to transformer for reference
+            self.transformer_original._layer_offload_conductor = self.layer_offload_conductor
 
-            # Prepare block devices (move some blocks to GPU, others keep weights on CPU)
-            block_offloader.prepare_block_devices_before_forward()
+            # Register hooks for automatic layer swapping
+            self.layer_offload_conductor.register_hooks()
 
-            # Register backward hooks for gradient-based block swapping
-            block_offloader.register_backward_hooks()
-
-            print(f"{self.log_prefix} Block Swap initialized successfully")
+            print(f"{self.log_prefix} LayerOffloadConductor initialized successfully")
+            print(f"{self.log_prefix} Ring buffer allocation strategy enabled")
         else:
             print(f"{self.log_prefix} Block Swap disabled (blocks_to_swap=0)")
             # Move Transformer to GPU normally
@@ -3495,4 +3507,29 @@ class BaseTrainer(ABC):
             raise
 
         print(f"{self.log_prefix} Training complete!")
-        self.writer.close()
+
+        # Cleanup resources
+        self.cleanup()
+
+    def cleanup(self):
+        """
+        Cleanup training resources.
+
+        - Remove Layer Offload Conductor hooks
+        - Restore layers to GPU
+        - Close TensorBoard writer
+        """
+        print(f"{self.log_prefix} Cleaning up training resources...")
+
+        # Cleanup Layer Offload Conductor
+        if self.layer_offload_conductor is not None:
+            print(f"{self.log_prefix} Cleaning up LayerOffloadConductor...")
+            self.layer_offload_conductor.cleanup()
+            self.layer_offload_conductor = None
+
+        # Close TensorBoard writer
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.close()
+            print(f"{self.log_prefix} TensorBoard writer closed")
+
+        print(f"{self.log_prefix} Cleanup complete")

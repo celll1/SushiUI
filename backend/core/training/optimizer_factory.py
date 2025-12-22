@@ -124,7 +124,7 @@ class OptimizerFactory:
 
         # AdamW8bit Ring Buffer (custom implementation)
         elif optimizer_type == "adamw8bit_ringbuffer":
-            from ..optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
 
             # Ring Buffer allocator will be provided by trainer
             get_state_buffer = kwargs.get("get_state_buffer", None)

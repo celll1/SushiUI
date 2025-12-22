@@ -13,7 +13,7 @@ from safetensors.torch import save_file, load_file
 import numpy as np
 import re
 
-from core.training.base_trainer import BaseTrainer, get_torch_dtype
+from .base_trainer import BaseTrainer, get_torch_dtype
 
 
 class LoRALinearLayer(torch.nn.Module):

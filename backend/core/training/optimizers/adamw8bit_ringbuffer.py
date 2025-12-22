@@ -138,13 +138,12 @@ class AdamW8bit_RingBuffer(Optimizer):
 
             state['is_8bit'] = True
 
-            # Memory reporting
-            state_mem_mb = (n * 2) / (1024 ** 2)  # 2 bytes per element (UINT8 x2)
-            absmax_mem_mb = (num_blocks * 2 * 4) / (1024 ** 2)  # FP32 x2
-            device_str = "CPU (Ring Buffer)" if self.get_state_buffer else "CPU"
-
-            print(f"[AdamW8bit_RingBuffer] Allocated 8-bit states for {p.shape} "
-                  f"({state_mem_mb:.2f} MB on {device_str}, {absmax_mem_mb:.2f} MB absmax on GPU)")
+            # Memory reporting (disabled to reduce log verbosity)
+            # state_mem_mb = (n * 2) / (1024 ** 2)  # 2 bytes per element (UINT8 x2)
+            # absmax_mem_mb = (num_blocks * 2 * 4) / (1024 ** 2)  # FP32 x2
+            # device_str = "CPU (Ring Buffer)" if self.get_state_buffer else "CPU"
+            # print(f"[AdamW8bit_RingBuffer] Allocated 8-bit states for {p.shape} "
+            #       f"({state_mem_mb:.2f} MB on {device_str}, {absmax_mem_mb:.2f} MB absmax on GPU)")
 
         else:
             # ============================================================

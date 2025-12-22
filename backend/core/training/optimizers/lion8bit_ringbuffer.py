@@ -134,13 +134,12 @@ class Lion8bit_RingBuffer(Optimizer):
 
             state['is_8bit'] = True
 
-            # Memory reporting
-            state_mem_mb = n / (1024 ** 2)  # 1 byte per element (UINT8)
-            absmax_mem_mb = (num_blocks * 4) / (1024 ** 2)  # FP32
-            device_str = "CPU (Ring Buffer)" if self.get_state_buffer else "CPU"
-
-            print(f"[Lion8bit_RingBuffer] Allocated 8-bit state for {p.shape} "
-                  f"({state_mem_mb:.2f} MB on {device_str}, {absmax_mem_mb:.2f} MB absmax on GPU)")
+            # Memory reporting (disabled to reduce log verbosity)
+            # state_mem_mb = n / (1024 ** 2)  # 1 byte per element (UINT8)
+            # absmax_mem_mb = (num_blocks * 4) / (1024 ** 2)  # FP32
+            # device_str = "CPU (Ring Buffer)" if self.get_state_buffer else "CPU"
+            # print(f"[Lion8bit_RingBuffer] Allocated 8-bit state for {p.shape} "
+            #       f"({state_mem_mb:.2f} MB on {device_str}, {absmax_mem_mb:.2f} MB absmax on GPU)")
 
         else:
             # ============================================================

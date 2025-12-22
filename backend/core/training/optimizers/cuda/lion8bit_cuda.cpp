@@ -10,13 +10,15 @@ Functions:
 */
 
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
-// CUDA kernel declarations
+// Forward declaration of CUDA kernel (defined in .cu file)
+// Note: Cannot use __global__ in .cpp file with MSVC, use extern "C" wrapper instead
 template <typename T>
-__global__ void lion_8bit_blockwise_update_kernel(
+void launch_lion_8bit_blockwise_update_kernel(
     T* param,
     const T* grad,
     unsigned char* exp_avg,
@@ -28,7 +30,9 @@ __global__ void lion_8bit_blockwise_update_kernel(
     float weight_decay,
     float gnorm_scale,
     int step,
-    int N
+    int N,
+    int blocks,
+    int threads
 );
 
 // Constant memory symbol will be accessed via cudaMemcpyToSymbol
@@ -127,28 +131,31 @@ void lion_8bit_update(
     auto param_dtype = param.dtype();
 
     if (param_dtype == torch::kFloat32) {
-        lion_8bit_blockwise_update_kernel<float><<<blocks, threads>>>(
+        launch_lion_8bit_blockwise_update_kernel<float>(
             param.data_ptr<float>(),
             grad.data_ptr<float>(),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            blocks, threads
         );
     } else if (param_dtype == torch::kFloat16) {
-        lion_8bit_blockwise_update_kernel<__half><<<blocks, threads>>>(
+        launch_lion_8bit_blockwise_update_kernel<__half>(
             reinterpret_cast<__half*>(param.data_ptr<at::Half>()),
             reinterpret_cast<const __half*>(grad.data_ptr<at::Half>()),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            blocks, threads
         );
     } else if (param_dtype == torch::kBFloat16) {
-        lion_8bit_blockwise_update_kernel<__nv_bfloat16><<<blocks, threads>>>(
+        launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
             reinterpret_cast<__nv_bfloat16*>(param.data_ptr<at::BFloat16>()),
             reinterpret_cast<const __nv_bfloat16*>(grad.data_ptr<at::BFloat16>()),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            blocks, threads
         );
     } else {
         TORCH_CHECK(false, "Unsupported parameter dtype");

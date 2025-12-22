@@ -861,6 +861,14 @@ class BaseTrainer(ABC):
             self.use_fused_backward = True
             print(f"{self.log_prefix} AdamW8bit_RingBuffer hooks registered via patch_adamw8bit_ringbuffer")
             return  # Skip the hook registration loop below
+        elif optimizer_type.lower() == "lion8bit_ringbuffer":
+            # Lion8bit_RingBuffer has built-in hook support via register_lion8bit_fused_backward
+            from .optimizers.lion8bit_ringbuffer import register_lion8bit_fused_backward
+            # Note: register_lion8bit_fused_backward registers hooks itself, so we don't need the loop below
+            register_lion8bit_fused_backward(self.optimizer, self.unet)
+            self.use_fused_backward = True
+            print(f"{self.log_prefix} Lion8bit_RingBuffer hooks registered via register_lion8bit_fused_backward")
+            return  # Skip the hook registration loop below
 
         # Register hooks for all trainable parameters
         hooks_registered = 0
@@ -1950,10 +1958,11 @@ class BaseTrainer(ABC):
             # Move Transformer back to GPU
             self.transformer_original.to(transformer_device)
 
-            # CRITICAL: Move Optimizer state back to GPU (skip for AdamW8bit_RingBuffer)
-            # AdamW8bit_RingBuffer keeps states on CPU intentionally
+            # CRITICAL: Move Optimizer state back to GPU (skip for Ring Buffer optimizers)
+            # AdamW8bit_RingBuffer and Lion8bit_RingBuffer keep states on CPU intentionally
             from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
-            if not isinstance(self.optimizer, AdamW8bit_RingBuffer):
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+            if not isinstance(self.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
                 # Optimizer state must be on the same device as model parameters for training
                 optimizer_state_dict = self.optimizer.state_dict()
                 for param_id, state in optimizer_state_dict['state'].items():
@@ -1963,7 +1972,7 @@ class BaseTrainer(ABC):
                 self.optimizer.load_state_dict(optimizer_state_dict)
                 print(f"{self.log_prefix} [Sample] Optimizer state restored to GPU")
             else:
-                print(f"{self.log_prefix} [Sample] Optimizer state kept on CPU (AdamW8bit_RingBuffer)")
+                print(f"{self.log_prefix} [Sample] Optimizer state kept on CPU (Ring Buffer)")
 
             torch.cuda.empty_cache()
             print(f"{self.log_prefix} [Sample] Transformer restored to GPU")

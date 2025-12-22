@@ -33,7 +33,7 @@ class OptimizerFactory:
         Returns:
             List of optimizer names
         """
-        optimizers = ["adamw", "adamw8bit", "adamw8bit_ringbuffer", "adafactor", "lion8bit"]
+        optimizers = ["adamw", "adamw8bit", "adamw8bit_ringbuffer", "adafactor", "lion8bit", "lion8bit_ringbuffer"]
 
         # Check if bitsandbytes is available for paged optimizers
         try:
@@ -139,6 +139,27 @@ class OptimizerFactory:
                 get_state_buffer=get_state_buffer,
             )
             print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer (bitsandbytes-based quantization)")
+            return optimizer
+
+        # Lion8bit Ring Buffer (custom implementation)
+        elif optimizer_type == "lion8bit_ringbuffer":
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+
+            # Ring Buffer allocator will be provided by trainer
+            get_state_buffer = kwargs.get("get_state_buffer", None)
+
+            # Lion uses different default betas
+            lion_betas = kwargs.get("lion_betas", (0.9, 0.99))
+
+            optimizer = Lion8bit_RingBuffer(
+                params,
+                lr=learning_rate,
+                betas=lion_betas,
+                weight_decay=weight_decay,
+                use_8bit=True,
+                get_state_buffer=get_state_buffer,
+            )
+            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer (bitsandbytes-based quantization)")
             return optimizer
 
         # bitsandbytes optimizers

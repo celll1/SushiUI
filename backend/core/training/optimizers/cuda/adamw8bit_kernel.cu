@@ -131,16 +131,17 @@ __global__ void adamw_8bit_update_kernel(
     // This ensures no race conditions
 
     typedef cub::BlockReduce<float, THREADS_PER_BLOCK> BlockReduce;
-    __shared__ typename BlockReduce::TempStorage temp_storage1;
-    __shared__ typename BlockReduce::TempStorage temp_storage2;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
 
     float local_absmax1 = fabsf(exp_avg);
     float local_absmax2 = fabsf(exp_avg_sq);
 
-    // Block-level reduction (NO ATOMIC OPERATIONS!)
-    float block_absmax1 = BlockReduce(temp_storage1).Reduce(local_absmax1, cub::Max());
+    // Block-level reduction for exp_avg (NO ATOMIC OPERATIONS!)
+    float block_absmax1 = BlockReduce(temp_storage).Reduce(local_absmax1, cub::Max());
     __syncthreads();
-    float block_absmax2 = BlockReduce(temp_storage2).Reduce(local_absmax2, cub::Max());
+
+    // Block-level reduction for exp_avg_sq (reuse temp_storage after syncthreads)
+    float block_absmax2 = BlockReduce(temp_storage).Reduce(local_absmax2, cub::Max());
     __syncthreads();
 
     // Only first thread in block writes absmax (NO RACE CONDITION!)

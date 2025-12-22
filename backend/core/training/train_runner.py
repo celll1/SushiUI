@@ -9,6 +9,8 @@ import sys
 import yaml
 import os
 import signal
+import torch
+import gc
 from pathlib import Path
 from typing import Dict, Any, List
 from datetime import datetime
@@ -256,6 +258,55 @@ def main():
     # Load config
     config = load_config(config_path)
     print(f"[TrainRunner] Loaded config: {config['job']}")
+
+    # ============================================================
+    # Unload Generate Pipeline to Free Memory
+    # ============================================================
+    # The main application loads models for inference (txt2img/img2img/inpaint).
+    # Training uses a separate model instance, so we unload the generate pipeline
+    # to free CPU/GPU memory (Z-Image 6B model = ~15 GB on CPU).
+    print(f"[TrainRunner] Unloading generate pipeline to free memory...")
+    try:
+        from core.pipeline import pipeline_manager
+
+        # Unload all generate pipelines
+        if pipeline_manager.txt2img_pipeline is not None:
+            print(f"[TrainRunner] Unloading txt2img pipeline...")
+            del pipeline_manager.txt2img_pipeline
+            pipeline_manager.txt2img_pipeline = None
+
+        if pipeline_manager.img2img_pipeline is not None:
+            print(f"[TrainRunner] Unloading img2img pipeline...")
+            del pipeline_manager.img2img_pipeline
+            pipeline_manager.img2img_pipeline = None
+
+        if pipeline_manager.inpaint_pipeline is not None:
+            print(f"[TrainRunner] Unloading inpaint pipeline...")
+            del pipeline_manager.inpaint_pipeline
+            pipeline_manager.inpaint_pipeline = None
+
+        # Unload Z-Image components if present
+        if pipeline_manager.zimage_components is not None:
+            print(f"[TrainRunner] Unloading Z-Image components...")
+            del pipeline_manager.zimage_components
+            pipeline_manager.zimage_components = None
+
+        # Reset current model tracking
+        pipeline_manager.current_model = None
+        pipeline_manager.current_model_info = None
+        pipeline_manager.is_zimage_model = False
+
+        # Force garbage collection
+        gc.collect()
+
+        # Clear CUDA cache if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        print(f"[TrainRunner] Generate pipeline unloaded successfully")
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to unload generate pipeline: {e}")
+        # Continue training even if unload fails
 
     # Get database sessions (separate DBs for training and datasets)
     training_db_gen = get_training_db()

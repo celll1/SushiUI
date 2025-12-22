@@ -93,7 +93,8 @@ class AdamW8bit_RingBuffer(Optimizer):
         state = self.state[p]
         group = None
         for g in self.param_groups:
-            if p in g['params']:
+            # Use id() comparison to avoid tensor shape mismatch errors
+            if any(id(param) == id(p) for param in g['params']):
                 group = g
                 break
 

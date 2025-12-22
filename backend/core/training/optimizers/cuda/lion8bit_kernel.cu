@@ -189,14 +189,6 @@ __global__ void lion_8bit_blockwise_update_kernel(
     }
 }
 
-// Template instantiations
-template __global__ void lion_8bit_blockwise_update_kernel<float>(
-    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, int);
-template __global__ void lion_8bit_blockwise_update_kernel<__half>(
-    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, int);
-template __global__ void lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
-    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, int);
-
 // ============================================================
 // Launcher Functions (MSVC compatibility)
 // ============================================================

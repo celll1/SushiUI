@@ -516,3 +516,29 @@ class TransformerBlockOffloader:
         num_removed = len(self.backward_hook_handles)
         self.backward_hook_handles = []
         print(f"[BlockOffloader] Removed {num_removed} backward hooks")
+
+    def cleanup(self):
+        """
+        Cleanup offloader resources
+
+        - Remove backward hooks
+        - Shutdown thread pool
+        - Clear staging buffers
+        """
+        print(f"[BlockOffloader] Cleaning up...")
+
+        # Remove hooks
+        self.remove_backward_hooks()
+
+        # Shutdown thread pool
+        self.thread_pool.shutdown(wait=True)
+
+        # Clear staging buffers
+        self.staging_buffer_a = None
+        self.staging_buffer_b = None
+        self.pinned_buffer = None
+
+        # Clear futures
+        self.futures.clear()
+
+        print(f"[BlockOffloader] Cleanup complete")

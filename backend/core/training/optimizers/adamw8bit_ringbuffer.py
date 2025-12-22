@@ -73,6 +73,15 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.get_state_buffer = get_state_buffer
         self.step_count = 0
 
+        # Keys that must preserve dtype (UINT8 states, FP32 absmax)
+        # Based on bitsandbytes.optim.optimizer.Optimizer8bit.non_castable_tensor_keys
+        self.non_castable_tensor_keys = {
+            "exp_avg",      # state1 (UINT8 or FP32)
+            "exp_avg_sq",   # state2 (UINT8 or FP32)
+            "absmax1",      # FP32 absmax tracking for exp_avg
+            "absmax2",      # FP32 absmax tracking for exp_avg_sq
+        }
+
         # Create quantization maps (once, shared across all parameters)
         if use_8bit:
             self._init_quantization_maps()
@@ -147,6 +156,90 @@ class AdamW8bit_RingBuffer(Optimizer):
             state_mem_mb = (p.numel() * 2 * p.element_size()) / (1024 ** 2)
             print(f"[AdamW8bit_RingBuffer] Allocated FP32 states for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
+
+    def load_state_dict(self, state_dict):
+        """
+        Load optimizer state while preserving UINT8 dtypes.
+
+        Based on bitsandbytes.optim.optimizer.Optimizer8bit.load_state_dict()
+        Standard PyTorch load_state_dict() converts UINT8 states to parameter dtype,
+        which breaks 8-bit quantization. This override preserves UINT8 dtypes.
+        """
+        from copy import deepcopy
+        from itertools import chain
+        from collections import abc as container_abcs, defaultdict
+
+        # Deepcopy to match PyTorch standard behavior
+        state_dict = deepcopy(state_dict)
+
+        # Validate state_dict structure
+        groups = self.param_groups
+        saved_groups = state_dict["param_groups"]
+
+        if len(groups) != len(saved_groups):
+            raise ValueError("loaded state dict has a different number of parameter groups")
+
+        param_lens = (len(g["params"]) for g in groups)
+        saved_lens = (len(g["params"]) for g in saved_groups)
+        if any(p_len != s_len for p_len, s_len in zip(param_lens, saved_lens)):
+            raise ValueError(
+                "loaded state dict contains a parameter group that doesn't match the size of optimizer's group",
+            )
+
+        # Create ID mapping (old param ID -> current param object)
+        id_map = {
+            old_id: p
+            for old_id, p in zip(
+                chain.from_iterable(g["params"] for g in saved_groups),
+                chain.from_iterable(g["params"] for g in groups),
+            )
+        }
+
+        def cast(param, value):
+            """
+            Cast value to match parameter, but preserve UINT8 dtype for optimizer states.
+            Based on bitsandbytes cast() function (Line 191-211).
+            """
+            if isinstance(value, torch.Tensor):
+                # CRITICAL: Preserve UINT8 dtype (8-bit quantized states)
+                # Only convert floating-point types, never UINT8
+                if param.is_floating_point() and value.dtype != torch.uint8:
+                    value = value.to(param.dtype)
+                # Move to parameter's device
+                value = value.to(param.device)
+                return value
+            elif isinstance(value, dict):
+                # For dict values (optimizer state), protect non_castable_tensor_keys
+                for k, v in value.items():
+                    if k in self.non_castable_tensor_keys:
+                        # Only move device, preserve dtype (UINT8 for exp_avg/exp_avg_sq)
+                        if isinstance(v, torch.Tensor):
+                            value[k] = v.to(param.device)
+                    else:
+                        # Other keys: standard cast
+                        value[k] = cast(param, v)
+                return value
+            elif isinstance(value, container_abcs.Iterable):
+                return type(value)(cast(param, v) for v in value)
+            else:
+                return value
+
+        # Copy state assigned to params (and cast tensors appropriately)
+        state = defaultdict(dict)
+        for k, v in state_dict["state"].items():
+            if k in id_map:
+                param = id_map[k]
+                state[param] = cast(param, v)
+            else:
+                state[k] = v
+
+        # Update parameter groups
+        def update_group(group, new_group):
+            new_group["params"] = group["params"]
+            return new_group
+
+        param_groups = [update_group(g, ng) for g, ng in zip(groups, saved_groups)]
+        self.__setstate__({"state": state, "param_groups": param_groups})
 
     @torch.no_grad()
     def step(self, closure=None):

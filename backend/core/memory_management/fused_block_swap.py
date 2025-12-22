@@ -16,7 +16,12 @@ from typing import List, Optional
 from torch.optim import Optimizer
 
 from .block_offloading import TransformerBlockOffloader
-from ..training.optimizers.fused_optimizer_groups import FusedOptimizerGroups
+
+# Import FusedOptimizerGroups only when needed (avoid circular imports)
+try:
+    from ..training.optimizers.fused_optimizer_groups import FusedOptimizerGroups
+except ImportError:
+    FusedOptimizerGroups = None
 
 
 class FusedBlockSwapTrainer:
@@ -90,6 +95,13 @@ class FusedBlockSwapTrainer:
         )
 
         # Initialize Fused Optimizer Groups
+        if FusedOptimizerGroups is None:
+            raise ImportError(
+                "FusedOptimizerGroups not available. "
+                "This is likely due to a circular import issue. "
+                "Use LayerOffloadConductor directly instead of FusedBlockSwapTrainer."
+            )
+
         self.fused_optimizer = FusedOptimizerGroups(
             optimizers=optimizer_groups,
             max_grad_norm=max_grad_norm

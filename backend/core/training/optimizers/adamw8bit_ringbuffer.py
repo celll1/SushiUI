@@ -130,9 +130,11 @@ class AdamW8bit_RingBuffer(Optimizer):
                 state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device='cpu')
                 state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device='cpu')
 
-            # Absmax metadata (small, keep on GPU)
-            state['absmax1'] = torch.zeros(num_blocks, dtype=torch.float32, device=p.device)
-            state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=p.device)
+            # Absmax metadata (small, ALWAYS keep on GPU even if param moves to CPU)
+            # Must be on CUDA for CUDA kernel execution
+            device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
+            state['absmax1'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+            state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
 
             state['is_8bit'] = True
 
@@ -214,7 +216,13 @@ class AdamW8bit_RingBuffer(Optimizer):
                     if k in self.non_castable_tensor_keys:
                         # Only move device, preserve dtype (UINT8 for exp_avg/exp_avg_sq)
                         if isinstance(v, torch.Tensor):
-                            value[k] = v.to(param.device)
+                            # absmax1/absmax2 must ALWAYS be on GPU (required by CUDA kernel)
+                            if k in ('absmax1', 'absmax2'):
+                                target_device = param.device if param.device.type == 'cuda' else torch.device('cuda:0')
+                                value[k] = v.to(target_device)
+                            else:
+                                # exp_avg/exp_avg_sq can be on CPU (Ring Buffer)
+                                value[k] = v.to(param.device)
                     else:
                         # Other keys: standard cast
                         value[k] = cast(param, v)

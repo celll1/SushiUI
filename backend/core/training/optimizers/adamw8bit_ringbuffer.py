@@ -174,6 +174,11 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if p.grad is None:
                     continue
 
+                # Skip parameters on CPU (offloaded by Block Swap)
+                # Optimizer updates will be applied when layer returns to GPU
+                if not p.is_cuda:
+                    continue
+
                 # Initialize state on first use
                 if len(self.state[p]) == 0:
                     self._init_param_state(p)

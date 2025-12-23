@@ -429,7 +429,30 @@ class ModelLoader:
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
 
-            # Step 3: Create transformer model
+            # Step 3: Detect actual layer count from safetensors file
+            print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
+            comfy_state_dict = load_file(file_path, device="cpu")
+
+            # Auto-detect layer count from state_dict (supports pruned models)
+            layer_indices = set()
+            for key in comfy_state_dict.keys():
+                if "layers." in key:
+                    parts = key.split(".")
+                    if len(parts) > 1 and parts[0] == "layers":
+                        try:
+                            layer_idx = int(parts[1])
+                            layer_indices.add(layer_idx)
+                        except ValueError:
+                            pass
+
+            actual_n_layers = max(layer_indices) + 1 if layer_indices else transformer_config["n_layers"]
+
+            if actual_n_layers != transformer_config["n_layers"]:
+                print(f"[ModelLoader] WARNING: Detected {actual_n_layers} layers in model file, "
+                      f"but config specifies {transformer_config['n_layers']} layers.")
+                print(f"[ModelLoader] Using detected layer count: {actual_n_layers}")
+
+            # Step 4: Create transformer model with detected layer count
             print("[ModelLoader] Creating Z-Image transformer...")
             with torch.device("meta"):
                 transformer = ZImageTransformer2DModel(
@@ -437,7 +460,7 @@ class ModelLoader:
                     all_f_patch_size=tuple(transformer_config["all_f_patch_size"]),
                     in_channels=transformer_config["in_channels"],
                     dim=transformer_config["dim"],
-                    n_layers=transformer_config["n_layers"],
+                    n_layers=actual_n_layers,
                     n_refiner_layers=transformer_config["n_refiner_layers"],
                     n_heads=transformer_config["n_heads"],
                     n_kv_heads=transformer_config["n_kv_heads"],
@@ -449,10 +472,6 @@ class ModelLoader:
                     axes_dims=transformer_config["axes_dims"],
                     axes_lens=transformer_config["axes_lens"],
                 ).to(torch_dtype)
-
-            # Step 4: Load Comfy safetensors weights into transformer
-            print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
-            comfy_state_dict = load_file(file_path, device="cpu")
 
             # Convert Comfy format (fused QKV) to official format (separate Q/K/V)
             print("[ModelLoader] Converting Comfy format to official format...")

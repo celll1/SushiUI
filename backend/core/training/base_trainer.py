@@ -3381,6 +3381,10 @@ class BaseTrainer(ABC):
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
                         loss.backward()
 
+                        # Clear saved activations immediately after backward to prevent VRAM leaks
+                        if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
+                            self.layer_offload_conductor.clear_activations()
+
                         # Free batch tensors immediately after backward to prevent VRAM accumulation
                         del latents, text_embeddings
                         if self.is_zimage:
@@ -3417,17 +3421,20 @@ class BaseTrainer(ABC):
 
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()
+                        recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
                         self.writer.add_scalar("train/loss", loss_value, global_step)
-                        self.writer.add_scalar("train/recon_loss", recon_loss, global_step)
+                        self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)
                         self.writer.add_scalar("train/lr", self.lr_scheduler.get_last_lr()[0], global_step)
 
                         # Flush TensorBoard writer periodically to prevent DRAM accumulation
                         # (TensorBoard buffers events internally, can accumulate GBs over long training)
                         if global_step % 100 == 0:
                             self.writer.flush()
+                            # Also clear CUDA cache to prevent fragmented memory accumulation
+                            torch.cuda.empty_cache()
 
                         # Free loss tensor after logging
-                        del loss
+                        del loss, recon_loss
 
                         # Save checkpoint
                         if global_step % save_every_n_steps == 0:
@@ -3486,7 +3493,7 @@ class BaseTrainer(ABC):
                             )
                     else:
                         # Gradient accumulation: Free loss tensor but don't do optimizer step yet
-                        del loss
+                        del loss, recon_loss
 
         except KeyboardInterrupt:
             print(f"\n{self.log_prefix} Training interrupted by user")

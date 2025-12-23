@@ -367,12 +367,23 @@ class LayerOffloadConductor:
         self.hook_handles = []
         print("[LayerOffloadConductor] Removed hooks")
 
+    def clear_activations(self):
+        """
+        Clear saved activations after backward pass.
+
+        IMPORTANT: Call this after each backward() to prevent VRAM leaks.
+        """
+        self.saved_activations.clear()
+
     def cleanup(self):
         """Cleanup allocators and restore layers to GPU."""
         print("[LayerOffloadConductor] Cleaning up...")
 
         # Remove hooks
         self.remove_hooks()
+
+        # Clear saved activations
+        self.clear_activations()
 
         # Move all layers to GPU
         for layer_idx, layer in enumerate(self.layers):

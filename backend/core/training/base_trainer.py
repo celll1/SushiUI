@@ -2878,19 +2878,14 @@ class BaseTrainer(ABC):
                         start_epoch = resume_training_state['epoch']
                         resume_batch_idx = resume_training_state['batch_idx']
 
-                        # Recalculate global_step from batch_idx (handles MNT partial skip correctly)
-                        # batch_idx is the true source of truth (which batch to resume from)
-                        # global_step is derived: (batches completed in previous epochs) + (batches in current epoch) * MNT
-                        batches_completed_prev_epochs = start_epoch * batches_per_epoch
-                        batches_completed_current_epoch = resume_batch_idx
-                        total_batches_completed = batches_completed_prev_epochs + batches_completed_current_epoch
-                        recalculated_global_step = total_batches_completed * multi_noise_timesteps
-
-                        if recalculated_global_step != global_step:
-                            print(f"{self.log_prefix} WARNING: global_step mismatch (checkpoint: {global_step}, calculated from batch_idx: {recalculated_global_step})")
-                            print(f"{self.log_prefix} This can happen if training was stopped mid-MNT iteration")
-                            print(f"{self.log_prefix} Using calculated global_step={recalculated_global_step} (based on batch_idx={resume_batch_idx})")
-                            global_step = recalculated_global_step
+                        # Use global_step from state.json (most accurate, saved at same time as batch_idx)
+                        if 'global_step' in resume_training_state:
+                            global_step = resume_training_state['global_step']
+                            print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}, global_step={global_step}")
+                        else:
+                            # Fallback: use global_step from checkpoint filename
+                            print(f"{self.log_prefix} WARNING: No global_step in training state, using checkpoint filename: {global_step}")
+                            print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}")
 
                         print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}, step {global_step}")
                     else:
@@ -2917,19 +2912,14 @@ class BaseTrainer(ABC):
                         start_epoch = resume_training_state['epoch']
                         resume_batch_idx = resume_training_state['batch_idx']
 
-                        # Recalculate global_step from batch_idx (handles MNT partial skip correctly)
-                        # batch_idx is the true source of truth (which batch to resume from)
-                        # global_step is derived: (batches completed in previous epochs) + (batches in current epoch) * MNT
-                        batches_completed_prev_epochs = start_epoch * batches_per_epoch
-                        batches_completed_current_epoch = resume_batch_idx
-                        total_batches_completed = batches_completed_prev_epochs + batches_completed_current_epoch
-                        recalculated_global_step = total_batches_completed * multi_noise_timesteps
-
-                        if recalculated_global_step != global_step:
-                            print(f"{self.log_prefix} WARNING: global_step mismatch (checkpoint: {global_step}, calculated from batch_idx: {recalculated_global_step})")
-                            print(f"{self.log_prefix} This can happen if training was stopped mid-MNT iteration")
-                            print(f"{self.log_prefix} Using calculated global_step={recalculated_global_step} (based on batch_idx={resume_batch_idx})")
-                            global_step = recalculated_global_step
+                        # Use global_step from state.json (most accurate, saved at same time as batch_idx)
+                        if 'global_step' in resume_training_state:
+                            global_step = resume_training_state['global_step']
+                            print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}, global_step={global_step}")
+                        else:
+                            # Fallback: use global_step from checkpoint filename
+                            print(f"{self.log_prefix} WARNING: No global_step in training state, using checkpoint filename: {global_step}")
+                            print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}")
 
                         print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}, step {global_step}")
                     else:

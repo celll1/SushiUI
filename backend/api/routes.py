@@ -62,7 +62,11 @@ executor = ThreadPoolExecutor(max_workers=1)
 
 # Cache for model list (to avoid re-scanning on every API call)
 _models_cache: Optional[Dict[str, Any]] = None
-_models_cache_timestamp: float = 0.0
+_models_cache_timestamp: float = 0
+
+# Cache for TensorBoard EventAccumulators to avoid re-reading event files on every request
+# Key: (run_id, event_file_path), Value: (EventAccumulator, last_modified_time)
+_event_accumulator_cache: Dict[tuple, tuple] = {}
 
 # Pydantic models for requests
 class LoginRequest(BaseModel):
@@ -4404,14 +4408,39 @@ async def get_training_metrics(
         if not event_files:
             return {"loss": [], "recon_loss": [], "learning_rate": []}
 
+        # Optimization: If since_step is provided, only read the most recent event file
+        # (since older files won't have data after since_step)
+        if since_step is not None and len(event_files) > 1:
+            # Sort by modification time, use only the most recent
+            event_files_sorted = sorted(event_files, key=lambda f: Path(f).stat().st_mtime)
+            event_files = [event_files_sorted[-1]]  # Only most recent
+
         # Use the most recent event file or merge all
         all_loss = []
         all_recon_loss = []
         all_lr = []
 
         for event_file in event_files:
-            ea = event_accumulator.EventAccumulator(event_file)
-            ea.Reload()
+            # Check cache first (keyed by run_id and event_file path)
+            cache_key = (run_id, event_file)
+            event_file_path = Path(event_file)
+            current_mtime = event_file_path.stat().st_mtime
+
+            # If cached and file hasn't changed, use cached EventAccumulator
+            if cache_key in _event_accumulator_cache:
+                cached_ea, cached_mtime = _event_accumulator_cache[cache_key]
+                if cached_mtime == current_mtime:
+                    ea = cached_ea
+                else:
+                    # File changed, reload
+                    ea = event_accumulator.EventAccumulator(event_file)
+                    ea.Reload()
+                    _event_accumulator_cache[cache_key] = (ea, current_mtime)
+            else:
+                # Not cached, create new
+                ea = event_accumulator.EventAccumulator(event_file)
+                ea.Reload()
+                _event_accumulator_cache[cache_key] = (ea, current_mtime)
 
             # Get scalar tags
             if 'train/loss' in ea.Tags()['scalars']:

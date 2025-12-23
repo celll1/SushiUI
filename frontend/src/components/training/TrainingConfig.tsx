@@ -613,15 +613,16 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="p-4 space-y-4 max-w-2xl">
+      <form onSubmit={handleSubmit} className="p-4">
         {error && (
-          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 text-sm">
+          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 text-sm mb-4">
             {error}
           </div>
         )}
 
+        <div className="columns-1 lg:columns-2 gap-4 space-y-4">
         {/* Run Name */}
-        <div>
+        <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">
             Run Name <span className="text-gray-500 text-xs font-normal">(optional, auto-generated if empty)</span>
           </label>
@@ -635,7 +636,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Datasets */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <div className="flex justify-between items-center">
             <label className="block text-sm font-medium">
               Datasets <span className="text-red-400">*</span>
@@ -730,7 +731,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Training Method */}
-        <div>
+        <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">Training Method</label>
           <div className="flex space-x-4">
             <label className="flex items-center space-x-2 cursor-pointer">
@@ -759,7 +760,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Base Model */}
-        <div>
+        <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">
             Base Model <span className="text-red-400">*</span>
           </label>
@@ -819,7 +820,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
         {/* LoRA Settings */}
         {trainingMethod === "lora" && (
-          <div className="bg-gray-800/50 rounded-lg p-3 space-y-3">
+          <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
             <h3 className="text-sm font-semibold">LoRA Settings</h3>
 
             <div className="grid grid-cols-2 gap-3">
@@ -851,7 +852,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         )}
 
         {/* Training Parameters */}
-        <div className="bg-gray-800/50 rounded-lg p-3 space-y-3">
+        <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
           <h3 className="text-sm font-semibold">Training Parameters</h3>
 
           {/* Steps/Epochs Toggle */}
@@ -1154,7 +1155,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Precision Settings (VRAM Optimization) */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Precision Settings (VRAM Optimization)</h3>
 
           <div className="grid grid-cols-2 gap-3">
@@ -1278,7 +1279,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Block Swap Settings (VRAM Optimization) */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Block Swap (Training VRAM Optimization)</h3>
 
           <div className="space-y-3">
@@ -1446,7 +1447,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Advanced Settings */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Advanced Settings</h3>
 
           {/* Save Checkpoint Every */}
@@ -1505,7 +1506,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Sample Generation */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Sample Generation (Optional)</h3>
 
           {/* Sample Every */}
@@ -1873,9 +1874,10 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             Force regenerate latent cache even if valid cache exists. Use this if you switched to a different VAE or if cache validation fails.
           </p>
         </div>
+        </div>
 
-        {/* Buttons */}
-        <div className="flex justify-end space-x-3 pt-4">
+        {/* Buttons - Outside grid */}
+        <div className="flex justify-end space-x-3 pt-4 mt-4">
           <button
             type="button"
             onClick={onClose}

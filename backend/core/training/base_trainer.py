@@ -623,8 +623,16 @@ class BaseTrainer(ABC):
         """
         import json
         import random
+        import re
 
-        state_file = self.output_dir / f"checkpoint_step_{step:06d}_state.json"
+        # Extract short name from run_name (same logic as checkpoint saving)
+        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+        if match:
+            short_name = match.group(1)
+        else:
+            short_name = self.run_name
+
+        state_file = self.output_dir / f"{short_name}_step_{step}_state.json"
 
         state = {
             "global_step": step,
@@ -659,8 +667,16 @@ class BaseTrainer(ABC):
         """
         import json
         import random
+        import re
 
-        state_file = self.output_dir / f"checkpoint_step_{step:06d}_state.json"
+        # Extract short name from run_name (same logic as checkpoint saving)
+        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+        if match:
+            short_name = match.group(1)
+        else:
+            short_name = self.run_name
+
+        state_file = self.output_dir / f"{short_name}_step_{step}_state.json"
 
         if not state_file.exists():
             print(f"{self.log_prefix} No training state file found: {state_file.name}")
@@ -689,23 +705,64 @@ class BaseTrainer(ABC):
         """
         # Search for checkpoint files with pattern: {run_name}_step_{step}.safetensors
         checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
-        if not checkpoint_files:
+
+        # Search for training state files with pattern: {run_name}_step_{step}_state.json
+        state_files = list(self.output_dir.glob("*_step_*_state.json"))
+
+        if not checkpoint_files and not state_files:
             print(f"{self.log_prefix} No checkpoints found in {self.output_dir}")
             return None
 
-        # Sort by step number
+        # Helper to extract step number from filename
         def get_step(path):
             try:
-                # Extract step number from filename: {run_name}_step_{step}.safetensors
-                step_str = path.stem.split("_step_")[-1]
+                # Extract step number from filename: {run_name}_step_{step}.safetensors or {run_name}_step_{step}_state.json
+                # Split by "_step_" and take the next part (remove "_state" suffix if present)
+                step_str = path.stem.split("_step_")[-1].replace("_state", "")
                 return int(step_str)
             except (ValueError, IndexError):
                 return 0
 
-        latest = max(checkpoint_files, key=get_step)
-        step = get_step(latest)
-        print(f"{self.log_prefix} Found latest checkpoint: {latest.name} (step {step})")
-        return (str(latest), step)
+        # Find latest step from both sources
+        latest_checkpoint_step = 0
+        latest_checkpoint_path = None
+        latest_state_step = 0
+
+        if checkpoint_files:
+            latest_checkpoint_path = max(checkpoint_files, key=get_step)
+            latest_checkpoint_step = get_step(latest_checkpoint_path)
+
+        if state_files:
+            latest_state_path = max(state_files, key=get_step)
+            latest_state_step = get_step(latest_state_path)
+
+        # Debug: Print all checkpoints
+        print(f"{self.log_prefix} Found checkpoint files:")
+        for ckpt in sorted(checkpoint_files, key=get_step):
+            step_num = get_step(ckpt)
+            print(f"{self.log_prefix}   - {ckpt.name} → step {step_num}")
+
+        print(f"{self.log_prefix} Found training state files:")
+        for state in sorted(state_files, key=get_step):
+            step_num = get_step(state)
+            print(f"{self.log_prefix}   - {state.name} → step {step_num}")
+
+        # Use the latest step (state.json takes priority as it represents interrupted training)
+        if latest_state_step > latest_checkpoint_step:
+            print(f"{self.log_prefix} Latest state.json: step {latest_state_step}")
+            print(f"{self.log_prefix} Latest safetensors: step {latest_checkpoint_step}")
+            print(f"{self.log_prefix} WARNING: State file is newer than checkpoint - this should not happen")
+            print(f"{self.log_prefix} Using checkpoint step {latest_checkpoint_step}")
+            step = latest_checkpoint_step
+        else:
+            step = max(latest_checkpoint_step, latest_state_step)
+
+        if latest_checkpoint_path is None:
+            print(f"{self.log_prefix} ERROR: No safetensors checkpoint found")
+            return None
+
+        print(f"{self.log_prefix} Selected latest checkpoint: {latest_checkpoint_path.name} (step {step})")
+        return (str(latest_checkpoint_path), step)
 
     def _cleanup_old_checkpoints(self, max_step_saves_to_keep: int):
         """

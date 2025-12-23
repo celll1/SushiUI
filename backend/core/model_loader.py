@@ -342,76 +342,47 @@ class ModelLoader:
         print(f"[ModelLoader] Loading Z-Image from Comfy safetensors: {file_path}")
         print(f"[ModelLoader] Base components will be downloaded from: {base_model_repo}")
 
-        # Add Z-Image source to Python path
-        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
-        if not zimage_src_path.exists():
-            raise FileNotFoundError(
-                f"Z-Image source code not found at: {zimage_src_path}\n"
-                f"Please clone Z-Image repository to: {zimage_src_path.parent}"
-            )
-
-        # Temporarily replace sys.path to prioritize Z-Image modules
-        original_sys_path = sys.path.copy()
-        sys.path = [str(zimage_src_path)] + sys.path
-
+        # Use SushiUI's internal Z-Image implementation (standalone)
         try:
             from transformers import AutoModel, AutoTokenizer
             from safetensors.torch import load_file
             import importlib.util
 
-            # CRITICAL: Load Z-Image's config module first and inject it into sys.modules
-            # This prevents transformer.py from importing SushiUI's config
-            config_spec = importlib.util.spec_from_file_location(
-                "config",
-                zimage_src_path / "config" / "__init__.py"
-            )
-            config_module = importlib.util.module_from_spec(config_spec)
+            # Load SushiUI's internal Z-Image modules (standalone implementation)
+            sushiui_models_path = Path(__file__).parent / "models"
 
-            # Temporarily inject Z-Image config into sys.modules
-            import sys as _sys
-            original_config = _sys.modules.get('config')
-            _sys.modules['config'] = config_module
-            config_spec.loader.exec_module(config_module)
-
-            # Now load Z-Image modules (they will import the correct config)
-            # CRITICAL: Load SushiUI's custom transformer module (Block Swap integrated)
-            # This replaces the original Z-Image transformer.py with our modified version
-            sushiui_transformer_path = Path(__file__).parent / "models" / "zimage_transformer.py"
+            # Load transformer module (Block Swap integrated)
             transformer_spec = importlib.util.spec_from_file_location(
                 "zimage_transformer",
-                sushiui_transformer_path
+                sushiui_models_path / "zimage_transformer.py"
             )
             transformer_module = importlib.util.module_from_spec(transformer_spec)
             # Register in sys.modules BEFORE exec_module (required for Flash Attention setup)
+            import sys as _sys
             _sys.modules['zimage_transformer'] = transformer_module
             transformer_spec.loader.exec_module(transformer_module)
             ZImageTransformer2DModel = transformer_module.ZImageTransformer2DModel
-            print(f"[ModelLoader] Loaded SushiUI Z-Image Transformer (Block Swap integrated) from: {sushiui_transformer_path}")
-            print(f"[ModelLoader] Injected 'zimage_transformer' into sys.modules for Flash Attention support")
+            print(f"[ModelLoader] Loaded SushiUI Z-Image Transformer (standalone, Block Swap integrated)")
 
             # Load autoencoder module
             autoencoder_spec = importlib.util.spec_from_file_location(
                 "zimage_autoencoder",
-                zimage_src_path / "zimage" / "autoencoder.py"
+                sushiui_models_path / "zimage_autoencoder.py"
             )
             autoencoder_module = importlib.util.module_from_spec(autoencoder_spec)
             autoencoder_spec.loader.exec_module(autoencoder_module)
             AutoencoderKL = autoencoder_module.AutoencoderKL
+            print(f"[ModelLoader] Loaded SushiUI Z-Image AutoencoderKL (standalone)")
 
             # Load scheduler module
             scheduler_spec = importlib.util.spec_from_file_location(
                 "zimage_scheduler",
-                zimage_src_path / "zimage" / "scheduler.py"
+                sushiui_models_path / "zimage_scheduler.py"
             )
             scheduler_module = importlib.util.module_from_spec(scheduler_spec)
             scheduler_spec.loader.exec_module(scheduler_module)
             FlowMatchEulerDiscreteScheduler = scheduler_module.FlowMatchEulerDiscreteScheduler
-
-            # Restore original config module
-            if original_config is not None:
-                _sys.modules['config'] = original_config
-            else:
-                del _sys.modules['config']
+            print(f"[ModelLoader] Loaded SushiUI Z-Image Scheduler (standalone)")
 
             # Step 1: Download base components from HuggingFace
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
@@ -575,9 +546,6 @@ class ModelLoader:
             import traceback
             traceback.print_exc()
             raise
-        finally:
-            # Restore original sys.path
-            sys.path = original_sys_path
 
     @staticmethod
     def load_from_safetensors(
@@ -743,96 +711,25 @@ class ModelLoader:
 
         print(f"[ModelLoader] Loading Z-Image from: {model_path}")
 
-        # Add Z-Image source to Python path
-        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
-        if not zimage_src_path.exists():
-            raise FileNotFoundError(
-                f"Z-Image source code not found at: {zimage_src_path}\n"
-                f"Please clone Z-Image repository to: {zimage_src_path.parent}"
+        # Check if model_path is a single safetensors file (Comfy format) or directory (diffusers format)
+        is_single_file = os.path.isfile(model_path) and model_path.endswith('.safetensors')
+
+        if is_single_file:
+            print(f"[ModelLoader] Detected Comfy format safetensors, delegating to Comfy loader")
+            # Use existing Comfy loader (already handles weight conversion)
+            components = ModelLoader.load_zimage_from_comfy_safetensors(
+                file_path=model_path,
+                device=device,
+                torch_dtype=torch_dtype
             )
-
-        # Temporarily replace sys.path to prioritize Z-Image modules
-        original_sys_path = sys.path.copy()
-        sys.path = [str(zimage_src_path)] + sys.path
-
-        try:
-            import importlib.util
-
-            # CRITICAL: Load Z-Image's config module and inject into sys.modules
-            config_spec = importlib.util.spec_from_file_location(
-                "config",
-                zimage_src_path / "config" / "__init__.py"
-            )
-            config_module = importlib.util.module_from_spec(config_spec)
-            original_config = sys.modules.get('config')
-            sys.modules['config'] = config_module
-            config_spec.loader.exec_module(config_module)
-
-            # CRITICAL: Load SushiUI's custom transformer module and inject as zimage.transformer
-            # This ensures load_from_local_dir() uses our Block Swap integrated version
-            sushiui_transformer_path = Path(__file__).parent / "models" / "zimage_transformer.py"
-            transformer_spec = importlib.util.spec_from_file_location(
-                "zimage.transformer",
-                sushiui_transformer_path
-            )
-            transformer_module = importlib.util.module_from_spec(transformer_spec)
-            sys.modules['zimage.transformer'] = transformer_module
-            transformer_spec.loader.exec_module(transformer_module)
-            print(f"[ModelLoader] Injected SushiUI Z-Image Transformer (Block Swap integrated) into sys.modules")
-
-            # Now load Z-Image components (will use our custom transformer)
-            from utils.loader import load_from_local_dir
-
-            # Check if model_path is a single safetensors file (Comfy format) or directory (diffusers format)
-            is_single_file = os.path.isfile(model_path) and model_path.endswith('.safetensors')
-
-            if is_single_file:
-                print(f"[ModelLoader] Detected Comfy format safetensors, using existing Comfy loader")
-                # Use existing Comfy loader (already handles weight conversion)
-                # Restore sys.path first before calling Comfy loader
-                sys.path = original_sys_path
-
-                components = ModelLoader.load_zimage_from_comfy_safetensors(
-                    file_path=model_path,
-                    device=device,
-                    torch_dtype=torch_dtype
-                )
-
-                # Don't restore config module here - Comfy loader handles it
-                return components
-            else:
-                print(f"[ModelLoader] Loading from diffusers directory")
-                components = load_from_local_dir(
-                    model_path,
-                    device=device,
-                    dtype=torch_dtype,
-                    verbose=True,
-                    compile=False  # Disable compile for now
-                )
-
-            # Restore original config module
-            if original_config is not None:
-                sys.modules['config'] = original_config
-            else:
-                if 'config' in sys.modules:
-                    del sys.modules['config']
-
-            print(f"[ModelLoader] Z-Image components loaded successfully")
-            print(f"  - Transformer: {type(components['transformer']).__name__}")
-            print(f"  - VAE: {type(components['vae']).__name__}")
-            print(f"  - Text Encoder: {type(components['text_encoder']).__name__}")
-            print(f"  - Scheduler: {type(components['scheduler']).__name__}")
-
             return components
-
-        except Exception as e:
-            print(f"[ModelLoader] Error loading Z-Image: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-        finally:
-            # Restore original sys.path
-            sys.path = original_sys_path
+        else:
+            # Diffusers format directory
+            raise NotImplementedError(
+                f"Z-Image diffusers format directory loading is not yet implemented.\n"
+                f"Please use Comfy format (.safetensors) instead.\n"
+                f"Convert your model using ComfyUI's 'Save Model' feature."
+            )
 
     @staticmethod
     def load_from_diffusers(

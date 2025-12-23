@@ -538,10 +538,11 @@ class LayerPruner:
         pruned_model = self.create_pruned_model(layers_to_keep)
 
         print(f"[Pruner] Saving to {output_path}...")
+        print(f"[Pruner] Output dtype: {self.dtype}")
         state_dict = pruned_model.state_dict()
 
-        # Convert to CPU for saving
-        state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
+        # Convert to CPU and target dtype for saving
+        state_dict_cpu = {k: v.cpu().to(dtype=self.dtype) for k, v in state_dict.items()}
 
         save_file(state_dict_cpu, output_path)
         print(f"[Pruner] Saved pruned model to {output_path}")
@@ -564,7 +565,8 @@ def main():
     parser.add_argument("--strategy", type=str, default="greedy", choices=["greedy", "uniform", "skip_middle"], help="Pruning strategy")
     parser.add_argument("--output", type=str, required=True, help="Output path for pruned model (safetensors)")
     parser.add_argument("--device", type=str, default="cuda", help="Device for computation")
-    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"], help="Data type")
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"], help="Computation dtype")
+    parser.add_argument("--save-dtype", type=str, default=None, choices=["float32", "float16", "bfloat16"], help="Output dtype (default: same as --dtype)")
 
     args = parser.parse_args()
 
@@ -577,7 +579,8 @@ def main():
     print(f"Strategy: {args.strategy}")
     print(f"Output: {args.output}")
     print(f"Device: {args.device}")
-    print(f"dtype: {args.dtype}")
+    print(f"Computation dtype: {args.dtype}")
+    print(f"Save dtype: {args.save_dtype if args.save_dtype else args.dtype} (default)")
     print("=" * 60)
 
     # Check paths
@@ -604,12 +607,15 @@ def main():
     }
     dtype = dtype_map[args.dtype]
 
+    # Save dtype (default to same as computation dtype)
+    save_dtype = dtype_map[args.save_dtype] if args.save_dtype else dtype
+
     # Initialize pruner
     pruner = LayerPruner(
         model_path=args.model_path,
         samples=samples,
         device=device,
-        dtype=dtype
+        dtype=save_dtype  # Use save_dtype for storage
     )
 
     # Execute pruning strategy

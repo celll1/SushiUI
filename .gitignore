@@ -27,6 +27,10 @@ tagother/
 *.pth
 *.bin
 
+# Layer pruning outputs
+subapps/layer_pruning/*.safetensors
+subapps/layer_pruning/samples.json
+
 # 開発環境
 .env
 .env.local
@@ -97,6 +101,10 @@ backend/backups/*
 verify_*.py
 check_*.py
 update_*_logs.py
+test_*.py
+
+# CUDAコンパイル
+backend/core/training/optimizers/cuda/build_*/
 
 # 設定ファイル
 last_model.json

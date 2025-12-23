@@ -552,11 +552,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       use_pinned_memory: usePinnedMemory,
       num_optimizer_groups: numOptimizerGroups,
       multi_noise_timesteps: multiNoiseTimesteps,
-      timestep_sampling: multiNoiseTimesteps > 1 ? {
+      timestep_sampling: {
         distribution: timestepDistribution,
         min_timestep: timestepMin,
         max_timestep: timestepMax,
-      } : undefined,
+      },
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -930,6 +930,59 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               <p className="text-xs text-gray-500 mt-1">
                 Process each batch with multiple different timesteps (default: 1)
               </p>
+            </div>
+
+            {/* Timestep Sampling */}
+            <div className="col-span-2 border-t border-gray-700 pt-4">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3">Timestep Sampling</h3>
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Distribution</label>
+                  <select
+                    value={timestepDistribution}
+                    onChange={(e) => setTimestepDistribution(e.target.value)}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="uniform">Uniform (Default)</option>
+                    <option value="normal">Normal (Gaussian)</option>
+                    <option value="lognormal">Log-Normal</option>
+                    <option value="beta">Beta Distribution</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Probability distribution for sampling timesteps during training
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Min Timestep</label>
+                    <input
+                      type="number"
+                      value={timestepMin}
+                      onChange={(e) => setTimestepMin(parseFloat(e.target.value))}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Max Timestep</label>
+                    <input
+                      type="number"
+                      value={timestepMax}
+                      onChange={(e) => setTimestepMax(parseFloat(e.target.value))}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Timestep range for sampling (0.0 = clean, 1.0 = fully noised)
+                </p>
+              </div>
             </div>
 
             <div>

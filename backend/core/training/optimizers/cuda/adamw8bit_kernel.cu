@@ -91,6 +91,7 @@ __global__ void adamw_8bit_update_kernel(
     const float weight_decay,               // Weight decay (0.01)
     const float gnorm_scale,                // Gradient norm scaling (1.0 if no clipping)
     const int step,                         // Current step (for bias correction)
+    const bool cautious,                    // Cautious optimizer mode
     const int numel                         // Total number of elements
 ) {
     // Thread and block indices
@@ -133,7 +134,19 @@ __global__ void adamw_8bit_update_kernel(
     exp_avg_sq = beta2 * exp_avg_sq + (1.0f - beta2) * (g * g);
 
     // ============================================================
-    // Step 3: Compute block-level absmax using CUB BlockReduce
+    // Step 2.5: Cautious masking (if enabled)
+    // ============================================================
+    // Mask out updates where momentum and gradient disagree in sign
+    // Based on: https://arxiv.org/abs/2411.16085
+
+    float mask_val = 1.0f;
+    if (cautious) {
+        // Check sign alignment: exp_avg * g > 0 means same direction
+        mask_val = (exp_avg * g > 0.0f) ? 1.0f : 0.0f;
+    }
+
+    // ============================================================
+    // Step 3: Compute block-level absmax and mask mean using CUB BlockReduce
     // ============================================================
 
     // Each quantization block (256 elements) is processed by one CUDA block
@@ -141,9 +154,25 @@ __global__ void adamw_8bit_update_kernel(
 
     typedef cub::BlockReduce<float, THREADS_PER_BLOCK> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
+    __shared__ float shared_mask_mean;
 
     float local_absmax1 = fabsf(exp_avg);
     float local_absmax2 = fabsf(exp_avg_sq);
+
+    // Cautious: Compute block-level mask mean for normalization
+    if (cautious) {
+        float block_mask_sum = BlockReduce(temp_storage).Sum(mask_val);
+        __syncthreads();
+
+        if (local_tid == 0) {
+            // Mean of mask values in this block, clamped to avoid division by zero
+            shared_mask_mean = fmaxf(block_mask_sum / THREADS_PER_BLOCK, 1e-3f);
+        }
+        __syncthreads();
+
+        // Normalize mask by block mean
+        mask_val /= shared_mask_mean;
+    }
 
     // Block-level reduction for exp_avg (NO ATOMIC OPERATIONS!)
     float block_absmax1 = BlockReduce(temp_storage).Reduce(local_absmax1, cub::Max());
@@ -191,11 +220,13 @@ __global__ void adamw_8bit_update_kernel(
     float corrected_exp_avg_sq_sqrt = sqrtf(exp_avg_sq) / bias_correction2;
 
     // ============================================================
-    // Step 6: Update parameter (AdamW with decoupled weight decay)
+    // Step 6: Update parameter (AdamW with decoupled weight decay + cautious masking)
     // ============================================================
 
     float denom = corrected_exp_avg_sq_sqrt + eps;
-    float update = corrected_exp_avg / denom;
+
+    // Apply cautious mask to momentum (normalized by block mean)
+    float update = (corrected_exp_avg * mask_val) / denom;
 
     // Convert parameter to FP32 (handles FP32/FP16/BF16)
     float param_val;
@@ -247,6 +278,7 @@ void adamw_8bit_update_fp32(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int numel,
     cudaStream_t stream
 ) {
@@ -256,7 +288,7 @@ void adamw_8bit_update_fp32(
 
     adamw_8bit_update_kernel<float><<<num_cuda_blocks, THREADS_PER_BLOCK, 0, stream>>>(
         param, grad, state1, state2, absmax1, absmax2,
-        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel
+        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel
     );
 }
 
@@ -275,6 +307,7 @@ void adamw_8bit_update_fp16(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int numel,
     cudaStream_t stream
 ) {
@@ -282,7 +315,7 @@ void adamw_8bit_update_fp16(
 
     adamw_8bit_update_kernel<__half><<<num_cuda_blocks, THREADS_PER_BLOCK, 0, stream>>>(
         param, grad, state1, state2, absmax1, absmax2,
-        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel
+        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel
     );
 }
 
@@ -301,6 +334,7 @@ void adamw_8bit_update_bf16(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int numel,
     cudaStream_t stream
 ) {
@@ -308,7 +342,7 @@ void adamw_8bit_update_bf16(
 
     adamw_8bit_update_kernel<__nv_bfloat16><<<num_cuda_blocks, THREADS_PER_BLOCK, 0, stream>>>(
         param, grad, state1, state2, absmax1, absmax2,
-        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel
+        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel
     );
 }
 

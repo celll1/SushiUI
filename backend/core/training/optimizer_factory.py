@@ -128,6 +128,7 @@ class OptimizerFactory:
 
             # Ring Buffer allocator will be provided by trainer
             get_state_buffer = kwargs.get("get_state_buffer", None)
+            cautious = kwargs.get("cautious", False)
 
             optimizer = AdamW8bit_RingBuffer(
                 params,
@@ -136,9 +137,11 @@ class OptimizerFactory:
                 weight_decay=weight_decay,
                 eps=eps,
                 use_8bit=True,
+                cautious=cautious,
                 get_state_buffer=get_state_buffer,
             )
-            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer (bitsandbytes-based quantization)")
+            cautious_str = " (cautious mode)" if cautious else ""
+            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer{cautious_str}")
             return optimizer
 
         # Lion8bit Ring Buffer (custom implementation)
@@ -147,6 +150,7 @@ class OptimizerFactory:
 
             # Ring Buffer allocator will be provided by trainer
             get_state_buffer = kwargs.get("get_state_buffer", None)
+            cautious = kwargs.get("cautious", False)
 
             # Lion uses different default betas
             lion_betas = kwargs.get("lion_betas", (0.9, 0.99))
@@ -157,9 +161,11 @@ class OptimizerFactory:
                 betas=lion_betas,
                 weight_decay=weight_decay,
                 use_8bit=True,
+                cautious=cautious,
                 get_state_buffer=get_state_buffer,
             )
-            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer (bitsandbytes-based quantization)")
+            cautious_str = " (cautious mode)" if cautious else ""
+            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer{cautious_str}")
             return optimizer
 
         # bitsandbytes optimizers

@@ -1703,20 +1703,23 @@ class DiffusionPipelineManager:
             print(f"[Z-Image] Transformer not quantized (BF16 inference)")
 
         # Denoising loop with progress callback
-        actual_step = 0  # Track actual executed steps (excluding skipped last step)
+        # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
+        # We normalize progress to user-requested num_inference_steps for UI consistency
         for i, t in enumerate(timesteps):
             # Skip last step if t=0 (flow matching termination)
             if t == 0 and i == len(timesteps) - 1:
                 print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")
                 continue
 
-            actual_step += 1
+            # Calculate normalized step for progress bar (map timestep index to user-requested steps)
+            # For Heun: len(timesteps)=39, num_inference_steps=20 → normalize i to 0-19 range
+            normalized_step = int((i / len(timesteps)) * num_inference_steps)
 
             # Call progress callbacks (pass 0-indexed step for consistency with SD/SDXL)
             if progress_callback:
-                progress_callback(actual_step - 1, num_inference_steps, latents)
+                progress_callback(normalized_step, num_inference_steps, latents)
             if step_callback:
-                step_callback(actual_step - 1, num_inference_steps)
+                step_callback(normalized_step, num_inference_steps)
 
             # Normalize timestep to [0, 1]
             timestep = t.expand(latents.shape[0])
@@ -1825,8 +1828,8 @@ class DiffusionPipelineManager:
                 # Blend: mask * denoised + (1 - mask) * noised_original
                 latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original
 
-            if actual_step % 5 == 1 or actual_step == num_inference_steps:
-                print(f"[Z-Image] Step {actual_step}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
+            if normalized_step % 5 == 0 or normalized_step == num_inference_steps - 1:
+                print(f"[Z-Image] Step {normalized_step+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
 
         print(f"[Z-Image] Denoising loop complete")
 

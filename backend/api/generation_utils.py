@@ -173,7 +173,8 @@ def create_db_image_record(
         width = params.get("width", 512)
         height = params.get("height", 512)
 
-    # Get ancestral seed (always save the value, including -1)
+    # Get sampler and ancestral seed
+    sampler = params.get("sampler", "euler")
     ancestral_seed_value = params.get("ancestral_seed", -1)
 
     # Base record

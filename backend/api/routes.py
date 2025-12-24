@@ -3534,6 +3534,12 @@ class TrainingRunCreateRequest(BaseModel):
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
     optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
+    optimizer_is_paged: bool = False
+    optimizer_cautious: bool = False
+    optimizer_beta1: Optional[float] = None
+    optimizer_beta2: Optional[float] = None
+    optimizer_epsilon: Optional[float] = None
+    optimizer_weight_decay: Optional[float] = None
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -3707,6 +3713,12 @@ async def create_training_run(
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
                 optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 save_every=request.save_every,
@@ -3764,6 +3776,12 @@ async def create_training_run(
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
                 optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,

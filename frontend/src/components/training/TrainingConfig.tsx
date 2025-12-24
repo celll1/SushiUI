@@ -24,6 +24,49 @@ interface ModelInfo {
   source_dir: string;
 }
 
+// Optimizer configuration: defines available options and defaults for each optimizer
+const OPTIMIZER_CONFIGS: Record<string, {
+  label: string;
+  supportsPaged?: boolean;
+  supportsCautious?: boolean;
+  defaults: {
+    beta1?: string;
+    beta2?: string;
+    epsilon?: string;
+    weight_decay?: string;
+  };
+}> = {
+  "adamw": {
+    label: "AdamW",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "adamw8bit": {
+    label: "AdamW 8-bit",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "adamw8bit_ringbuffer": {
+    label: "AdamW 8-bit Ring Buffer",
+    supportsCautious: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "lion8bit": {
+    label: "Lion 8-bit",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.99", weight_decay: "0.01" }  // Lion uses different beta2
+  },
+  "lion8bit_ringbuffer": {
+    label: "Lion 8-bit Ring Buffer",
+    supportsCautious: true,
+    defaults: { beta1: "0.9", beta2: "0.99", weight_decay: "0.01" }
+  },
+  "adafactor": {
+    label: "Adafactor",
+    defaults: { weight_decay: "0.01" }  // Adafactor has adaptive beta1/beta2
+  }
+};
+
 export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfigProps) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
@@ -53,6 +96,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [learningRate, setLearningRate] = useState<string>("1e-5");
   const [lrScheduler, setLrScheduler] = useState("constant");
   const [optimizer, setOptimizer] = useState("adamw8bit");
+
+  // Optimizer-specific options
+  const [optimizerIsPaged, setOptimizerIsPaged] = useState(false);
+  const [optimizerCautious, setOptimizerCautious] = useState(false);
+  const [optimizerBeta1, setOptimizerBeta1] = useState<string>("0.9");
+  const [optimizerBeta2, setOptimizerBeta2] = useState<string>("0.999");
+  const [optimizerEpsilon, setOptimizerEpsilon] = useState<string>("1e-8");
+  const [optimizerWeightDecay, setOptimizerWeightDecay] = useState<string>("0.01");
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
@@ -183,6 +234,22 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       setVaeDtype("fp16");
     }
   }, [baseModelPath]);
+
+  // Reset optimizer hyperparameters when optimizer changes
+  useEffect(() => {
+    const config = OPTIMIZER_CONFIGS[optimizer];
+    if (!config) return;
+
+    const { beta1, beta2, epsilon, weight_decay } = config.defaults;
+    if (beta1 !== undefined) setOptimizerBeta1(beta1);
+    if (beta2 !== undefined) setOptimizerBeta2(beta2);
+    if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
+    if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+
+    // Reset options that are not supported by the new optimizer
+    if (!config.supportsPaged) setOptimizerIsPaged(false);
+    if (!config.supportsCautious) setOptimizerCautious(false);
+  }, [optimizer]);
 
   const loadDatasets = async () => {
     try {
@@ -318,6 +385,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       learningRate,
       lrScheduler,
       optimizer,
+      optimizerIsPaged,
+      optimizerCautious,
+      optimizerBeta1,
+      optimizerBeta2,
+      optimizerEpsilon,
+      optimizerWeightDecay,
       loraRank,
       loraAlpha,
       saveEvery,
@@ -404,6 +477,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.learningRate !== undefined) setLearningRate(config.learningRate);
     if (config.lrScheduler !== undefined) setLrScheduler(config.lrScheduler);
     if (config.optimizer !== undefined) setOptimizer(config.optimizer);
+    if (config.optimizerIsPaged !== undefined) setOptimizerIsPaged(config.optimizerIsPaged);
+    if (config.optimizerCautious !== undefined) setOptimizerCautious(config.optimizerCautious);
+    if (config.optimizerBeta1 !== undefined) setOptimizerBeta1(config.optimizerBeta1);
+    if (config.optimizerBeta2 !== undefined) setOptimizerBeta2(config.optimizerBeta2);
+    if (config.optimizerEpsilon !== undefined) setOptimizerEpsilon(config.optimizerEpsilon);
+    if (config.optimizerWeightDecay !== undefined) setOptimizerWeightDecay(config.optimizerWeightDecay);
     if (config.loraRank !== undefined) setLoraRank(config.loraRank);
     if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
     if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
@@ -509,6 +588,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       learning_rate: parseFloat(learningRate),
       lr_scheduler: lrScheduler,
       optimizer: optimizer,
+      optimizer_is_paged: optimizerIsPaged,
+      optimizer_cautious: optimizerCautious,
+      optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
+      optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
+      optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
+      optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
       save_every: saveEvery,
@@ -1010,40 +1095,140 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </select>
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Optimizer</label>
-              <select
-                value={optimizer}
-                onChange={(e) => setOptimizer(e.target.value)}
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              >
-                <optgroup label="Standard">
-                  <option value="adamw">AdamW (32-bit)</option>
+            {/* Optimizer Selection */}
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Optimizer</label>
+                <select
+                  value={optimizer}
+                  onChange={(e) => setOptimizer(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="adamw">AdamW</option>
                   <option value="adamw8bit">AdamW 8-bit</option>
-                  <option value="adafactor">Adafactor</option>
-                </optgroup>
-                <optgroup label="Ring Buffer (CPU State + 8-bit)">
                   <option value="adamw8bit_ringbuffer">AdamW 8-bit Ring Buffer</option>
-                  <option value="lion8bit_ringbuffer">Lion 8-bit Ring Buffer</option>
-                </optgroup>
-                <optgroup label="Paged (CPU Offload)">
-                  <option value="paged_adamw">Paged AdamW</option>
-                  <option value="paged_adamw8bit">Paged AdamW 8-bit</option>
-                </optgroup>
-                <optgroup label="Lion">
                   <option value="lion8bit">Lion 8-bit</option>
-                  <option value="paged_lion8bit">Paged Lion 8-bit</option>
-                </optgroup>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                {optimizer === "adafactor" && "Adaptive learning rate, no momentum"}
-                {optimizer === "lion8bit" && "Sign-based momentum"}
-                {optimizer === "adamw8bit_ringbuffer" && "8-bit quantization, CPU state allocation"}
-                {optimizer === "lion8bit_ringbuffer" && "Sign-based momentum, 8-bit quantization, CPU state allocation"}
-                {optimizer.startsWith("paged_") && "CPU offloading when GPU memory is full"}
-                {optimizer === "adamw8bit" && "8-bit quantization"}
-                {optimizer === "adamw" && "32-bit full precision"}
-              </p>
+                  <option value="lion8bit_ringbuffer">Lion 8-bit Ring Buffer</option>
+                  <option value="adafactor">Adafactor</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {optimizer === "adafactor" && "Adaptive learning rate"}
+                  {optimizer === "lion8bit" && "Sign-based momentum, 8-bit quantization"}
+                  {optimizer === "lion8bit_ringbuffer" && "Sign-based momentum, 8-bit quantization, CPU state allocation"}
+                  {optimizer === "adamw8bit_ringbuffer" && "8-bit quantization, CPU state allocation"}
+                  {optimizer === "adamw8bit" && "8-bit quantization"}
+                  {optimizer === "adamw" && "Full precision"}
+                </p>
+              </div>
+
+              {/* Optimizer Options */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* is_paged option (AdamW, AdamW8bit, Lion8bit) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsPaged && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="optimizer-is-paged"
+                      checked={optimizerIsPaged}
+                      onChange={(e) => setOptimizerIsPaged(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="optimizer-is-paged" className="text-xs text-gray-300 cursor-pointer">
+                      Paged (CPU offload)
+                    </label>
+                  </div>
+                )}
+
+                {/* cautious option (Ring Buffer optimizers only) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsCautious && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="optimizer-cautious"
+                      checked={optimizerCautious}
+                      onChange={(e) => setOptimizerCautious(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="optimizer-cautious" className="text-xs text-gray-300 cursor-pointer">
+                      Cautious (sign mask)
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Optimizer Hyperparameters */}
+              <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-gray-400">Hyperparameters</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const config = OPTIMIZER_CONFIGS[optimizer];
+                      if (!config) return;
+                      const { beta1, beta2, epsilon, weight_decay } = config.defaults;
+                      if (beta1 !== undefined) setOptimizerBeta1(beta1);
+                      if (beta2 !== undefined) setOptimizerBeta2(beta2);
+                      if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
+                      if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+                    }}
+                    className="text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Reset to Defaults
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Beta1 (not for Adafactor) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.beta1 !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beta1</label>
+                      <input
+                        type="text"
+                        value={optimizerBeta1}
+                        onChange={(e) => setOptimizerBeta1(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Beta2 (not for Adafactor) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.beta2 !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beta2</label>
+                      <input
+                        type="text"
+                        value={optimizerBeta2}
+                        onChange={(e) => setOptimizerBeta2(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Epsilon (not for Lion) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.epsilon !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Epsilon</label>
+                      <input
+                        type="text"
+                        value={optimizerEpsilon}
+                        onChange={(e) => setOptimizerEpsilon(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Weight Decay (all optimizers) */}
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Weight Decay</label>
+                    <input
+                      type="text"
+                      value={optimizerWeightDecay}
+                      onChange={(e) => setOptimizerWeightDecay(e.target.value)}
+                      className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 

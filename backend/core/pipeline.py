@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import gc
+import random
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,

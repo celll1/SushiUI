@@ -21,7 +21,7 @@ extern "C" {
         uint8_t* state1, uint8_t* state2,
         float* absmax1, float* absmax2,
         float beta1, float beta2, float eps, float lr,
-        float weight_decay, float gnorm_scale, int step, int numel,
+        float weight_decay, float gnorm_scale, int step, bool cautious, int numel,
         cudaStream_t stream
     );
 
@@ -30,7 +30,7 @@ extern "C" {
         uint8_t* state1, uint8_t* state2,
         float* absmax1, float* absmax2,
         float beta1, float beta2, float eps, float lr,
-        float weight_decay, float gnorm_scale, int step, int numel,
+        float weight_decay, float gnorm_scale, int step, bool cautious, int numel,
         cudaStream_t stream
     );
 
@@ -39,7 +39,7 @@ extern "C" {
         uint8_t* state1, uint8_t* state2,
         float* absmax1, float* absmax2,
         float beta1, float beta2, float eps, float lr,
-        float weight_decay, float gnorm_scale, int step, int numel,
+        float weight_decay, float gnorm_scale, int step, bool cautious, int numel,
         cudaStream_t stream
     );
 
@@ -64,7 +64,8 @@ void adamw_8bit_update(
     float lr,
     float weight_decay,
     float gnorm_scale,
-    int step
+    int step,
+    bool cautious
 ) {
     // Input validation
     TORCH_CHECK(param.is_cuda(), "Param must be on CUDA device");
@@ -112,7 +113,7 @@ void adamw_8bit_update(
             state2_gpu.data_ptr<uint8_t>(),
             absmax1.data_ptr<float>(),
             absmax2.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel,
             stream
         );
     } else if (param.dtype() == torch::kFloat16) {
@@ -123,7 +124,7 @@ void adamw_8bit_update(
             state2_gpu.data_ptr<uint8_t>(),
             absmax1.data_ptr<float>(),
             absmax2.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel,
             stream
         );
     } else if (param.dtype() == torch::kBFloat16) {
@@ -134,7 +135,7 @@ void adamw_8bit_update(
             state2_gpu.data_ptr<uint8_t>(),
             absmax1.data_ptr<float>(),
             absmax2.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, numel,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, numel,
             stream
         );
     } else {

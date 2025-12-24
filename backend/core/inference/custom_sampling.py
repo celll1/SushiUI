@@ -303,10 +303,14 @@ def custom_sampling_loop(
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
     print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # Ancestral generator handling:
+    # - If ancestral_generator is provided (seed != -1): Use it for all steps (reproducible)
+    # - If ancestral_generator is None (seed == -1): Pass None to scheduler.step() → PyTorch generates random noise per step
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler (reproducible)")
+    else:
+        print(f"[CustomSampling] Ancestral generator is None → random noise per step (non-reproducible)")
 
     # Get components
     unet = pipeline.unet
@@ -842,10 +846,14 @@ def custom_img2img_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # Ancestral generator handling:
+    # - If ancestral_generator is provided (seed != -1): Use it for all steps (reproducible)
+    # - If ancestral_generator is None (seed == -1): Pass None to scheduler.step() → PyTorch generates random noise per step
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler (reproducible)")
+    else:
+        print(f"[CustomSampling] Ancestral generator is None → random noise per step (non-reproducible)")
 
     # Get components
     unet = pipeline.unet
@@ -1376,10 +1384,14 @@ def custom_inpaint_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # Ancestral generator handling:
+    # - If ancestral_generator is provided (seed != -1): Use it for all steps (reproducible)
+    # - If ancestral_generator is None (seed == -1): Pass None to scheduler.step() → PyTorch generates random noise per step
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler (reproducible)")
+    else:
+        print(f"[CustomSampling] Ancestral generator is None → random noise per step (non-reproducible)")
 
     unet = pipeline.unet
     vae = pipeline.vae

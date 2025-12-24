@@ -232,7 +232,9 @@ class BaseTrainer(ABC):
         use_pinned_memory: bool = False,
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
-        # Optimizer hyperparameters
+        # Optimizer options and hyperparameters
+        optimizer_is_paged: bool = False,
+        optimizer_cautious: bool = False,
         optimizer_beta1: Optional[float] = None,
         optimizer_beta2: Optional[float] = None,
         optimizer_epsilon: Optional[float] = None,
@@ -279,7 +281,9 @@ class BaseTrainer(ABC):
         self.use_fused_backward = False  # Adafactor per-parameter updates
         self.fused_optimizer_groups = None  # FusedOptimizerGroups instance (for any optimizer)
 
-        # Optimizer hyperparameters (defaults will be used if None)
+        # Optimizer options and hyperparameters (defaults will be used if None)
+        self.optimizer_is_paged = optimizer_is_paged
+        self.optimizer_cautious = optimizer_cautious
         self.optimizer_beta1 = optimizer_beta1
         self.optimizer_beta2 = optimizer_beta2
         self.optimizer_epsilon = optimizer_epsilon
@@ -861,6 +865,10 @@ class BaseTrainer(ABC):
             else:
                 optimizer_kwargs["betas"] = (beta1, beta2)
                 optimizer_kwargs["eps"] = eps
+
+            # Pass cautious option to RingBuffer optimizers
+            if "ringbuffer" in optimizer_type.lower():
+                optimizer_kwargs["cautious"] = self.optimizer_cautious
 
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,

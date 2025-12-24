@@ -2687,12 +2687,15 @@ class DiffusionPipelineManager:
         # Create ancestral generator for stochastic samplers
         ancestral_seed = params.get("ancestral_seed", -1)
         if ancestral_seed == -1:
-            # Use main seed for ancestral sampling (default behavior)
-            ancestral_generator = None  # Will use generator in custom_sampling_loop
+            # Generate random seed for ancestral sampling (reproducible when saved)
+            actual_ancestral_seed = random.randint(0, 2147483647)
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+            print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
         else:
-            # Use separate seed for ancestral sampling
+            # Use specified seed for ancestral sampling
+            actual_ancestral_seed = ancestral_seed
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
-            print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+            print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
         # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
@@ -2902,7 +2905,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, actual_seed
+        return image, actual_seed, actual_ancestral_seed
 
     def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image
@@ -3362,7 +3365,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, actual_seed
+        return image, actual_seed, actual_ancestral_seed
 
     def generate_inpaint(
         self,

@@ -96,6 +96,7 @@ __global__ void lion_8bit_blockwise_update_kernel(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int N
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -137,6 +138,17 @@ __global__ void lion_8bit_blockwise_update_kernel(
 
     // 1. Interpolate: c_t = β1 * m_{t-1} + (1 - β1) * g_t
     float c_t = beta1 * m_prev + (1.0f - beta1) * g;
+
+    // 1.5. Cautious masking (if enabled)
+    // Apply mask to interpolated momentum before sign operation
+    if (cautious) {
+        // Binary mask: check sign alignment between c_t and gradient
+        float mask_val = (c_t * g > 0.0f) ? 1.0f : 0.0f;
+
+        // Apply mask to interpolated momentum
+        // Paper algorithm for Lion: sign(c_t * mask / (mask.mean() + eps))
+        c_t = c_t * mask_val;
+    }
 
     // 2. Sign-based update with weight decay
     float update = (c_t > 0.0f ? 1.0f : -1.0f) + weight_decay * param_val;
@@ -207,23 +219,24 @@ void launch_lion_8bit_blockwise_update_kernel(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int N,
     int blocks,
     int threads
 ) {
     lion_8bit_blockwise_update_kernel<T><<<blocks, threads>>>(
         param, grad, exp_avg, absmax,
-        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N
+        beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N
     );
 }
 
 // Explicit instantiations
 template void launch_lion_8bit_blockwise_update_kernel<float>(
-    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
 template void launch_lion_8bit_blockwise_update_kernel<__half>(
-    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
 template void launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
-    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, int, int, int);
+    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
 
 // ============================================================
 // Quantization Map Initialization (extern "C" for C++ linkage)

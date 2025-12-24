@@ -121,14 +121,22 @@ class AdamW8bit_RingBuffer(Optimizer):
             n = p.numel()
             num_blocks = (n + blocksize - 1) // blocksize
 
-            # Allocate quantized states on CPU (via Ring Buffer)
+            # Allocate quantized states
             if self.get_state_buffer is not None:
+                # Ring Buffer enabled: CPU allocation (for Block Swap integration)
                 state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
                 state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+
+                # Use pinned memory for faster CPU-GPU transfer
+                if hasattr(state['exp_avg'], 'pin_memory'):
+                    state['exp_avg'] = state['exp_avg'].pin_memory()
+                    state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
             else:
-                # Fallback: CPU allocation without Ring Buffer
-                state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device='cpu')
-                state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device='cpu')
+                # Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)
+                # Avoids CPU-GPU transfer overhead (~256ms/step for 350M params)
+                device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
+                state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device=device)
+                state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
 
             # Absmax metadata (small, ALWAYS keep on GPU even if param moves to CPU)
             # Must be on CUDA for CUDA kernel execution
@@ -294,11 +302,21 @@ class AdamW8bit_RingBuffer(Optimizer):
                     # 8-bit Quantized Update (CUDA Kernel)
                     # ============================================================
 
+                    # Ring Buffer optimization: Ensure states are on GPU
+                    # If states are on CPU (Ring Buffer), move to GPU with non_blocking=True
+                    exp_avg_gpu = state['exp_avg']
+                    exp_avg_sq_gpu = state['exp_avg_sq']
+
+                    if not state['exp_avg'].is_cuda:
+                        # Async transfer for Ring Buffer states (pinned memory)
+                        exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
+                        exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
+
                     self.ext.adamw_8bit_update(
                         p,                      # param (GPU)
                         grad,                   # grad (GPU)
-                        state['exp_avg'],       # state1 (CPU or GPU)
-                        state['exp_avg_sq'],    # state2 (CPU or GPU)
+                        exp_avg_gpu,            # state1 (GPU, async transferred if needed)
+                        exp_avg_sq_gpu,         # state2 (GPU, async transferred if needed)
                         state['absmax1'],       # absmax1 (GPU)
                         state['absmax2'],       # absmax2 (GPU)
                         beta1,
@@ -309,6 +327,12 @@ class AdamW8bit_RingBuffer(Optimizer):
                         gnorm_scale,
                         self.step_count
                     )
+
+                    # Ring Buffer: Copy updated states back to CPU
+                    if not state['exp_avg'].is_cuda:
+                        # Async copy back (non_blocking requires pinned memory)
+                        state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
+                        state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
                 else:
                     # ============================================================

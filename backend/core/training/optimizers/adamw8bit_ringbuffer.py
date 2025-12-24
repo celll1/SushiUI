@@ -28,6 +28,52 @@ from .adamw8bit_cuda import get_extension
 from .quantization_map import create_quantization_map
 
 
+def quantize_blockwise_inplace(tensor: torch.Tensor, blocksize: int = 256):
+    """
+    Quantize a tensor to UINT8 using blockwise quantization (for z initialization).
+
+    Args:
+        tensor: Input tensor (FP16/FP32) on GPU
+        blocksize: Block size for quantization (default: 256)
+
+    Returns:
+        quantized: UINT8 tensor (same shape as input)
+        absmax: FP32 absmax values per block [num_blocks]
+    """
+    n = tensor.numel()
+    num_blocks = (n + blocksize - 1) // blocksize
+
+    # Allocate output
+    device = tensor.device
+    quantized = torch.zeros(n, dtype=torch.uint8, device=device)
+    absmax = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+
+    # Flatten tensor for blockwise processing
+    flat = tensor.flatten()
+
+    # Process each block
+    for i in range(num_blocks):
+        start = i * blocksize
+        end = min(start + blocksize, n)
+        block = flat[start:end]
+
+        # Compute absmax for this block
+        block_absmax = block.abs().max()
+        absmax[i] = block_absmax
+
+        # Quantize: map [-absmax, absmax] -> [0, 255]
+        if block_absmax > 0:
+            # Normalize to [-1, 1], then map to [0, 255]
+            normalized = block / block_absmax  # [-1, 1]
+            quantized_block = ((normalized + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+            quantized[start:end] = quantized_block
+        else:
+            # Zero block
+            quantized[start:end] = 127  # Middle of [0, 255]
+
+    return quantized, absmax
+
+
 class AdamW8bit_RingBuffer(Optimizer):
     """
     AdamW optimizer with 8-bit blockwise quantization and Ring Buffer support.
@@ -155,7 +201,15 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if schedule_free:
                     # Schedule-Free: only exp_avg_sq and z (no exp_avg)
                     state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+
+                    # Initialize z by quantizing p, then transfer to CPU
+                    device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
+                    z_quantized, absmax_z_init = quantize_blockwise_inplace(p.detach().clone().to(device), blocksize)
+
+                    # Allocate CPU buffer and copy quantized z
                     state['z'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['z'].copy_(z_quantized.cpu())
+                    state['_absmax_z_init'] = absmax_z_init  # Temporary storage (on GPU)
 
                     # Use pinned memory for faster CPU-GPU transfer
                     if hasattr(state['exp_avg_sq'], 'pin_memory'):
@@ -178,7 +232,12 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if schedule_free:
                     # Schedule-Free: only exp_avg_sq and z (no exp_avg)
                     state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
-                    state['z'] = torch.zeros(n, dtype=torch.uint8, device=device)
+
+                    # Initialize z by quantizing p (z starts as a quantized copy of p)
+                    z_quantized, absmax_z_init = quantize_blockwise_inplace(p.detach().clone().to(device), blocksize)
+                    state['z'] = z_quantized
+                    # absmax_z will be allocated later, initialized with absmax_z_init
+                    state['_absmax_z_init'] = absmax_z_init  # Temporary storage
                 else:
                     # Standard AdamW: exp_avg and exp_avg_sq
                     state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device=device)
@@ -191,7 +250,13 @@ class AdamW8bit_RingBuffer(Optimizer):
             if schedule_free:
                 # Schedule-Free: absmax for exp_avg_sq and z
                 state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
-                state['absmax_z'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+
+                # Initialize absmax_z from quantized p (if available)
+                if '_absmax_z_init' in state:
+                    state['absmax_z'] = state['_absmax_z_init'].to(device)
+                    del state['_absmax_z_init']  # Clean up temporary storage
+                else:
+                    state['absmax_z'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
             else:
                 # Standard AdamW: absmax for exp_avg and exp_avg_sq
                 state['absmax1'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
@@ -342,9 +407,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                     "Call optimizer.train() before training loop."
                 )
 
-            # Increment step counter
-            self.k += 1
-
         for group in self.param_groups:
             beta1, beta2 = group['betas']
             lr = group['lr']
@@ -361,9 +423,10 @@ class AdamW8bit_RingBuffer(Optimizer):
                 r = group['r']
                 weight_lr_power = group['weight_lr_power']
 
-                # Linear warmup
-                if self.k <= warmup_steps:
-                    sched = self.k / warmup_steps
+                # Linear warmup (use k+1 because k increments at end of step)
+                k = self.k
+                if k < warmup_steps:
+                    sched = (k + 1) / warmup_steps
                 else:
                     sched = 1.0
 
@@ -372,8 +435,8 @@ class AdamW8bit_RingBuffer(Optimizer):
                 # Update lr_max
                 self.lr_max = max(scheduled_lr, self.lr_max)
 
-                # Compute weight for averaging
-                weight = ((self.k) ** r) * (self.lr_max ** weight_lr_power)
+                # Compute weight for averaging (use k+1)
+                weight = ((k + 1) ** r) * (self.lr_max ** weight_lr_power)
                 self.weight_sum += weight
 
                 # Averaging coefficient
@@ -381,9 +444,13 @@ class AdamW8bit_RingBuffer(Optimizer):
                     ckp1 = weight / self.weight_sum
                 except ZeroDivisionError:
                     ckp1 = 0.0
+
+                # Bias correction (use k+1, not step_count)
+                bias_correction2_sf = 1 - beta2 ** (k + 1)
             else:
                 scheduled_lr = lr
                 ckp1 = 0.0
+                bias_correction2_sf = None
 
             for p in group['params']:
                 if p.grad is None:
@@ -415,26 +482,37 @@ class AdamW8bit_RingBuffer(Optimizer):
                         # ============================================================
 
                         # Ring Buffer optimization: Ensure states are on GPU
-                        exp_avg_sq_gpu = state['exp_avg_sq']
                         z_gpu = state['z']
+                        exp_avg_sq_gpu = state['exp_avg_sq']
 
-                        if not state['exp_avg_sq'].is_cuda:
+                        if not state['z'].is_cuda:
                             # Async transfer for Ring Buffer states (pinned memory)
-                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
                             z_gpu = state['z'].cuda(non_blocking=True)
+                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
 
                         # Call Schedule-Free CUDA kernel
-                        # TODO: Implement adamw_8bit_schedulefree_update kernel
-                        # For now, use FP32 fallback for Schedule-Free
-                        raise NotImplementedError(
-                            "Schedule-Free 8-bit kernel not yet implemented. "
-                            "Please use use_8bit=False for Schedule-Free."
+                        self.ext.adamw_8bit_schedulefree_update(
+                            p,                      # param (y, GPU)
+                            grad,                   # grad (GPU)
+                            z_gpu,                  # z (UINT8, GPU/async transferred)
+                            exp_avg_sq_gpu,         # exp_avg_sq (UINT8, GPU/async transferred)
+                            state['absmax_z'],      # absmax_z (FP32, GPU)
+                            state['absmax2'],       # absmax2 (FP32, GPU)
+                            beta1,
+                            beta2,
+                            eps,
+                            scheduled_lr,
+                            weight_decay,
+                            ckp1,
+                            gnorm_scale,
+                            bias_correction2_sf
                         )
 
                         # Ring Buffer: Copy updated states back to CPU
-                        if not state['exp_avg_sq'].is_cuda:
-                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
+                        if not state['z'].is_cuda:
+                            # Async copy back (non_blocking requires pinned memory)
                             state['z'].copy_(z_gpu, non_blocking=True)
+                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
                     else:
                         # ============================================================
@@ -491,9 +569,8 @@ class AdamW8bit_RingBuffer(Optimizer):
                         # Update exp_avg_sq (second moment)
                         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                        # Bias correction for second moment
-                        bias_correction2 = 1 - beta2 ** self.step_count
-                        denom = (exp_avg_sq / bias_correction2).sqrt_().add_(eps)
+                        # Bias correction for second moment (use Schedule-Free k+1)
+                        denom = (exp_avg_sq / bias_correction2_sf).sqrt_().add_(eps)
 
                         # Normalize gradient (reuse grad buffer for memory efficiency)
                         grad_normalized = grad.div_(denom)
@@ -539,6 +616,10 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                         # Apply update
                         p.addcdiv_(corrected_exp_avg, denom, value=-step_size)
+
+        # Schedule-Free: Increment k after all parameter updates
+        if self.schedule_free:
+            self.k += 1
 
         return loss
 

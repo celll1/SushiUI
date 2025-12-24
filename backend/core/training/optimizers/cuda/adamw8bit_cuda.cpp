@@ -44,6 +44,37 @@ extern "C" {
     );
 
     void init_quantization_maps(const float* host_qmap_signed, const float* host_qmap_unsigned);
+
+    // Schedule-Free kernels
+    void adamw_8bit_schedulefree_update_fp32(
+        float* param, const float* grad,
+        uint8_t* state_z, uint8_t* state_exp_avg_sq,
+        float* absmax_z, float* absmax2,
+        float beta1, float beta2, float eps, float lr,
+        float weight_decay, float ckp1, float gnorm_scale,
+        float bias_correction2, int numel,
+        cudaStream_t stream
+    );
+
+    void adamw_8bit_schedulefree_update_fp16(
+        at::Half* param, const at::Half* grad,
+        uint8_t* state_z, uint8_t* state_exp_avg_sq,
+        float* absmax_z, float* absmax2,
+        float beta1, float beta2, float eps, float lr,
+        float weight_decay, float ckp1, float gnorm_scale,
+        float bias_correction2, int numel,
+        cudaStream_t stream
+    );
+
+    void adamw_8bit_schedulefree_update_bf16(
+        at::BFloat16* param, const at::BFloat16* grad,
+        uint8_t* state_z, uint8_t* state_exp_avg_sq,
+        float* absmax_z, float* absmax2,
+        float beta1, float beta2, float eps, float lr,
+        float weight_decay, float ckp1, float gnorm_scale,
+        float bias_correction2, int numel,
+        cudaStream_t stream
+    );
 }
 
 
@@ -183,6 +214,117 @@ void init_quantization_maps_wrapper(torch::Tensor qmap_signed, torch::Tensor qma
 
 
 // ============================================================
+// PyTorch Wrapper: AdamW 8-bit Schedule-Free Update
+// ============================================================
+
+void adamw_8bit_schedulefree_update(
+    torch::Tensor param,
+    torch::Tensor grad,
+    torch::Tensor state_z,
+    torch::Tensor state_exp_avg_sq,
+    torch::Tensor absmax_z,
+    torch::Tensor absmax2,
+    float beta1,
+    float beta2,
+    float eps,
+    float lr,
+    float weight_decay,
+    float ckp1,
+    float gnorm_scale,
+    float bias_correction2
+) {
+    // Input validation
+    TORCH_CHECK(param.is_cuda(), "Param must be on CUDA device");
+    TORCH_CHECK(grad.is_cuda(), "Grad must be on CUDA device");
+    TORCH_CHECK(param.dtype() == grad.dtype(), "Param and Grad must have same dtype");
+    TORCH_CHECK(state_z.dtype() == torch::kUInt8, "State z must be UINT8");
+    TORCH_CHECK(state_exp_avg_sq.dtype() == torch::kUInt8, "State exp_avg_sq must be UINT8");
+    TORCH_CHECK(absmax_z.dtype() == torch::kFloat32, "Absmax z must be FP32");
+    TORCH_CHECK(absmax2.dtype() == torch::kFloat32, "Absmax2 must be FP32");
+    TORCH_CHECK(absmax_z.is_cuda(), "Absmax z must be on CUDA device");
+    TORCH_CHECK(absmax2.is_cuda(), "Absmax2 must be on CUDA device");
+
+    int numel = param.numel();
+
+    // ============================================================
+    // Ring Buffer Support: CPU→GPU Transfer
+    // ============================================================
+
+    torch::Tensor state_z_gpu = state_z;
+    torch::Tensor state_exp_avg_sq_gpu = state_exp_avg_sq;
+
+    bool state_z_is_cpu = !state_z.is_cuda();
+    bool state_exp_avg_sq_is_cpu = !state_exp_avg_sq.is_cuda();
+
+    // Move states to GPU if on CPU (Ring Buffer case)
+    if (state_z_is_cpu) {
+        state_z_gpu = state_z.to(param.device(), /*non_blocking=*/true);
+    }
+    if (state_exp_avg_sq_is_cpu) {
+        state_exp_avg_sq_gpu = state_exp_avg_sq.to(param.device(), /*non_blocking=*/true);
+    }
+
+    // Get CUDA stream
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // ============================================================
+    // Call CUDA kernel (dtype dispatch)
+    // ============================================================
+
+    if (param.dtype() == torch::kFloat32) {
+        adamw_8bit_schedulefree_update_fp32(
+            param.data_ptr<float>(),
+            grad.data_ptr<float>(),
+            state_z_gpu.data_ptr<uint8_t>(),
+            state_exp_avg_sq_gpu.data_ptr<uint8_t>(),
+            absmax_z.data_ptr<float>(),
+            absmax2.data_ptr<float>(),
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
+            numel, stream
+        );
+    } else if (param.dtype() == torch::kFloat16) {
+        adamw_8bit_schedulefree_update_fp16(
+            reinterpret_cast<at::Half*>(param.data_ptr<at::Half>()),
+            reinterpret_cast<const at::Half*>(grad.data_ptr<at::Half>()),
+            state_z_gpu.data_ptr<uint8_t>(),
+            state_exp_avg_sq_gpu.data_ptr<uint8_t>(),
+            absmax_z.data_ptr<float>(),
+            absmax2.data_ptr<float>(),
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
+            numel, stream
+        );
+    } else if (param.dtype() == torch::kBFloat16) {
+        adamw_8bit_schedulefree_update_bf16(
+            reinterpret_cast<at::BFloat16*>(param.data_ptr<at::BFloat16>()),
+            reinterpret_cast<const at::BFloat16*>(grad.data_ptr<at::BFloat16>()),
+            state_z_gpu.data_ptr<uint8_t>(),
+            state_exp_avg_sq_gpu.data_ptr<uint8_t>(),
+            absmax_z.data_ptr<float>(),
+            absmax2.data_ptr<float>(),
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
+            numel, stream
+        );
+    } else {
+        TORCH_CHECK(false, "Unsupported dtype (must be FP32, FP16, or BF16)");
+    }
+
+    // ============================================================
+    // Ring Buffer Support: GPU→CPU Copy-back
+    // ============================================================
+
+    if (state_z_is_cpu) {
+        state_z.copy_(state_z_gpu, /*non_blocking=*/true);
+    }
+    if (state_exp_avg_sq_is_cpu) {
+        state_exp_avg_sq.copy_(state_exp_avg_sq_gpu, /*non_blocking=*/true);
+    }
+
+    // Synchronize to ensure copy-back completes
+    cudaStreamSynchronize(stream);
+}
+
+
+// ============================================================
 // Python Bindings
 // ============================================================
 
@@ -191,6 +333,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "adamw_8bit_update",
         &adamw_8bit_update,
         "AdamW update with 8-bit blockwise quantized states (CUDA, Ring Buffer compatible)"
+    );
+    m.def(
+        "adamw_8bit_schedulefree_update",
+        &adamw_8bit_schedulefree_update,
+        "AdamW Schedule-Free update with 8-bit quantized z and exp_avg_sq (CUDA, Ring Buffer compatible)"
     );
     m.def(
         "init_quantization_maps",

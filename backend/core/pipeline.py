@@ -1809,18 +1809,26 @@ class DiffusionPipelineManager:
             else:
                 noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
 
-            # Scheduler step (flow matching with stochastic sampling support)
+            # Scheduler step (flow matching)
             noise_pred = -noise_pred.squeeze(2)
 
-            # Debug: Log s_churn on first step
+            # Debug: Log ancestral sampling on first step
             if i == 0:
-                print(f"[Z-Image] Scheduler.step() called with s_churn={s_churn}, s_noise={s_noise}, generator={'None' if ancestral_generator is None else 'provided'}")
+                print(f"[Z-Image] Ancestral sampling: {'Enabled' if s_churn > 0 else 'Disabled'} (s_churn={s_churn})")
 
+            # Note: FlowMatchEulerDiscreteScheduler.step() accepts s_churn/s_noise but doesn't implement them
+            # The parameters exist for API compatibility but are not used internally
             latents = scheduler.step(
                 noise_pred.to(torch.float32), t, latents,
-                s_churn=s_churn, s_noise=s_noise, generator=ancestral_generator,
                 return_dict=False
             )[0]
+
+            # Manual ancestral noise injection (Euler a behavior for Flow Matching)
+            # Add stochastic noise after each step (except the last)
+            if s_churn > 0 and i < len(timesteps) - 1:
+                noise = torch.randn_like(latents, generator=ancestral_generator)
+                # Scale noise by s_churn (strength) and s_noise (scaling factor)
+                latents = latents + noise * s_churn * s_noise
 
             # Inpaint mask blending: blend denoised latents with noised original latents
             if mask_latent is not None and original_latents is not None:

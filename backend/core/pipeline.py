@@ -618,11 +618,23 @@ class DiffusionPipelineManager:
             # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
-                import random
                 seed = random.randint(0, 2**32 - 1)
 
             generator = torch.Generator(device=self.device)
             generator.manual_seed(seed)
+
+            # Create ancestral generator for stochastic samplers
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for ancestral sampling (reproducible when saved)
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+                print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                # Use specified seed for ancestral sampling
+                actual_ancestral_seed = ancestral_seed
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+                print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
             # Z-Image parameters
             prompt = params.get("prompt", "")
@@ -774,7 +786,7 @@ class DiffusionPipelineManager:
 
             print("[Z-Image] Generation completed")
 
-            return images[0], seed
+            return images[0], seed, actual_ancestral_seed
 
         except Exception as e:
             print(f"[Z-Image] Generation error: {e}")
@@ -832,11 +844,23 @@ class DiffusionPipelineManager:
             # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
-                import random
                 seed = random.randint(0, 2**32 - 1)
 
             generator = torch.Generator(device=self.device)
             generator.manual_seed(seed)
+
+            # Create ancestral generator for stochastic samplers
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for ancestral sampling (reproducible when saved)
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+                print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                # Use specified seed for ancestral sampling
+                actual_ancestral_seed = ancestral_seed
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+                print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
             # Z-Image parameters
             prompt = params.get("prompt", "")
@@ -1075,7 +1099,7 @@ class DiffusionPipelineManager:
 
             print("[Z-Image] img2img generation completed")
 
-            return images[0], seed
+            return images[0], seed, actual_ancestral_seed
 
         except Exception as e:
             print(f"[Z-Image] img2img generation error: {e}")
@@ -1385,7 +1409,7 @@ class DiffusionPipelineManager:
 
             print("[Z-Image] inpaint generation completed")
 
-            return images[0], seed
+            return images[0], seed, actual_ancestral_seed
 
         except Exception as e:
             print(f"[Z-Image] inpaint generation error: {e}")
@@ -1719,7 +1743,7 @@ class DiffusionPipelineManager:
 
             # Scheduler step (flow matching)
             noise_pred = -noise_pred.squeeze(2)
-            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, generator=ancestral_generator, return_dict=False)[0]
 
             # Inpaint mask blending: blend denoised latents with noised original latents
             if mask_latent is not None and original_latents is not None:
@@ -3419,6 +3443,19 @@ class DiffusionPipelineManager:
             seed = torch.randint(0, 2**32 - 1, (1,)).item()
         generator = torch.Generator(device=self.device).manual_seed(seed)
 
+        # Create ancestral generator for stochastic samplers
+        ancestral_seed = params.get("ancestral_seed", -1)
+        if ancestral_seed == -1:
+            # Generate random seed for ancestral sampling (reproducible when saved)
+            actual_ancestral_seed = random.randint(0, 2147483647)
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+            print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
+        else:
+            # Use specified seed for ancestral sampling
+            actual_ancestral_seed = ancestral_seed
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+            print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
+
         # Resize images if needed
         target_width = params.get("width", settings.default_width)
         target_height = params.get("height", settings.default_height)
@@ -3675,7 +3712,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, seed
+        return image, seed, actual_ancestral_seed
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

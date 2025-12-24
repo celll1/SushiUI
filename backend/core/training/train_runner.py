@@ -481,6 +481,14 @@ def main():
             text_encoder_1_lr = train_config.get('text_encoder_1_lr')
             text_encoder_2_lr = train_config.get('text_encoder_2_lr')
 
+            # Get optimizer options and hyperparameters from train_config
+            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
+            optimizer_cautious = train_config.get('optimizer_cautious', False)
+            optimizer_beta1 = train_config.get('optimizer_beta1')
+            optimizer_beta2 = train_config.get('optimizer_beta2')
+            optimizer_epsilon = train_config.get('optimizer_epsilon')
+            optimizer_weight_decay = train_config.get('optimizer_weight_decay')
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -502,6 +510,13 @@ def main():
                 text_encoder_lr=text_encoder_lr,
                 text_encoder_1_lr=text_encoder_1_lr,
                 text_encoder_2_lr=text_encoder_2_lr,
+                # Optimizer options and hyperparameters
+                optimizer_is_paged=optimizer_is_paged,
+                optimizer_cautious=optimizer_cautious,
+                optimizer_beta1=optimizer_beta1,
+                optimizer_beta2=optimizer_beta2,
+                optimizer_epsilon=optimizer_epsilon,
+                optimizer_weight_decay=optimizer_weight_decay,
             )
 
             # Setup optimizer

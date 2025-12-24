@@ -103,7 +103,9 @@ class LoRATrainer(BaseTrainer):
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
-        # Optimizer hyperparameters
+        # Optimizer options and hyperparameters
+        optimizer_is_paged: bool = False,
+        optimizer_cautious: bool = False,
         optimizer_beta1: Optional[float] = None,
         optimizer_beta2: Optional[float] = None,
         optimizer_epsilon: Optional[float] = None,
@@ -154,6 +156,8 @@ class LoRATrainer(BaseTrainer):
             debug_vram=debug_vram,
             use_flash_attention=use_flash_attention,
             min_snr_gamma=min_snr_gamma,
+            optimizer_is_paged=optimizer_is_paged,
+            optimizer_cautious=optimizer_cautious,
             optimizer_beta1=optimizer_beta1,
             optimizer_beta2=optimizer_beta2,
             optimizer_epsilon=optimizer_epsilon,

@@ -748,7 +748,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, progress_callback, step_callback
+                generator, ancestral_generator, progress_callback, step_callback
             )
 
             # Offload Transformer to CPU to free VRAM for VAE
@@ -1059,7 +1059,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, progress_callback, step_callback,
+                generator, ancestral_generator, progress_callback, step_callback,
                 init_latents=noised_latents,
                 timesteps_override=timesteps_img2img
             )
@@ -1367,7 +1367,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, progress_callback, step_callback,
+                generator, ancestral_generator, progress_callback, step_callback,
                 init_latents=noised_latents,
                 timesteps_override=timesteps_inpaint,
                 mask_latent=mask_latent,
@@ -1554,7 +1554,7 @@ class DiffusionPipelineManager:
     def _zimage_denoising_loop(
         self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-        generator, progress_callback, step_callback,
+        generator, ancestral_generator, progress_callback, step_callback,
         init_latents: Optional[torch.Tensor] = None,
         timesteps_override: Optional[torch.Tensor] = None,
         mask_latent: Optional[torch.Tensor] = None,

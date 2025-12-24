@@ -1265,15 +1265,31 @@ async def get_current_model():
 
 @router.get("/samplers")
 async def get_samplers():
-    """Get available samplers (static list, doesn't require model)"""
+    """Get available samplers (depends on current model type: SD/SDXL vs Z-Image)"""
     try:
-        samplers = get_available_samplers()
-        display_names = get_sampler_display_names()
-        return {
-            "samplers": [
+        # Check if current model is Z-Image
+        is_zimage = pipeline_manager.is_zimage_model
+
+        if is_zimage:
+            # Z-Image (Flow Matching) samplers
+            # Only Euler and Heun are truly different; other names map to Euler
+            samplers_list = [
+                {"id": "euler", "name": "Euler (Flow Match)"},
+                {"id": "euler_a", "name": "Euler a (Flow Match + Stochastic)"},
+                {"id": "heun", "name": "Heun (Flow Match)"},
+            ]
+        else:
+            # SD/SDXL samplers (standard diffusion)
+            samplers = get_available_samplers()
+            display_names = get_sampler_display_names()
+            samplers_list = [
                 {"id": sampler_id, "name": display_names.get(sampler_id, sampler_id)}
                 for sampler_id in samplers
             ]
+
+        return {
+            "samplers": samplers_list,
+            "is_zimage": is_zimage
         }
     except Exception as e:
         print(f"[ERROR] Failed to get samplers: {e}")

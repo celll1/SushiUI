@@ -559,6 +559,45 @@ class DiffusionPipelineManager:
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
         print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
+    def _get_zimage_scheduler(self, sampler: str):
+        """
+        Get appropriate Flow Match scheduler for Z-Image based on sampler selection
+
+        Z-Image uses Flow Matching schedulers (different from SD/SDXL).
+        Maps user-selected sampler to compatible Flow Match scheduler.
+
+        Sampler mapping:
+        - euler, euler_a, dpm_2, dpm_2_a, dpmpp_2m, dpmpp_sde → FlowMatchEulerDiscreteScheduler
+        - heun → FlowMatchHeunDiscreteScheduler
+        - lcm → FlowMatchLCMScheduler
+
+        Args:
+            sampler: User-selected sampler name (e.g., "euler", "heun")
+
+        Returns:
+            Configured Flow Match scheduler instance
+        """
+        from diffusers.schedulers import (
+            FlowMatchEulerDiscreteScheduler,
+            FlowMatchHeunDiscreteScheduler,
+        )
+
+        base_scheduler = self.zimage_components["scheduler"]
+        config = base_scheduler.config
+
+        # Map sampler to Flow Match scheduler class
+        if sampler == "heun":
+            scheduler_class = FlowMatchHeunDiscreteScheduler
+            print(f"[Z-Image] Using FlowMatchHeunDiscreteScheduler for sampler '{sampler}'")
+        else:
+            # All other samplers use Euler (default for Flow Matching)
+            # euler, euler_a, dpm_2, dpm_2_a, dpmpp_2m, dpmpp_sde, etc.
+            scheduler_class = FlowMatchEulerDiscreteScheduler
+            print(f"[Z-Image] Using FlowMatchEulerDiscreteScheduler for sampler '{sampler}'")
+
+        # Create scheduler with same config as base
+        return scheduler_class.from_config(config)
+
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
 
@@ -582,7 +621,11 @@ class DiffusionPipelineManager:
             vae = self.zimage_components["vae"]
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
-            scheduler = self.zimage_components["scheduler"]
+
+            # Get scheduler based on user-selected sampler
+            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
+            sampler = params.get("sampler", "euler")
+            scheduler = self._get_zimage_scheduler(sampler)
 
             # Set attention backend based on global settings or params
             attention_type = params.get("attention_type", settings.attention_type)
@@ -637,9 +680,7 @@ class DiffusionPipelineManager:
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
             # Z-Image: ancestral sampling via s_churn parameter
-            # Note: Z-Image uses FlowMatchEulerDiscreteScheduler (fixed), not switchable like SD/SDXL
             # To enable ancestral behavior, set s_churn > 0
-            sampler = params.get("sampler", "euler")
             is_ancestral = sampler in ["euler_a", "dpm2_a"]
             s_churn = 1.0 if is_ancestral else 0.0  # 0.0 = deterministic, 1.0 = stochastic
             s_noise = 1.0  # Noise scale (always 1.0)
@@ -826,7 +867,11 @@ class DiffusionPipelineManager:
             vae = self.zimage_components["vae"]
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
-            scheduler = self.zimage_components["scheduler"]
+
+            # Get scheduler based on user-selected sampler
+            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
+            sampler = params.get("sampler", "euler")
+            scheduler = self._get_zimage_scheduler(sampler)
 
             # Set attention backend
             attention_type = params.get("attention_type", settings.attention_type)
@@ -872,9 +917,7 @@ class DiffusionPipelineManager:
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
             # Z-Image: ancestral sampling via s_churn parameter
-            # Note: Z-Image uses FlowMatchEulerDiscreteScheduler (fixed), not switchable like SD/SDXL
             # To enable ancestral behavior, set s_churn > 0
-            sampler = params.get("sampler", "euler")
             is_ancestral = sampler in ["euler_a", "dpm2_a"]
             s_churn = 1.0 if is_ancestral else 0.0  # 0.0 = deterministic, 1.0 = stochastic
             s_noise = 1.0  # Noise scale (always 1.0)

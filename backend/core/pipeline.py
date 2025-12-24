@@ -2678,7 +2678,6 @@ class DiffusionPipelineManager:
         seed = params.get("seed", -1)
         if seed < 0:
             # Generate random seed
-            import random
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed
@@ -2954,7 +2953,6 @@ class DiffusionPipelineManager:
         seed = params.get("seed", -1)
         if seed < 0:
             # Generate random seed
-            import random
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed

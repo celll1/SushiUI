@@ -239,6 +239,11 @@ class BaseTrainer(ABC):
         optimizer_beta2: Optional[float] = None,
         optimizer_epsilon: Optional[float] = None,
         optimizer_weight_decay: Optional[float] = None,
+        # Schedule-Free optimizer options (RingBuffer optimizers only)
+        optimizer_schedule_free: bool = False,
+        optimizer_warmup_steps: int = 0,
+        optimizer_schedule_free_r: float = 0.0,
+        optimizer_schedule_free_weight_lr_power: float = 2.0,
     ):
         """
         Initialize base trainer.
@@ -288,6 +293,12 @@ class BaseTrainer(ABC):
         self.optimizer_beta2 = optimizer_beta2
         self.optimizer_epsilon = optimizer_epsilon
         self.optimizer_weight_decay = optimizer_weight_decay
+
+        # Schedule-Free optimizer options (RingBuffer optimizers only)
+        self.optimizer_schedule_free = optimizer_schedule_free
+        self.optimizer_warmup_steps = optimizer_warmup_steps
+        self.optimizer_schedule_free_r = optimizer_schedule_free_r
+        self.optimizer_schedule_free_weight_lr_power = optimizer_schedule_free_weight_lr_power
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -866,9 +877,13 @@ class BaseTrainer(ABC):
                 optimizer_kwargs["betas"] = (beta1, beta2)
                 optimizer_kwargs["eps"] = eps
 
-            # Pass cautious option to RingBuffer optimizers
+            # Pass cautious and Schedule-Free options to RingBuffer optimizers
             if "ringbuffer" in optimizer_type.lower():
                 optimizer_kwargs["cautious"] = self.optimizer_cautious
+                optimizer_kwargs["schedule_free"] = self.optimizer_schedule_free
+                optimizer_kwargs["warmup_steps"] = self.optimizer_warmup_steps
+                optimizer_kwargs["r"] = self.optimizer_schedule_free_r
+                optimizer_kwargs["weight_lr_power"] = self.optimizer_schedule_free_weight_lr_power
 
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,

@@ -110,6 +110,11 @@ class LoRATrainer(BaseTrainer):
         optimizer_beta2: Optional[float] = None,
         optimizer_epsilon: Optional[float] = None,
         optimizer_weight_decay: Optional[float] = None,
+        # Schedule-Free optimizer options (RingBuffer optimizers only)
+        optimizer_schedule_free: bool = False,
+        optimizer_warmup_steps: int = 0,
+        optimizer_schedule_free_r: float = 0.0,
+        optimizer_schedule_free_weight_lr_power: float = 2.0,
     ):
         """
         Initialize LoRA trainer.
@@ -162,6 +167,10 @@ class LoRATrainer(BaseTrainer):
             optimizer_beta2=optimizer_beta2,
             optimizer_epsilon=optimizer_epsilon,
             optimizer_weight_decay=optimizer_weight_decay,
+            optimizer_schedule_free=optimizer_schedule_free,
+            optimizer_warmup_steps=optimizer_warmup_steps,
+            optimizer_schedule_free_r=optimizer_schedule_free_r,
+            optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
         )
 
         # Override log prefix

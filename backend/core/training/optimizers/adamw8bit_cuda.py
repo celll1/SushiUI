@@ -39,10 +39,16 @@ def get_extension():
     # Get source directory
     cuda_dir = Path(__file__).parent / "cuda"
     kernel_cu = cuda_dir / "adamw8bit_kernel.cu"
+    schedulefree_kernel_cu = cuda_dir / "adamw8bit_schedulefree_kernel.cu"
+    schedulefree_launcher_cu = cuda_dir / "adamw8bit_schedulefree_launcher.cu"
     wrapper_cpp = cuda_dir / "adamw8bit_cuda.cpp"
 
     if not kernel_cu.exists():
         raise RuntimeError(f"[AdamW8bit_CUDA] Kernel source not found: {kernel_cu}")
+    if not schedulefree_kernel_cu.exists():
+        raise RuntimeError(f"[AdamW8bit_CUDA] Schedule-Free kernel source not found: {schedulefree_kernel_cu}")
+    if not schedulefree_launcher_cu.exists():
+        raise RuntimeError(f"[AdamW8bit_CUDA] Schedule-Free launcher source not found: {schedulefree_launcher_cu}")
     if not wrapper_cpp.exists():
         raise RuntimeError(f"[AdamW8bit_CUDA] Wrapper source not found: {wrapper_cpp}")
 
@@ -56,6 +62,8 @@ def get_extension():
 
     print("[AdamW8bit_CUDA] Compiling CUDA extension (this may take a few minutes)...")
     print(f"  Kernel: {kernel_cu}")
+    print(f"  Schedule-Free Kernel: {schedulefree_kernel_cu}")
+    print(f"  Schedule-Free Launcher: {schedulefree_launcher_cu}")
     print(f"  Wrapper: {wrapper_cpp}")
     print(f"  Build dir: {build_dir}")
     print(f"  Log file: {log_file}")
@@ -88,10 +96,15 @@ def get_extension():
         sys.stdout = logger
         sys.stderr = logger
 
-        # JIT compile
+        # JIT compile (include Schedule-Free kernels)
         _extension = load(
             name="adamw8bit_cuda_ext",
-            sources=[str(wrapper_cpp), str(kernel_cu)],
+            sources=[
+                str(wrapper_cpp),
+                str(kernel_cu),
+                str(schedulefree_kernel_cu),
+                str(schedulefree_launcher_cu)
+            ],
             extra_cflags=["-O3"],
             extra_cuda_cflags=[
                 "-O3",

@@ -1687,16 +1687,23 @@ class DiffusionPipelineManager:
 
         # Set scheduler parameters
         scheduler.sigma_min = 0.0
-        scheduler_kwargs = {"mu": mu}
 
         # Prepare timesteps (use override if provided for img2img, otherwise calculate normally)
         if timesteps_override is not None:
             timesteps = timesteps_override
             print(f"[Z-Image] Using {len(timesteps)} timesteps for img2img (strength-based, from t_start)")
         else:
-            scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+            # Only FlowMatchEulerDiscreteScheduler supports 'mu' parameter
+            # FlowMatchHeunDiscreteScheduler does not support it
+            if hasattr(scheduler, '__class__') and 'Euler' in scheduler.__class__.__name__:
+                scheduler_kwargs = {"mu": mu}
+                scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+                print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(scheduler.timesteps)} timesteps generated, shift={mu:.3f}")
+            else:
+                # Heun or other schedulers: no mu parameter
+                scheduler.set_timesteps(num_inference_steps, device=device)
+                print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(scheduler.timesteps)} timesteps generated (scheduler: {scheduler.__class__.__name__})")
             timesteps = scheduler.timesteps
-            print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(timesteps)} timesteps generated, shift={mu:.3f}")
 
         # Detect FP8 quantization (check once before loop)
         has_fp8_weights = False
@@ -1804,6 +1811,11 @@ class DiffusionPipelineManager:
 
             # Scheduler step (flow matching with stochastic sampling support)
             noise_pred = -noise_pred.squeeze(2)
+
+            # Debug: Log s_churn on first step
+            if i == 0:
+                print(f"[Z-Image] Scheduler.step() called with s_churn={s_churn}, s_noise={s_noise}, generator={'None' if ancestral_generator is None else 'provided'}")
+
             latents = scheduler.step(
                 noise_pred.to(torch.float32), t, latents,
                 s_churn=s_churn, s_noise=s_noise, generator=ancestral_generator,

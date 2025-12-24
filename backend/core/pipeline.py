@@ -1826,7 +1826,12 @@ class DiffusionPipelineManager:
             # Manual ancestral noise injection (Euler a behavior for Flow Matching)
             # Add stochastic noise after each step (except the last)
             if s_churn > 0 and i < len(timesteps) - 1:
-                noise = torch.randn_like(latents, generator=ancestral_generator)
+                noise = torch.randn(
+                    latents.shape,
+                    generator=ancestral_generator,
+                    device=latents.device,
+                    dtype=latents.dtype
+                )
                 # Scale noise by s_churn (strength) and s_noise (scaling factor)
                 latents = latents + noise * s_churn * s_noise
 

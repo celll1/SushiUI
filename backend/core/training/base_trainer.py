@@ -232,6 +232,11 @@ class BaseTrainer(ABC):
         use_pinned_memory: bool = False,
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
+        # Optimizer hyperparameters
+        optimizer_beta1: Optional[float] = None,
+        optimizer_beta2: Optional[float] = None,
+        optimizer_epsilon: Optional[float] = None,
+        optimizer_weight_decay: Optional[float] = None,
     ):
         """
         Initialize base trainer.
@@ -273,6 +278,12 @@ class BaseTrainer(ABC):
         self.num_optimizer_groups = num_optimizer_groups
         self.use_fused_backward = False  # Adafactor per-parameter updates
         self.fused_optimizer_groups = None  # FusedOptimizerGroups instance (for any optimizer)
+
+        # Optimizer hyperparameters (defaults will be used if None)
+        self.optimizer_beta1 = optimizer_beta1
+        self.optimizer_beta2 = optimizer_beta2
+        self.optimizer_epsilon = optimizer_epsilon
+        self.optimizer_weight_decay = optimizer_weight_decay
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -834,13 +845,28 @@ class BaseTrainer(ABC):
         # Create optimizer using factory
         from .optimizer_factory import OptimizerFactory
         try:
+            # Use hyperparameters from config, or fall back to defaults
+            weight_decay = self.optimizer_weight_decay if self.optimizer_weight_decay is not None else 0.01
+            beta1 = self.optimizer_beta1 if self.optimizer_beta1 is not None else 0.9
+            beta2 = self.optimizer_beta2 if self.optimizer_beta2 is not None else 0.999
+            eps = self.optimizer_epsilon if self.optimizer_epsilon is not None else 1e-8
+
+            # Lion optimizers use 'lion_betas' kwarg instead of 'betas', and don't have epsilon
+            optimizer_kwargs = {
+                "weight_decay": weight_decay,
+            }
+            if "lion" in optimizer_type.lower():
+                optimizer_kwargs["lion_betas"] = (beta1, beta2)
+                # Lion doesn't use epsilon
+            else:
+                optimizer_kwargs["betas"] = (beta1, beta2)
+                optimizer_kwargs["eps"] = eps
+
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,
                 params=param_groups,
                 learning_rate=self.learning_rate,
-                weight_decay=0.01,
-                betas=(0.9, 0.999),
-                eps=1e-8,
+                **optimizer_kwargs,
             )
         except (ValueError, ImportError) as e:
             print(f"{self.log_prefix} ERROR: {e}")

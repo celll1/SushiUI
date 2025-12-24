@@ -130,6 +130,12 @@ class OptimizerFactory:
             get_state_buffer = kwargs.get("get_state_buffer", None)
             cautious = kwargs.get("cautious", False)
 
+            # Schedule-Free options
+            schedule_free = kwargs.get("schedule_free", False)
+            warmup_steps = kwargs.get("warmup_steps", 0)
+            r = kwargs.get("r", 0.0)
+            weight_lr_power = kwargs.get("weight_lr_power", 2.0)
+
             optimizer = AdamW8bit_RingBuffer(
                 params,
                 lr=learning_rate,
@@ -138,10 +144,19 @@ class OptimizerFactory:
                 eps=eps,
                 use_8bit=True,
                 cautious=cautious,
+                schedule_free=schedule_free,
+                warmup_steps=warmup_steps,
+                r=r,
+                weight_lr_power=weight_lr_power,
                 get_state_buffer=get_state_buffer,
             )
-            cautious_str = " (cautious mode)" if cautious else ""
-            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer{cautious_str}")
+            options_str = []
+            if cautious:
+                options_str.append("cautious")
+            if schedule_free:
+                options_str.append("schedule-free")
+            options_desc = f" ({', '.join(options_str)})" if options_str else ""
+            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer{options_desc}")
             return optimizer
 
         # Lion8bit Ring Buffer (custom implementation)

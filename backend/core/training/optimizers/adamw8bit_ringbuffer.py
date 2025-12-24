@@ -52,6 +52,10 @@ class AdamW8bit_RingBuffer(Optimizer):
         weight_decay: float = 0.01,
         use_8bit: bool = True,
         cautious: bool = False,
+        schedule_free: bool = False,
+        warmup_steps: int = 0,
+        r: float = 0.0,
+        weight_lr_power: float = 2.0,
         get_state_buffer: Optional[Callable] = None,
     ):
         # Lazy load CUDA extension (compile on first optimizer creation)
@@ -63,6 +67,11 @@ class AdamW8bit_RingBuffer(Optimizer):
                 "Please ensure CUDA toolkit and ninja are installed."
             )
 
+        # Schedule-Free: cautious is incompatible (no exp_avg momentum to mask)
+        if schedule_free and cautious:
+            print("[AdamW8bit_RingBuffer] WARNING: cautious is disabled when schedule_free=True")
+            cautious = False
+
         defaults = dict(
             lr=lr,
             betas=betas,
@@ -70,12 +79,24 @@ class AdamW8bit_RingBuffer(Optimizer):
             weight_decay=weight_decay,
             use_8bit=use_8bit,
             cautious=cautious,
+            schedule_free=schedule_free,
+            warmup_steps=warmup_steps,
+            r=r,
+            weight_lr_power=weight_lr_power,
         )
         super().__init__(params, defaults)
 
         self.get_state_buffer = get_state_buffer
         self.step_count = 0
         self.cautious = cautious
+        self.schedule_free = schedule_free
+
+        # Schedule-Free specific state
+        if schedule_free:
+            self.k = 0  # Step counter
+            self.weight_sum = 0.0  # FP32 accumulator for weighted average
+            self.lr_max = 0.0  # Maximum learning rate seen
+            self.train_mode = False  # Training mode flag
 
         # Keys that must preserve dtype (UINT8 states, FP32 absmax)
         # Based on bitsandbytes.optim.optimizer.Optimizer8bit.non_castable_tensor_keys
@@ -84,6 +105,8 @@ class AdamW8bit_RingBuffer(Optimizer):
             "exp_avg_sq",   # state2 (UINT8 or FP32)
             "absmax1",      # FP32 absmax tracking for exp_avg
             "absmax2",      # FP32 absmax tracking for exp_avg_sq
+            "z",            # Schedule-Free: z sequence (UINT8 or FP32)
+            "absmax_z",     # FP32 absmax tracking for z
         }
 
         # Create quantization maps (once, shared across all parameters)
@@ -115,6 +138,7 @@ class AdamW8bit_RingBuffer(Optimizer):
             raise RuntimeError(f"Parameter {p.shape} not found in param_groups")
 
         use_8bit = group['use_8bit']
+        schedule_free = group.get('schedule_free', False)
 
         if use_8bit:
             # ============================================================
@@ -128,25 +152,50 @@ class AdamW8bit_RingBuffer(Optimizer):
             # Allocate quantized states
             if self.get_state_buffer is not None:
                 # Ring Buffer enabled: CPU allocation (for Block Swap integration)
-                state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
-                state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+                if schedule_free:
+                    # Schedule-Free: only exp_avg_sq and z (no exp_avg)
+                    state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['z'] = self.get_state_buffer(p, dtype=torch.uint8)
 
-                # Use pinned memory for faster CPU-GPU transfer
-                if hasattr(state['exp_avg'], 'pin_memory'):
-                    state['exp_avg'] = state['exp_avg'].pin_memory()
-                    state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
+                    # Use pinned memory for faster CPU-GPU transfer
+                    if hasattr(state['exp_avg_sq'], 'pin_memory'):
+                        state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
+                        state['z'] = state['z'].pin_memory()
+                else:
+                    # Standard AdamW: exp_avg and exp_avg_sq
+                    state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+
+                    # Use pinned memory for faster CPU-GPU transfer
+                    if hasattr(state['exp_avg'], 'pin_memory'):
+                        state['exp_avg'] = state['exp_avg'].pin_memory()
+                        state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
             else:
                 # Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)
                 # Avoids CPU-GPU transfer overhead (~256ms/step for 350M params)
                 device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
-                state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device=device)
-                state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
+
+                if schedule_free:
+                    # Schedule-Free: only exp_avg_sq and z (no exp_avg)
+                    state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
+                    state['z'] = torch.zeros(n, dtype=torch.uint8, device=device)
+                else:
+                    # Standard AdamW: exp_avg and exp_avg_sq
+                    state['exp_avg'] = torch.zeros(n, dtype=torch.uint8, device=device)
+                    state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
 
             # Absmax metadata (small, ALWAYS keep on GPU even if param moves to CPU)
             # Must be on CUDA for CUDA kernel execution
             device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
-            state['absmax1'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
-            state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+
+            if schedule_free:
+                # Schedule-Free: absmax for exp_avg_sq and z
+                state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+                state['absmax_z'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+            else:
+                # Standard AdamW: absmax for exp_avg and exp_avg_sq
+                state['absmax1'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+                state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
 
             state['is_8bit'] = True
 
@@ -162,8 +211,15 @@ class AdamW8bit_RingBuffer(Optimizer):
             # FP32 States (Standard AdamW)
             # ============================================================
 
-            state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-            state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+            if schedule_free:
+                # Schedule-Free: only exp_avg_sq and z (no exp_avg)
+                state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                state['z'] = torch.clone(p, memory_format=torch.preserve_format)  # Initialize z to p
+            else:
+                # Standard AdamW: exp_avg and exp_avg_sq
+                state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+
             state['is_8bit'] = False
 
             state_mem_mb = (p.numel() * 2 * p.element_size()) / (1024 ** 2)
@@ -275,12 +331,59 @@ class AdamW8bit_RingBuffer(Optimizer):
 
         self.step_count += 1
 
+        # ============================================================
+        # Schedule-Free: Update global state
+        # ============================================================
+        if self.schedule_free:
+            # Ensure optimizer is in train mode
+            if not self.train_mode:
+                raise RuntimeError(
+                    "Optimizer must be in train mode when step() is called. "
+                    "Call optimizer.train() before training loop."
+                )
+
+            # Increment step counter
+            self.k += 1
+
         for group in self.param_groups:
             beta1, beta2 = group['betas']
             lr = group['lr']
             weight_decay = group['weight_decay']
             eps = group['eps']
             use_8bit = group['use_8bit']
+            schedule_free = group.get('schedule_free', False)
+
+            # ============================================================
+            # Schedule-Free: Compute learning rate schedule and weight
+            # ============================================================
+            if schedule_free:
+                warmup_steps = group['warmup_steps']
+                r = group['r']
+                weight_lr_power = group['weight_lr_power']
+
+                # Linear warmup
+                if self.k <= warmup_steps:
+                    sched = self.k / warmup_steps
+                else:
+                    sched = 1.0
+
+                scheduled_lr = lr * sched
+
+                # Update lr_max
+                self.lr_max = max(scheduled_lr, self.lr_max)
+
+                # Compute weight for averaging
+                weight = ((self.k) ** r) * (self.lr_max ** weight_lr_power)
+                self.weight_sum += weight
+
+                # Averaging coefficient
+                try:
+                    ckp1 = weight / self.weight_sum
+                except ZeroDivisionError:
+                    ckp1 = 0.0
+            else:
+                scheduled_lr = lr
+                ckp1 = 0.0
 
             for p in group['params']:
                 if p.grad is None:
@@ -306,70 +409,184 @@ class AdamW8bit_RingBuffer(Optimizer):
                     # 8-bit Quantized Update (CUDA Kernel)
                     # ============================================================
 
-                    # Ring Buffer optimization: Ensure states are on GPU
-                    # If states are on CPU (Ring Buffer), move to GPU with non_blocking=True
-                    exp_avg_gpu = state['exp_avg']
-                    exp_avg_sq_gpu = state['exp_avg_sq']
+                    if schedule_free:
+                        # ============================================================
+                        # Schedule-Free: Update exp_avg_sq and z, then update y (p)
+                        # ============================================================
 
-                    if not state['exp_avg'].is_cuda:
-                        # Async transfer for Ring Buffer states (pinned memory)
-                        exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
-                        exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
+                        # Ring Buffer optimization: Ensure states are on GPU
+                        exp_avg_sq_gpu = state['exp_avg_sq']
+                        z_gpu = state['z']
 
-                    self.ext.adamw_8bit_update(
-                        p,                      # param (GPU)
-                        grad,                   # grad (GPU)
-                        exp_avg_gpu,            # state1 (GPU, async transferred if needed)
-                        exp_avg_sq_gpu,         # state2 (GPU, async transferred if needed)
-                        state['absmax1'],       # absmax1 (GPU)
-                        state['absmax2'],       # absmax2 (GPU)
-                        beta1,
-                        beta2,
-                        eps,
-                        lr,
-                        weight_decay,
-                        gnorm_scale,
-                        self.step_count,
-                        self.cautious           # Cautious masking
-                    )
+                        if not state['exp_avg_sq'].is_cuda:
+                            # Async transfer for Ring Buffer states (pinned memory)
+                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
+                            z_gpu = state['z'].cuda(non_blocking=True)
 
-                    # Ring Buffer: Copy updated states back to CPU
-                    if not state['exp_avg'].is_cuda:
-                        # Async copy back (non_blocking requires pinned memory)
-                        state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
-                        state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
+                        # Call Schedule-Free CUDA kernel
+                        # TODO: Implement adamw_8bit_schedulefree_update kernel
+                        # For now, use FP32 fallback for Schedule-Free
+                        raise NotImplementedError(
+                            "Schedule-Free 8-bit kernel not yet implemented. "
+                            "Please use use_8bit=False for Schedule-Free."
+                        )
+
+                        # Ring Buffer: Copy updated states back to CPU
+                        if not state['exp_avg_sq'].is_cuda:
+                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
+                            state['z'].copy_(z_gpu, non_blocking=True)
+
+                    else:
+                        # ============================================================
+                        # Standard AdamW 8-bit Update
+                        # ============================================================
+
+                        # Ring Buffer optimization: Ensure states are on GPU
+                        # If states are on CPU (Ring Buffer), move to GPU with non_blocking=True
+                        exp_avg_gpu = state['exp_avg']
+                        exp_avg_sq_gpu = state['exp_avg_sq']
+
+                        if not state['exp_avg'].is_cuda:
+                            # Async transfer for Ring Buffer states (pinned memory)
+                            exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
+                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
+
+                        self.ext.adamw_8bit_update(
+                            p,                      # param (GPU)
+                            grad,                   # grad (GPU)
+                            exp_avg_gpu,            # state1 (GPU, async transferred if needed)
+                            exp_avg_sq_gpu,         # state2 (GPU, async transferred if needed)
+                            state['absmax1'],       # absmax1 (GPU)
+                            state['absmax2'],       # absmax2 (GPU)
+                            beta1,
+                            beta2,
+                            eps,
+                            scheduled_lr,           # Use scheduled_lr instead of lr
+                            weight_decay,
+                            gnorm_scale,
+                            self.step_count,
+                            self.cautious           # Cautious masking
+                        )
+
+                        # Ring Buffer: Copy updated states back to CPU
+                        if not state['exp_avg'].is_cuda:
+                            # Async copy back (non_blocking requires pinned memory)
+                            state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
+                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
                 else:
                     # ============================================================
-                    # FP32 Update (Standard PyTorch AdamW)
+                    # FP32 Update
                     # ============================================================
 
-                    exp_avg = state['exp_avg']
-                    exp_avg_sq = state['exp_avg_sq']
+                    if schedule_free:
+                        # ============================================================
+                        # Schedule-Free FP32 Update
+                        # ============================================================
 
-                    # Update momentum
-                    exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                        y = p  # p is y (training parameters)
+                        z = state['z']
+                        exp_avg_sq = state['exp_avg_sq']
 
-                    # Bias correction
-                    bias_correction1 = 1 - beta1 ** self.step_count
-                    bias_correction2 = 1 - beta2 ** self.step_count
+                        # Update exp_avg_sq (second moment)
+                        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                    corrected_exp_avg = exp_avg / bias_correction1
-                    corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                        # Bias correction for second moment
+                        bias_correction2 = 1 - beta2 ** self.step_count
+                        denom = (exp_avg_sq / bias_correction2).sqrt_().add_(eps)
 
-                    # AdamW update
-                    denom = corrected_exp_avg_sq.sqrt().add_(eps)
-                    step_size = lr / bias_correction1
+                        # Normalize gradient (reuse grad buffer for memory efficiency)
+                        grad_normalized = grad.div_(denom)
 
-                    # Decoupled weight decay
-                    if weight_decay > 0:
-                        p.mul_(1 - lr * weight_decay)
+                        # Weight decay at y (decoupled weight decay)
+                        if weight_decay > 0:
+                            grad_normalized.add_(y, alpha=weight_decay)
 
-                    # Apply update
-                    p.addcdiv_(corrected_exp_avg, denom, value=-step_size)
+                        # Update y (training parameters)
+                        # y = (1 - ckp1) * y + ckp1 * z + lr * (beta1 * (1 - ckp1) - 1) * grad_normalized
+                        y.lerp_(end=z, weight=ckp1)
+                        y.add_(grad_normalized, alpha=scheduled_lr * (beta1 * (1 - ckp1) - 1))
+
+                        # Update z (main sequence)
+                        z.sub_(grad_normalized, alpha=scheduled_lr)
+
+                    else:
+                        # ============================================================
+                        # Standard AdamW FP32 Update
+                        # ============================================================
+
+                        exp_avg = state['exp_avg']
+                        exp_avg_sq = state['exp_avg_sq']
+
+                        # Update momentum
+                        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+                        # Bias correction
+                        bias_correction1 = 1 - beta1 ** self.step_count
+                        bias_correction2 = 1 - beta2 ** self.step_count
+
+                        corrected_exp_avg = exp_avg / bias_correction1
+                        corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+
+                        # AdamW update
+                        denom = corrected_exp_avg_sq.sqrt().add_(eps)
+                        step_size = scheduled_lr / bias_correction1
+
+                        # Decoupled weight decay
+                        if weight_decay > 0:
+                            p.mul_(1 - scheduled_lr * weight_decay)
+
+                        # Apply update
+                        p.addcdiv_(corrected_exp_avg, denom, value=-step_size)
 
         return loss
+
+    @torch.no_grad()
+    def train(self):
+        """
+        Set optimizer to train mode (Schedule-Free).
+        Sets parameters to y (training sequence): p = (1 - beta1) * z + beta1 * y
+        """
+        if not self.schedule_free:
+            return
+
+        for group in self.param_groups:
+            beta1 = group['betas'][0]
+
+            for p in group['params']:
+                state = self.state.get(p)
+                if state is None or 'z' not in state:
+                    continue
+
+                # Set p to y: p.lerp_(end=z, weight=1-beta1)
+                # This is equivalent to: p = beta1 * p + (1 - beta1) * z
+                p.lerp_(end=state['z'], weight=1 - beta1)
+
+        self.train_mode = True
+
+    @torch.no_grad()
+    def eval(self):
+        """
+        Set optimizer to eval mode (Schedule-Free).
+        Sets parameters to x (evaluation sequence): p = (1 - 1/beta1) * z + (1/beta1) * y
+        """
+        if not self.schedule_free:
+            return
+
+        for group in self.param_groups:
+            beta1 = group['betas'][0]
+
+            for p in group['params']:
+                state = self.state.get(p)
+                if state is None or 'z' not in state:
+                    continue
+
+                # Set p to x: p.lerp_(end=z, weight=1-1/beta1)
+                # This is equivalent to: p = (1/beta1) * p + (1 - 1/beta1) * z
+                p.lerp_(end=state['z'], weight=1 - 1 / beta1)
+
+        self.train_mode = False
 
 
 def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer):

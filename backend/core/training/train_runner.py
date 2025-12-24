@@ -489,6 +489,12 @@ def main():
             optimizer_epsilon = train_config.get('optimizer_epsilon')
             optimizer_weight_decay = train_config.get('optimizer_weight_decay')
 
+            # Schedule-Free optimizer options (RingBuffer optimizers only)
+            optimizer_schedule_free = train_config.get('optimizer_schedule_free', False)
+            optimizer_warmup_steps = train_config.get('optimizer_warmup_steps', 0)
+            optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
+            optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -517,6 +523,11 @@ def main():
                 optimizer_beta2=optimizer_beta2,
                 optimizer_epsilon=optimizer_epsilon,
                 optimizer_weight_decay=optimizer_weight_decay,
+                # Schedule-Free optimizer options
+                optimizer_schedule_free=optimizer_schedule_free,
+                optimizer_warmup_steps=optimizer_warmup_steps,
+                optimizer_schedule_free_r=optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
             )
 
             # Setup optimizer

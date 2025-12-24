@@ -369,13 +369,14 @@ async def generate_txt2img(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        image, actual_seed = await loop.run_in_executor(
+        image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -648,13 +649,14 @@ async def generate_img2img(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        result_image, actual_seed = await loop.run_in_executor(
+        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -951,13 +953,14 @@ async def generate_inpaint(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        result_image, actual_seed = await loop.run_in_executor(
+        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(

@@ -2076,11 +2076,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     -1
                   </Button>
                   <Button
-                    onClick={() => generatedImageAncestralSeed !== null && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                    onClick={() => generatedImageAncestralSeed !== null && generatedImageAncestralSeed !== -1 && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
                     variant="secondary"
                     size="sm"
                     title="Use ancestral seed from preview image"
-                    disabled={generatedImageAncestralSeed === null}
+                    disabled={generatedImageAncestralSeed === null || generatedImageAncestralSeed === -1}
                   >
                     ♻️
                   </Button>

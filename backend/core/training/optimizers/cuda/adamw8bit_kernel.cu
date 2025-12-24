@@ -165,17 +165,19 @@ __global__ void adamw_8bit_update_kernel(
         __syncthreads();
 
         if (local_tid == 0) {
-            // Mean of mask values in this block, clamped to avoid division by zero
+            // Mean of mask values in this block, clamped to avoid division by zero (eps in paper)
             shared_mask_mean = fmaxf(block_mask_sum / THREADS_PER_BLOCK, 1e-3f);
         }
         __syncthreads();
 
-        // Normalize mask by block mean
-        mask_val /= shared_mask_mean;
+        // Apply mask to momentum and normalize by mask mean (paper algorithm)
+        // Algorithm: p.add_(u * m / (m.mean() + eps), alpha=-lr)
+        exp_avg = exp_avg * mask_val / shared_mask_mean;
     }
 
     // Block-level reduction for exp_avg (NO ATOMIC OPERATIONS!)
-    float block_absmax1 = BlockReduce(temp_storage).Reduce(local_absmax1, cub::Max());
+    // Note: exp_avg may be masked if cautious=true
+    float block_absmax1 = BlockReduce(temp_storage).Reduce(fabsf(exp_avg), cub::Max());
     __syncthreads();
 
     // Block-level reduction for exp_avg_sq (reuse temp_storage after syncthreads)
@@ -216,17 +218,18 @@ __global__ void adamw_8bit_update_kernel(
     float bias_correction1 = 1.0f - powf(beta1, (float)step);
     float bias_correction2 = sqrtf(1.0f - powf(beta2, (float)step));
 
+    // Apply bias correction to (masked) momentum
     float corrected_exp_avg = exp_avg / bias_correction1;
     float corrected_exp_avg_sq_sqrt = sqrtf(exp_avg_sq) / bias_correction2;
 
     // ============================================================
-    // Step 6: Update parameter (AdamW with decoupled weight decay + cautious masking)
+    // Step 6: Update parameter (AdamW with decoupled weight decay)
     // ============================================================
 
     float denom = corrected_exp_avg_sq_sqrt + eps;
 
-    // Apply cautious mask to momentum (normalized by block mean)
-    float update = (corrected_exp_avg * mask_val) / denom;
+    // Compute update (cautious mask already applied to exp_avg in Step 2.5)
+    float update = corrected_exp_avg / denom;
 
     // Convert parameter to FP32 (handles FP32/FP16/BF16)
     float param_val;

@@ -43,6 +43,7 @@ class Lion8bit_RingBuffer(Optimizer):
         betas: Coefficients (β1 for interpolation, β2 for momentum EMA) (default: (0.9, 0.99))
         weight_decay: Weight decay coefficient (default: 0.0)
         use_8bit: Enable 8-bit quantization (default: True)
+        cautious: Enable cautious masking (default: False)
         get_state_buffer: Callable to allocate Ring Buffer state (from RingBufferAllocator)
     """
 
@@ -53,6 +54,7 @@ class Lion8bit_RingBuffer(Optimizer):
         betas: tuple = (0.9, 0.99),
         weight_decay: float = 0.0,
         use_8bit: bool = True,
+        cautious: bool = False,
         get_state_buffer: Optional[Callable] = None,
     ):
         # Lazy load CUDA extension
@@ -69,11 +71,13 @@ class Lion8bit_RingBuffer(Optimizer):
             betas=betas,
             weight_decay=weight_decay,
             use_8bit=use_8bit,
+            cautious=cautious,
         )
         super().__init__(params, defaults)
 
         self.get_state_buffer = get_state_buffer
         self.step_count = 0
+        self.cautious = cautious
 
         # Keys that must preserve dtype (UINT8 state, FP32 absmax)
         # Based on bitsandbytes.optim.optimizer.Optimizer8bit.non_castable_tensor_keys
@@ -301,7 +305,8 @@ class Lion8bit_RingBuffer(Optimizer):
                         state['absmax'],
                         beta1, beta2, 0.0,          # eps unused in Lion
                         lr, weight_decay, 1.0,      # gnorm_scale
-                        self.step_count
+                        self.step_count,
+                        self.cautious               # Cautious masking
                     )
 
                     # Ring Buffer: Copy updated state back to CPU

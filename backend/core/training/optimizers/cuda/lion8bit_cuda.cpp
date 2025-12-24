@@ -33,6 +33,7 @@ void launch_lion_8bit_blockwise_update_kernel(
     float weight_decay,
     float gnorm_scale,
     int step,
+    bool cautious,
     int N,
     int blocks,
     int threads
@@ -87,7 +88,8 @@ void lion_8bit_update(
     float lr,
     float weight_decay,
     float gnorm_scale,
-    int step
+    int step,
+    bool cautious
 ) {
     // ============================================================
     // Validation
@@ -135,7 +137,7 @@ void lion_8bit_update(
             grad.data_ptr<float>(),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
             blocks, threads
         );
     } else if (param_dtype == torch::kFloat16) {
@@ -144,7 +146,7 @@ void lion_8bit_update(
             reinterpret_cast<const __half*>(grad.data_ptr<at::Half>()),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
             blocks, threads
         );
     } else if (param_dtype == torch::kBFloat16) {
@@ -153,7 +155,7 @@ void lion_8bit_update(
             reinterpret_cast<const __nv_bfloat16*>(grad.data_ptr<at::BFloat16>()),
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, N,
+            beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
             blocks, threads
         );
     } else {

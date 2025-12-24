@@ -567,9 +567,9 @@ class DiffusionPipelineManager:
         Maps user-selected sampler to compatible Flow Match scheduler.
 
         Sampler mapping:
-        - euler, euler_a, dpm_2, dpm_2_a, dpmpp_2m, dpmpp_sde → FlowMatchEulerDiscreteScheduler
+        - euler → FlowMatchEulerDiscreteScheduler (stochastic_sampling=False)
+        - euler_a → FlowMatchEulerDiscreteScheduler (stochastic_sampling=True)
         - heun → FlowMatchHeunDiscreteScheduler
-        - lcm → FlowMatchLCMScheduler
 
         Args:
             sampler: User-selected sampler name (e.g., "euler", "heun")
@@ -589,14 +589,17 @@ class DiffusionPipelineManager:
         if sampler == "heun":
             scheduler_class = FlowMatchHeunDiscreteScheduler
             print(f"[Z-Image] Using FlowMatchHeunDiscreteScheduler for sampler '{sampler}'")
+            return scheduler_class.from_config(config)
         else:
-            # All other samplers use Euler (default for Flow Matching)
-            # euler, euler_a, dpm_2, dpm_2_a, dpmpp_2m, dpmpp_sde, etc.
-            scheduler_class = FlowMatchEulerDiscreteScheduler
-            print(f"[Z-Image] Using FlowMatchEulerDiscreteScheduler for sampler '{sampler}'")
+            # Euler/Euler a: use FlowMatchEulerDiscreteScheduler with stochastic_sampling flag
+            is_ancestral = sampler in ["euler_a", "dpm2_a"]
+            print(f"[Z-Image] Using FlowMatchEulerDiscreteScheduler for sampler '{sampler}' (stochastic={is_ancestral})")
 
-        # Create scheduler with same config as base
-        return scheduler_class.from_config(config)
+            # Create config dict and enable stochastic_sampling for ancestral samplers
+            scheduler_config = dict(config)
+            scheduler_config["stochastic_sampling"] = is_ancestral
+
+            return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
@@ -666,25 +669,16 @@ class DiffusionPipelineManager:
             generator = torch.Generator(device=self.device)
             generator.manual_seed(seed)
 
-            # Create ancestral generator for stochastic samplers
+            # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for ancestral sampling (reproducible when saved)
+                # Generate random seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
-                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
                 print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified seed for ancestral sampling
+                # Use specified seed
                 actual_ancestral_seed = ancestral_seed
-                ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
-
-            # Z-Image: ancestral sampling via s_churn parameter
-            # To enable ancestral behavior, set s_churn > 0
-            is_ancestral = sampler in ["euler_a", "dpm2_a"]
-            s_churn = 1.0 if is_ancestral else 0.0  # 0.0 = deterministic, 1.0 = stochastic
-            s_noise = 1.0  # Noise scale (always 1.0)
-            print(f"[Z-Image] Sampler: {sampler}, s_churn={s_churn} (ancestral={is_ancestral})")
 
             # Z-Image parameters
             prompt = params.get("prompt", "")
@@ -798,7 +792,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, ancestral_generator, s_churn, s_noise, progress_callback, step_callback
+                generator, progress_callback, step_callback
             )
 
             # Offload Transformer to CPU to free VRAM for VAE
@@ -903,25 +897,16 @@ class DiffusionPipelineManager:
             generator = torch.Generator(device=self.device)
             generator.manual_seed(seed)
 
-            # Create ancestral generator for stochastic samplers
+            # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for ancestral sampling (reproducible when saved)
+                # Generate random seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
-                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
                 print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified seed for ancestral sampling
+                # Use specified seed
                 actual_ancestral_seed = ancestral_seed
-                ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
-
-            # Z-Image: ancestral sampling via s_churn parameter
-            # To enable ancestral behavior, set s_churn > 0
-            is_ancestral = sampler in ["euler_a", "dpm2_a"]
-            s_churn = 1.0 if is_ancestral else 0.0  # 0.0 = deterministic, 1.0 = stochastic
-            s_noise = 1.0  # Noise scale (always 1.0)
-            print(f"[Z-Image] Sampler: {sampler}, s_churn={s_churn} (ancestral={is_ancestral})")
 
             # Z-Image parameters
             prompt = params.get("prompt", "")
@@ -1120,7 +1105,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, ancestral_generator, s_churn, s_noise, progress_callback, step_callback,
+                generator, progress_callback, step_callback,
                 init_latents=noised_latents,
                 timesteps_override=timesteps_img2img
             )
@@ -1428,7 +1413,7 @@ class DiffusionPipelineManager:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, ancestral_generator, s_churn, s_noise, progress_callback, step_callback,
+                generator, progress_callback, step_callback,
                 init_latents=noised_latents,
                 timesteps_override=timesteps_inpaint,
                 mask_latent=mask_latent,
@@ -1615,7 +1600,7 @@ class DiffusionPipelineManager:
     def _zimage_denoising_loop(
         self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-        generator, ancestral_generator, s_churn, s_noise, progress_callback, step_callback,
+        generator, progress_callback, step_callback,
         init_latents: Optional[torch.Tensor] = None,
         timesteps_override: Optional[torch.Tensor] = None,
         mask_latent: Optional[torch.Tensor] = None,
@@ -1809,31 +1794,12 @@ class DiffusionPipelineManager:
             else:
                 noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
 
-            # Scheduler step (flow matching)
+            # Scheduler step (flow matching with stochastic_sampling if enabled)
             noise_pred = -noise_pred.squeeze(2)
-
-            # Debug: Log ancestral sampling on first step
-            if i == 0:
-                print(f"[Z-Image] Ancestral sampling: {'Enabled' if s_churn > 0 else 'Disabled'} (s_churn={s_churn})")
-
-            # Note: FlowMatchEulerDiscreteScheduler.step() accepts s_churn/s_noise but doesn't implement them
-            # The parameters exist for API compatibility but are not used internally
             latents = scheduler.step(
                 noise_pred.to(torch.float32), t, latents,
                 return_dict=False
             )[0]
-
-            # Manual ancestral noise injection (Euler a behavior for Flow Matching)
-            # Add stochastic noise after each step (except the last)
-            if s_churn > 0 and i < len(timesteps) - 1:
-                noise = torch.randn(
-                    latents.shape,
-                    generator=ancestral_generator,
-                    device=latents.device,
-                    dtype=latents.dtype
-                )
-                # Scale noise by s_churn (strength) and s_noise (scaling factor)
-                latents = latents + noise * s_churn * s_noise
 
             # Inpaint mask blending: blend denoised latents with noised original latents
             if mask_latent is not None and original_latents is not None:

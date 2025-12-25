@@ -19,6 +19,7 @@ interface ItemDetailColumnProps {
   item: DatasetItem | null;
   datasetId: number;
   tagCategoryCache: Record<string, string>; // Pre-loaded category map from parent
+  onTaggerSettingsChange?: (settings: any) => void; // Notify parent of tagger settings changes
 }
 
 interface EditHistory {
@@ -47,7 +48,7 @@ const getCategoryColor = (category: string): string => {
   return colors[normalized] || "bg-orange-600 dark:bg-orange-700 hover:bg-orange-500";
 };
 
-export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: ItemDetailColumnProps) {
+export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, onTaggerSettingsChange }: ItemDetailColumnProps) {
   const tagSuggestionsContext = useTagSuggestions();
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
@@ -66,6 +67,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
   const [isImageExpanded, setIsImageExpanded] = useState(false);
   const [expandedImageWidth, setExpandedImageWidth] = useState(800); // Pixels
   const [isResizing, setIsResizing] = useState(false);
+
+  // Notify parent when tagger settings change
+  useEffect(() => {
+    if (taggerSettings && onTaggerSettingsChange) {
+      onTaggerSettingsChange(taggerSettings);
+    }
+  }, [taggerSettings, onTaggerSettingsChange]);
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {

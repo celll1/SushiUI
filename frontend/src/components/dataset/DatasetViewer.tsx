@@ -12,6 +12,17 @@ interface DatasetViewerProps {
   datasetId: number;
 }
 
+// Tagger settings interface (from ItemDetailColumn)
+interface TaggerSettings {
+  categoryThresholds: Array<{
+    id: string;
+    label: string;
+    addThreshold: number;
+    removeThreshold: number;
+    enabled: boolean;
+  }>;
+}
+
 export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const tagSuggestionsContext = useTagSuggestions();
   const [dataset, setDataset] = useState<Dataset | null>(null);
@@ -29,6 +40,9 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [tagCategoryCache, setTagCategoryCache] = useState<Record<string, string>>({});
   // Tag statistics with categories (tag -> {category, count})
   const [tagStatistics, setTagStatistics] = useState<Record<string, { category: string; count: number }> | undefined>(undefined);
+
+  // Tagger settings (shared across batch operations)
+  const [taggerSettings, setTaggerSettings] = useState<TaggerSettings | null>(null);
 
   // Load dataset and compute categories using tagSuggestions
   useEffect(() => {
@@ -173,15 +187,20 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           item={currentItem}
           datasetId={datasetId}
           tagCategoryCache={tagCategoryCache}
+          onTaggerSettingsChange={setTaggerSettings}
         />
       </div>
 
-      {/* Right Column: Tag Statistics */}
+      {/* Right Column: Actions & Tag Statistics */}
       <div className="w-80 flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg">
         <ActionsColumn
           datasetId={datasetId}
           tagStatistics={tagStatistics}
           onRefresh={loadItems}
+          selectedItemIds={Array.from(selectedItems)}
+          totalItems={total}
+          captionProcessingConfig={dataset?.caption_processing}
+          taggerSettings={taggerSettings}
         />
       </div>
     </div>

@@ -138,6 +138,7 @@ class TrainingConfigGenerator:
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
                 ds_caption_processing = ds_config.get("caption_processing", {})
+                ds_caption_types = ds_config.get("caption_types", [])
 
                 dataset_entry = {
                     "folder_path": ds_path,
@@ -158,6 +159,11 @@ class TrainingConfigGenerator:
                     "cache_latents_to_disk": cache_latents_to_disk,
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
+
+                # Add caption_types if specified
+                if ds_caption_types:
+                    dataset_entry["caption_types"] = ds_caption_types
+
                 datasets_array.append(dataset_entry)
         else:
             # Fallback: use single dataset_path (backward compatibility)
@@ -429,6 +435,7 @@ class TrainingConfigGenerator:
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
                 ds_caption_processing = ds_config.get("caption_processing", {})
+                ds_caption_types = ds_config.get("caption_types", [])
 
                 dataset_entry = {
                     "folder_path": ds_path,
@@ -439,6 +446,10 @@ class TrainingConfigGenerator:
                 # Add caption processing if provided
                 if ds_caption_processing:
                     dataset_entry["caption_processing"] = ds_caption_processing
+
+                # Add caption_types if specified
+                if ds_caption_types:
+                    dataset_entry["caption_types"] = ds_caption_types
 
                 datasets_array.append(dataset_entry)
         else:

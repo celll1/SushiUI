@@ -774,29 +774,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Prepare TIPO config if use_tipo is enabled
     let tipo_config = undefined;
     if (params.use_tipo) {
-      const saved = localStorage.getItem("tipo_settings");
-      const sharedTipoSettings = saved ? JSON.parse(saved) : null;
+      const categoryOrder = tipoSettings.categories.map((c: any) => c.id);
+      const enabledCategories: Record<string, boolean> = {};
+      tipoSettings.categories.forEach((c: any) => {
+        enabledCategories[c.id] = c.enabled;
+      });
 
-      if (sharedTipoSettings) {
-        const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
-        const enabledCategories: Record<string, boolean> = {};
-        sharedTipoSettings.categories.forEach((c: any) => {
-          enabledCategories[c.id] = c.enabled;
-        });
-
-        tipo_config = {
-          model_name: sharedTipoSettings.model_name,
-          tag_length: sharedTipoSettings.tag_length,
-          nl_length: sharedTipoSettings.nl_length,
-          temperature: sharedTipoSettings.temperature,
-          top_p: sharedTipoSettings.top_p,
-          top_k: sharedTipoSettings.top_k,
-          max_new_tokens: sharedTipoSettings.max_new_tokens,
-          category_order: categoryOrder,
-          enabled_categories: enabledCategories,
-          treat_as_nl: treatAsNL  // Add local state
-        };
-      }
+      tipo_config = {
+        model_name: tipoSettings.model_name,
+        tag_length: tipoSettings.tag_length,
+        nl_length: tipoSettings.nl_length,
+        temperature: tipoSettings.temperature,
+        top_p: tipoSettings.top_p,
+        top_k: tipoSettings.top_k,
+        max_new_tokens: tipoSettings.max_new_tokens,
+        category_order: categoryOrder,
+        enabled_categories: enabledCategories,
+        treat_as_nl: treatAsNL  // Add local state
+      };
     }
 
     // Create loop group ID if loop generation is enabled

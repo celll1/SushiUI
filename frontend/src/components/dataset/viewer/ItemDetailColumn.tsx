@@ -553,22 +553,63 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           </div>
         </div>
 
-        {/* Field Switcher - Card Buttons */}
+        {/* Field Switcher - Category Buttons (tags, text, metadata) */}
         <div className="flex-shrink-0 flex gap-1 flex-wrap">
-          {detailedItem?.captions?.map((caption, index) => (
-            <button
-              key={caption.caption_type}
-              onClick={() => setActiveFieldType(caption.caption_type)}
-              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                activeFieldType === caption.caption_type
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-700 hover:bg-gray-600 text-gray-300"
-              }`}
-              title={`Switch to ${caption.caption_type.replace(/_/g, " ")} (Shortcut: ${index + 1})`}
-            >
-              {caption.caption_type.replace(/_/g, " ")}
-            </button>
-          ))}
+          {(() => {
+            const captions = detailedItem?.captions || [];
+            const tagsCaptions = captions.filter(c => c.field_category === 'training' && c.is_tags_format);
+            const textCaptions = captions.filter(c => c.field_category === 'training' && !c.is_tags_format);
+            const metadataCaptions = captions.filter(c => c.field_category === 'metadata');
+
+            return (
+              <>
+                {/* Tags button */}
+                {tagsCaptions.length > 0 && (
+                  <button
+                    onClick={() => setActiveFieldType(tagsCaptions[0].caption_type)}
+                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                      tagsCaptions.some(c => c.caption_type === activeFieldType)
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    title="Tags (Danbooru format)"
+                  >
+                    Tags
+                  </button>
+                )}
+
+                {/* Text button */}
+                {textCaptions.length > 0 && (
+                  <button
+                    onClick={() => setActiveFieldType(textCaptions[0].caption_type)}
+                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                      textCaptions.some(c => c.caption_type === activeFieldType)
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    title="Natural language text"
+                  >
+                    Text
+                  </button>
+                )}
+
+                {/* Metadata button (collapsible) */}
+                {metadataCaptions.length > 0 && (
+                  <button
+                    onClick={() => setActiveFieldType('__metadata__')}
+                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                      activeFieldType === '__metadata__'
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    title={`Metadata (${metadataCaptions.length} fields)`}
+                  >
+                    Metadata ({metadataCaptions.length})
+                  </button>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         {/* Caption Display Area - Unified */}
@@ -576,7 +617,10 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           {/* Header with field name and actions */}
           <div className="flex-shrink-0 flex items-center justify-between mb-2">
             <h4 className="text-xs font-semibold capitalize">
-              {activeFieldType.replace(/_/g, " ")}
+              {activeFieldType === '__metadata__'
+                ? `Metadata (${detailedItem?.captions?.filter(c => c.field_category === 'metadata').length || 0} fields)`
+                : activeFieldType.replace(/_/g, " ")
+              }
               {activeFieldType === "tags" && ` (${tags.length})`}
             </h4>
             {activeFieldType === "tags" && (
@@ -631,7 +675,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
             )}
           </div>
 
-          {/* Content Area - Tags or Read-only Caption */}
+          {/* Content Area - Tags, Text, or Metadata */}
           {activeFieldType === "tags" ? (
             <>
               {/* Tag List - Scrollable */}
@@ -671,9 +715,29 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
                 />
               </div>
             </>
+          ) : activeFieldType === '__metadata__' ? (
+            <>
+              {/* Metadata Display - All fields in one textbox */}
+              <div className="flex-1 bg-gray-900 rounded p-2 overflow-y-auto min-h-0">
+                <textarea
+                  readOnly
+                  value={(() => {
+                    const metadataCaptions = detailedItem?.captions?.filter(c => c.field_category === 'metadata') || [];
+                    return metadataCaptions
+                      .map(c => `${c.source_field || c.caption_type}: ${c.content}`)
+                      .join('\n');
+                  })()}
+                  className="w-full h-full bg-transparent text-xs text-gray-300 font-mono resize-none focus:outline-none"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="flex-shrink-0 mt-2 text-[10px] text-gray-500">
+                {detailedItem?.captions?.filter(c => c.field_category === 'metadata').length || 0} metadata fields
+              </div>
+            </>
           ) : (
             <>
-              {/* Read-only Caption Display */}
+              {/* Read-only Caption Display (Text/Natural Language) */}
               <div className="flex-1 bg-gray-900 rounded p-2 overflow-y-auto min-h-0">
                 <p className="text-xs text-gray-300 whitespace-pre-wrap">
                   {detailedItem?.captions?.find(c => c.caption_type === activeFieldType)?.content || "No content"}

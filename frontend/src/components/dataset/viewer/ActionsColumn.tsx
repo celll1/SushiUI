@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { addTagToCategory } from "@/utils/api";
 import { X } from "lucide-react";
+import BatchOperationsPanel from "../batch/BatchOperationsPanel";
 
 interface TagStatistic {
   category: string;
@@ -13,6 +14,10 @@ interface ActionsColumnProps {
   datasetId: number;
   tagStatistics?: Record<string, TagStatistic>;
   onRefresh: () => void;
+  selectedItemIds: number[];
+  totalItems: number;
+  captionProcessingConfig?: any;
+  taggerSettings?: any;
 }
 
 // Category colors (same as ItemDetailColumn)
@@ -38,6 +43,10 @@ export default function ActionsColumn({
   datasetId,
   tagStatistics,
   onRefresh,
+  selectedItemIds,
+  totalItems,
+  captionProcessingConfig,
+  taggerSettings,
 }: ActionsColumnProps) {
   // Category visibility state (all visible by default)
   const [visibleCategories, setVisibleCategories] = useState<Set<string>>(
@@ -100,11 +109,20 @@ export default function ActionsColumn({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="p-3 border-b border-gray-700">
-        <h3 className="text-sm font-semibold">Tag Statistics</h3>
+        <h3 className="text-sm font-semibold">Actions & Statistics</h3>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {/* Batch Operations Panel */}
+        <BatchOperationsPanel
+          datasetId={datasetId}
+          selectedItemIds={Array.from(selectedItemIds)}
+          totalItems={totalItems}
+          captionProcessingConfig={captionProcessingConfig}
+          taggerSettings={taggerSettings}
+          onOperationComplete={onRefresh}
+        />
         {/* Category Filter */}
         {allCategories.length > 0 && (
           <div className="bg-gray-800 rounded-lg p-2">

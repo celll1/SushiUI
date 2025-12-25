@@ -1225,6 +1225,10 @@ export interface CaptionSubtype {
 export interface CaptionTypeInfo {
   caption_type: string;
   total_count: number;
+  field_category: 'training' | 'metadata';
+  is_tags_format: boolean;
+  avg_match_rate: number;
+  source_field?: string;
   subtypes: CaptionSubtype[];
 }
 

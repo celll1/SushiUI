@@ -135,6 +135,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // TIPO: Treat as Natural Language (local state, not persisted)
+  const [treatAsNL, setTreatAsNL] = useState(false);
+
   // Tokenize prompts using backend tokenizer (debounced)
   useEffect(() => {
     if (tokenizePromptTimeoutRef.current) {
@@ -647,7 +650,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         top_k: tipoSettings.top_k,
         max_new_tokens: tipoSettings.max_new_tokens,
         category_order: categoryOrder,
-        enabled_categories: enabledCategories
+        enabled_categories: enabledCategories,
+        treat_as_nl: treatAsNL
       });
 
       // Replace with generated prompt
@@ -789,7 +793,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           top_k: sharedTipoSettings.top_k,
           max_new_tokens: sharedTipoSettings.max_new_tokens,
           category_order: categoryOrder,
-          enabled_categories: enabledCategories
+          enabled_categories: enabledCategories,
+          treat_as_nl: treatAsNL  // Add local state
         };
       }
     }
@@ -1427,6 +1432,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
               />
               <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer ml-4">
+              <input
+                type="checkbox"
+                checked={treatAsNL}
+                onChange={(e) => setTreatAsNL(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+                title="Treat input as natural language instead of tags"
+              />
+              <span className="text-xs text-gray-400">NL</span>
             </label>
             <button
               onClick={() => setIsTIPODialogOpen(true)}

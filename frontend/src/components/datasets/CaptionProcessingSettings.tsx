@@ -292,25 +292,40 @@ export default function CaptionProcessingSettings({
         </div>
       )}
 
-      {/* Image Metadata Fields - Display Only */}
+      {/* Image Metadata Fields - Display Only (Collapsible Card) */}
       {datasetId && availableCaptionTypes.some(ct => ct.field_category === 'metadata') && (
-        <div className="space-y-3 mt-6 pt-6 border-t border-gray-700">
-          <h3 className="text-sm font-semibold text-gray-400">
-            Image Metadata (Display Only)
-          </h3>
-          <p className="text-xs text-gray-500">
-            These fields are stored as image metadata and displayed in the viewer, but not used for training.
-          </p>
-          <div className="space-y-1">
-            {availableCaptionTypes
-              .filter(ct => ct.field_category === 'metadata')
-              .map((captionType) => (
-              <div key={captionType.caption_type} className="flex items-center gap-2 p-2 bg-gray-800/50 rounded text-xs text-gray-500">
-                <span>{captionType.source_field || captionType.caption_type}</span>
-                <span className="ml-auto">({captionType.total_count} items)</span>
+        <div className="mt-6 pt-6 border-t border-gray-700">
+          <details className="group">
+            <summary className="flex items-center justify-between p-3 bg-gray-800 rounded cursor-pointer hover:bg-gray-750">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-400">
+                  Image Metadata ({availableCaptionTypes.filter(ct => ct.field_category === 'metadata').length} fields)
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Display only, not used for training
+                </p>
               </div>
-            ))}
-          </div>
+              <svg className="w-5 h-5 text-gray-400 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </summary>
+            <div className="mt-2 p-3 bg-gray-800/30 rounded border border-gray-700">
+              <div className="grid grid-cols-2 gap-2">
+                {availableCaptionTypes
+                  .filter(ct => ct.field_category === 'metadata')
+                  .map((captionType) => (
+                  <div key={captionType.caption_type} className="flex items-center justify-between p-2 bg-gray-700/50 rounded text-xs">
+                    <span className="text-gray-400 truncate" title={captionType.source_field || captionType.caption_type}>
+                      {captionType.source_field || captionType.caption_type}
+                    </span>
+                    <span className="text-gray-500 ml-2 whitespace-nowrap">
+                      {captionType.total_count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
         </div>
       )}
 

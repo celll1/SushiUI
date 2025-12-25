@@ -58,9 +58,14 @@ def is_metadata_field(field_name: str, content: str) -> bool:
 
     # Content-based detection
     content_stripped = content.strip()
+    content_lower = content_stripped.lower()
 
     # Empty content
     if not content_stripped:
+        return True
+
+    # Boolean values (True, False, true, false, 0, 1)
+    if content_lower in ('true', 'false', '0', '1'):
         return True
 
     # ISO timestamps (e.g., "2025-08-29T07:00:21.893Z")
@@ -70,6 +75,13 @@ def is_metadata_field(field_name: str, content: str) -> bool:
     # Pure numbers (e.g., metrics values: "28", "71")
     if content_stripped.isdigit():
         return True
+
+    # Floating point numbers
+    try:
+        float(content_stripped)
+        return True
+    except ValueError:
+        pass
 
     # URLs
     if content_stripped.startswith(('http://', 'https://', 'www.')):

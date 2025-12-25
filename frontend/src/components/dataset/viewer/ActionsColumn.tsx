@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { addTagToCategory } from "@/utils/api";
+import { X } from "lucide-react";
 
 interface TagStatistic {
   category: string;
@@ -39,8 +41,12 @@ export default function ActionsColumn({
 }: ActionsColumnProps) {
   // Category visibility state (all visible by default)
   const [visibleCategories, setVisibleCategories] = useState<Set<string>>(
-    new Set(["character", "artist", "copyright", "general", "meta", "quality", "rating", "model"])
+    new Set(["character", "artist", "copyright", "general", "meta", "quality", "rating", "model", "unknown"])
   );
+
+  // Categorization dialog state
+  const [selectedTag, setSelectedTag] = useState<{ tag: string; count: number } | null>(null);
+  const [isCategorizing, setIsCategorizing] = useState(false);
 
   // Get unique categories from tag statistics
   const allCategories = tagStatistics
@@ -64,6 +70,30 @@ export default function ActionsColumn({
       newVisible.add(normalized);
     }
     setVisibleCategories(newVisible);
+  };
+
+  const handleTagClick = (tag: string, stats: TagStatistic) => {
+    // Only allow categorization for Unknown tags
+    if (stats.category.toLowerCase() === "unknown") {
+      setSelectedTag({ tag, count: stats.count });
+    }
+  };
+
+  const handleCategorize = async (targetCategory: string) => {
+    if (!selectedTag) return;
+
+    setIsCategorizing(true);
+    try {
+      await addTagToCategory(selectedTag.tag, targetCategory, selectedTag.count);
+      alert(`Tag "${selectedTag.tag}" added to ${targetCategory} category`);
+      setSelectedTag(null);
+      onRefresh(); // Refresh dataset to update tag categories
+    } catch (error) {
+      console.error("Failed to categorize tag:", error);
+      alert("Failed to categorize tag. See console for details.");
+    } finally {
+      setIsCategorizing(false);
+    }
   };
 
   return (
@@ -107,10 +137,15 @@ export default function ActionsColumn({
             <div className="space-y-1 max-h-96 overflow-y-auto">
               {sortedTags.map(([tag, stats]) => {
                 const colorClass = getCategoryColor(stats.category);
+                const isUnknown = stats.category.toLowerCase() === "unknown";
                 return (
                   <div
                     key={tag}
-                    className="flex items-center justify-between text-xs group hover:bg-gray-700 rounded px-1.5 py-0.5 transition-colors"
+                    className={`flex items-center justify-between text-xs group hover:bg-gray-700 rounded px-1.5 py-0.5 transition-colors ${
+                      isUnknown ? 'cursor-pointer' : ''
+                    }`}
+                    onClick={() => handleTagClick(tag, stats)}
+                    title={isUnknown ? "Click to categorize" : ""}
                   >
                     <div className="flex items-center space-x-1.5 flex-1 min-w-0">
                       <span className={`px-1.5 py-0.5 ${colorClass} rounded text-[10px] flex-shrink-0`}>
@@ -132,6 +167,50 @@ export default function ActionsColumn({
           )}
         </div>
       </div>
+
+      {/* Categorization Dialog */}
+      {selectedTag && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-lg border border-gray-700 w-full max-w-sm p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold">Categorize Tag</h3>
+              <button
+                onClick={() => setSelectedTag(null)}
+                className="p-1 hover:bg-gray-700 rounded transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mb-3">
+              <div className="text-xs text-gray-300 mb-1">Tag:</div>
+              <div className="bg-gray-900 rounded px-2 py-1 text-xs text-gray-200">
+                {selectedTag.tag}
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <div className="text-xs text-gray-300 mb-2">Select Category:</div>
+              <div className="grid grid-cols-2 gap-2">
+                {["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"].map(category => (
+                  <button
+                    key={category}
+                    onClick={() => handleCategorize(category)}
+                    disabled={isCategorizing}
+                    className={`px-3 py-2 rounded text-xs transition-colors ${getCategoryColor(category)} hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="text-[10px] text-gray-500">
+              Count: {selectedTag.count} (will be saved to taglist JSON)
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

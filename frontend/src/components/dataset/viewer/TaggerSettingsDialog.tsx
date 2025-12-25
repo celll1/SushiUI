@@ -189,44 +189,72 @@ function DualThresholdSlider({
   onChange: (removeThreshold: number, addThreshold: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const [isDraggingRemove, setIsDraggingRemove] = useState(false);
-  const [isDraggingAdd, setIsDraggingAdd] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartX, setDragStartX] = useState<number | null>(null);
+  const [dragType, setDragType] = useState<'remove' | 'add' | null>(null);
 
-  const handleMouseDown = (type: 'remove' | 'add') => (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (type === 'remove') {
-      setIsDraggingRemove(true);
+    if (!trackRef.current) return;
+
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percent = x / rect.width;
+
+    setIsDragging(true);
+    setDragStartX(x);
+
+    // If thresholds are overlapping (within 5% or 0.05), determine direction on move
+    const gap = Math.abs(addThreshold - removeThreshold);
+    if (gap <= 0.05) {
+      setDragType(null); // Will be determined on first move
     } else {
-      setIsDraggingAdd(true);
+      // Determine which handle is closer
+      const distToRemove = Math.abs(percent - removeThreshold);
+      const distToAdd = Math.abs(percent - addThreshold);
+      setDragType(distToRemove < distToAdd ? 'remove' : 'add');
     }
   };
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!trackRef.current || (!isDraggingRemove && !isDraggingAdd)) return;
+      if (!trackRef.current || !isDragging) return;
 
       const rect = trackRef.current.getBoundingClientRect();
       const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
       const percent = x / rect.width;
       const value = Math.round(percent * 20) / 20; // Snap to 0.05 increments
 
-      if (isDraggingRemove) {
-        // Ensure removeThreshold < addThreshold
-        const newRemove = Math.min(value, addThreshold - 0.05);
+      // Determine drag type if overlapping handles
+      let currentDragType = dragType;
+      if (currentDragType === null && dragStartX !== null) {
+        const delta = x - dragStartX;
+        if (Math.abs(delta) > 2) { // Threshold to detect direction
+          currentDragType = delta < 0 ? 'remove' : 'add';
+          setDragType(currentDragType);
+        } else {
+          return; // Wait for clear direction
+        }
+      }
+
+      if (currentDragType === 'remove') {
+        // Allow removeThreshold to equal addThreshold (overlap allowed)
+        const newRemove = Math.min(value, addThreshold);
         onChange(Math.max(0, newRemove), addThreshold);
-      } else if (isDraggingAdd) {
-        // Ensure addThreshold > removeThreshold
-        const newAdd = Math.max(value, removeThreshold + 0.05);
+      } else if (currentDragType === 'add') {
+        // Allow addThreshold to equal removeThreshold (overlap allowed)
+        const newAdd = Math.max(value, removeThreshold);
         onChange(removeThreshold, Math.min(1, newAdd));
       }
     };
 
     const handleMouseUp = () => {
-      setIsDraggingRemove(false);
-      setIsDraggingAdd(false);
+      setIsDragging(false);
+      setDragStartX(null);
+      setDragType(null);
     };
 
-    if (isDraggingRemove || isDraggingAdd) {
+    if (isDragging) {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
       return () => {
@@ -234,7 +262,7 @@ function DualThresholdSlider({
         document.removeEventListener('mouseup', handleMouseUp);
       };
     }
-  }, [isDraggingRemove, isDraggingAdd, removeThreshold, addThreshold, onChange]);
+  }, [isDragging, dragStartX, dragType, removeThreshold, addThreshold, onChange]);
 
   return (
     <div className="flex items-center gap-2 py-0.5">
@@ -278,20 +306,20 @@ function DualThresholdSlider({
           />
         </div>
 
-        {/* Remove threshold handle (red) */}
+        {/* Remove threshold handle (red) - can overlap with blue */}
         <div
-          className="absolute top-0 w-3 h-4 cursor-pointer"
+          className="absolute top-0 w-3 h-4 cursor-pointer z-10"
           style={{ left: `calc(${removeThreshold * 100}% - 6px)` }}
-          onMouseDown={handleMouseDown('remove')}
+          onMouseDown={handleMouseDown}
         >
           <div className="w-3 h-4 bg-red-500 border border-red-300 rounded shadow hover:scale-125 transition-transform" />
         </div>
 
-        {/* Add threshold handle (blue) */}
+        {/* Add threshold handle (blue) - can overlap with red */}
         <div
-          className="absolute top-0 w-3 h-4 cursor-pointer"
+          className="absolute top-0 w-3 h-4 cursor-pointer z-10"
           style={{ left: `calc(${addThreshold * 100}% - 6px)` }}
-          onMouseDown={handleMouseDown('add')}
+          onMouseDown={handleMouseDown}
         >
           <div className="w-3 h-4 bg-blue-500 border border-blue-300 rounded shadow hover:scale-125 transition-transform" />
         </div>

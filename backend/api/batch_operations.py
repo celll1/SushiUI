@@ -144,7 +144,7 @@ async def save_item_to_txt_json(item, db):
 
 async def update_tag_statistics(dataset_id: int, db):
     """
-    Update tag statistics for a dataset
+    Update tag statistics for a dataset with category information
     """
     from database.models import Dataset, DatasetCaption
     from sqlalchemy import func
@@ -164,11 +164,28 @@ async def update_tag_statistics(dataset_id: int, db):
         for tag in tags:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-    # Update dataset tag_statistics
+    # Load taglist for category detection
+    all_tags = load_all_tags()
+    tag_to_category = {}
+    for category, tags_in_category in all_tags.items():
+        for tag_name in tags_in_category:
+            tag_to_category[tag_name.lower()] = category
+
+    # Update dataset tag_statistics with category information
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset:
-        dataset.tag_statistics = {tag: {"count": count} for tag, count in tag_counts.items()}
+        tag_statistics = {}
+        for tag, count in tag_counts.items():
+            # Get category from taglist
+            normalized_tag = tag.lower().replace('_', ' ').strip()
+            category = tag_to_category.get(normalized_tag, "General")
+            tag_statistics[tag] = {
+                "count": count,
+                "category": category
+            }
+        dataset.tag_statistics = tag_statistics
         db.commit()
+        print(f"[BatchOps] Updated tag statistics: {len(tag_statistics)} unique tags")
 
 
 def normalize_tag_for_matching(tag: str) -> str:

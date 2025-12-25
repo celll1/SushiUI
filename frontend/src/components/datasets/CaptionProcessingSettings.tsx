@@ -237,31 +237,45 @@ export default function CaptionProcessingSettings({
         </div>
       )}
 
-      {/* Caption Types Selection - Training Only */}
+      {/* Caption Types Selection - Training Only (Radio: Single Selection) */}
       {datasetId && availableCaptionTypes.some(ct => ct.field_category === 'training') && (
         <div className="space-y-3">
           <h3 className="text-sm font-semibold text-gray-200 border-b border-gray-700 pb-2">
-            Caption Types for Training
+            Caption Type for Training
           </h3>
           <div className="space-y-2">
             <p className="text-xs text-gray-400">
-              Select which caption types to use during training. Only training-category fields are shown. If none selected, auto-selects in priority order: tags &gt; natural_language &gt; others.
+              Select which caption type to use during training. Only one type can be selected. If none selected, auto-selects in priority order: tags &gt; natural_language &gt; others.
             </p>
             <div className="space-y-1">
+              {/* Auto-select option */}
+              <label className="flex items-center gap-2 p-2 bg-gray-800 rounded hover:bg-gray-750 cursor-pointer">
+                <input
+                  type="radio"
+                  name="caption_type"
+                  checked={!localConfig.caption_types || (localConfig.caption_types as any[]).length === 0}
+                  onChange={() => handleChange("caption_types", [])}
+                  disabled={readOnly}
+                  className="w-4 h-4"
+                />
+                <div className="flex-1">
+                  <span className="text-sm text-gray-200">Auto-select</span>
+                  <span className="ml-2 text-xs text-gray-400">
+                    (Priority: tags &gt; natural language)
+                  </span>
+                </div>
+              </label>
+
+              {/* Individual caption types */}
               {availableCaptionTypes
                 .filter(ct => ct.field_category === 'training')
                 .map((captionType) => (
-                <label key={captionType.caption_type} className="flex items-center gap-2 p-2 bg-gray-800 rounded hover:bg-gray-750">
+                <label key={captionType.caption_type} className="flex items-center gap-2 p-2 bg-gray-800 rounded hover:bg-gray-750 cursor-pointer">
                   <input
-                    type="checkbox"
-                    checked={(localConfig.caption_types || []).includes(captionType.caption_type)}
-                    onChange={(e) => {
-                      const currentTypes = localConfig.caption_types || [];
-                      const newTypes = e.target.checked
-                        ? [...currentTypes, captionType.caption_type]
-                        : currentTypes.filter((t) => t !== captionType.caption_type);
-                      handleChange("caption_types", newTypes);
-                    }}
+                    type="radio"
+                    name="caption_type"
+                    checked={(localConfig.caption_types as any[] || []).length === 1 && (localConfig.caption_types as any[])[0] === captionType.caption_type}
+                    onChange={() => handleChange("caption_types", [captionType.caption_type])}
                     disabled={readOnly}
                     className="w-4 h-4"
                   />
@@ -300,10 +314,19 @@ export default function CaptionProcessingSettings({
         </div>
       )}
 
-      {/* Tag Processing Options - Only show if tags-format captions are selected (or if no dataset specified) */}
-      {(!datasetId || ((localConfig.caption_types || []).length > 0 && availableCaptionTypes.some(ct =>
-        (localConfig.caption_types || []).includes(ct.caption_type) && ct.is_tags_format
-      ))) && (
+      {/* Tag Processing Options - Only show if tags-format caption is selected (or if no dataset specified) */}
+      {(!datasetId || (() => {
+        const selectedTypes = localConfig.caption_types as any[] || [];
+        if (selectedTypes.length === 0) {
+          // Auto-select: check if any tags-format type exists (will be auto-selected)
+          return availableCaptionTypes.some(ct => ct.field_category === 'training' && ct.is_tags_format);
+        } else if (selectedTypes.length === 1) {
+          // Single selection: check if selected type is tags-format
+          const selectedType = availableCaptionTypes.find(ct => ct.caption_type === selectedTypes[0]);
+          return selectedType?.is_tags_format || false;
+        }
+        return false;
+      })()) && (
         <>
           {/* Tag Normalization */}
           <div className="space-y-3 mt-4 pt-4 border-t border-gray-700">

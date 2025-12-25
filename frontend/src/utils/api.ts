@@ -1168,6 +1168,10 @@ export interface DatasetCaptionData {
   item_id: number;
   caption_type: string;
   content: string;
+  field_category?: 'training' | 'metadata'; // Field category: training or metadata
+  is_tags_format?: boolean; // True if tags format (Danbooru), false if natural language
+  tag_match_rate?: number; // Tag match rate (0.0-1.0) for tags format detection
+  source_field?: string; // JSON field path (e.g., "metrics.likes", "author")
   source: string;
   created_at: string;
   updated_at: string;

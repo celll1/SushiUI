@@ -56,6 +56,7 @@ export default function BatchOperationsPanel({
     return () => wsClient.unsubscribe(handleProgress);
   }, [isProcessing]);
 
+  // If no items selected, target all items (empty array means "all" in backend)
   const targetCount = selectedItemIds.length > 0 ? selectedItemIds.length : totalItems;
   const targetItemIds = selectedItemIds.length > 0 ? selectedItemIds : [];
 

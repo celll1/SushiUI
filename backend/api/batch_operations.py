@@ -206,8 +206,6 @@ async def batch_tagger_inference(
     from database.models import DatasetItem, DatasetCaption
     from core.extensions.tagger_manager import tagger_manager
     from PIL import Image
-    import base64
-    import io
 
     reset_cancellation_flag()
 
@@ -232,7 +230,7 @@ async def batch_tagger_inference(
     send_progress_callback(0, total, "Starting batch tagger inference...")
 
     # Load tagger model if not loaded
-    if not tagger_manager.is_loaded():
+    if not tagger_manager.loaded:
         send_progress_callback(0, total, "Loading tagger model...")
         tagger_manager.load_model(
             use_gpu=True,
@@ -259,17 +257,25 @@ async def batch_tagger_inference(
                 f"Processing {item.base_name} ({processed + 1}/{total})"
             )
 
-            # Load image and convert to base64
-            image = Image.open(item.image_path)
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            # Load image as PIL Image
+            try:
+                image = Image.open(item.image_path)
+                # Ensure image is in RGB mode
+                if image.mode not in ('RGB', 'RGBA'):
+                    image = image.convert('RGB')
+            except Exception as img_error:
+                print(f"[BatchTagger] Failed to load image {item.image_path}: {img_error}")
+                failed += 1
+                processed += 1
+                continue
 
-            # Run tagger inference
+            # Run tagger inference (predict() takes PIL Image, not base64)
             result = tagger_manager.predict(
-                image_base64,
+                image,
                 gen_threshold=request.gen_threshold,
                 char_threshold=request.char_threshold,
+                model_version=request.model_version or "cl_tagger_1_02",
+                auto_unload=False,  # Don't unload during batch processing
                 thresholds=request.thresholds or {}
             )
 

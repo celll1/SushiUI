@@ -3103,6 +3103,48 @@ async def list_dataset_items(
         "page_size": page_size
     }
 
+@router.get("/datasets/{dataset_id}/items/ids")
+async def get_all_dataset_item_ids(
+    dataset_id: int,
+    search: Optional[str] = None,
+    tags: Optional[str] = None,
+    db: Session = Depends(get_datasets_db)
+):
+    """Get all item IDs in dataset (with optional filters)
+
+    Args:
+        dataset_id: Dataset ID
+        search: Text search in filename (base_name)
+        tags: Comma-separated tags to filter by
+
+    Returns:
+        List of all matching item IDs
+    """
+    query = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+
+    # Filename search
+    if search:
+        query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
+
+    # Tag filter
+    if tags:
+        tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
+        if tag_list:
+            query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
+            query = query.filter(DatasetCaption.caption_type == "tags")
+            for tag in tag_list:
+                query = query.filter(
+                    func.lower(DatasetCaption.content).like(f"%{tag}%")
+                )
+
+    # Get all IDs
+    item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
+
+    return {
+        "item_ids": item_ids,
+        "total": len(item_ids)
+    }
+
 @router.get("/datasets/{dataset_id}/tags")
 async def get_dataset_tags(
     dataset_id: int,

@@ -100,6 +100,11 @@ class ControlNetConfig(BaseModel):
     preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
     enable_preprocessor: bool = True  # Whether to apply preprocessing
 
+class AddTagRequest(BaseModel):
+    tag: str
+    category: str
+    count: int = 1
+
 class GenerationParams(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = ""
@@ -1712,6 +1717,111 @@ async def get_taglist_timestamps():
         print(f"Error getting tag file timestamps: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/tag-category/add")
+async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_datasets_db)):
+    """Add a tag to a category's taglist JSON file and update all datasets' tag statistics
+
+    Args:
+        request: AddTagRequest containing tag, category, and count
+        db: Database session
+
+    Returns:
+        Status message
+    """
+    import json
+    import os
+
+    # Validate category
+    valid_categories = ["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"]
+    if request.category not in valid_categories:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+
+    # Taglist file path
+    taglist_file = os.path.join(settings.root_dir, "taglist", f"{request.category}.json")
+
+    if not os.path.exists(taglist_file):
+        raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_file}")
+
+    try:
+        # Load existing taglist
+        with open(taglist_file, 'r', encoding='utf-8') as f:
+            taglist = json.load(f)
+
+        # Check if tag already exists in this category
+        tag_already_exists = request.tag in taglist
+        json_updated = False
+
+        if not tag_already_exists:
+            # Add tag to taglist JSON
+            taglist[request.tag] = request.count
+
+            # Sort by count (descending) and write back
+            sorted_taglist = dict(sorted(taglist.items(), key=lambda x: int(x[1]), reverse=True))
+
+            with open(taglist_file, 'w', encoding='utf-8') as f:
+                json.dump(sorted_taglist, f, ensure_ascii=False, indent=2)
+
+            json_updated = True
+            print(f"[TagCategory] Added tag '{request.tag}' to {request.category}.json")
+
+            # Record user addition in a separate log file (project root, not in taglist/)
+            user_additions_file = os.path.join(settings.root_dir, "user_tag_additions.json")
+            user_additions = []
+
+            if os.path.exists(user_additions_file):
+                try:
+                    with open(user_additions_file, 'r', encoding='utf-8') as f:
+                        user_additions = json.load(f)
+                except:
+                    user_additions = []
+
+            # Add new entry with timestamp
+            from datetime import datetime
+            user_additions.append({
+                "tag": request.tag,
+                "category": request.category,
+                "count": request.count,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # Write user additions log (keep last 1000 entries)
+            with open(user_additions_file, 'w', encoding='utf-8') as f:
+                json.dump(user_additions[-1000:], f, ensure_ascii=False, indent=2)
+        else:
+            print(f"[TagCategory] Tag '{request.tag}' already exists in {request.category}.json, skipping JSON update")
+
+        # Update tag category in all datasets' tag_statistics
+        datasets = db.query(Dataset).all()
+        updated_datasets = 0
+        for dataset in datasets:
+            if dataset.tag_statistics and request.tag in dataset.tag_statistics:
+                # Update category for this tag
+                dataset.tag_statistics[request.tag]["category"] = request.category
+                updated_datasets += 1
+
+        # Commit database changes
+        if updated_datasets > 0:
+            db.commit()
+            print(f"[TagCategory] Updated category for tag '{request.tag}' in {updated_datasets} datasets")
+
+        # Build response message
+        if tag_already_exists:
+            message = f"Tag '{request.tag}' already exists in {request.category} category. Updated {updated_datasets} dataset(s)."
+        else:
+            message = f"Tag '{request.tag}' added to {request.category} category. Updated {updated_datasets} dataset(s)."
+
+        return {
+            "status": "success",
+            "message": message,
+            "tag": request.tag,
+            "category": request.category,
+            "count": request.count,
+            "json_updated": json_updated,
+            "updated_datasets": updated_datasets
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update taglist: {str(e)}")
+
 @router.get("/taglist/{category}")
 async def get_taglist(category: str):
     """
@@ -2210,85 +2320,6 @@ async def unload_tagger_model():
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/taglist/add-tag")
-async def add_tag_to_category(
-    tag: str = Form(...),
-    category: str = Form(...),
-    count: int = Form(1)
-):
-    """Add a tag to a category's taglist JSON file
-
-    Args:
-        tag: Tag name to add
-        category: Target category (Artist, Character, Copyright, General, Meta, Model, Quality, Rating)
-        count: Tag count (default: 1)
-
-    Returns:
-        Status message
-    """
-    import json
-    import os
-
-    # Validate category
-    valid_categories = ["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"]
-    if category not in valid_categories:
-        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}")
-
-    # Taglist file path
-    taglist_dir = "taglist"
-    taglist_file = os.path.join(taglist_dir, f"{category}.json")
-
-    if not os.path.exists(taglist_file):
-        raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_file}")
-
-    try:
-        # Load existing taglist
-        with open(taglist_file, 'r', encoding='utf-8') as f:
-            taglist = json.load(f)
-
-        # Add or update tag
-        taglist[tag] = count
-
-        # Sort by count (descending) and write back
-        sorted_taglist = dict(sorted(taglist.items(), key=lambda x: x[1], reverse=True))
-
-        with open(taglist_file, 'w', encoding='utf-8') as f:
-            json.dump(sorted_taglist, f, ensure_ascii=False, indent=2)
-
-        # Record user addition in a separate log file (project root, not in taglist/)
-        user_additions_file = "user_tag_additions.json"
-        user_additions = []
-
-        if os.path.exists(user_additions_file):
-            try:
-                with open(user_additions_file, 'r', encoding='utf-8') as f:
-                    user_additions = json.load(f)
-            except:
-                user_additions = []
-
-        # Add new entry with timestamp
-        from datetime import datetime
-        user_additions.append({
-            "tag": tag,
-            "category": category,
-            "count": count,
-            "timestamp": datetime.now().isoformat()
-        })
-
-        # Write user additions log (keep last 1000 entries)
-        with open(user_additions_file, 'w', encoding='utf-8') as f:
-            json.dump(user_additions[-1000:], f, ensure_ascii=False, indent=2)
-
-        return {
-            "status": "success",
-            "message": f"Tag '{tag}' added to {category} category",
-            "tag": tag,
-            "category": category,
-            "count": count
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update taglist: {str(e)}")
 
 @router.get("/system/gpu-stats")
 async def get_gpu_stats():

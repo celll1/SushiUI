@@ -1178,6 +1178,18 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export const getAllDatasetItemIds = async (
+  datasetId: number,
+  search?: string,
+  tags?: string
+): Promise<{ item_ids: number[]; total: number }> => {
+  const params: any = {};
+  if (search) params.search = search;
+  if (tags) params.tags = tags;
+  const response = await api.get(`/datasets/${datasetId}/items/ids`, { params });
+  return response.data;
+};
+
 export const getDatasetTags = async (datasetId: number): Promise<string[]> => {
   const response = await api.get(`/datasets/${datasetId}/tags`);
   return response.data.tags;

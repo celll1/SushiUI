@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { listDatasetItems, DatasetItem, Dataset, getDataset } from "@/utils/api";
+import { listDatasetItems, DatasetItem, Dataset, getDataset, getAllDatasetItemIds } from "@/utils/api";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 import ItemGridColumn from "./viewer/ItemGridColumn";
@@ -115,9 +115,18 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setSelectedItems(newSelected);
   };
 
-  const handleSelectAll = () => {
-    const newSelected = new Set(items.map(item => item.id));
-    setSelectedItems(newSelected);
+  const handleSelectAll = async () => {
+    try {
+      // Fetch all item IDs (respecting current search/tag filters)
+      const response = await getAllDatasetItemIds(
+        datasetId,
+        search || undefined,
+        tagFilter || undefined
+      );
+      setSelectedItems(new Set(response.item_ids));
+    } catch (err) {
+      console.error("Failed to select all items:", err);
+    }
   };
 
   const handleDeselectAll = () => {
@@ -153,6 +162,8 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           onSearchChange={handleSearchChange}
           onTagFilterChange={handleTagFilterChange}
           onPageChange={setPage}
+          onSelectAll={handleSelectAll}
+          onDeselectAll={handleDeselectAll}
         />
       </div>
 
@@ -165,15 +176,11 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         />
       </div>
 
-      {/* Right Column: Actions */}
+      {/* Right Column: Tag Statistics */}
       <div className="w-80 flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg">
         <ActionsColumn
           datasetId={datasetId}
-          selectedItems={selectedItems}
-          totalItems={total}
           tagStatistics={tagStatistics}
-          onSelectAll={handleSelectAll}
-          onDeselectAll={handleDeselectAll}
           onRefresh={loadItems}
         />
       </div>

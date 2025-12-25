@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Search, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, X, CheckSquare, Square } from "lucide-react";
 import { DatasetItem } from "@/utils/api";
 import TagSuggestions from "@/components/common/TagSuggestions";
 import { TagFilterMode, normalizeTagForMatching } from "@/utils/tagSuggestions";
@@ -22,6 +22,8 @@ interface ItemGridColumnProps {
   onSearchChange: (search: string) => void;
   onTagFilterChange: (tagFilter: string) => void;
   onPageChange: (page: number) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
 }
 
 interface TagSuggestion {
@@ -63,6 +65,8 @@ export default function ItemGridColumn({
   onSearchChange,
   onTagFilterChange,
   onPageChange,
+  onSelectAll,
+  onDeselectAll,
 }: ItemGridColumnProps) {
   const totalPages = Math.ceil(total / pageSize);
   const tagSuggestionsContext = useTagSuggestions();
@@ -225,7 +229,31 @@ export default function ItemGridColumn({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="p-3 border-b border-gray-700">
-        <h3 className="text-sm font-semibold mb-3">Items ({total})</h3>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold">Items ({total})</h3>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onSelectAll}
+              className="p-1 hover:bg-gray-700 rounded transition-colors"
+              title="Select All (all pages)"
+            >
+              <CheckSquare className="h-4 w-4 text-gray-400 hover:text-blue-400" />
+            </button>
+            <button
+              onClick={onDeselectAll}
+              disabled={selectedItems.size === 0}
+              className="p-1 hover:bg-gray-700 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Deselect All"
+            >
+              <Square className="h-4 w-4 text-gray-400 hover:text-blue-400" />
+            </button>
+          </div>
+        </div>
+        {selectedItems.size > 0 && (
+          <div className="text-xs text-blue-400 mb-2">
+            {selectedItems.size} selected
+          </div>
+        )}
 
         {/* Filename Search */}
         <div className="relative mb-2">

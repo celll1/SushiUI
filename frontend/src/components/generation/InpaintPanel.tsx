@@ -1140,27 +1140,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     // Feeling Lucky mode: Generate prompt with TIPO before queueing
     if (params.feeling_lucky) {
       try {
-        // Load shared TIPO settings from localStorage (same as Prompt Editor)
-        const saved = localStorage.getItem("tipo_settings");
-        const sharedTipoSettings = saved ? JSON.parse(saved) : tipoSettings;
-
+        // Use panel's TIPO settings (not localStorage)
         // Build category order and enabled map from settings
-        const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
+        const categoryOrder = tipoSettings.categories.map((c: any) => c.id);
         const enabledCategories: Record<string, boolean> = {};
-        sharedTipoSettings.categories.forEach((c: any) => {
+        tipoSettings.categories.forEach((c: any) => {
           enabledCategories[c.id] = c.enabled;
         });
 
         console.log('[Inpaint] Feeling Lucky: Generating prompt with TIPO...');
         const result = await generateTIPOPrompt({
           input_prompt: processedPrompt,
-          model_name: sharedTipoSettings.model_name,
-          tag_length: sharedTipoSettings.tag_length,
-          nl_length: sharedTipoSettings.nl_length,
-          temperature: sharedTipoSettings.temperature,
-          top_p: sharedTipoSettings.top_p,
-          top_k: sharedTipoSettings.top_k,
-          max_new_tokens: sharedTipoSettings.max_new_tokens,
+          model_name: tipoSettings.model_name,
+          tag_length: tipoSettings.tag_length,
+          nl_length: tipoSettings.nl_length,
+          temperature: tipoSettings.temperature,
+          top_p: tipoSettings.top_p,
+          top_k: tipoSettings.top_k,
+          max_new_tokens: tipoSettings.max_new_tokens,
           treat_as_nl: treatAsNL,
           category_order: categoryOrder,
           enabled_categories: enabledCategories

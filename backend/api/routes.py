@@ -4922,3 +4922,84 @@ async def delete_training_preset(preset_id: int, db: Session = Depends(get_train
     db.delete(preset)
     db.commit()
     return {"message": "Preset deleted successfully"}
+
+
+# ============================================================
+# Batch Operations for Dataset Items
+# ============================================================
+
+from api.batch_operations import (
+    BatchTaggerRequest,
+    BatchReorderTagsRequest,
+    BatchReplaceTagRequest,
+    BatchOperationResponse,
+    batch_tagger_inference,
+    batch_reorder_tags,
+    batch_replace_tag,
+    cancel_batch_operation,
+)
+
+@router.post("/datasets/{dataset_id}/batch-tagger", response_model=BatchOperationResponse)
+async def batch_tagger_endpoint(
+    dataset_id: int,
+    request: BatchTaggerRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Run tagger inference on multiple items
+    """
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_tagger_inference(request, db, send_progress)
+
+    print(f"[BatchTagger] {result.message}")
+    print(f"[BatchTagger] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-reorder-tags", response_model=BatchOperationResponse)
+async def batch_reorder_tags_endpoint(
+    dataset_id: int,
+    request: BatchReorderTagsRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Reorder tags by category for multiple items
+    """
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_reorder_tags(request, db, send_progress)
+
+    print(f"[BatchReorder] {result.message}")
+    print(f"[BatchReorder] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-replace-tag", response_model=BatchOperationResponse)
+async def batch_replace_tag_endpoint(
+    dataset_id: int,
+    request: BatchReplaceTagRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Replace a specific tag with another tag for multiple items
+    """
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_replace_tag(request, db, send_progress)
+
+    print(f"[BatchReplace] {result.message}")
+    print(f"[BatchReplace] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-cancel")
+async def batch_cancel_endpoint(dataset_id: int):
+    """
+    Cancel the current batch operation
+    """
+    cancel_batch_operation()
+    return {"message": "Batch operation cancellation requested"}

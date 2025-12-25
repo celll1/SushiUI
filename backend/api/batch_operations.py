@@ -212,6 +212,18 @@ async def batch_tagger_inference(
     reset_cancellation_flag()
 
     total = len(request.item_ids)
+
+    # Validate input
+    if total == 0:
+        return BatchOperationResponse(
+            status="completed",
+            processed_count=0,
+            updated_count=0,
+            skipped_count=0,
+            failed_count=0,
+            message="No items selected"
+        )
+
     processed = 0
     updated = 0
     skipped = 0
@@ -261,31 +273,48 @@ async def batch_tagger_inference(
                 thresholds=request.thresholds or {}
             )
 
-            # Get existing tags caption
+            # Get existing tags caption (single tags field per item)
             tags_caption = db.query(DatasetCaption).filter(
                 DatasetCaption.item_id == item.id,
                 DatasetCaption.caption_type == "tags"
             ).first()
 
-            existing_tags = []
+            # Parse existing tags if merge mode
+            existing_tags_set = set()
             if tags_caption and request.merge_with_existing:
-                existing_tags = [t.strip() for t in tags_caption.content.split(',') if t.strip()]
+                existing_tags_set = set(t.strip() for t in tags_caption.content.split(',') if t.strip())
 
-            # Merge predicted tags
-            new_tags = []
-
-            # Add existing tags first (if merging)
-            if request.merge_with_existing:
-                new_tags.extend(existing_tags)
-
-            # Add predicted tags (avoiding duplicates)
+            # Collect predicted tags with their scores
+            predicted_tags = {}  # tag -> score
             for category, predictions in result['predictions'].items():
                 for tag, score in predictions:
-                    if tag not in new_tags:
-                        new_tags.append(tag)
+                    predicted_tags[tag] = score
+
+            # Build final tag list
+            final_tags = []
+
+            if request.merge_with_existing and tags_caption:
+                # Merge mode: Keep existing tags + add new predictions
+                # Remove existing tags that are now below threshold
+                for existing_tag in existing_tags_set:
+                    # If tag is in predictions and above threshold, keep it
+                    if existing_tag in predicted_tags:
+                        if predicted_tags[existing_tag] >= request.gen_threshold:
+                            final_tags.append(existing_tag)
+                    else:
+                        # Tag not in predictions, keep it (user might have added manually)
+                        final_tags.append(existing_tag)
+
+                # Add new predicted tags (not in existing)
+                for tag, score in predicted_tags.items():
+                    if tag not in existing_tags_set:
+                        final_tags.append(tag)
+            else:
+                # Replace mode or no existing tags: Use only predictions
+                final_tags = list(predicted_tags.keys())
 
             # Update or create caption
-            content = ', '.join(new_tags)
+            content = ', '.join(final_tags)
 
             if tags_caption:
                 tags_caption.content = content
@@ -359,6 +388,18 @@ async def batch_reorder_tags(
     reset_cancellation_flag()
 
     total = len(request.item_ids)
+
+    # Validate input
+    if total == 0:
+        return BatchOperationResponse(
+            status="completed",
+            processed_count=0,
+            updated_count=0,
+            skipped_count=0,
+            failed_count=0,
+            message="No items selected"
+        )
+
     processed = 0
     updated = 0
     skipped = 0
@@ -480,6 +521,18 @@ async def batch_replace_tag(
     reset_cancellation_flag()
 
     total = len(request.item_ids)
+
+    # Validate input
+    if total == 0:
+        return BatchOperationResponse(
+            status="completed",
+            processed_count=0,
+            updated_count=0,
+            skipped_count=0,
+            failed_count=0,
+            message="No items selected"
+        )
+
     processed = 0
     updated = 0
     skipped = 0

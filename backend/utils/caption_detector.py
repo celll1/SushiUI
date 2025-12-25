@@ -211,6 +211,9 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
     """
     Recursively scan JSON fields and classify each
 
+    IMPORTANT: Only ONE tags field is allowed per item.
+    If multiple tags-format fields are found, only the first one is used.
+
     Args:
         json_data: JSON object to scan
         taglist: Set of known tags
@@ -219,12 +222,12 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
     Returns:
         List of caption dicts: [
             {
-                "caption_type": "tags",
+                "caption_type": "tags",  # Only ONE tags field (first tags-format field found)
                 "content": "1girl, long hair, ...",
                 "field_category": "training",
                 "is_tags_format": True,
                 "tag_match_rate": 0.85,
-                "source_field": "tags"
+                "source_field": "tags"  # Original field name
             },
             {
                 "caption_type": "text",
@@ -241,18 +244,11 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
                 "is_tags_format": False,
                 "tag_match_rate": 0.0,
                 "source_field": "savedAt"
-            },
-            {
-                "caption_type": "metrics.retweets",
-                "content": "28",
-                "field_category": "metadata",
-                "is_tags_format": False,
-                "tag_match_rate": 0.0,
-                "source_field": "metrics.retweets"
             }
         ]
     """
     results = []
+    found_tags_field = False  # Track if we've already found a tags field
 
     for key, value in json_data.items():
         # Build field path
@@ -260,8 +256,13 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
 
         # Handle nested objects (recursion)
         if isinstance(value, dict):
-            nested_results = scan_json_fields(value, taglist, prefix=field_path)
+            # Pass found_tags_field state to nested recursion
+            nested_results, found_tags_in_nested = _scan_json_fields_internal(
+                value, taglist, prefix=field_path, found_tags_field=found_tags_field
+            )
             results.extend(nested_results)
+            if found_tags_in_nested:
+                found_tags_field = True
             continue
 
         # Handle lists (skip for now)
@@ -274,8 +275,28 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
         # Classify field
         field_category, is_tags_format, match_rate = classify_field(field_path, content, taglist)
 
+        # Enforce single tags field constraint
+        if is_tags_format and field_category == "training":
+            if found_tags_field:
+                # Skip this tags field (already found one)
+                print(f"[CaptionDetector] Skipping duplicate tags field: {field_path} (first tags field already used)")
+                continue
+            else:
+                # First tags field - use it with caption_type="tags"
+                results.append({
+                    "caption_type": "tags",  # Normalized to "tags"
+                    "content": content,
+                    "field_category": field_category,
+                    "is_tags_format": is_tags_format,
+                    "tag_match_rate": match_rate,
+                    "source_field": field_path  # Original field name
+                })
+                found_tags_field = True
+                continue
+
+        # Non-tags field: use original field name as caption_type
         results.append({
-            "caption_type": field_path,  # Use full path as caption_type (e.g., "metrics.retweets")
+            "caption_type": field_path,
             "content": content,
             "field_category": field_category,
             "is_tags_format": is_tags_format,
@@ -284,3 +305,56 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
         })
 
     return results
+
+
+def _scan_json_fields_internal(json_data: Dict[str, Any], taglist: set, prefix: str = "", found_tags_field: bool = False) -> tuple:
+    """
+    Internal recursive helper for scan_json_fields
+    Returns: (results, found_tags_field)
+    """
+    results = []
+
+    for key, value in json_data.items():
+        field_path = f"{prefix}.{key}" if prefix else key
+
+        if isinstance(value, dict):
+            nested_results, found_tags_in_nested = _scan_json_fields_internal(
+                value, taglist, prefix=field_path, found_tags_field=found_tags_field
+            )
+            results.extend(nested_results)
+            if found_tags_in_nested:
+                found_tags_field = True
+            continue
+
+        if isinstance(value, list):
+            continue
+
+        content = str(value)
+        field_category, is_tags_format, match_rate = classify_field(field_path, content, taglist)
+
+        if is_tags_format and field_category == "training":
+            if found_tags_field:
+                print(f"[CaptionDetector] Skipping duplicate tags field: {field_path}")
+                continue
+            else:
+                results.append({
+                    "caption_type": "tags",
+                    "content": content,
+                    "field_category": field_category,
+                    "is_tags_format": is_tags_format,
+                    "tag_match_rate": match_rate,
+                    "source_field": field_path
+                })
+                found_tags_field = True
+                continue
+
+        results.append({
+            "caption_type": field_path,
+            "content": content,
+            "field_category": field_category,
+            "is_tags_format": is_tags_format,
+            "tag_match_rate": match_rate,
+            "source_field": field_path
+        })
+
+    return (results, found_tags_field)

@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 interface TagStatistic {
   category: string;
   count: number;
@@ -35,12 +37,34 @@ export default function ActionsColumn({
   tagStatistics,
   onRefresh,
 }: ActionsColumnProps) {
-  // Sort tags by count (most common first)
+  // Category visibility state (all visible by default)
+  const [visibleCategories, setVisibleCategories] = useState<Set<string>>(
+    new Set(["character", "artist", "copyright", "general", "meta", "quality", "rating", "model"])
+  );
+
+  // Get unique categories from tag statistics
+  const allCategories = tagStatistics
+    ? Array.from(new Set(Object.values(tagStatistics).map(s => s.category)))
+    : [];
+
+  // Sort tags by count (most common first) and filter by visible categories
   const sortedTags = tagStatistics
     ? Object.entries(tagStatistics)
+        .filter(([_, stats]) => visibleCategories.has(stats.category.toLowerCase()))
         .sort((a, b) => b[1].count - a[1].count)
-        .slice(0, 50) // Show top 50
+        .slice(0, 100) // Show top 100
     : [];
+
+  const toggleCategory = (category: string) => {
+    const newVisible = new Set(visibleCategories);
+    const normalized = category.toLowerCase();
+    if (newVisible.has(normalized)) {
+      newVisible.delete(normalized);
+    } else {
+      newVisible.add(normalized);
+    }
+    setVisibleCategories(newVisible);
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -50,7 +74,34 @@ export default function ActionsColumn({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {/* Category Filter */}
+        {allCategories.length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-2">
+            <div className="text-[10px] font-semibold text-gray-400 mb-1">Filter by Category</div>
+            <div className="flex flex-wrap gap-1">
+              {allCategories.map(category => {
+                const normalized = category.toLowerCase();
+                const isVisible = visibleCategories.has(normalized);
+                const colorClass = getCategoryColor(category);
+                return (
+                  <button
+                    key={category}
+                    onClick={() => toggleCategory(category)}
+                    className={`px-1.5 py-0.5 rounded text-[9px] transition-opacity ${colorClass} ${
+                      isVisible ? 'opacity-100' : 'opacity-30'
+                    }`}
+                    title={isVisible ? `Hide ${category}` : `Show ${category}`}
+                  >
+                    {category}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Tag List */}
         <div className="bg-gray-800 rounded-lg p-3">
           {sortedTags.length > 0 ? (
             <div className="space-y-1 max-h-96 overflow-y-auto">
@@ -79,14 +130,6 @@ export default function ActionsColumn({
               No tag statistics available. Scan dataset to generate.
             </div>
           )}
-        </div>
-
-        {/* Auto-Tagger (Placeholder) */}
-        <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">Auto-Tagger</h4>
-          <div className="text-[10px] text-gray-500 text-center py-4">
-            Tagger integration coming soon
-          </div>
         </div>
       </div>
     </div>

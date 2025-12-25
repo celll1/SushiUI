@@ -4984,8 +4984,14 @@ async def batch_tagger_endpoint(
     db: Session = Depends(get_datasets_db)
 ):
     """
-    Run tagger inference on multiple items
+    Run tagger inference on multiple items.
+    If item_ids is empty, process all items in the dataset.
     """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
@@ -5003,8 +5009,14 @@ async def batch_reorder_tags_endpoint(
     db: Session = Depends(get_datasets_db)
 ):
     """
-    Reorder tags by category for multiple items
+    Reorder tags by category for multiple items.
+    If item_ids is empty, process all items in the dataset.
     """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
@@ -5022,8 +5034,14 @@ async def batch_replace_tag_endpoint(
     db: Session = Depends(get_datasets_db)
 ):
     """
-    Replace a specific tag with another tag for multiple items
+    Replace a specific tag with another tag for multiple items.
+    If item_ids is empty, process all items in the dataset.
     """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 

@@ -149,51 +149,60 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
 
         raw_caption = primary_caption.content if primary_caption else ""
 
-        # Check if tag_data is available (pre-categorized tags for fast processing)
-        tag_data_available = primary_caption and primary_caption.tag_data
+        # Check if caption is tags format (Danbooru tags) or natural language
+        is_tags_format = primary_caption.is_tags_format if primary_caption and hasattr(primary_caption, 'is_tags_format') else True  # Default to True for backward compatibility
 
-        if tag_data_available:
-            # Fast path: Use pre-categorized tag_data
-            import json
-            try:
-                tag_data = json.loads(primary_caption.tag_data)
-            except:
-                tag_data = None
-                tag_data_available = False
+        if is_tags_format:
+            # Tags format: Apply tag processing (normalization, shuffle, dropout, etc.)
+            # Check if tag_data is available (pre-categorized tags for fast processing)
+            tag_data_available = primary_caption and primary_caption.tag_data
 
-        if tag_data_available and tag_data:
-            # Fast per-epoch shuffle/dropout using pre-categorized tags
-            from core.training.caption_processor import process_caption_with_tag_data
-            processed_caption = process_caption_with_tag_data(
-                tag_data=tag_data,
-                epoch_num=epoch_num,
-                item_path=item.image_path,
-                caption_config=caption_config,
-            )
+            if tag_data_available:
+                # Fast path: Use pre-categorized tag_data
+                import json
+                try:
+                    tag_data = json.loads(primary_caption.tag_data)
+                except:
+                    tag_data = None
+                    tag_data_available = False
+
+            if tag_data_available and tag_data:
+                # Fast per-epoch shuffle/dropout using pre-categorized tags
+                from core.training.caption_processor import process_caption_with_tag_data
+                processed_caption = process_caption_with_tag_data(
+                    tag_data=tag_data,
+                    epoch_num=epoch_num,
+                    item_path=item.image_path,
+                    caption_config=caption_config,
+                )
+            else:
+                # Legacy path: Use process_caption with category lookup
+                processed_caption = process_caption(
+                    caption=raw_caption,
+                    epoch_num=epoch_num,
+                    item_path=item.image_path,
+                    normalize_tags=caption_config.get("normalize_tags", True),
+                    category_order=caption_config.get("category_order", None),
+                    caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+                    token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+                    keep_tokens=caption_config.get("keep_tokens", 0),
+                    shuffle_tokens=caption_config.get("shuffle_tokens", False),
+                    shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+                    shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+                    shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+                    shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+                    tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+                    exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+                    tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+                    tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+                    tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+                    tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+                    tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+                )
         else:
-            # Legacy path: Use process_caption with category lookup
-            processed_caption = process_caption(
-                caption=raw_caption,
-                epoch_num=epoch_num,
-                item_path=item.image_path,
-                normalize_tags=caption_config.get("normalize_tags", True),
-                category_order=caption_config.get("category_order", None),
-                caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
-                token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
-                keep_tokens=caption_config.get("keep_tokens", 0),
-                shuffle_tokens=caption_config.get("shuffle_tokens", False),
-                shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
-                shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
-                shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
-                shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
-                tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
-                exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
-                tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
-                tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
-                tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
-                tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
-                tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
-            )
+            # Natural language: Use caption as-is (no tag processing)
+            processed_caption = raw_caption
+            print(f"[TrainRunner] Natural language caption (skipping tag processing): {raw_caption[:50]}...")
 
         dataset_items.append({
             "image_path": item.image_path,

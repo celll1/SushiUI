@@ -2887,7 +2887,14 @@ async def scan_dataset(
 
     # Supported image extensions
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    caption_exts = {".txt"}
+    caption_exts = {".txt", ".json"}
+
+    # Load taglist for caption format detection (once at start)
+    from utils.taglist_loader import load_all_tags
+    from utils.caption_detector import classify_field, scan_json_fields
+    print(f"[Dataset Scan] Loading taglist for format detection...")
+    taglist = load_all_tags(settings.root_dir)
+    print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
 
     # Scan directory
     items_found = 0
@@ -3048,20 +3055,57 @@ async def scan_dataset(
                         f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                     )
 
-                # Process captions
+                # Process captions (TXT/JSON files)
                 for caption_path in files["captions"]:
                     try:
-                        with open(caption_path, 'r', encoding='utf-8') as f:
-                            content = f.read().strip()
-                            if content:
+                        _, ext = os.path.splitext(caption_path)
+                        ext_lower = ext.lower()
+
+                        if ext_lower == '.txt':
+                            # TXT file: Read content and detect format
+                            with open(caption_path, 'r', encoding='utf-8') as f:
+                                content = f.read().strip()
+                                if content:
+                                    # Detect format
+                                    field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
+
+                                    caption = DatasetCaption(
+                                        item_id=item.id,
+                                        caption_type="tags",
+                                        content=content,
+                                        field_category=field_category,
+                                        is_tags_format=is_tags_format,
+                                        tag_match_rate=match_rate,
+                                        source="file",
+                                        source_field="tags"
+                                    )
+                                    db.add(caption)
+                                    captions_found += 1
+
+                        elif ext_lower == '.json':
+                            # JSON file: Recursively scan all fields
+                            import json
+
+                            with open(caption_path, 'r', encoding='utf-8') as f:
+                                json_data = json.load(f)
+
+                            # Scan all fields
+                            caption_results = scan_json_fields(json_data, taglist)
+
+                            for result in caption_results:
                                 caption = DatasetCaption(
                                     item_id=item.id,
-                                    caption_type="tags",
-                                    content=content,
-                                    source="file"
+                                    caption_type=result["caption_type"],
+                                    content=result["content"],
+                                    field_category=result["field_category"],
+                                    is_tags_format=result["is_tags_format"],
+                                    tag_match_rate=result["tag_match_rate"],
+                                    source="file",
+                                    source_field=result["source_field"]
                                 )
                                 db.add(caption)
                                 captions_found += 1
+
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
@@ -3272,50 +3316,53 @@ async def get_dataset_caption_types(
     dataset_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Get available caption types in the dataset with counts and subtypes"""
+    """Get available caption types with format detection info"""
     # Check dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Query caption types with counts
-    # Group by caption_type and caption_subtype
+    # Query caption types with aggregated format info
     from sqlalchemy import func
 
     results = db.query(
         DatasetCaption.caption_type,
-        DatasetCaption.caption_subtype,
-        func.count(DatasetCaption.id).label('count')
+        DatasetCaption.field_category,
+        DatasetCaption.is_tags_format,
+        DatasetCaption.source_field,
+        func.count(DatasetCaption.id).label('count'),
+        func.avg(DatasetCaption.tag_match_rate).label('avg_match_rate')
     ).join(DatasetItem).filter(
         DatasetItem.dataset_id == dataset_id
     ).group_by(
         DatasetCaption.caption_type,
-        DatasetCaption.caption_subtype
+        DatasetCaption.field_category,
+        DatasetCaption.is_tags_format,
+        DatasetCaption.source_field
     ).all()
 
     # Organize results by caption_type
     caption_types_dict = {}
-    for caption_type, caption_subtype, count in results:
+    for caption_type, field_category, is_tags_format, source_field, count, avg_match_rate in results:
         if caption_type not in caption_types_dict:
             caption_types_dict[caption_type] = {
                 "caption_type": caption_type,
                 "total_count": 0,
+                "field_category": field_category or "training",
+                "is_tags_format": is_tags_format or False,
+                "avg_match_rate": 0.0,
+                "source_field": source_field,
                 "subtypes": []
             }
 
         caption_types_dict[caption_type]["total_count"] += count
+        # Average of averages (weighted by count would be better, but this is simpler)
+        caption_types_dict[caption_type]["avg_match_rate"] = avg_match_rate or 0.0
 
-        if caption_subtype:
-            caption_types_dict[caption_type]["subtypes"].append({
-                "subtype": caption_subtype,
-                "count": count
-            })
-
-    # Convert to list and sort by count
+    # Convert to list and sort: training first, then by count
     caption_types_list = sorted(
         caption_types_dict.values(),
-        key=lambda x: x["total_count"],
-        reverse=True
+        key=lambda x: (x["field_category"] != "training", -x["total_count"])
     )
 
     return {

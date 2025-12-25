@@ -345,6 +345,11 @@ class DatasetCaption(DatasetBase):
     # JSON format: [{"tag": "1girl", "category": "General"}, {"tag": "long_hair", "category": "General"}, ...]
     tag_data = Column(Text, nullable=True)  # Stored as JSON string
 
+    # Caption format detection (for auto-handling tags vs natural language)
+    field_category = Column(String, default="training")  # "training" | "metadata"
+    is_tags_format = Column(Boolean, default=False)  # True if Danbooru tags format
+    tag_match_rate = Column(Float, default=0.0)  # 0.0-1.0 (percentage of tokens matching taglist)
+
     # Metadata
     language = Column(String, nullable=True)
     source = Column(String, default="manual", index=True)
@@ -365,6 +370,9 @@ class DatasetCaption(DatasetBase):
             "caption_type": self.caption_type,
             "caption_subtype": self.caption_subtype,
             "content": self.content,
+            "field_category": self.field_category,
+            "is_tags_format": self.is_tags_format,
+            "tag_match_rate": self.tag_match_rate,
             "language": self.language,
             "source": self.source,
             "source_field": self.source_field,

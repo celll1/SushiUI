@@ -66,8 +66,14 @@ class BatchOperationResponse(BaseModel):
 async def save_item_to_txt_json(item, db):
     """
     Save item captions to txt/json file
+
+    Strategy:
+    - If .json exists: Add/update "tags" field in JSON
+    - Else if .txt exists: Create .json with tags field + keep txt as-is
+    - Else: Create new .txt file with tags
     """
     from database.models import DatasetCaption
+    import json
 
     # Get tags caption
     tags_caption = db.query(DatasetCaption).filter(
@@ -81,14 +87,59 @@ async def save_item_to_txt_json(item, db):
     # Get base path (image path without extension)
     image_path = Path(item.image_path)
     base_path = image_path.parent / image_path.stem
-
-    # Save to .txt file
     txt_path = base_path.with_suffix('.txt')
+    json_path = base_path.with_suffix('.json')
+
     try:
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(tags_caption.content)
+        # Case 1: JSON file exists - add/update tags field
+        if json_path.exists():
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # Update tags field
+                data['tags'] = tags_caption.content
+
+                # Write back to JSON
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                print(f"[BatchOps] Updated tags in existing JSON: {json_path}")
+            except Exception as e:
+                print(f"[BatchOps] Failed to update JSON file {json_path}: {e}")
+
+        # Case 2: TXT file exists but no JSON - create JSON with tags field
+        elif txt_path.exists():
+            try:
+                # Read existing txt content (natural language)
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    existing_content = f.read().strip()
+
+                # Create JSON with both tags and the existing content
+                data = {
+                    'tags': tags_caption.content
+                }
+
+                # If txt had content, preserve it under a suitable field
+                if existing_content:
+                    data['text'] = existing_content
+
+                # Write JSON file
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                print(f"[BatchOps] Created JSON with tags field: {json_path}")
+            except Exception as e:
+                print(f"[BatchOps] Failed to create JSON file {json_path}: {e}")
+
+        # Case 3: Neither exists - create new txt file
+        else:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(tags_caption.content)
+            print(f"[BatchOps] Created new txt file: {txt_path}")
+
     except Exception as e:
-        print(f"[BatchOps] Failed to save txt file {txt_path}: {e}")
+        print(f"[BatchOps] Failed to save caption files for {item.base_name}: {e}")
 
 
 async def update_tag_statistics(dataset_id: int, db):

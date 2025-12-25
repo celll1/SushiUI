@@ -1,16 +1,19 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Undo2, Redo2, Copy, Clipboard } from "lucide-react";
+import { Undo2, Redo2, Copy, Clipboard, Sparkles, Settings } from "lucide-react";
 import {
   getDatasetItem,
   DatasetItem,
   updateItemCaption,
   saveItemCaptionToTxt,
+  predictTags,
+  TaggerPredictionsResponse,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
+import TaggerSettingsDialog, { TaggerSettings } from "./TaggerSettingsDialog";
 
 interface ItemDetailColumnProps {
   item: DatasetItem | null;
@@ -57,6 +60,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
   });
   const previousItemIdRef = useRef<number | null>(null);
   const [activeFieldType, setActiveFieldType] = useState<string>("tags"); // Current field being displayed
+  const [isTaggerSettingsOpen, setIsTaggerSettingsOpen] = useState(false);
+  const [isTagging, setIsTagging] = useState(false);
+  const [taggerSettings, setTaggerSettings] = useState<TaggerSettings | null>(null);
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {
@@ -329,6 +335,108 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     }));
   };
 
+  const handleTaggerInference = async () => {
+    if (!item || !taggerSettings) {
+      // If no settings, open settings dialog first
+      setIsTaggerSettingsOpen(true);
+      return;
+    }
+
+    setIsTagging(true);
+
+    try {
+      // Convert image to base64
+      const imageResponse = await fetch(`/api/serve-image?path=${encodeURIComponent(item.image_path)}`);
+      const imageBlob = await imageResponse.blob();
+      const base64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const dataUrl = reader.result as string;
+          resolve(dataUrl.split(',')[1]);
+        };
+        reader.readAsDataURL(imageBlob);
+      });
+
+      // Build thresholds dict (using addThreshold for prediction)
+      const thresholds: { [key: string]: number } = {};
+      taggerSettings.categoryThresholds.forEach(cat => {
+        if (cat.enabled) {
+          thresholds[cat.id] = cat.addThreshold;
+        }
+      });
+
+      const genThreshold = taggerSettings.categoryThresholds.find(c => c.id === "general")?.addThreshold || 0.45;
+      const charThreshold = taggerSettings.categoryThresholds.find(c => c.id === "character")?.addThreshold || 0.45;
+
+      // Predict tags
+      const response = await predictTags(
+        base64,
+        genThreshold,
+        charThreshold,
+        taggerSettings.modelVersion,
+        true, // auto_unload
+        thresholds
+      );
+
+      // Process predictions: merge with existing tags
+      const existingTags = new Set(tags);
+      const predictedTags = new Map<string, { confidence: number; category: string }>(); // tag -> {confidence, category}
+
+      // Collect all predicted tags with confidence and category
+      Object.entries(response.predictions).forEach(([category, categoryTags]) => {
+        categoryTags.forEach(([tag, confidence]) => {
+          predictedTags.set(tag, { confidence, category });
+        });
+      });
+
+      // Build category threshold map for quick lookup
+      const removeThresholdMap = new Map<string, number>();
+      const addThresholdMap = new Map<string, number>();
+      taggerSettings.categoryThresholds.forEach(cat => {
+        removeThresholdMap.set(cat.id, cat.removeThreshold);
+        addThresholdMap.set(cat.id, cat.addThreshold);
+      });
+
+      // Build new tag list
+      const newTags: string[] = [];
+
+      // 1. Keep existing tags with confidence above category's removeThreshold, or not in predictions
+      existingTags.forEach(tag => {
+        const predicted = predictedTags.get(tag);
+        if (!predicted) {
+          // Tag not in predictions, keep it
+          newTags.push(tag);
+        } else {
+          // Tag in predictions, check category-specific removeThreshold
+          const removeThreshold = removeThresholdMap.get(predicted.category) || 0.3;
+          if (predicted.confidence >= removeThreshold) {
+            // Confidence above removeThreshold, keep it
+            newTags.push(tag);
+          }
+          // else: confidence < removeThreshold, remove it
+        }
+      });
+
+      // 2. Add new predicted tags with confidence >= category's addThreshold
+      predictedTags.forEach(({ confidence, category }, tag) => {
+        const addThreshold = addThresholdMap.get(category) || 0.45;
+        if (confidence >= addThreshold && !existingTags.has(tag)) {
+          newTags.push(tag);
+        }
+      });
+
+      // Update tags with history
+      pushHistory(newTags);
+
+      console.log(`[Tagger] Inference complete: ${tags.length} → ${newTags.length} tags (removed: ${tags.length - newTags.filter(t => existingTags.has(t)).length}, added: ${newTags.filter(t => !existingTags.has(t)).length})`);
+    } catch (error) {
+      console.error("[Tagger] Inference failed:", error);
+      alert("Tagger inference failed. See console for details.");
+    } finally {
+      setIsTagging(false);
+    }
+  };
+
   if (!item) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400 text-sm">
@@ -401,6 +509,22 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
             </h4>
             {activeFieldType === "tags" && (
               <div className="flex items-center space-x-0.5">
+                <button
+                  onClick={handleTaggerInference}
+                  disabled={isTagging}
+                  className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Run Tagger Inference"
+                >
+                  <Sparkles className={`h-3 w-3 ${isTagging ? 'animate-pulse text-blue-400' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setIsTaggerSettingsOpen(true)}
+                  className="p-0.5 hover:bg-gray-700 rounded transition-colors"
+                  title="Tagger Settings"
+                >
+                  <Settings className="h-3 w-3" />
+                </button>
+                <div className="w-px h-3 bg-gray-600 mx-0.5" />
                 <button
                   onClick={handleUndo}
                   disabled={history.past.length === 0}
@@ -491,6 +615,12 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
         </div>
       </div>
 
+      {/* Tagger Settings Dialog */}
+      <TaggerSettingsDialog
+        isOpen={isTaggerSettingsOpen}
+        onClose={() => setIsTaggerSettingsOpen(false)}
+        onSave={setTaggerSettings}
+      />
     </div>
   );
 }

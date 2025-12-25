@@ -2211,6 +2211,85 @@ async def unload_tagger_model():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/taglist/add-tag")
+async def add_tag_to_category(
+    tag: str = Form(...),
+    category: str = Form(...),
+    count: int = Form(1)
+):
+    """Add a tag to a category's taglist JSON file
+
+    Args:
+        tag: Tag name to add
+        category: Target category (Artist, Character, Copyright, General, Meta, Model, Quality, Rating)
+        count: Tag count (default: 1)
+
+    Returns:
+        Status message
+    """
+    import json
+    import os
+
+    # Validate category
+    valid_categories = ["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"]
+    if category not in valid_categories:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+
+    # Taglist file path
+    taglist_dir = "taglist"
+    taglist_file = os.path.join(taglist_dir, f"{category}.json")
+
+    if not os.path.exists(taglist_file):
+        raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_file}")
+
+    try:
+        # Load existing taglist
+        with open(taglist_file, 'r', encoding='utf-8') as f:
+            taglist = json.load(f)
+
+        # Add or update tag
+        taglist[tag] = count
+
+        # Sort by count (descending) and write back
+        sorted_taglist = dict(sorted(taglist.items(), key=lambda x: x[1], reverse=True))
+
+        with open(taglist_file, 'w', encoding='utf-8') as f:
+            json.dump(sorted_taglist, f, ensure_ascii=False, indent=2)
+
+        # Record user addition in a separate log file (project root, not in taglist/)
+        user_additions_file = "user_tag_additions.json"
+        user_additions = []
+
+        if os.path.exists(user_additions_file):
+            try:
+                with open(user_additions_file, 'r', encoding='utf-8') as f:
+                    user_additions = json.load(f)
+            except:
+                user_additions = []
+
+        # Add new entry with timestamp
+        from datetime import datetime
+        user_additions.append({
+            "tag": tag,
+            "category": category,
+            "count": count,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        # Write user additions log (keep last 1000 entries)
+        with open(user_additions_file, 'w', encoding='utf-8') as f:
+            json.dump(user_additions[-1000:], f, ensure_ascii=False, indent=2)
+
+        return {
+            "status": "success",
+            "message": f"Tag '{tag}' added to {category} category",
+            "tag": tag,
+            "category": category,
+            "count": count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update taglist: {str(e)}")
+
 @router.get("/system/gpu-stats")
 async def get_gpu_stats():
     """Get GPU statistics (VRAM, utilization, temperature)"""

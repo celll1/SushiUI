@@ -881,6 +881,21 @@ export const unloadTaggerModel = async () => {
   return response.data;
 };
 
+export const addTagToCategory = async (
+  tag: string,
+  category: string,
+  count: number = 1
+): Promise<{ status: string; message: string; tag: string; category: string; count: number }> => {
+  const formData = new FormData();
+  formData.append("tag", tag);
+  formData.append("category", category);
+  formData.append("count", String(count));
+  const response = await api.post("/taglist/add-tag", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
 export interface GPUStats {
   index: number;
   name: string;

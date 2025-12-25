@@ -112,6 +112,7 @@ model_hash_cache.json
 .requirements_hash
 backend/.port_info
 frontend/.package_hash
+user_tag_additions.json
 
 # ドキュメント（個別に除外）
 docs/DATASET_VIEWER_DESIGN.md

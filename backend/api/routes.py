@@ -3323,6 +3323,39 @@ async def update_item_caption(
     db.commit()
     db.refresh(caption)
 
+    # If this is a "tags" caption, also update "tags_ordered" with the same content
+    if request.caption_type == "tags":
+        ordered_caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item_id,
+            DatasetCaption.caption_type == "tags_ordered"
+        ).first()
+
+        if ordered_caption:
+            # Update existing tags_ordered caption
+            ordered_caption.content = request.content
+            if request.tag_data is not None:
+                import json
+                ordered_caption.tag_data = json.dumps(request.tag_data)
+            ordered_caption.updated_at = datetime.utcnow()
+        else:
+            # Create new tags_ordered caption
+            tag_data_json = None
+            if request.tag_data is not None:
+                import json
+                tag_data_json = json.dumps(request.tag_data)
+
+            ordered_caption = DatasetCaption(
+                item_id=item_id,
+                caption_type="tags_ordered",
+                content=request.content,
+                tag_data=tag_data_json,
+                source="auto_synced"
+            )
+            db.add(ordered_caption)
+
+        db.commit()
+        print(f"[Dataset] Auto-synced tags_ordered with tags for item {item_id}")
+
     # Update tag statistics if this is a "tags" caption
     if request.caption_type == "tags":
         dataset = db.query(Dataset).filter(Dataset.id == item.dataset_id).first()
@@ -3390,6 +3423,12 @@ async def save_item_caption_to_txt(
         DatasetCaption.caption_type == "tags"
     ).first()
 
+    # Get tags_ordered caption
+    ordered_caption = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id == item_id,
+        DatasetCaption.caption_type == "tags_ordered"
+    ).first()
+
     if not caption:
         # No caption to save, return success (nothing to do)
         return {"success": True, "message": "No tags caption found, nothing to save"}
@@ -3417,15 +3456,19 @@ async def save_item_caption_to_txt(
                 with open(json_path, 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
 
-                # Update caption field
+                # Update caption field (tags)
                 json_data['caption'] = caption.content
+
+                # Update tags_ordered field if available
+                if ordered_caption:
+                    json_data['tags_ordered'] = ordered_caption.content
 
                 # Write back
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(json_data, f, ensure_ascii=False, indent=2)
 
                 saved_files.append(json_path)
-                print(f"[Dataset] Saved caption to JSON: {json_path}")
+                print(f"[Dataset] Saved caption and tags_ordered to JSON: {json_path}")
             except Exception as json_err:
                 print(f"[Dataset] Failed to update JSON file {json_path}: {json_err}")
 

@@ -269,8 +269,8 @@ async def batch_tagger_inference(
                 processed += 1
                 continue
 
-            # Run tagger inference (predict() takes PIL Image, not base64)
-            result = tagger_manager.predict(
+            # Run tagger inference (predict() returns dict of predictions directly)
+            predictions = tagger_manager.predict(
                 image,
                 gen_threshold=request.gen_threshold,
                 char_threshold=request.char_threshold,
@@ -292,8 +292,8 @@ async def batch_tagger_inference(
 
             # Collect predicted tags with their scores
             predicted_tags = {}  # tag -> score
-            for category, predictions in result['predictions'].items():
-                for tag, score in predictions:
+            for category, category_predictions in predictions.items():
+                for tag, score in category_predictions:
                     predicted_tags[tag] = score
 
             # Build final tag list
@@ -345,6 +345,8 @@ async def batch_tagger_inference(
 
         except Exception as e:
             print(f"[BatchTagger] Failed to process item {item_id}: {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
         processed += 1
@@ -357,6 +359,11 @@ async def batch_tagger_inference(
         first_item = db.query(DatasetItem).filter(DatasetItem.id == request.item_ids[0]).first()
         if first_item:
             await update_tag_statistics(first_item.dataset_id, db)
+
+    # Unload tagger model to free VRAM/memory
+    if tagger_manager.loaded:
+        print("[BatchTagger] Unloading tagger model to free VRAM")
+        tagger_manager.unload_model()
 
     cancelled = is_batch_operation_cancelled()
     status = "cancelled" if cancelled else "completed"

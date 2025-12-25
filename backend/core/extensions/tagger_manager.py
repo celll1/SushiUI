@@ -5,11 +5,18 @@ Based on cl_tagger: https://huggingface.co/cella110n/cl_tagger
 """
 
 import os
+import sys
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Optional
 import onnxruntime as ort
 import json
+
+# Debug: Print onnxruntime info at module load
+print(f"[Tagger] Python executable: {sys.executable}")
+print(f"[Tagger] ONNX Runtime module path: {ort.__file__}")
+print(f"[Tagger] ONNX Runtime version: {ort.__version__}")
+print(f"[Tagger] Initial available providers: {ort.get_available_providers()}")
 
 
 class TaggerManager:

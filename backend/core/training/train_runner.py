@@ -90,9 +90,17 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
 
     # Determine which caption types to use
+    # Priority: 1) caption_types parameter (from dataset_configs, legacy)
+    #           2) caption_config.caption_types (from dataset.caption_processing, new standard)
+    #           3) Auto-select (priority: tags > natural_language > others)
     if caption_types:
+        # Legacy: from dataset_configs (Training Config page)
         selected_caption_types = caption_types
-        print(f"[TrainRunner] Using selected caption types: {selected_caption_types}")
+        print(f"[TrainRunner] Using selected caption types (from dataset_configs): {selected_caption_types}")
+    elif caption_config.get("caption_types"):
+        # New standard: from caption_processing (Dataset Management page)
+        selected_caption_types = caption_config.get("caption_types")
+        print(f"[TrainRunner] Using selected caption types (from caption_processing): {selected_caption_types}")
     else:
         # Auto-select: priority order: tags > natural_language > others
         selected_caption_types = None  # Will auto-select per item

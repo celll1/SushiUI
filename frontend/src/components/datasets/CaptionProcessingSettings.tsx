@@ -7,24 +7,29 @@ import {
   listCaptionProcessingPresets,
   createCaptionProcessingPreset,
   deleteCaptionProcessingPreset,
+  getDatasetCaptionTypes,
+  CaptionTypeInfo,
 } from "@/utils/api";
 
 interface CaptionProcessingSettingsProps {
   config: CaptionProcessingConfig;
   onChange: (config: CaptionProcessingConfig) => void;
   readOnly?: boolean;
+  datasetId?: number; // For loading available caption types
 }
 
 export default function CaptionProcessingSettings({
   config,
   onChange,
   readOnly = false,
+  datasetId,
 }: CaptionProcessingSettingsProps) {
   const [localConfig, setLocalConfig] = useState<CaptionProcessingConfig>(config);
   const [presets, setPresets] = useState<CaptionProcessingPreset[]>([]);
   const [showSavePresetDialog, setShowSavePresetDialog] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
   const [newPresetDescription, setNewPresetDescription] = useState("");
+  const [availableCaptionTypes, setAvailableCaptionTypes] = useState<CaptionTypeInfo[]>([]);
 
   useEffect(() => {
     setLocalConfig(config);
@@ -32,7 +37,20 @@ export default function CaptionProcessingSettings({
 
   useEffect(() => {
     loadPresets();
-  }, []);
+    if (datasetId) {
+      loadCaptionTypes();
+    }
+  }, [datasetId]);
+
+  const loadCaptionTypes = async () => {
+    if (!datasetId) return;
+    try {
+      const response = await getDatasetCaptionTypes(datasetId);
+      setAvailableCaptionTypes(response.caption_types);
+    } catch (error) {
+      console.error("Failed to load caption types:", error);
+    }
+  };
 
   const loadPresets = async () => {
     try {
@@ -214,6 +232,43 @@ export default function CaptionProcessingSettings({
                   Save
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Caption Types Selection */}
+      {datasetId && availableCaptionTypes.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold text-gray-200 border-b border-gray-700 pb-2">
+            Caption Types for Training
+          </h3>
+          <div className="space-y-2">
+            <p className="text-xs text-gray-400">
+              Select which caption types to use during training. If none selected, auto-selects in priority order: tags &gt; natural_language &gt; others.
+            </p>
+            <div className="space-y-1">
+              {availableCaptionTypes.map((captionType) => (
+                <label key={captionType.caption_type} className="flex items-center gap-2 p-2 bg-gray-800 rounded hover:bg-gray-750">
+                  <input
+                    type="checkbox"
+                    checked={(localConfig.caption_types || []).includes(captionType.caption_type)}
+                    onChange={(e) => {
+                      const currentTypes = localConfig.caption_types || [];
+                      const newTypes = e.target.checked
+                        ? [...currentTypes, captionType.caption_type]
+                        : currentTypes.filter((t) => t !== captionType.caption_type);
+                      handleChange("caption_types", newTypes);
+                    }}
+                    disabled={readOnly}
+                    className="w-4 h-4"
+                  />
+                  <div className="flex-1">
+                    <span className="text-sm text-gray-200">{captionType.caption_type}</span>
+                    <span className="ml-2 text-xs text-gray-400">({captionType.total_count} items)</span>
+                  </div>
+                </label>
+              ))}
             </div>
           </div>
         </div>

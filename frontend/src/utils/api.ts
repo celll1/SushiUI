@@ -931,6 +931,7 @@ export default api;
 // ============================================================
 
 export interface CaptionProcessingConfig {
+  caption_types?: string[];  // Caption types to use for training (e.g., ["tags", "natural_language"]). Empty = auto-select.
   normalize_tags?: boolean;  // Normalize tags to standard format (default: true)
   category_order?: string[];  // Category order (e.g., ["Rating", "Quality", "Character", ...])
   caption_dropout_rate?: number;

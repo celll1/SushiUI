@@ -32,7 +32,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: int = None) -> list:
+def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: int = None, caption_types: list = None) -> list:
     """
     Get all items from dataset with caption processing applied.
 
@@ -41,6 +41,7 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         dataset_id: Dataset ID
         epoch_num: Current epoch number (for per-epoch shuffle/dropout)
         run_id: Training run ID (for phase progress updates)
+        caption_types: List of caption types to use (e.g., ["tags", "natural_language"]). If None/empty, auto-select.
 
     Returns:
         List of dataset items with processed captions
@@ -88,10 +89,14 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
     # Check if category_order is enabled
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
 
-    # Note: Pre-ordered captions (tags_ordered) will be used automatically if available
-    # This happens on a per-item basis in the loop below to avoid SQLite parameter limits
-    if has_category_order and epoch_num == 0:
-        print(f"[TrainRunner] Category ordering enabled - will use pre-ordered captions if available")
+    # Determine which caption types to use
+    if caption_types:
+        selected_caption_types = caption_types
+        print(f"[TrainRunner] Using selected caption types: {selected_caption_types}")
+    else:
+        # Auto-select: priority order: tags > natural_language > others
+        selected_caption_types = None  # Will auto-select per item
+        print(f"[TrainRunner] No caption types specified - will auto-select per item (priority: tags > natural_language)")
 
     # Update phase to "initializing" for dataset loading
     update_phase_progress("initializing", 0.0, f"Loading dataset: 0/{total_items} items")
@@ -107,11 +112,32 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             progress_pct = ((idx + 1) / total_items) * 100.0
             print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({progress_pct:.1f}%)")
 
-        # Get caption
-        primary_caption = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id == item.id,
-            DatasetCaption.caption_type == "tags"
-        ).first()
+        # Get caption based on selected caption_types
+        primary_caption = None
+        if selected_caption_types:
+            # Try each selected caption type in order
+            for caption_type in selected_caption_types:
+                primary_caption = db.query(DatasetCaption).filter(
+                    DatasetCaption.item_id == item.id,
+                    DatasetCaption.caption_type == caption_type
+                ).first()
+                if primary_caption:
+                    break
+        else:
+            # Auto-select: try "tags" first, then "natural_language", then any other
+            for caption_type in ["tags", "natural_language"]:
+                primary_caption = db.query(DatasetCaption).filter(
+                    DatasetCaption.item_id == item.id,
+                    DatasetCaption.caption_type == caption_type
+                ).first()
+                if primary_caption:
+                    break
+
+            # If still not found, use any caption type
+            if not primary_caption:
+                primary_caption = db.query(DatasetCaption).filter(
+                    DatasetCaption.item_id == item.id
+                ).first()
 
         raw_caption = primary_caption.content if primary_caption else ""
 
@@ -348,7 +374,8 @@ def main():
             dataset_unique_ids.append(dataset.unique_id)
 
             # Get dataset items and tag with dataset_unique_id for cache management
-            dataset_items = get_dataset_items(datasets_db, dataset_id, run_id=run_id)
+            caption_types = ds_config.get("caption_types", [])
+            dataset_items = get_dataset_items(datasets_db, dataset_id, run_id=run_id, caption_types=caption_types)
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
 
             # Add dataset_unique_id to each item for cache management
@@ -410,7 +437,8 @@ def main():
                 get freshly processed captions (with shuffling, etc.).
                 """
                 dataset_id = self.dataset_config["dataset_id"]
-                items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id)
+                caption_types = self.dataset_config.get("caption_types", [])
+                items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id, caption_types=caption_types)
 
                 # Add dataset_unique_id for cache management
                 for item in items:

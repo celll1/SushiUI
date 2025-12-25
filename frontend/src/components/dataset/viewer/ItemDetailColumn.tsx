@@ -56,6 +56,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     future: [],
   });
   const previousItemIdRef = useRef<number | null>(null);
+  const [activeFieldType, setActiveFieldType] = useState<string>("tags"); // Current field being displayed
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {
@@ -121,6 +122,36 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       previousItemIdRef.current = item.id;
     }
   }, [item?.id]);
+
+  // Keyboard shortcuts for field switching
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in input field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      const availableFields = detailedItem?.captions?.map(c => c.caption_type) || ["tags"];
+
+      // Tab: cycle through fields
+      if (e.key === "Tab") {
+        e.preventDefault();
+        const currentIndex = availableFields.indexOf(activeFieldType);
+        const nextIndex = (currentIndex + 1) % availableFields.length;
+        setActiveFieldType(availableFields[nextIndex]);
+      }
+
+      // Number keys (1-9): switch to specific field
+      const num = parseInt(e.key);
+      if (num >= 1 && num <= availableFields.length) {
+        e.preventDefault();
+        setActiveFieldType(availableFields[num - 1]);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [detailedItem?.captions, activeFieldType]);
 
   // Build tag_data with categories for backend
   const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
@@ -342,103 +373,122 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           </div>
         </div>
 
-        {/* Tags Section - Compact */}
-        <div className="flex-1 bg-gray-800 rounded-lg p-2 flex flex-col min-h-0">
-          <div className="flex-shrink-0 flex items-center justify-between mb-2">
-            <h4 className="text-xs font-semibold">Tags ({tags.length})</h4>
-            <div className="flex items-center space-x-0.5">
-              <button
-                onClick={handleUndo}
-                disabled={history.past.length === 0}
-                className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Undo (Ctrl+Z)"
-              >
-                <Undo2 className="h-3 w-3" />
-              </button>
-              <button
-                onClick={handleRedo}
-                disabled={history.future.length === 0}
-                className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="Redo (Ctrl+Y)"
-              >
-                <Redo2 className="h-3 w-3" />
-              </button>
-              <button
-                onClick={handleCopyTags}
-                className="p-0.5 hover:bg-gray-700 rounded transition-colors"
-                title="Copy Tags (Ctrl+C)"
-              >
-                <Copy className="h-3 w-3" />
-              </button>
-              <button
-                onClick={handlePasteTags}
-                className="p-0.5 hover:bg-gray-700 rounded transition-colors"
-                title="Paste Tags (Ctrl+V)"
-              >
-                <Clipboard className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
+        {/* Field Switcher - Card Buttons */}
+        <div className="flex-shrink-0 flex gap-1 flex-wrap">
+          {detailedItem?.captions?.map((caption, index) => (
+            <button
+              key={caption.caption_type}
+              onClick={() => setActiveFieldType(caption.caption_type)}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeFieldType === caption.caption_type
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+              }`}
+              title={`Switch to ${caption.caption_type.replace(/_/g, " ")} (Shortcut: ${index + 1})`}
+            >
+              {caption.caption_type.replace(/_/g, " ")}
+            </button>
+          ))}
+        </div>
 
-          {/* Tag List - Scrollable */}
-          <div className="flex-1 flex flex-wrap gap-1 content-start bg-gray-900 rounded p-2 overflow-y-auto min-h-0">
-            {tags.length === 0 ? (
-              <div className="text-xs text-gray-500 w-full text-center py-2">No tags</div>
-            ) : (
-              tags.map((tag, index) => {
-                const category = tagCategories[tag] || "general";
-                const colorClass = getCategoryColor(category);
-                return (
-                  <div
-                    key={index}
-                    className={`flex items-center space-x-1 px-2 py-1 ${colorClass} rounded text-xs transition-colors group h-fit cursor-pointer`}
-                    title={`Category: ${category}`}
-                    onClick={() => handleRemoveTag(index)}
-                  >
-                    <span>{tag}</span>
-                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
-                      ✕
-                    </span>
-                  </div>
-                );
-              })
+        {/* Caption Display Area - Unified */}
+        <div className="flex-1 bg-gray-800 rounded-lg p-2 flex flex-col min-h-0">
+          {/* Header with field name and actions */}
+          <div className="flex-shrink-0 flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold capitalize">
+              {activeFieldType.replace(/_/g, " ")}
+              {activeFieldType === "tags" && ` (${tags.length})`}
+            </h4>
+            {activeFieldType === "tags" && (
+              <div className="flex items-center space-x-0.5">
+                <button
+                  onClick={handleUndo}
+                  disabled={history.past.length === 0}
+                  className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="Undo (Ctrl+Z)"
+                >
+                  <Undo2 className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={handleRedo}
+                  disabled={history.future.length === 0}
+                  className="p-0.5 hover:bg-gray-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="Redo (Ctrl+Y)"
+                >
+                  <Redo2 className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={handleCopyTags}
+                  className="p-0.5 hover:bg-gray-700 rounded transition-colors"
+                  title="Copy Tags (Ctrl+C)"
+                >
+                  <Copy className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={handlePasteTags}
+                  className="p-0.5 hover:bg-gray-700 rounded transition-colors"
+                  title="Paste Tags (Ctrl+V)"
+                >
+                  <Clipboard className="h-3 w-3" />
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Add Tag - with Autocomplete */}
-          <div className="flex-shrink-0 mt-2">
-            <InputWithTagSuggestions
-              value={newTag}
-              onChange={setNewTag}
-              onTagAdd={handleTagAdd}
-              placeholder="Type to search tags..."
-              className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
-              showSuggestionsAbove={true}
-            />
-          </div>
-        </div>
-
-        {/* Other Caption Types - Collapsible */}
-        {detailedItem?.captions?.filter(c => c.caption_type !== "tags").length > 0 && (
-          <div className="flex-shrink-0 bg-gray-800 rounded-lg p-2">
-            <details className="group">
-              <summary className="text-xs font-semibold cursor-pointer list-none flex items-center justify-between">
-                <span>Other Captions ({detailedItem?.captions?.filter(c => c.caption_type !== "tags").length})</span>
-                <span className="group-open:rotate-180 transition-transform">▼</span>
-              </summary>
-              <div className="mt-2 space-y-2">
-                {detailedItem?.captions?.filter(c => c.caption_type !== "tags").map(caption => (
-                  <div key={caption.id} className="bg-gray-900 rounded p-2">
-                    <h5 className="text-[10px] font-semibold text-gray-400 mb-1 capitalize">
-                      {caption.caption_type.replace(/_/g, " ")} ({caption.source})
-                    </h5>
-                    <p className="text-xs text-gray-300">{caption.content}</p>
-                  </div>
-                ))}
+          {/* Content Area - Tags or Read-only Caption */}
+          {activeFieldType === "tags" ? (
+            <>
+              {/* Tag List - Scrollable */}
+              <div className="flex-1 flex flex-wrap gap-1 content-start bg-gray-900 rounded p-2 overflow-y-auto min-h-0">
+                {tags.length === 0 ? (
+                  <div className="text-xs text-gray-500 w-full text-center py-2">No tags</div>
+                ) : (
+                  tags.map((tag, index) => {
+                    const category = tagCategories[tag] || "general";
+                    const colorClass = getCategoryColor(category);
+                    return (
+                      <div
+                        key={index}
+                        className={`flex items-center space-x-1 px-2 py-1 ${colorClass} rounded text-xs transition-colors group h-fit cursor-pointer`}
+                        title={`Category: ${category}`}
+                        onClick={() => handleRemoveTag(index)}
+                      >
+                        <span>{tag}</span>
+                        <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+                          ✕
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
-            </details>
-          </div>
-        )}
+
+              {/* Add Tag - with Autocomplete */}
+              <div className="flex-shrink-0 mt-2">
+                <InputWithTagSuggestions
+                  value={newTag}
+                  onChange={setNewTag}
+                  onTagAdd={handleTagAdd}
+                  placeholder="Type to search tags..."
+                  className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
+                  showSuggestionsAbove={true}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Read-only Caption Display */}
+              <div className="flex-1 bg-gray-900 rounded p-2 overflow-y-auto min-h-0">
+                <p className="text-xs text-gray-300 whitespace-pre-wrap">
+                  {detailedItem?.captions?.find(c => c.caption_type === activeFieldType)?.content || "No content"}
+                </p>
+              </div>
+              <div className="flex-shrink-0 mt-2 text-[10px] text-gray-500">
+                Source: {detailedItem?.captions?.find(c => c.caption_type === activeFieldType)?.source || "unknown"}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
     </div>

@@ -35,7 +35,7 @@ class ConnectionManager:
             "type": "progress",
             "step": step,
             "total_steps": total_steps,
-            "progress": (step / total_steps) * 100,
+            "progress": (step / total_steps) * 100 if total_steps > 0 else 0,
             "message": message
         }
         if preview_image:

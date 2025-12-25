@@ -3069,18 +3069,35 @@ async def scan_dataset(
                                     # Detect format
                                     field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
 
-                                    caption = DatasetCaption(
-                                        item_id=item.id,
-                                        caption_type="tags",
-                                        content=content,
-                                        field_category=field_category,
-                                        is_tags_format=is_tags_format,
-                                        tag_match_rate=match_rate,
-                                        source="file",
-                                        source_field="tags"
-                                    )
-                                    db.add(caption)
-                                    captions_found += 1
+                                    # Check if tags caption already exists (single tags field per item)
+                                    existing_tags = db.query(DatasetCaption).filter(
+                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.caption_type == "tags"
+                                    ).first()
+
+                                    if existing_tags:
+                                        # Update existing
+                                        existing_tags.content = content
+                                        existing_tags.field_category = field_category
+                                        existing_tags.is_tags_format = is_tags_format
+                                        existing_tags.tag_match_rate = match_rate
+                                        existing_tags.source = "file"
+                                        existing_tags.source_field = "tags"
+                                        existing_tags.updated_at = datetime.utcnow()
+                                    else:
+                                        # Create new
+                                        caption = DatasetCaption(
+                                            item_id=item.id,
+                                            caption_type="tags",
+                                            content=content,
+                                            field_category=field_category,
+                                            is_tags_format=is_tags_format,
+                                            tag_match_rate=match_rate,
+                                            source="file",
+                                            source_field="tags"
+                                        )
+                                        db.add(caption)
+                                        captions_found += 1
 
                         elif ext_lower == '.json':
                             # JSON file: Recursively scan all fields
@@ -3093,9 +3110,30 @@ async def scan_dataset(
                             caption_results = scan_json_fields(json_data, taglist)
 
                             for result in caption_results:
+                                caption_type = result["caption_type"]
+
+                                # Enforce single tags field per item
+                                if caption_type == "tags":
+                                    existing_tags = db.query(DatasetCaption).filter(
+                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.caption_type == "tags"
+                                    ).first()
+
+                                    if existing_tags:
+                                        # Update existing tags field
+                                        existing_tags.content = result["content"]
+                                        existing_tags.field_category = result["field_category"]
+                                        existing_tags.is_tags_format = result["is_tags_format"]
+                                        existing_tags.tag_match_rate = result["tag_match_rate"]
+                                        existing_tags.source = "file"
+                                        existing_tags.source_field = result["source_field"]
+                                        existing_tags.updated_at = datetime.utcnow()
+                                        continue  # Skip adding new caption
+
+                                # Create new caption (for non-tags fields or first tags field)
                                 caption = DatasetCaption(
                                     item_id=item.id,
-                                    caption_type=result["caption_type"],
+                                    caption_type=caption_type,
                                     content=result["content"],
                                     field_category=result["field_category"],
                                     is_tags_format=result["is_tags_format"],

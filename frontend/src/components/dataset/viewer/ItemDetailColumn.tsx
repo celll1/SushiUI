@@ -425,30 +425,75 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       // Build new tag list
       const newTags: string[] = [];
 
-      // 1. Keep existing tags with confidence above category's removeThreshold, or not in predictions
+      // Special handling for Rating and Quality: pick top prediction only
+      const ratingEnabled = taggerSettings.categoryThresholds.find(c => c.id === "rating")?.enabled;
+      const qualityEnabled = taggerSettings.categoryThresholds.find(c => c.id === "quality")?.enabled;
+
+      const existingRatingTags = Array.from(existingTags).filter(tag => {
+        const category = tagCategories[tag] || (predictedTags.get(tag)?.category);
+        return category?.toLowerCase() === "rating";
+      });
+      const existingQualityTags = Array.from(existingTags).filter(tag => {
+        const category = tagCategories[tag] || (predictedTags.get(tag)?.category);
+        return category?.toLowerCase() === "quality";
+      });
+
+      // Get top predicted rating and quality tags
+      let topRatingTag: string | null = null;
+      let topRatingConfidence = 0;
+      let topQualityTag: string | null = null;
+      let topQualityConfidence = 0;
+
+      predictedTags.forEach(({ confidence, category }, tag) => {
+        if (category === "rating" && confidence > topRatingConfidence) {
+          topRatingTag = tag;
+          topRatingConfidence = confidence;
+        }
+        if (category === "quality" && confidence > topQualityConfidence) {
+          topQualityTag = tag;
+          topQualityConfidence = confidence;
+        }
+      });
+
+      // 1. Keep existing tags (with special handling for rating/quality)
       existingTags.forEach(tag => {
         const predicted = predictedTags.get(tag);
         if (!predicted) {
           // Tag not in predictions, keep it
           newTags.push(tag);
+        } else if (predicted.category === "rating" || predicted.category === "quality") {
+          // Rating/Quality: handled separately below
+          return;
         } else {
-          // Tag in predictions, check category-specific removeThreshold
-          const removeThreshold = removeThresholdMap.get(predicted.category) || 0.3;
+          // Other categories: check category-specific removeThreshold
+          const removeThreshold = removeThresholdMap.get(predicted.category) || 0.0;
           if (predicted.confidence >= removeThreshold) {
-            // Confidence above removeThreshold, keep it
             newTags.push(tag);
           }
-          // else: confidence < removeThreshold, remove it
         }
       });
 
-      // 2. Add new predicted tags with confidence >= category's addThreshold
+      // 2. Add new predicted tags
       predictedTags.forEach(({ confidence, category }, tag) => {
+        if (category === "rating" || category === "quality") {
+          // Rating/Quality: handled separately below
+          return;
+        }
         const addThreshold = addThresholdMap.get(category) || 0.45;
         if (confidence >= addThreshold && !existingTags.has(tag)) {
           newTags.push(tag);
         }
       });
+
+      // 3. Handle Rating: add top prediction only if no existing rating tag
+      if (ratingEnabled && topRatingTag && existingRatingTags.length === 0) {
+        newTags.push(topRatingTag);
+      }
+
+      // 4. Handle Quality: add top prediction only if no existing quality tag
+      if (qualityEnabled && topQualityTag && existingQualityTags.length === 0) {
+        newTags.push(topQualityTag);
+      }
 
       // Update tags with history
       pushHistory(newTags);

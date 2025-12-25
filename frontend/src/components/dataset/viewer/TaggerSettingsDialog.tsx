@@ -127,19 +127,34 @@ export default function TaggerSettingsDialog({ isOpen, onClose, onSave }: Tagger
               Category Threshold Ranges
             </label>
             <div className="bg-gray-900 rounded p-2 space-y-1 max-h-56 overflow-y-auto">
-              {settings.categoryThresholds.map((cat, index) => (
-                <DualThresholdSlider
-                  key={cat.id}
-                  label={cat.label}
-                  enabled={cat.enabled}
-                  removeThreshold={cat.removeThreshold}
-                  addThreshold={cat.addThreshold}
-                  onToggle={() => toggleCategory(index)}
-                  onChange={(removeThreshold, addThreshold) =>
-                    updateCategoryThresholds(index, removeThreshold, addThreshold)
-                  }
-                />
-              ))}
+              {settings.categoryThresholds.map((cat, index) => {
+                const isSpecialCategory = cat.id === "rating" || cat.id === "quality";
+                return isSpecialCategory ? (
+                  <div key={cat.id} className="flex items-center gap-2 py-0.5">
+                    <input
+                      type="checkbox"
+                      checked={cat.enabled}
+                      onChange={() => toggleCategory(index)}
+                      className="cursor-pointer w-3 h-3 flex-shrink-0"
+                    />
+                    <span className={`text-[10px] font-medium ${cat.enabled ? 'text-gray-200' : 'text-gray-500'}`}>
+                      {cat.label} <span className="text-[9px] text-gray-500">(top prediction only)</span>
+                    </span>
+                  </div>
+                ) : (
+                  <DualThresholdSlider
+                    key={cat.id}
+                    label={cat.label}
+                    enabled={cat.enabled}
+                    removeThreshold={cat.removeThreshold}
+                    addThreshold={cat.addThreshold}
+                    onToggle={() => toggleCategory(index)}
+                    onChange={(removeThreshold, addThreshold) =>
+                      updateCategoryThresholds(index, removeThreshold, addThreshold)
+                    }
+                  />
+                );
+              })}
             </div>
           </div>
         </div>

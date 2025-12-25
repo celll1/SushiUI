@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 
 from utils.taglist_loader import load_all_tags
+from config.settings import settings
 
 # Global cancellation flag for batch operations
 _batch_operation_cancelled = False
@@ -166,7 +167,7 @@ async def update_tag_statistics(dataset_id: int, db):
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     # Load taglist for category detection
-    all_tags = load_all_tags()
+    all_tags = load_all_tags(settings.root_dir)
     tag_to_category = {}
     for category, tags_in_category in all_tags.items():
         for tag_name in tags_in_category:
@@ -439,10 +440,11 @@ async def batch_reorder_tags(
     send_progress_callback(0, total, "Starting batch tag reordering...")
 
     # Load taglist for category detection
-    all_tags = load_all_tags()
+    all_tags = load_all_tags(settings.root_dir)
     tag_to_category = {}
-    for tag_entry in all_tags:
-        tag_to_category[tag_entry['tag']] = tag_entry['category']
+    for category, tags_in_category in all_tags.items():
+        for tag_name in tags_in_category:
+            tag_to_category[tag_name.lower()] = category
 
     for idx, item_id in enumerate(request.item_ids):
         if is_batch_operation_cancelled():

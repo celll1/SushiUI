@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Scan, Save } from "lucide-react";
-import { getDataset, scanDataset, Dataset, updateCaptionProcessing, CaptionProcessingConfig } from "@/utils/api";
+import { getDataset, scanDataset, updateCaptionProcessing, CaptionProcessingConfig } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
 import { wsClient } from "@/utils/websocket";
@@ -214,6 +214,7 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
               <CaptionProcessingSettings
                 config={captionConfig}
                 onChange={setCaptionConfig}
+                datasetId={datasetId}
               />
             </div>
           </div>

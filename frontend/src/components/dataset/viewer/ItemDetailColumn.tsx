@@ -63,6 +63,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
   const [isTaggerSettingsOpen, setIsTaggerSettingsOpen] = useState(false);
   const [isTagging, setIsTagging] = useState(false);
   const [taggerSettings, setTaggerSettings] = useState<TaggerSettings | null>(null);
+  const [isImageExpanded, setIsImageExpanded] = useState(false);
+  const [expandedImageWidth, setExpandedImageWidth] = useState(800); // Pixels
+  const [isResizing, setIsResizing] = useState(false);
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {
@@ -158,6 +161,28 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [detailedItem?.captions, activeFieldType]);
+
+  // Resize handling for expanded image panel
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX;
+      setExpandedImageWidth(Math.max(300, Math.min(newWidth, window.innerWidth - 400)));
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isResizing]);
 
   // Build tag_data with categories for backend
   const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
@@ -466,7 +491,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
             <img
               src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
               alt={item.base_name}
-              className="w-full h-full object-contain bg-gray-900"
+              className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
+              onDoubleClick={() => setIsImageExpanded(true)}
+              title="Double-click to expand"
             />
           </div>
 
@@ -621,6 +648,42 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
         onClose={() => setIsTaggerSettingsOpen(false)}
         onSave={setTaggerSettings}
       />
+
+      {/* Expanded Image Popup - Slides from left with resizable width */}
+      {isImageExpanded && (
+        <div
+          className="fixed top-0 left-0 bottom-0 bg-gray-900 shadow-2xl flex"
+          style={{ width: `${expandedImageWidth}px`, zIndex: 45 }}
+        >
+          {/* Image Container */}
+          <div className="flex-1 flex items-center justify-center p-4">
+            <img
+              src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+              alt={item.base_name}
+              className="max-w-full max-h-full object-contain"
+            />
+          </div>
+
+          {/* Resize Handle */}
+          <div
+            className="w-1 bg-gray-700 hover:bg-blue-500 cursor-ew-resize transition-colors"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setIsResizing(true);
+            }}
+            title="Drag to resize"
+          />
+
+          {/* Close Button */}
+          <button
+            className="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 text-white rounded p-2 transition-colors z-10"
+            onClick={() => setIsImageExpanded(false)}
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }

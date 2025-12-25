@@ -17,14 +17,14 @@ export interface CategoryThreshold {
 }
 
 const DEFAULT_THRESHOLDS: CategoryThreshold[] = [
-  { id: "rating", label: "Rating", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "quality", label: "Quality", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "character", label: "Character", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "copyright", label: "Copyright", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "artist", label: "Artist", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "general", label: "General", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "meta", label: "Meta", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
-  { id: "model", label: "Model", removeThreshold: 0.3, addThreshold: 0.45, enabled: true },
+  { id: "rating", label: "Rating", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "quality", label: "Quality", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "character", label: "Character", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "copyright", label: "Copyright", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "artist", label: "Artist", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "general", label: "General", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "meta", label: "Meta", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
+  { id: "model", label: "Model", removeThreshold: 0.0, addThreshold: 0.45, enabled: true },
 ];
 
 const MODEL_VERSIONS = [
@@ -126,7 +126,7 @@ export default function TaggerSettingsDialog({ isOpen, onClose, onSave }: Tagger
             <label className="block text-xs font-medium text-gray-300 mb-1">
               Category Threshold Ranges
             </label>
-            <div className="bg-gray-900 rounded p-2 space-y-3 max-h-96 overflow-y-auto">
+            <div className="bg-gray-900 rounded p-2 space-y-1 max-h-56 overflow-y-auto">
               {settings.categoryThresholds.map((cat, index) => (
                 <DualThresholdSlider
                   key={cat.id}
@@ -237,38 +237,27 @@ function DualThresholdSlider({
   }, [isDraggingRemove, isDraggingAdd, removeThreshold, addThreshold, onChange]);
 
   return (
-    <div className="space-y-1">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={onToggle}
-            className="cursor-pointer w-3 h-3"
-          />
-          <span className={`text-[10px] font-medium ${enabled ? 'text-gray-200' : 'text-gray-500'}`}>
-            {label}
-          </span>
-        </div>
-        <div className="flex gap-2 text-[9px]">
-          <span className="text-red-400" title="Remove threshold">
-            {removeThreshold.toFixed(2)}
-          </span>
-          <span className="text-gray-600">—</span>
-          <span className="text-blue-400" title="Add threshold">
-            {addThreshold.toFixed(2)}
-          </span>
-        </div>
-      </div>
+    <div className="flex items-center gap-2 py-0.5">
+      {/* Checkbox */}
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={onToggle}
+        className="cursor-pointer w-3 h-3 flex-shrink-0"
+      />
 
-      {/* Dual-handle slider */}
+      {/* Label */}
+      <span className={`text-[10px] font-medium w-16 flex-shrink-0 ${enabled ? 'text-gray-200' : 'text-gray-500'}`}>
+        {label}
+      </span>
+
+      {/* Dual-handle slider (compact) */}
       <div
         ref={trackRef}
-        className={`relative h-6 ${!enabled ? 'opacity-40 pointer-events-none' : ''}`}
+        className={`relative h-4 flex-1 ${!enabled ? 'opacity-40 pointer-events-none' : ''}`}
       >
         {/* Track background with 3 zones */}
-        <div className="absolute top-2 left-0 right-0 h-2 rounded overflow-hidden bg-gray-700">
+        <div className="absolute top-1.5 left-0 right-0 h-1 rounded overflow-hidden bg-gray-700">
           {/* Red zone: 0 to removeThreshold */}
           <div
             className="absolute top-0 left-0 h-full bg-red-500"
@@ -291,28 +280,32 @@ function DualThresholdSlider({
 
         {/* Remove threshold handle (red) */}
         <div
-          className="absolute top-0 w-4 h-6 cursor-pointer"
-          style={{ left: `calc(${removeThreshold * 100}% - 8px)` }}
+          className="absolute top-0 w-3 h-4 cursor-pointer"
+          style={{ left: `calc(${removeThreshold * 100}% - 6px)` }}
           onMouseDown={handleMouseDown('remove')}
         >
-          <div className="w-4 h-6 bg-red-500 border-2 border-red-300 rounded shadow-lg hover:scale-110 transition-transform" />
+          <div className="w-3 h-4 bg-red-500 border border-red-300 rounded shadow hover:scale-125 transition-transform" />
         </div>
 
         {/* Add threshold handle (blue) */}
         <div
-          className="absolute top-0 w-4 h-6 cursor-pointer"
-          style={{ left: `calc(${addThreshold * 100}% - 8px)` }}
+          className="absolute top-0 w-3 h-4 cursor-pointer"
+          style={{ left: `calc(${addThreshold * 100}% - 6px)` }}
           onMouseDown={handleMouseDown('add')}
         >
-          <div className="w-4 h-6 bg-blue-500 border-2 border-blue-300 rounded shadow-lg hover:scale-110 transition-transform" />
+          <div className="w-3 h-4 bg-blue-500 border border-blue-300 rounded shadow hover:scale-125 transition-transform" />
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex justify-between text-[9px] text-gray-500 px-1">
-        <span>Remove below</span>
-        <span>Keep unchanged</span>
-        <span>Add above</span>
+      {/* Values */}
+      <div className="flex gap-1 text-[9px] flex-shrink-0 w-14 justify-end">
+        <span className="text-red-400" title="Remove threshold">
+          {removeThreshold.toFixed(2)}
+        </span>
+        <span className="text-gray-600">-</span>
+        <span className="text-blue-400" title="Add threshold">
+          {addThreshold.toFixed(2)}
+        </span>
       </div>
     </div>
   );

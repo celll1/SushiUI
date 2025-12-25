@@ -1598,4 +1598,68 @@ export const updateItemCaption = async (
   return response.data;
 };
 
+// ============================================================
+// Batch Operations API
+// ============================================================
+
+export interface BatchTaggerRequest {
+  item_ids: number[];
+  gen_threshold?: number;
+  char_threshold?: number;
+  thresholds?: Record<string, number>;
+  model_version?: string;
+  remove_below_threshold?: boolean;
+  merge_with_existing?: boolean;
+}
+
+export interface BatchReorderTagsRequest {
+  item_ids: number[];
+  category_order: string[];
+}
+
+export interface BatchReplaceTagRequest {
+  item_ids: number[];
+  from_tag: string;
+  to_tag: string;
+  normalize_match?: boolean;
+}
+
+export interface BatchOperationResponse {
+  status: string;
+  processed_count: number;
+  updated_count: number;
+  skipped_count: number;
+  failed_count: number;
+  message: string;
+}
+
+export const batchTaggerInference = async (
+  datasetId: number,
+  request: BatchTaggerRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-tagger`, request);
+  return response.data;
+};
+
+export const batchReorderTags = async (
+  datasetId: number,
+  request: BatchReorderTagsRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-reorder-tags`, request);
+  return response.data;
+};
+
+export const batchReplaceTag = async (
+  datasetId: number,
+  request: BatchReplaceTagRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-replace-tag`, request);
+  return response.data;
+};
+
+export const cancelBatchOperation = async (datasetId: number): Promise<{ message: string }> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-cancel`);
+  return response.data;
+};
+
 // Tag Dictionary Search API was removed - use tagSuggestions.ts instead

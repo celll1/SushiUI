@@ -71,6 +71,9 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
   // BAN_TAGS state (comma-separated tags to exclude)
   const [banTags, setBanTags] = useState("monochrome, grayscale");
 
+  // NL mode state (treat input as natural language)
+  const [treatAsNL, setTreatAsNL] = useState(false);
+
   // Category order settings (from CategoryOrderPanel)
   const [categoryOrder, setCategoryOrder] = useState<TIPOCategoryOrder[]>(() => {
     const savedOrder = getCategoryOrder();
@@ -163,6 +166,7 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
         ban_tags: banTags.trim(),
         category_order: categoryOrderIds,
         enabled_categories: enabledCategories,
+        treat_as_nl: treatAsNL,
       });
 
       console.log('[TIPO Panel] Response:', response);
@@ -306,6 +310,22 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
               className="w-full"
             />
           </div>
+        </div>
+
+        {/* Treat as Natural Language Checkbox */}
+        <div className="mt-2">
+          <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={treatAsNL}
+              onChange={(e) => setTreatAsNL(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+            />
+            <span>Treat input as Natural Language (NL) instead of tags</span>
+          </label>
+          <p className="text-xs text-gray-500 mt-1 ml-6">
+            When enabled, the entire input is used as a natural language prompt for generation context, and no input tags are preserved in the output.
+          </p>
         </div>
 
         {/* Advanced Settings */}

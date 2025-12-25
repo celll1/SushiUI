@@ -231,7 +231,8 @@ async def generate_txt2img(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -528,7 +529,8 @@ async def generate_img2img(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -828,7 +830,8 @@ async def generate_inpaint(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -1911,6 +1914,7 @@ class TIPOGenerateRequest(BaseModel):
     # Output formatting options
     category_order: Optional[List[str]] = None  # Order of categories in output
     enabled_categories: Optional[Dict[str, bool]] = None  # Which categories to include
+    treat_as_nl: bool = False  # Treat input as natural language instead of tags
 
 class TIPOLoadModelRequest(BaseModel):
     model_name: str = "KBlueLeaf/TIPO-500M"
@@ -1966,7 +1970,8 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             top_p=request.top_p,
             top_k=request.top_k,
             max_new_tokens=request.max_new_tokens,
-            ban_tags=request.ban_tags
+            ban_tags=request.ban_tags,
+            treat_as_nl=request.treat_as_nl
         )
 
         # Check if using tipo-kgen (returns dict)

@@ -754,6 +754,7 @@ export interface TIPOGenerateRequest {
   ban_tags?: string;  // Comma-separated tags to exclude from generation
   category_order?: string[];
   enabled_categories?: Record<string, boolean>;
+  treat_as_nl?: boolean;  // Treat input as natural language instead of tags
 }
 
 export interface TIPOParsedOutput {

@@ -192,6 +192,8 @@ function DualThresholdSlider({
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragType, setDragType] = useState<'remove' | 'add' | null>(null);
+  const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastWheelTargetRef = useRef<'remove' | 'add' | null>(null);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -213,6 +215,57 @@ function DualThresholdSlider({
       const distToRemove = Math.abs(percent - removeThreshold);
       const distToAdd = Math.abs(percent - addThreshold);
       setDragType(distToRemove < distToAdd ? 'remove' : 'add');
+    }
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (!trackRef.current) return;
+
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percent = x / rect.width;
+
+    // Determine which handle to control
+    let targetHandle: 'remove' | 'add';
+
+    // If wheel was used recently (within 500ms), use the same handle
+    if (lastWheelTargetRef.current !== null) {
+      targetHandle = lastWheelTargetRef.current;
+    } else {
+      // Determine based on cursor position and overlap
+      const gap = Math.abs(addThreshold - removeThreshold);
+      if (gap <= 0.05) {
+        // Overlapping: use wheel direction to decide
+        targetHandle = e.deltaY < 0 ? 'add' : 'remove'; // Up=increase(add), Down=decrease(remove)
+      } else {
+        // Not overlapping: use closest handle
+        const distToRemove = Math.abs(percent - removeThreshold);
+        const distToAdd = Math.abs(percent - addThreshold);
+        targetHandle = distToRemove < distToAdd ? 'remove' : 'add';
+      }
+    }
+
+    // Remember this handle for subsequent wheel events
+    lastWheelTargetRef.current = targetHandle;
+
+    // Clear previous timeout and set new one (200ms memory window)
+    if (wheelTimeoutRef.current) {
+      clearTimeout(wheelTimeoutRef.current);
+    }
+    wheelTimeoutRef.current = setTimeout(() => {
+      lastWheelTargetRef.current = null;
+    }, 200);
+
+    // Calculate new value (wheel up = increase, down = decrease)
+    const delta = e.deltaY < 0 ? 0.05 : -0.05;
+
+    if (targetHandle === 'remove') {
+      const newRemove = Math.min(Math.max(0, removeThreshold + delta), addThreshold);
+      onChange(newRemove, addThreshold);
+    } else {
+      const newAdd = Math.max(Math.min(1, addThreshold + delta), removeThreshold);
+      onChange(removeThreshold, newAdd);
     }
   };
 
@@ -283,6 +336,7 @@ function DualThresholdSlider({
       <div
         ref={trackRef}
         className={`relative h-4 flex-1 ${!enabled ? 'opacity-40 pointer-events-none' : ''}`}
+        onWheel={handleWheel}
       >
         {/* Track background with 3 zones */}
         <div className="absolute top-1.5 left-0 right-0 h-1 rounded overflow-hidden bg-gray-700">

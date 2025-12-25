@@ -885,13 +885,19 @@ export const addTagToCategory = async (
   tag: string,
   category: string,
   count: number = 1
-): Promise<{ status: string; message: string; tag: string; category: string; count: number }> => {
-  const formData = new FormData();
-  formData.append("tag", tag);
-  formData.append("category", category);
-  formData.append("count", String(count));
-  const response = await api.post("/taglist/add-tag", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
+): Promise<{
+  status: string;
+  message: string;
+  tag: string;
+  category: string;
+  count: number;
+  json_updated: boolean;
+  updated_datasets: number;
+}> => {
+  const response = await api.post("/tag-category/add", {
+    tag,
+    category,
+    count
   });
   return response.data;
 };

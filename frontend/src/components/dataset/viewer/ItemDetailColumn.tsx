@@ -553,47 +553,37 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           </div>
         </div>
 
-        {/* Field Switcher - Category Buttons (tags, text, metadata) */}
+        {/* Field Switcher - Individual buttons for training fields, single button for metadata */}
         <div className="flex-shrink-0 flex gap-1 flex-wrap">
           {(() => {
             const captions = detailedItem?.captions || [];
-            const tagsCaptions = captions.filter(c => c.field_category === 'training' && c.is_tags_format);
-            const textCaptions = captions.filter(c => c.field_category === 'training' && !c.is_tags_format);
+            const trainingCaptions = captions.filter(c => c.field_category !== 'metadata');
             const metadataCaptions = captions.filter(c => c.field_category === 'metadata');
+
+            // Get unique caption types from training captions
+            const uniqueTrainingTypes = Array.from(
+              new Set(trainingCaptions.map(c => c.caption_type))
+            );
 
             return (
               <>
-                {/* Tags button */}
-                {tagsCaptions.length > 0 && (
+                {/* Individual buttons for each training caption type */}
+                {uniqueTrainingTypes.map((type) => (
                   <button
-                    onClick={() => setActiveFieldType(tagsCaptions[0].caption_type)}
+                    key={type}
+                    onClick={() => setActiveFieldType(type)}
                     className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                      tagsCaptions.some(c => c.caption_type === activeFieldType)
+                      activeFieldType === type
                         ? "bg-blue-600 text-white"
                         : "bg-gray-700 hover:bg-gray-600 text-gray-300"
                     }`}
-                    title="Tags (Danbooru format)"
+                    title={type.replace(/_/g, " ")}
                   >
-                    Tags
+                    {type.replace(/_/g, " ")}
                   </button>
-                )}
+                ))}
 
-                {/* Text button */}
-                {textCaptions.length > 0 && (
-                  <button
-                    onClick={() => setActiveFieldType(textCaptions[0].caption_type)}
-                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                      textCaptions.some(c => c.caption_type === activeFieldType)
-                        ? "bg-blue-600 text-white"
-                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
-                    }`}
-                    title="Natural language text"
-                  >
-                    Text
-                  </button>
-                )}
-
-                {/* Metadata button (collapsible) */}
+                {/* Single Metadata button (collapsible, shows all metadata fields) */}
                 {metadataCaptions.length > 0 && (
                   <button
                     onClick={() => setActiveFieldType('__metadata__')}
@@ -604,7 +594,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
                     }`}
                     title={`Metadata (${metadataCaptions.length} fields)`}
                   >
-                    Metadata ({metadataCaptions.length})
+                    metadata ({metadataCaptions.length})
                   </button>
                 )}
               </>

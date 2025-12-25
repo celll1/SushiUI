@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Undo2, Redo2, Copy, Clipboard, Save } from "lucide-react";
+import { Undo2, Redo2, Copy, Clipboard } from "lucide-react";
 import {
   getDatasetItem,
   DatasetItem,
@@ -55,8 +55,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     present: [],
     future: [],
   });
-  const [hasChanges, setHasChanges] = useState(false);
-  const [isSavingToTxt, setIsSavingToTxt] = useState(false);
+  const previousItemIdRef = useRef<number | null>(null);
 
   // Initialize tag categories from cache when item loads
   useEffect(() => {
@@ -88,7 +87,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           present: tagList,
           future: [],
         });
-        setHasChanges(false);
 
         // Load categories from tag_data if available (fast path)
         if (tagCaption.tag_data && tagCaption.tag_data.length > 0) {
@@ -116,6 +114,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       loadItemDetails();
     }
   }, [item, loadItemDetails]);
+
+  // Update item reference when item changes
+  useEffect(() => {
+    if (item) {
+      previousItemIdRef.current = item.id;
+    }
+  }, [item?.id]);
 
   // Build tag_data with categories for backend
   const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
@@ -152,6 +157,19 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
     return tagData;
   };
 
+  const saveToFileSystem = async (itemId: number) => {
+    try {
+      const result = await saveItemCaptionToTxt(itemId);
+      if (result.success) {
+        console.log("[ItemDetailColumn] Auto-saved to file:", result.message);
+      } else {
+        console.warn("[ItemDetailColumn] File save failed:", result.message);
+      }
+    } catch (err) {
+      console.error("[ItemDetailColumn] Error auto-saving to file:", err);
+    }
+  };
+
   const pushHistory = async (newTags: string[]) => {
     setHistory({
       past: [...history.past, history.present],
@@ -159,9 +177,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       future: [],
     });
     setTags(newTags);
-    setHasChanges(true);
 
-    // Immediately save to DB
+    // Immediately save to DB and file
     if (item) {
       try {
         const content = newTags.join(", ");
@@ -171,9 +188,12 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           content,
           tag_data,
         });
-        console.log("[ItemDetailColumn] Tags saved to DB immediately");
+        console.log("[ItemDetailColumn] Tags saved to DB");
+
+        // Auto-save to txt/json file
+        await saveToFileSystem(item.id);
       } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save tags to DB:", err);
+        console.error("[ItemDetailColumn] Failed to save tags:", err);
       }
     }
   };
@@ -190,9 +210,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       future: [history.present, ...history.future],
     });
     setTags(previous);
-    setHasChanges(newPast.length > 0 || history.future.length > 0);
 
-    // Immediately save to DB
+    // Immediately save to DB and file
     if (item) {
       try {
         const content = previous.join(", ");
@@ -202,9 +221,12 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           content,
           tag_data,
         });
-        console.log("[ItemDetailColumn] Undo saved to DB immediately");
+        console.log("[ItemDetailColumn] Undo saved to DB");
+
+        // Auto-save to txt/json file
+        await saveToFileSystem(item.id);
       } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save undo to DB:", err);
+        console.error("[ItemDetailColumn] Failed to save undo:", err);
       }
     }
   };
@@ -221,9 +243,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       future: newFuture,
     });
     setTags(next);
-    setHasChanges(true);
 
-    // Immediately save to DB
+    // Immediately save to DB and file
     if (item) {
       try {
         const content = next.join(", ");
@@ -233,9 +254,12 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
           content,
           tag_data,
         });
-        console.log("[ItemDetailColumn] Redo saved to DB immediately");
+        console.log("[ItemDetailColumn] Redo saved to DB");
+
+        // Auto-save to txt/json file
+        await saveToFileSystem(item.id);
       } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save redo to DB:", err);
+        console.error("[ItemDetailColumn] Failed to save redo:", err);
       }
     }
   };
@@ -257,27 +281,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
       pushHistory([...tags, ...pastedTags]);
     } catch (err) {
       console.error("Failed to paste tags:", err);
-    }
-  };
-
-  const handleSaveToTxt = async () => {
-    if (!item) return;
-
-    setIsSavingToTxt(true);
-    try {
-      const result = await saveItemCaptionToTxt(item.id);
-      if (result.success) {
-        console.log("[ItemDetailColumn] Saved to TXT:", result.message);
-        alert("Caption saved to TXT file successfully");
-      } else {
-        console.error("[ItemDetailColumn] Failed to save to TXT:", result.message);
-        alert(`Failed to save to TXT: ${result.message}`);
-      }
-    } catch (err) {
-      console.error("[ItemDetailColumn] Error saving to TXT:", err);
-      alert("Failed to save to TXT file. Please try again.");
-    } finally {
-      setIsSavingToTxt(false);
     }
   };
 
@@ -412,19 +415,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache }: 
               className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs focus:outline-none focus:border-blue-500"
               showSuggestionsAbove={true}
             />
-          </div>
-
-          {/* Save to TXT Button */}
-          <div className="flex-shrink-0 mt-2">
-            <button
-              onClick={handleSaveToTxt}
-              disabled={isSavingToTxt}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Save current tags to TXT file"
-            >
-              <Save className="h-3.5 w-3.5" />
-              <span>{isSavingToTxt ? "Saving..." : "Save to TXT"}</span>
-            </button>
           </div>
         </div>
 

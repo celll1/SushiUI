@@ -3370,8 +3370,9 @@ async def save_item_caption_to_txt(
     item_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Save caption from DB to TXT file"""
+    """Save caption from DB to TXT/JSON file (auto-detect based on existing file)"""
     import os
+    import json
 
     # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
@@ -3385,22 +3386,58 @@ async def save_item_caption_to_txt(
     ).first()
 
     if not caption:
-        raise HTTPException(status_code=404, detail="No tags caption found for this item")
+        # No caption to save, return success (nothing to do)
+        return {"success": True, "message": "No tags caption found, nothing to save"}
 
-    # Determine TXT file path
+    # Determine file paths
     image_path = item.image_path
-    txt_path = os.path.splitext(image_path)[0] + ".txt"
+    base_path = os.path.splitext(image_path)[0]
+    txt_path = base_path + ".txt"
+    json_path = base_path + ".json"
+
+    saved_files = []
 
     try:
-        # Write to TXT file
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(caption.content)
+        # Check if TXT file exists and save to it
+        if os.path.exists(txt_path):
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption.content)
+            saved_files.append(txt_path)
+            print(f"[Dataset] Saved caption to TXT: {txt_path}")
 
-        print(f"[Dataset] Saved caption to TXT: {txt_path}")
-        return {"status": "success", "txt_path": txt_path}
+        # Check if JSON file exists and save to it
+        if os.path.exists(json_path):
+            try:
+                # Read existing JSON
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+
+                # Update caption field
+                json_data['caption'] = caption.content
+
+                # Write back
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+                saved_files.append(json_path)
+                print(f"[Dataset] Saved caption to JSON: {json_path}")
+            except Exception as json_err:
+                print(f"[Dataset] Failed to update JSON file {json_path}: {json_err}")
+
+        # If neither file exists, create a TXT file
+        if not saved_files:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption.content)
+            saved_files.append(txt_path)
+            print(f"[Dataset] Created new TXT file: {txt_path}")
+
+        return {
+            "success": True,
+            "message": f"Saved to {len(saved_files)} file(s): {', '.join(saved_files)}"
+        }
     except Exception as e:
-        print(f"[Dataset] Failed to save caption to TXT: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to write TXT file: {str(e)}")
+        print(f"[Dataset] Failed to save caption: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
 
 @router.post("/datasets/{dataset_id}/save-all-to-txt")
 async def save_all_captions_to_txt(

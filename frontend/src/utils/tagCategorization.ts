@@ -77,7 +77,8 @@ async function buildTagCategoryCache(): Promise<Record<string, string>> {
 
   for (const category of categories) {
     try {
-      const response = await fetch(`http://localhost:8000/api/taglist/${category}`);
+      // Fixed: Use relative URL matching OpenAPI specification (was hardcoded localhost:8000)
+      const response = await fetch(`/api/v1/taglist/${category}`);
       if (response.ok) {
         const tagData: Record<string, number> = await response.json();
         for (const tag of Object.keys(tagData)) {

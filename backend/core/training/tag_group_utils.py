@@ -7,12 +7,18 @@ Supports:
 - Tag group-based shuffle
 - Per-category dropout rates
 - Tag normalization (handle various escape patterns)
+
+MIGRATED TO USE TaglistCache singleton (Phase 3):
+- Replaces direct JSON file loading with server-side cache
+- Eliminates repeated 50MB file reads during training
+- Automatic mtime-based cache invalidation
 """
 import json
 import random
 import re
 from pathlib import Path
 from typing import Dict, List, Set, Optional
+from utils.taglist_cache import taglist_cache
 
 
 # Person count tags (for exclusion from General group shuffle/dropout)
@@ -122,7 +128,13 @@ def normalize_tag_for_output(tag: str) -> str:
 
 
 class TagGroupManager:
-    """Manage tag groups for caption processing."""
+    """
+    Manage tag groups for caption processing.
+
+    MIGRATED TO USE TaglistCache singleton (Phase 3):
+    - Uses shared cache instead of per-instance loading
+    - Eliminates 50MB file reads on every TagGroupManager instantiation
+    """
 
     def __init__(self, tag_group_dir: str = "taglist"):
         """
@@ -146,14 +158,21 @@ class TagGroupManager:
 
         self.tag_group_dir = tag_path
         self.tag_groups: Dict[str, Set[str]] = {}
-        self._tag_to_group_cache: Dict[str, str] = {}
+
+        # Initialize TaglistCache (will use singleton if already initialized)
+        taglist_cache.initialize(str(project_root))
+
         self.load_tag_groups()
 
     def load_tag_groups(self):
-        """Load tag groups from JSON files."""
-        print(f"[TagGroupManager] Attempting to load tag groups from: {self.tag_group_dir.absolute()}")
+        """
+        Load tag groups using TaglistCache singleton.
 
-        # Add hardcoded Rating and Quality tags (these don't have JSON files)
+        MIGRATED: Uses shared cache instead of per-instance JSON file loading.
+        """
+        print(f"[TagGroupManager] Loading tag groups via TaglistCache (no file reads)")
+
+        # Add hardcoded Rating and Quality tags (these don't have JSON files in taglist)
         rating_tags = {
             'general', 'sensitive', 'questionable', 'explicit',
             'rating:general', 'rating:sensitive', 'rating:questionable', 'rating:explicit'
@@ -166,46 +185,23 @@ class TagGroupManager:
         self.tag_groups['Rating'] = rating_tags
         self.tag_groups['Quality'] = quality_tags
 
-        # Build cache for Rating and Quality
-        for tag in rating_tags:
-            self._tag_to_group_cache[self._normalize_tag(tag)] = 'Rating'
-        for tag in quality_tags:
-            self._tag_to_group_cache[self._normalize_tag(tag)] = 'Quality'
-
         print(f"[TagGroupManager] Added hardcoded Rating ({len(rating_tags)} tags) and Quality ({len(quality_tags)} tags)")
 
-        if not self.tag_group_dir.exists():
-            print(f"[TagGroupManager] ERROR: Tag group directory not found: {self.tag_group_dir.absolute()}")
-            print(f"[TagGroupManager] Category ordering will not work without tag group files!")
-            return
+        # Load other categories from TaglistCache
+        categories = ["general", "character", "artist", "copyright", "meta", "model"]
+        total_tags = 0
 
-        json_files = list(self.tag_group_dir.glob("*.json"))
-        print(f"[TagGroupManager] Found {len(json_files)} JSON files")
+        for category in categories:
+            category_tags_dict = taglist_cache.get_category_tags(category)
+            tags = set(category_tags_dict.keys())
+            self.tag_groups[category.capitalize()] = tags
+            total_tags += len(tags)
+            print(f"[TagGroupManager] Loaded {len(tags)} tags for group '{category.capitalize()}' (via cache)")
 
-        for json_file in json_files:
-            group_name = json_file.stem
-            print(f"[TagGroupManager] Loading group '{group_name}' from {json_file.name}")
-            try:
-                with open(json_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    # JSON format: {"tag_name": count, ...}
-                    tags = set(data.keys())
-                    self.tag_groups[group_name] = tags
-
-                    # Build cache: tag -> group (skip if already cached to preserve priority)
-                    for tag in tags:
-                        normalized_tag = self._normalize_tag(tag)
-                        # Only add if not already in cache (Rating/Quality have priority)
-                        if normalized_tag not in self._tag_to_group_cache:
-                            self._tag_to_group_cache[normalized_tag] = group_name
-
-                print(f"[TagGroupManager] Loaded {len(tags)} tags for group '{group_name}'")
-            except Exception as e:
-                print(f"[TagGroupManager] Failed to load {json_file}: {e}")
-
-        print(f"[TagGroupManager] Total loaded: {len(self.tag_groups)} tag groups, {len(self._tag_to_group_cache)} tags in cache")
-        if len(self.tag_groups) == 0:
-            print(f"[TagGroupManager] WARNING: No tag groups loaded! Category ordering will not work!")
+        # Add stats from cache
+        cache_stats = taglist_cache.get_stats()
+        print(f"[TagGroupManager] Total loaded: {len(self.tag_groups)} tag groups, {total_tags} tags from cache")
+        print(f"[TagGroupManager] Cache stats: {cache_stats}")
 
     def _normalize_tag(self, tag: str) -> str:
         """
@@ -221,7 +217,7 @@ class TagGroupManager:
 
     def get_tag_group(self, tag: str) -> Optional[str]:
         """
-        Get group name for a tag.
+        Get group name for a tag using TaglistCache.
 
         Args:
             tag: Tag string
@@ -230,7 +226,21 @@ class TagGroupManager:
             Group name or None if not found
         """
         normalized = self._normalize_tag(tag)
-        return self._tag_to_group_cache.get(normalized)
+
+        # Check hardcoded Rating and Quality first
+        for rating_tag in self.tag_groups.get('Rating', set()):
+            if self._normalize_tag(rating_tag) == normalized:
+                return 'Rating'
+
+        for quality_tag in self.tag_groups.get('Quality', set()):
+            if self._normalize_tag(quality_tag) == normalized:
+                return 'Quality'
+
+        # Use TaglistCache for other categories (O(1) lookup)
+        category = taglist_cache.get_category(tag)
+
+        # TaglistCache returns capitalized category names
+        return category if category != "General" or tag else category
 
     def is_person_count_tag(self, tag: str) -> bool:
         """

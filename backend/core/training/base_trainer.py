@@ -2945,6 +2945,15 @@ class BaseTrainer(ABC):
                     # Fast-forward lr_scheduler to match the checkpoint
                     for _ in range(global_step):
                         self.lr_scheduler.step()
+
+                    # IMPORTANT: Update optimizer learning rate from YAML config
+                    # (Necessary when user modifies LR in YAML before resume)
+                    if hasattr(self, 'optimizer') and self.optimizer is not None:
+                        for param_group in self.optimizer.param_groups:
+                            old_lr = param_group['lr']
+                            param_group['lr'] = self.learning_rate
+                            if old_lr != self.learning_rate:
+                                print(f"{self.log_prefix} Updated optimizer LR: {old_lr:.2e} -> {self.learning_rate:.2e}")
                 else:
                     print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
             else:
@@ -2979,6 +2988,15 @@ class BaseTrainer(ABC):
                     # Fast-forward lr_scheduler to match the checkpoint
                     for _ in range(global_step):
                         self.lr_scheduler.step()
+
+                    # IMPORTANT: Update optimizer learning rate from YAML config
+                    # (Necessary when user modifies LR in YAML before resume)
+                    if hasattr(self, 'optimizer') and self.optimizer is not None:
+                        for param_group in self.optimizer.param_groups:
+                            old_lr = param_group['lr']
+                            param_group['lr'] = self.learning_rate
+                            if old_lr != self.learning_rate:
+                                print(f"{self.log_prefix} Updated optimizer LR: {old_lr:.2e} -> {self.learning_rate:.2e}")
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")

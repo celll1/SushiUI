@@ -7,7 +7,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 
-from utils.taglist_loader import load_all_tags
+from utils.taglist_cache import taglist_cache
 from config.settings import settings
 
 # Global cancellation flag for batch operations
@@ -147,9 +147,13 @@ async def save_item_to_txt_json(item, db):
 async def update_tag_statistics(dataset_id: int, db):
     """
     Update tag statistics for a dataset with category information
+    (MIGRATED TO USE TaglistCache singleton - Phase 3)
     """
     from database.models import Dataset, DatasetCaption
     from sqlalchemy import func
+
+    # Initialize cache
+    taglist_cache.initialize(settings.root_dir)
 
     # Get all tags captions
     captions = db.query(DatasetCaption).join(
@@ -166,28 +170,24 @@ async def update_tag_statistics(dataset_id: int, db):
         for tag in tags:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-    # Load taglist for category detection
-    all_tags = load_all_tags(settings.root_dir)
-    tag_to_category = {}
-    for category, tags_in_category in all_tags.items():
-        for tag_name in tags_in_category:
-            tag_to_category[tag_name.lower()] = category
+    # Get categories for all tags using batch operation
+    all_tag_names = list(tag_counts.keys())
+    tag_categories = taglist_cache.get_categories_batch(all_tag_names)
 
     # Update dataset tag_statistics with category information
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset:
         tag_statistics = {}
         for tag, count in tag_counts.items():
-            # Get category from taglist
-            normalized_tag = tag.lower().replace('_', ' ').strip()
-            category = tag_to_category.get(normalized_tag, "General")
+            # Get category from cache (O(1) lookup)
+            category = tag_categories.get(tag, "General")
             tag_statistics[tag] = {
                 "count": count,
                 "category": category
             }
         dataset.tag_statistics = tag_statistics
         db.commit()
-        print(f"[BatchOps] Updated tag statistics: {len(tag_statistics)} unique tags")
+        print(f"[BatchOps] Updated tag statistics: {len(tag_statistics)} unique tags (via TaglistCache)")
 
 
 def normalize_tag_for_matching(tag: str) -> str:
@@ -439,12 +439,8 @@ async def batch_reorder_tags(
 
     send_progress_callback(0, total, "Starting batch tag reordering...")
 
-    # Load taglist for category detection
-    all_tags = load_all_tags(settings.root_dir)
-    tag_to_category = {}
-    for category, tags_in_category in all_tags.items():
-        for tag_name in tags_in_category:
-            tag_to_category[tag_name.lower()] = category
+    # Initialize taglist cache
+    taglist_cache.initialize(settings.root_dir)
 
     for idx, item_id in enumerate(request.item_ids):
         if is_batch_operation_cancelled():
@@ -479,12 +475,12 @@ async def batch_reorder_tags(
             # Parse tags
             tags = [t.strip() for t in tags_caption.content.split(',') if t.strip()]
 
-            # Categorize tags
+            # Categorize tags using cache (O(1) lookup per tag)
             categorized = {cat: [] for cat in request.category_order}
             categorized['Unknown'] = []
 
             for tag in tags:
-                category = tag_to_category.get(tag, 'General')
+                category = taglist_cache.get_category(tag)
                 if category in categorized:
                     categorized[category].append(tag)
                 else:

@@ -1,15 +1,19 @@
 """
 Taglist loader for caption format detection.
+
+MIGRATED TO USE TaglistCache singleton (Phase 3):
+- Uses server-side cache instead of repeated file reads
+- Automatic mtime-based invalidation
+- Consistent tag normalization
 """
 
-import os
-import json
 from typing import Set
+from utils.taglist_cache import taglist_cache
 
 
 def load_all_tags(root_dir: str) -> Set[str]:
     """
-    Load all tags from taglist JSON files.
+    Load all tags from taglist JSON files using TaglistCache singleton.
 
     Args:
         root_dir: Root directory of the application (where taglist/ folder is)
@@ -17,43 +21,22 @@ def load_all_tags(root_dir: str) -> Set[str]:
     Returns:
         Set of all tags (lowercase, normalized)
     """
-    taglist_dir = os.path.join(root_dir, "taglist")
+    # Initialize cache with root directory
+    taglist_cache.initialize(root_dir)
 
-    if not os.path.exists(taglist_dir):
-        print(f"[TaglistLoader] Warning: taglist directory not found: {taglist_dir}")
-        return set()
-
+    # Collect all tags from all categories
     all_tags = set()
 
-    # Taglist files
-    taglist_files = [
-        "artist.json",
-        "character.json",
-        "copyright.json",
-        "general.json",
-        "meta.json",
-        # Quality/Rating are not tags in Danbooru sense, skip them
-    ]
+    categories = ["general", "character", "artist", "copyright", "meta", "model"]
 
-    for filename in taglist_files:
-        file_path = os.path.join(taglist_dir, filename)
+    for category in categories:
+        category_tags = taglist_cache.get_category_tags(category)
 
-        if not os.path.exists(file_path):
-            continue
+        # Normalize tags (cache already stores normalized keys in category_map)
+        for tag in category_tags.keys():
+            normalized = taglist_cache._normalize_tag(tag)
+            if normalized:
+                all_tags.add(normalized)
 
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                tags = json.load(f)
-
-            # Normalize tags (lowercase, strip)
-            for tag in tags:
-                normalized = tag.lower().strip()
-                if normalized:
-                    all_tags.add(normalized)
-
-        except Exception as e:
-            print(f"[TaglistLoader] Error loading {filename}: {e}")
-            continue
-
-    print(f"[TaglistLoader] Loaded {len(all_tags)} tags from taglist")
+    print(f"[TaglistLoader] Loaded {len(all_tags)} tags from taglist (via TaglistCache)")
     return all_tags

@@ -158,6 +158,7 @@ class TagGroupManager:
 
         self.tag_group_dir = tag_path
         self.tag_groups: Dict[str, Set[str]] = {}
+        self._normalized_rating_quality: Set[str] = set()  # Fast O(1) lookup for Rating/Quality
 
         # Initialize TaglistCache (will use singleton if already initialized)
         taglist_cache.initialize(str(project_root))
@@ -184,6 +185,12 @@ class TagGroupManager:
 
         self.tag_groups['Rating'] = rating_tags
         self.tag_groups['Quality'] = quality_tags
+
+        # Build normalized Rating/Quality set for O(1) lookup in get_tag_group()
+        for tag in rating_tags:
+            self._normalized_rating_quality.add(self._normalize_tag(tag))
+        for tag in quality_tags:
+            self._normalized_rating_quality.add(self._normalize_tag(tag))
 
         print(f"[TagGroupManager] Added hardcoded Rating ({len(rating_tags)} tags) and Quality ({len(quality_tags)} tags)")
 
@@ -219,6 +226,9 @@ class TagGroupManager:
         """
         Get group name for a tag using TaglistCache.
 
+        PERFORMANCE CRITICAL: Called millions of times during training.
+        Optimized to O(1) lookups only.
+
         Args:
             tag: Tag string
 
@@ -227,20 +237,21 @@ class TagGroupManager:
         """
         normalized = self._normalize_tag(tag)
 
-        # Check hardcoded Rating and Quality first
-        for rating_tag in self.tag_groups.get('Rating', set()):
-            if self._normalize_tag(rating_tag) == normalized:
-                return 'Rating'
+        # O(1) check for Rating/Quality (hardcoded tags not in TaglistCache)
+        if normalized in self._normalized_rating_quality:
+            # Determine if Rating or Quality
+            for rating_tag in self.tag_groups['Rating']:
+                if self._normalize_tag(rating_tag) == normalized:
+                    return 'Rating'
+            return 'Quality'
 
-        for quality_tag in self.tag_groups.get('Quality', set()):
-            if self._normalize_tag(quality_tag) == normalized:
-                return 'Quality'
+        # O(1) lookup in TaglistCache's category_map (no reload_if_needed overhead)
+        category = taglist_cache._category_map.get(normalized)
+        if category:
+            return category  # Already capitalized (e.g., "General", "Character")
 
-        # Use TaglistCache for other categories (O(1) lookup)
-        category = taglist_cache.get_category(tag)
-
-        # TaglistCache returns capitalized category names
-        return category if category != "General" or tag else category
+        # Not found in either Rating/Quality or TaglistCache
+        return None
 
     def is_person_count_tag(self, tag: str) -> bool:
         """

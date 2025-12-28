@@ -350,6 +350,45 @@ class TaglistCache:
             for cat, tags in self._cache.items()
         }
 
+    def invalidate_category(self, category: str):
+        """
+        Force invalidate a specific category cache (useful after manual file modification).
+
+        Args:
+            category: Category name to invalidate
+        """
+        category_lower = category.lower()
+
+        # Remove mtime to force reload on next access
+        if category_lower in self._mtimes:
+            del self._mtimes[category_lower]
+
+        print(f"[TaglistCache] Invalidated cache for category '{category}'")
+
+    def get_all_timestamps(self) -> Dict[str, int]:
+        """
+        Get modification timestamps for all taglist files.
+
+        Returns:
+            Dict mapping category name -> timestamp (milliseconds since epoch)
+        """
+        if not self._root_dir:
+            raise RuntimeError("TaglistCache not initialized. Call initialize(root_dir) first.")
+
+        timestamps = {}
+        categories = ["general", "character", "artist", "copyright", "meta", "model"]
+
+        for category in categories:
+            try:
+                file_path = self._get_taglist_path(category)
+                if os.path.exists(file_path):
+                    mtime = os.path.getmtime(file_path)
+                    timestamps[category] = int(mtime * 1000)
+            except Exception as e:
+                print(f"[TaglistCache] Error getting timestamp for {category}: {e}")
+
+        return timestamps
+
 
 # Global singleton instance
 taglist_cache = TaglistCache()

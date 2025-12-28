@@ -1680,31 +1680,17 @@ async def cleanup_temp_images(max_age_hours: int = 24):
 @router.get("/taglist/timestamps")
 async def get_taglist_timestamps():
     """
-    Get modification timestamps for all tag files to check if cache is stale
-    Returns Unix timestamps in milliseconds
+    Get modification timestamps for all tag files to check if cache is stale.
+
+    MIGRATED: Uses TaglistCache for taglist files (Phase 4).
+
+    Returns Unix timestamps in milliseconds.
     """
     try:
-        category_map = {
-            "general": "General",
-            "character": "Character",
-            "artist": "Artist",
-            "copyright": "Copyright",
-            "meta": "Meta",
-            "model": "Model"
-        }
+        # Use TaglistCache for taglist timestamps
+        timestamps = taglist_cache.get_all_timestamps()
 
-        timestamps = {}
-
-        # Get taglist file timestamps
-        for category_key, filename in category_map.items():
-            taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
-            if os.path.exists(taglist_path):
-                mtime = os.path.getmtime(taglist_path)
-                timestamps[category_key] = int(mtime * 1000)  # Convert to ms
-            else:
-                timestamps[category_key] = 0  # File doesn't exist
-
-        # Get tag_other_names timestamp
+        # Get tag_other_names timestamp (not in taglist, keep manual check)
         tagother_path = os.path.join(settings.root_dir, "tagother", "tag_other_names.json")
         if os.path.exists(tagother_path):
             mtime = os.path.getmtime(tagother_path)
@@ -1714,7 +1700,7 @@ async def get_taglist_timestamps():
 
         return timestamps
     except Exception as e:
-        print(f"Error getting tag file timestamps: {e}")
+        print(f"[Taglist API] Error getting tag file timestamps: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/tag-category/add")
@@ -1763,6 +1749,9 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
 
             json_updated = True
             print(f"[TagCategory] Added tag '{request.tag}' to {request.category}.json")
+
+            # Invalidate TaglistCache to ensure cache consistency
+            taglist_cache.invalidate_category(request.category)
 
             # Record user addition in a separate log file (project root, not in taglist/)
             user_additions_file = os.path.join(settings.root_dir, "user_tag_additions.json")
@@ -1825,38 +1814,29 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
 @router.get("/taglist/{category}")
 async def get_taglist(category: str):
     """
-    Get tag list for a specific category from taglist directory
+    Get tag list for a specific category using TaglistCache.
+
+    MIGRATED: Uses server-side cache instead of direct file read (Phase 4).
+
     Categories: general, character, artist, copyright, meta, model
     """
     try:
-        # Map category names to file names (capitalize first letter)
-        category_map = {
-            "general": "General",
-            "character": "Character",
-            "artist": "Artist",
-            "copyright": "Copyright",
-            "meta": "Meta",
-            "model": "Model"
-        }
-
-        if category.lower() not in category_map:
+        # Validate category
+        valid_categories = ["general", "character", "artist", "copyright", "meta", "model"]
+        if category.lower() not in valid_categories:
             raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
 
-        filename = category_map[category.lower()]
-        taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
+        # Use TaglistCache for O(1) lookup with automatic mtime-based invalidation
+        tags = taglist_cache.get_category_tags(category.lower())
 
-        if not os.path.exists(taglist_path):
-            raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_path}")
-
-        import json
-        with open(taglist_path, "r", encoding="utf-8") as f:
-            tags = json.load(f)
+        if not tags:
+            raise HTTPException(status_code=404, detail=f"No tags found for category: {category}")
 
         return tags
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error loading taglist: {e}")
+        print(f"[Taglist API] Error loading taglist for category '{category}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/tagother/tag_other_names")

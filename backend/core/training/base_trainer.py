@@ -310,6 +310,10 @@ class BaseTrainer(ABC):
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
 
+        # SNR Regularization (to prevent overbaking)
+        self.snr_regularization_loss = None
+        self.config = {}  # Will be set by subclass for factory function access
+
         # Legacy dtype for compatibility
         self.dtype = self.weight_dtype
 
@@ -1688,12 +1692,27 @@ class BaseTrainer(ABC):
         # Flow Matching target: velocity = data - noise
         target = latents - noise
 
-        # Calculate loss (always in fp32)
+        # Calculate MSE loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
-        loss = loss_per_sample.mean()
+        mse_loss = loss_per_sample.mean()
+
+        # Add SNR or Energy regularization if enabled
+        regularization_loss = torch.tensor(0.0, device=self.device)
+        if self.snr_regularization_loss is not None:
+            # Compute predicted latent from velocity: x_0 = x_t + (1-t) * v_pred
+            with torch.no_grad():
+                predicted_latent_for_reg = noisy_latents + (1.0 - t) * model_pred
+            regularization_loss = self.snr_regularization_loss(
+                predicted_latent_for_reg.detach(),  # Detach to prevent backprop through reconstruction
+                latents,
+                timesteps
+            )
+
+        # Total loss
+        loss = mse_loss + regularization_loss
 
         # Calculate reconstruction loss
         # For Flow Matching, reconstruct using: x_0 = x_t + (1-t) * v_pred

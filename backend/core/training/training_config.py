@@ -80,6 +80,15 @@ class TrainingConfigGenerator:
         # Multi Noise-Timestep (MNT) settings
         multi_noise_timesteps: int = 1,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
+        # Regularization settings (prevent overbaking)
+        regularization_type: Optional[str] = None,  # "snr", "energy", or None
+        snr_regularization_weight: float = 0.1,
+        snr_timestep_adaptive: bool = True,
+        snr_penalty_mode: str = "relu",
+        energy_regularization_weight: float = 0.05,
+        energy_timestep_adaptive: bool = True,
+        energy_penalty_mode: str = "abs",
+        energy_normalize_by_pixels: bool = True,
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -255,6 +264,15 @@ class TrainingConfigGenerator:
                             "multi_noise_timesteps": multi_noise_timesteps,
                             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
                             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
+                            # Regularization settings
+                            **({"regularization_type": regularization_type} if regularization_type else {}),
+                            "snr_regularization_weight": snr_regularization_weight,
+                            "snr_timestep_adaptive": snr_timestep_adaptive,
+                            "snr_penalty_mode": snr_penalty_mode,
+                            "energy_regularization_weight": energy_regularization_weight,
+                            "energy_timestep_adaptive": energy_timestep_adaptive,
+                            "energy_penalty_mode": energy_penalty_mode,
+                            "energy_normalize_by_pixels": energy_normalize_by_pixels,
                         },
                         "model": {
                             "name_or_path": base_model_path,
@@ -345,6 +363,15 @@ class TrainingConfigGenerator:
         # Multi Noise-Timestep (MNT) settings
         multi_noise_timesteps: int = 1,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
+        # Regularization settings (prevent overbaking)
+        regularization_type: Optional[str] = None,  # "snr", "energy", or None
+        snr_regularization_weight: float = 0.1,
+        snr_timestep_adaptive: bool = True,
+        snr_penalty_mode: str = "relu",
+        energy_regularization_weight: float = 0.05,
+        energy_timestep_adaptive: bool = True,
+        energy_penalty_mode: str = "abs",
+        energy_normalize_by_pixels: bool = True,
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -409,6 +436,15 @@ class TrainingConfigGenerator:
             "multi_noise_timesteps": multi_noise_timesteps,
             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
+            # Regularization settings
+            **({"regularization_type": regularization_type} if regularization_type else {}),
+            "snr_regularization_weight": snr_regularization_weight,
+            "snr_timestep_adaptive": snr_timestep_adaptive,
+            "snr_penalty_mode": snr_penalty_mode,
+            "energy_regularization_weight": energy_regularization_weight,
+            "energy_timestep_adaptive": energy_timestep_adaptive,
+            "energy_penalty_mode": energy_penalty_mode,
+            "energy_normalize_by_pixels": energy_normalize_by_pixels,
         }
 
         # Add component-specific learning rates if specified

@@ -176,6 +176,16 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [timestepMin, setTimestepMin] = useState<number>(0.0);
   const [timestepMax, setTimestepMax] = useState<number>(1.0);
 
+  // Regularization settings (prevent overbaking)
+  const [regularizationType, setRegularizationType] = useState<string>("none");
+  const [snrRegularizationWeight, setSnrRegularizationWeight] = useState<number>(0.1);
+  const [snrTimestepAdaptive, setSnrTimestepAdaptive] = useState<boolean>(true);
+  const [snrPenaltyMode, setSnrPenaltyMode] = useState<string>("relu");
+  const [energyRegularizationWeight, setEnergyRegularizationWeight] = useState<number>(0.05);
+  const [energyTimestepAdaptive, setEnergyTimestepAdaptive] = useState<boolean>(true);
+  const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("abs");
+  const [energyNormalizeByPixels, setEnergyNormalizeByPixels] = useState<boolean>(true);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -625,6 +635,15 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         min_timestep: timestepMin,
         max_timestep: timestepMax,
       },
+      // Regularization settings
+      regularization_type: regularizationType !== "none" ? regularizationType : null,
+      snr_regularization_weight: snrRegularizationWeight,
+      snr_timestep_adaptive: snrTimestepAdaptive,
+      snr_penalty_mode: snrPenaltyMode,
+      energy_regularization_weight: energyRegularizationWeight,
+      energy_timestep_adaptive: energyTimestepAdaptive,
+      energy_penalty_mode: energyPenaltyMode,
+      energy_normalize_by_pixels: energyNormalizeByPixels,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1013,6 +1032,136 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   Timestep range for sampling (0.0 = clean, 1.0 = fully noised)
                 </p>
               </div>
+            </div>
+
+            {/* Regularization Settings */}
+            <div className="space-y-3 p-3 bg-gray-900/50 rounded border border-gray-700/50">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1 font-semibold">
+                  Regularization (Prevent Overbaking)
+                </label>
+                <select
+                  value={regularizationType}
+                  onChange={(e) => setRegularizationType(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="none">None</option>
+                  <option value="snr">SNR Regularization</option>
+                  <option value="energy">Energy Regularization</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {regularizationType === "none" && "No regularization (standard MSE loss only)"}
+                  {regularizationType === "snr" && "Penalize high SNR in predicted latents (prevents over-denoising)"}
+                  {regularizationType === "energy" && "Penalize energy deviation in predicted latents (prevents detail loss)"}
+                </p>
+              </div>
+
+              {regularizationType === "snr" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      SNR Weight
+                    </label>
+                    <input
+                      type="number"
+                      value={snrRegularizationWeight}
+                      onChange={(e) => setSnrRegularizationWeight(parseFloat(e.target.value))}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="snr-timestep-adaptive"
+                      checked={snrTimestepAdaptive}
+                      onChange={(e) => setSnrTimestepAdaptive(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="snr-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
+                      Timestep Adaptive (stronger penalty at low timesteps)
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Penalty Mode
+                    </label>
+                    <select
+                      value={snrPenaltyMode}
+                      onChange={(e) => setSnrPenaltyMode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="relu">ReLU (one-sided, penalize only over-denoising)</option>
+                      <option value="abs">Absolute (two-sided, penalize any deviation)</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {regularizationType === "energy" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Energy Weight
+                    </label>
+                    <input
+                      type="number"
+                      value={energyRegularizationWeight}
+                      onChange={(e) => setEnergyRegularizationWeight(parseFloat(e.target.value))}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.05</p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="energy-timestep-adaptive"
+                      checked={energyTimestepAdaptive}
+                      onChange={(e) => setEnergyTimestepAdaptive(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="energy-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
+                      Timestep Adaptive (stronger penalty at low timesteps)
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Penalty Mode
+                    </label>
+                    <select
+                      value={energyPenaltyMode}
+                      onChange={(e) => setEnergyPenaltyMode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="abs">Absolute (two-sided, penalize any deviation)</option>
+                      <option value="under">Under (one-sided, penalize only energy loss)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="energy-normalize-by-pixels"
+                      checked={energyNormalizeByPixels}
+                      onChange={(e) => setEnergyNormalizeByPixels(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="energy-normalize-by-pixels" className="text-xs text-gray-300 cursor-pointer">
+                      Normalize by Pixels (resolution-independent)
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
 
             <div>

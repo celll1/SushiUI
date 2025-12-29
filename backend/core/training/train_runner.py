@@ -580,6 +580,32 @@ def main():
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
             trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
 
+            # Setup regularization loss (SNR or Energy)
+            regularization_type = train_config.get('regularization_type', None)
+            if regularization_type:
+                print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
+                trainer.config = train_config  # Pass config for factory function
+
+                if regularization_type.lower() == 'snr':
+                    from core.training.losses.snr_regularization import create_snr_regularization_loss
+                    trainer.snr_regularization_loss = create_snr_regularization_loss(train_config)
+                    print(f"[TrainRunner] SNR Regularization enabled:")
+                    print(f"  Weight: {train_config.get('snr_regularization_weight', 0.1)}")
+                    print(f"  Timestep adaptive: {train_config.get('snr_timestep_adaptive', True)}")
+                    print(f"  Penalty mode: {train_config.get('snr_penalty_mode', 'relu')}")
+                elif regularization_type.lower() == 'energy':
+                    from core.training.losses.energy_regularization import create_energy_regularization_loss
+                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                    print(f"[TrainRunner] Energy Regularization enabled:")
+                    print(f"  Weight: {train_config.get('energy_regularization_weight', 0.05)}")
+                    print(f"  Timestep adaptive: {train_config.get('energy_timestep_adaptive', True)}")
+                    print(f"  Penalty mode: {train_config.get('energy_penalty_mode', 'abs')}")
+                    print(f"  Normalize by pixels: {train_config.get('energy_normalize_by_pixels', True)}")
+                else:
+                    print(f"[TrainRunner] WARNING: Unknown regularization type '{regularization_type}', skipping")
+            else:
+                print(f"[TrainRunner] Regularization disabled (regularization_type not set)")
+
             # Determine epochs or steps
             num_epochs = train_config.get('epochs', None)
             total_steps_config = train_config.get('steps', None)
@@ -786,6 +812,32 @@ def main():
             optimizer_type = train_config.get('optimizer', 'adamw8bit')
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
             trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
+
+            # Setup regularization loss (SNR or Energy)
+            regularization_type = train_config.get('regularization_type', None)
+            if regularization_type:
+                print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
+                trainer.config = train_config  # Pass config for factory function
+
+                if regularization_type.lower() == 'snr':
+                    from core.training.losses.snr_regularization import create_snr_regularization_loss
+                    trainer.snr_regularization_loss = create_snr_regularization_loss(train_config)
+                    print(f"[TrainRunner] SNR Regularization enabled:")
+                    print(f"  Weight: {train_config.get('snr_regularization_weight', 0.1)}")
+                    print(f"  Timestep adaptive: {train_config.get('snr_timestep_adaptive', True)}")
+                    print(f"  Penalty mode: {train_config.get('snr_penalty_mode', 'relu')}")
+                elif regularization_type.lower() == 'energy':
+                    from core.training.losses.energy_regularization import create_energy_regularization_loss
+                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                    print(f"[TrainRunner] Energy Regularization enabled:")
+                    print(f"  Weight: {train_config.get('energy_regularization_weight', 0.05)}")
+                    print(f"  Timestep adaptive: {train_config.get('energy_timestep_adaptive', True)}")
+                    print(f"  Penalty mode: {train_config.get('energy_penalty_mode', 'abs')}")
+                    print(f"  Normalize by pixels: {train_config.get('energy_normalize_by_pixels', True)}")
+                else:
+                    print(f"[TrainRunner] WARNING: Unknown regularization type '{regularization_type}', skipping")
+            else:
+                print(f"[TrainRunner] Regularization disabled (regularization_type not set)")
 
             # Determine epochs or steps
             num_epochs = train_config.get('epochs', None)

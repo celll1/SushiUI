@@ -3875,6 +3875,16 @@ class TrainingRunCreateRequest(BaseModel):
     multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
     timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
 
+    # Regularization settings (prevent overbaking)
+    regularization_type: Optional[str] = None  # "snr", "energy", or None
+    snr_regularization_weight: float = 0.1
+    snr_timestep_adaptive: bool = True
+    snr_penalty_mode: str = "relu"
+    energy_regularization_weight: float = 0.05
+    energy_timestep_adaptive: bool = True
+    energy_penalty_mode: str = "abs"
+    energy_normalize_by_pixels: bool = True
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -4035,6 +4045,14 @@ async def create_training_run(
                 num_optimizer_groups=request.num_optimizer_groups,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
@@ -4096,6 +4114,14 @@ async def create_training_run(
                 num_optimizer_groups=request.num_optimizer_groups,
                 multi_noise_timesteps=request.multi_noise_timesteps,
                 timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,

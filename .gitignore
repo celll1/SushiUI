@@ -129,3 +129,6 @@ memo.md
 # OS
 Thumbs.db
 .DS_Store
+# Test outputs and analysis
+test_output/
+archive/

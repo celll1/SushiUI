@@ -623,7 +623,13 @@ def main():
             # Progress callback (update DB only, no print to avoid cluttering tqdm output)
             def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
                 # Get current learning rate from optimizer (if available)
-                lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') and trainer.optimizer else None
+                lr = None
+                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                    lr = trainer.optimizer.param_groups[0]['lr']
+                    # Debug: Log LR retrieval
+                    if phase == "training" and step % 100 == 0:
+                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
                 update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
 
             # Total steps callback (called once when actual total_steps is determined)
@@ -854,7 +860,13 @@ def main():
             # Progress callback
             def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
                 # Get current learning rate from optimizer (if available)
-                lr = trainer.optimizer.param_groups[0]['lr'] if hasattr(trainer, 'optimizer') and trainer.optimizer else None
+                lr = None
+                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                    lr = trainer.optimizer.param_groups[0]['lr']
+                    # Debug: Log LR retrieval
+                    if phase == "training" and step % 100 == 0:
+                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
                 update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
 
             # Total steps callback

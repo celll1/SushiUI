@@ -2973,6 +2973,15 @@ class BaseTrainer(ABC):
                             param_group['lr'] = self.learning_rate
                             if old_lr != self.learning_rate:
                                 print(f"{self.log_prefix} Updated optimizer LR: {old_lr:.2e} -> {self.learning_rate:.2e}")
+
+                    # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
+                    if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
+                        if hasattr(self.lr_scheduler, 'base_lrs'):
+                            for i in range(len(self.lr_scheduler.base_lrs)):
+                                old_base_lr = self.lr_scheduler.base_lrs[i]
+                                self.lr_scheduler.base_lrs[i] = self.learning_rate
+                                if old_base_lr != self.learning_rate:
+                                    print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {self.learning_rate:.2e}")
                 else:
                     print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
             else:
@@ -3016,6 +3025,15 @@ class BaseTrainer(ABC):
                             param_group['lr'] = self.learning_rate
                             if old_lr != self.learning_rate:
                                 print(f"{self.log_prefix} Updated optimizer LR: {old_lr:.2e} -> {self.learning_rate:.2e}")
+
+                    # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
+                    if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
+                        if hasattr(self.lr_scheduler, 'base_lrs'):
+                            for i in range(len(self.lr_scheduler.base_lrs)):
+                                old_base_lr = self.lr_scheduler.base_lrs[i]
+                                self.lr_scheduler.base_lrs[i] = self.learning_rate
+                                if old_base_lr != self.learning_rate:
+                                    print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {self.learning_rate:.2e}")
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")

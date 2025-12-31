@@ -59,12 +59,14 @@ class SNRRegularizationLoss(nn.Module):
         """
         Compute SNR (Signal-to-Noise Ratio) in dB for latent tensors.
 
-        SNR is defined as:
-            SNR(dB) = 10 * log10(signal_power / noise_power)
+        Corrected SNR definition:
+            SNR(dB) = 10 * log10(total_power / noise_power)
 
         Where:
-            - signal_power = mean^2 (DC component)
-            - noise_power = variance (AC component)
+            - total_power = mean(x^2) (total signal power)
+            - noise_power = variance (noise power)
+
+        This is the correct definition: SNR = mean(x^2) / var(x) = (mean^2 + var) / var
 
         Args:
             latent: Latent tensor of shape [B, C, H, W]
@@ -75,24 +77,21 @@ class SNRRegularizationLoss(nn.Module):
         Mathematical details:
             For each sample in batch:
             1. Flatten spatial dimensions: [C, H, W] -> [C, H*W]
-            2. Compute channel-wise mean: mu_c = mean(x_c)
-            3. Signal power: P_signal = mean(mu_c^2)
-            4. Noise power: P_noise = mean(var(x_c))
-            5. SNR(dB) = 10 * log10(P_signal / P_noise)
+            2. Total power: P_total = mean(x_c^2)
+            3. Noise power: P_noise = var(x_c)
+            4. SNR(dB) = 10 * log10(P_total / P_noise)
         """
         B, C, H, W = latent.shape
         latent_flat = latent.view(B, C, -1)  # [B, C, H*W]
 
-        # Signal power: mean^2 (DC component)
-        mean = latent_flat.mean(dim=-1)  # [B, C]
-        signal_power = mean.pow(2).mean(dim=1)  # [B]
+        # Total power: mean(x^2)
+        total_power = latent_flat.pow(2).mean(dim=-1).mean(dim=1)  # [B]
 
-        # Noise power: variance (AC component)
-        variance = latent_flat.var(dim=-1)  # [B, C]
-        noise_power = variance.mean(dim=1)  # [B]
+        # Noise power: variance
+        variance = latent_flat.var(dim=-1).mean(dim=1)  # [B]
 
         # SNR in dB
-        snr = signal_power / (noise_power + 1e-8)
+        snr = total_power / (variance + 1e-8)
         snr_db = 10 * torch.log10(snr + 1e-8)
 
         return snr_db

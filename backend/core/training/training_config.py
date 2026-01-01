@@ -82,6 +82,8 @@ class TrainingConfigGenerator:
         caption_processing: Optional[Dict[str, Any]] = None,
         # Multi Noise-Timestep (MNT) settings
         multi_noise_timesteps: int = 1,
+        multi_noise_mode: str = "independent",
+        trajectory_blend_alpha: float = 0.7,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         # Regularization settings (prevent overbaking)
         regularization_type: Optional[str] = None,  # "snr", "energy", or None
@@ -268,6 +270,8 @@ class TrainingConfigGenerator:
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
                             "multi_noise_timesteps": multi_noise_timesteps,
+                            "multi_noise_mode": multi_noise_mode,
+                            "trajectory_blend_alpha": trajectory_blend_alpha,
                             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
                             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
                             # Regularization settings
@@ -371,6 +375,8 @@ class TrainingConfigGenerator:
         caption_processing: Optional[dict] = None,
         # Multi Noise-Timestep (MNT) settings
         multi_noise_timesteps: int = 1,
+        multi_noise_mode: str = "independent",
+        trajectory_blend_alpha: float = 0.7,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         # Regularization settings (prevent overbaking)
         regularization_type: Optional[str] = None,  # "snr", "energy", or None
@@ -446,6 +452,8 @@ class TrainingConfigGenerator:
             "debug_latents": debug_latents,
             "debug_latents_every": debug_latents_every,
             "multi_noise_timesteps": multi_noise_timesteps,
+            "multi_noise_mode": multi_noise_mode,
+            "trajectory_blend_alpha": trajectory_blend_alpha,
             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
             **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
             # Regularization settings

@@ -730,6 +730,8 @@ def main():
 
             # Get Multi Noise-Timestep (MNT) settings
             multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            multi_noise_mode = train_config.get('multi_noise_mode', 'independent')
+            trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
             # Start training with new interface
@@ -765,6 +767,8 @@ def main():
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,
+                multi_noise_mode=multi_noise_mode,
+                trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
             )
 
@@ -965,6 +969,8 @@ def main():
 
             # Get Multi Noise-Timestep (MNT) settings
             multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            multi_noise_mode = train_config.get('multi_noise_mode', 'independent')
+            trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
             # Start training with new interface
@@ -1000,6 +1006,8 @@ def main():
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,
+                multi_noise_mode=multi_noise_mode,
+                trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
             )
 

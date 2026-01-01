@@ -177,13 +177,13 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [timestepMax, setTimestepMax] = useState<number>(1.0);
 
   // Regularization settings (prevent overbaking)
-  const [regularizationType, setRegularizationType] = useState<string>("none");
-  const [snrRegularizationWeight, setSnrRegularizationWeight] = useState<number>(0.1);
+  const [regularizationType, setRegularizationType] = useState<string>("none");  // Deprecated, kept for API compatibility
+  const [snrRegularizationWeight, setSnrRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
   const [snrTimestepAdaptive, setSnrTimestepAdaptive] = useState<boolean>(true);
   const [snrPenaltyMode, setSnrPenaltyMode] = useState<string>("relu");
-  const [energyRegularizationWeight, setEnergyRegularizationWeight] = useState<number>(0.05);
+  const [energyRegularizationWeight, setEnergyRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
   const [energyTimestepAdaptive, setEnergyTimestepAdaptive] = useState<boolean>(true);
-  const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("abs");
+  const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("under");  // Changed from "abs" to "under" (recommended)
   const [energyNormalizeByPixels, setEnergyNormalizeByPixels] = useState<boolean>(true);
 
   const [loading, setLoading] = useState(false);
@@ -1035,28 +1035,40 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             </div>
 
             {/* Regularization Settings */}
-            <div className="space-y-3 p-3 bg-gray-900/50 rounded border border-gray-700/50">
+            <div className="space-y-4 p-3 bg-gray-900/50 rounded border border-gray-700/50">
               <div>
                 <label className="block text-xs text-gray-400 mb-1 font-semibold">
                   Regularization (Prevent Overbaking)
                 </label>
-                <select
-                  value={regularizationType}
-                  onChange={(e) => setRegularizationType(e.target.value)}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                >
-                  <option value="none">None</option>
-                  <option value="snr">SNR Regularization</option>
-                  <option value="energy">Energy Regularization</option>
-                </select>
                 <p className="text-xs text-gray-500 mt-1">
-                  {regularizationType === "none" && "No regularization (standard MSE loss only)"}
-                  {regularizationType === "snr" && "Penalize high SNR in predicted latents (prevents over-denoising)"}
-                  {regularizationType === "energy" && "Penalize energy deviation in predicted latents (prevents detail loss)"}
+                  Both SNR and Energy regularization can be enabled simultaneously for comprehensive overbaking prevention.
                 </p>
               </div>
 
-              {regularizationType === "snr" && (
+              {/* SNR Regularization */}
+              <div className="space-y-3 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs text-gray-300 font-semibold">
+                    SNR Regularization (Frequency Domain)
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="enable-snr-reg"
+                      checked={snrRegularizationWeight > 0}
+                      onChange={(e) => setSnrRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="enable-snr-reg" className="text-xs text-gray-400 cursor-pointer">
+                      Enable
+                    </label>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Penalizes high SNR in predicted latents (prevents over-denoising in frequency domain)
+                </p>
+
+              {snrRegularizationWeight > 0 && (
                 <>
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">
@@ -1102,8 +1114,32 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   </div>
                 </>
               )}
+              </div>
 
-              {regularizationType === "energy" && (
+              {/* Energy Regularization */}
+              <div className="space-y-3 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs text-gray-300 font-semibold">
+                    Energy Regularization (Spatial Domain)
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="enable-energy-reg"
+                      checked={energyRegularizationWeight > 0}
+                      onChange={(e) => setEnergyRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="enable-energy-reg" className="text-xs text-gray-400 cursor-pointer">
+                      Enable
+                    </label>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Penalizes energy deviation in predicted latents (prevents detail loss in spatial domain)
+                </p>
+
+              {energyRegularizationWeight > 0 && (
                 <>
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">
@@ -1118,7 +1154,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                       step="0.01"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
-                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.05</p>
+                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
                   </div>
 
                   <div className="flex items-center space-x-2">
@@ -1143,8 +1179,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                       onChange={(e) => setEnergyPenaltyMode(e.target.value)}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
+                      <option value="under">Under (one-sided, penalize only energy loss - recommended)</option>
                       <option value="abs">Absolute (two-sided, penalize any deviation)</option>
-                      <option value="under">Under (one-sided, penalize only energy loss)</option>
                     </select>
                   </div>
 
@@ -1162,6 +1198,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   </div>
                 </>
               )}
+              </div>
             </div>
 
             <div>

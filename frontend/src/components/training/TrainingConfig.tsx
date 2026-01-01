@@ -70,6 +70,7 @@ const OPTIMIZER_CONFIGS: Record<string, {
 };
 
 export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRunUpdated }: TrainingConfigProps) {
+  console.log(`[TrainingConfig] Component mounted/re-rendered, editRunId=${editRunId}`);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
@@ -224,9 +225,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Load training run parameters for edit mode
   const loadTrainingRunParams = useCallback(async (runId: number) => {
+    const startTime = performance.now();
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
     try {
+      const apiStartTime = performance.now();
       const params = await getTrainingRunParams(runId);
+      console.log(`[TrainingConfig] API call took ${performance.now() - apiStartTime}ms`);
       console.log(`[TrainingConfig] Received parameters:`, params);
 
       // Populate all form fields from loaded parameters
@@ -354,6 +358,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
       console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);
+      console.log(`[TrainingConfig] Total loadTrainingRunParams time: ${performance.now() - startTime}ms`);
     } catch (err: any) {
       console.error("[TrainingConfig] Failed to load training run parameters:", err);
       console.error("[TrainingConfig] Error details:", err.response?.data);
@@ -363,11 +368,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
 
   useEffect(() => {
+    console.log("[TrainingConfig] Initial useEffect running...");
+    const startTime = performance.now();
     loadDatasets();
     loadModels();
     loadSamplers();
     loadScheduleTypes();
     loadPresets();
+    console.log(`[TrainingConfig] All load functions called in ${performance.now() - startTime}ms`);
   }, []);
 
   // Load training run parameters when in edit mode
@@ -418,8 +426,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [optimizer]);
 
   const loadDatasets = async () => {
+    const startTime = performance.now();
+    console.log("[TrainingConfig] loadDatasets starting...");
     try {
       const response = await listDatasets();
+      console.log(`[TrainingConfig] loadDatasets API took ${performance.now() - startTime}ms`);
       setDatasets(response.datasets);
       if (response.datasets.length > 0) {
         const firstDatasetId = response.datasets[0].id;
@@ -432,8 +443,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   };
 
   const loadModels = async () => {
+    const startTime = performance.now();
+    console.log("[TrainingConfig] loadModels starting...");
     try {
       const response = await getModels();
+      console.log(`[TrainingConfig] loadModels API took ${performance.now() - startTime}ms`);
       const models = response.models || [];
       setAvailableModels(models);
       if (models.length > 0) {

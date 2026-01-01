@@ -276,6 +276,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Save & Sample intervals
       if (params.save_every !== undefined) setSaveEvery(params.save_every);
       if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
+      if (params.resume_from_checkpoint !== undefined) setResumeFromCheckpoint(params.resume_from_checkpoint);
 
       // Component-specific training
       if (params.train_unet !== undefined) setTrainUnet(params.train_unet);

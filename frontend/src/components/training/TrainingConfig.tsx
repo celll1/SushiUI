@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -668,14 +668,24 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     });
 
     try {
-      const newRun = await createTrainingRun(requestData);
-      console.log("[TrainingConfig] Training run created:", newRun);
-      onRunCreated(newRun);
+      if (editRunId) {
+        // Update existing run
+        const updatedRun = await updateTrainingRun(editRunId, requestData);
+        console.log("[TrainingConfig] Training run updated:", updatedRun);
+        if (onRunUpdated) {
+          onRunUpdated(updatedRun);
+        }
+      } else {
+        // Create new run
+        const newRun = await createTrainingRun(requestData);
+        console.log("[TrainingConfig] Training run created:", newRun);
+        onRunCreated(newRun);
+      }
     } catch (err: any) {
       console.error("[TrainingConfig] Error details:", err);
       console.error("[TrainingConfig] Error response:", err.response);
       console.error("[TrainingConfig] Error data:", err.response?.data);
-      const errorMessage = err.response?.data?.detail || err.response?.data?.message || err.message || "Failed to create training run";
+      const errorMessage = err.response?.data?.detail || err.response?.data?.message || err.message || (editRunId ? "Failed to update training run" : "Failed to create training run");
       setError(errorMessage);
     } finally {
       setLoading(false);
@@ -685,7 +695,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   return (
     <div className="h-full overflow-y-auto">
       <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
-        <h2 className="text-lg font-semibold">New Training Run</h2>
+        <h2 className="text-lg font-semibold">{editRunId ? "Edit Training Run" : "New Training Run"}</h2>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -2264,7 +2274,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading}
           >
-            {loading ? "Creating..." : "Create Training Run"}
+            {loading ? (editRunId ? "Updating..." : "Creating...") : (editRunId ? "Update Training Run" : "Create Training Run")}
           </button>
         </div>
       </form>

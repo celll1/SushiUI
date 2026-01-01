@@ -1394,6 +1394,11 @@ export const getTrainingRunParams = async (id: number): Promise<TrainingRunCreat
   return response.data;
 };
 
+export const updateTrainingRun = async (id: number, request: TrainingRunCreateRequest): Promise<TrainingRun> => {
+  const response = await api.put(`/training/runs/${id}`, request);
+  return response.data;
+};
+
 export const deleteTrainingRun = async (id: number): Promise<void> => {
   await api.delete(`/training/runs/${id}`);
 };

@@ -1427,6 +1427,11 @@ export const updateTrainingConfig = async (id: number, configYaml: string): Prom
   return response.data;
 };
 
+export const reloadTrainingConfig = async (id: number): Promise<{ message: string; run: TrainingRun }> => {
+  const response = await api.post(`/training/runs/${id}/config/reload`);
+  return response.data;
+};
+
 export const getTrainingStatus = async (id: number): Promise<TrainingStatus> => {
   const response = await api.get(`/training/runs/${id}/status`);
   return response.data;

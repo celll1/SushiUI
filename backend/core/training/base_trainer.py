@@ -2737,6 +2737,7 @@ class BaseTrainer(ABC):
         self,
         datasets: List[Any],
         num_epochs: int = 10,
+        total_steps: Optional[int] = None,  # If specified, overrides num_epochs
         batch_size: int = 1,
         save_every_n_steps: int = 500,
         sample_every_n_steps: int = 500,
@@ -2858,22 +2859,33 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Gradient accumulation steps: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Effective gradient accumulation (with MNT): {effective_gradient_accumulation}")
 
-        # Calculate total steps (MNT multiplies steps)
+        # Calculate total steps and epochs
         total_items = sum(len(dataset.items) for dataset in datasets)
         batches_per_epoch = (total_items + batch_size - 1) // batch_size
         steps_per_epoch = batches_per_epoch * multi_noise_timesteps  # MNT multiplier
-        total_steps = steps_per_epoch * num_epochs
+
+        # If total_steps is specified, calculate num_epochs; otherwise use num_epochs
+        if total_steps is not None:
+            # Step-based training: calculate epochs needed
+            num_epochs = (total_steps + steps_per_epoch - 1) // steps_per_epoch
+            actual_total_steps = total_steps
+            print(f"{self.log_prefix} Training mode: Step-based ({total_steps} steps)")
+            print(f"{self.log_prefix} Calculated epochs needed: {num_epochs}")
+        else:
+            # Epoch-based training: calculate total steps
+            actual_total_steps = steps_per_epoch * num_epochs
+            print(f"{self.log_prefix} Training mode: Epoch-based ({num_epochs} epochs)")
 
         print(f"{self.log_prefix} Total items: {total_items}")
         print(f"{self.log_prefix} Batches per epoch: {batches_per_epoch}")
         print(f"{self.log_prefix} Steps per epoch (with MNT): {steps_per_epoch}")
-        print(f"{self.log_prefix} Total training steps: {total_steps}")
+        print(f"{self.log_prefix} Total training steps: {actual_total_steps}")
 
         # Setup optimizer
         self.setup_optimizer(
             optimizer_type=optimizer_type,
             lr_scheduler_type=lr_scheduler_type,
-            total_steps=total_steps,
+            total_steps=actual_total_steps,
         )
 
         # Apply bucketing to datasets
@@ -3657,10 +3669,15 @@ class BaseTrainer(ABC):
                             progress_callback(
                                 phase="training",
                                 step=global_step,
-                                total=total_steps,
+                                total=actual_total_steps,
                                 epoch=epoch,
                                 loss=loss_value,
                             )
+
+                        # Check if total_steps reached (step-based training)
+                        if total_steps is not None and global_step >= total_steps:
+                            print(f"\n{self.log_prefix} Reached target steps ({total_steps}), stopping training")
+                            return  # Exit training loop
                     else:
                         # Gradient accumulation: Free loss tensor but don't do optimizer step yet
                         del loss, recon_loss

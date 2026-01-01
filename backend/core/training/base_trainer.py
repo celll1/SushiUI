@@ -1783,15 +1783,15 @@ class BaseTrainer(ABC):
         # The training loop will call .backward() on the loss tensor.
         recon_loss_value = recon_loss.item()
 
-        # Save model_pred for trajectory mode before deletion
-        model_pred_return = None
-        if return_model_pred:
-            # Clone and detach to create independent copy (not just reference)
-            model_pred_return = model_pred.clone().detach()
+        # Return model_pred for trajectory mode (caller must delete it after use)
+        model_pred_return = model_pred if return_model_pred else None
 
         # Free intermediate tensors explicitly to reduce VRAM usage
         # But keep 'loss' tensor for backward pass
-        del noise, noisy_latents, noisy_latents_4d, model_pred, target
+        # NOTE: If return_model_pred=True, we keep model_pred alive (caller will delete it)
+        if not return_model_pred:
+            del model_pred
+        del noise, noisy_latents, noisy_latents_4d, target
         del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
         return loss, recon_loss_value, model_pred_return
@@ -3633,6 +3633,25 @@ class BaseTrainer(ABC):
                                 profile_vram=self.debug_vram,
                             )
 
+                        # Trajectory stepping BEFORE backward (model_pred still has computation graph)
+                        # This must be done before backward() to use model_pred while it's still alive
+                        trajectory_latents_for_next_iter = None
+                        if multi_noise_mode == "trajectory" and model_pred_for_trajectory is not None:
+                            # Use model_pred to compute trajectory stepping
+                            # Flow Matching: x_0_pred = x_t + (1-t) * v_pred
+                            t = timesteps[:, None, None, None]
+                            predicted_clean = current_latents + (1.0 - t) * model_pred_for_trajectory
+
+                            # Detach and store for next iteration (no computation graph needed)
+                            trajectory_latents_for_next_iter = predicted_clean.detach()
+
+                            # Free computation tensors
+                            del t, predicted_clean
+
+                        # Free model_pred now (before backward, as it's no longer needed)
+                        if model_pred_for_trajectory is not None:
+                            del model_pred_for_trajectory
+
                         # Backward pass
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
                         loss.backward()
@@ -3641,23 +3660,9 @@ class BaseTrainer(ABC):
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
                             self.layer_offload_conductor.clear_activations()
 
-                        # Trajectory stepping for next MNT iteration (Mode 3 only)
-                        if multi_noise_mode == "trajectory" and model_pred_for_trajectory is not None:
-                            # Use already computed model_pred to step trajectory
-                            # Flow Matching: x_0_pred = x_t + (1-t) * v_pred
-                            t = timesteps[:, None, None, None]
-                            predicted_clean = current_latents + (1.0 - t) * model_pred_for_trajectory
-
-                            # Store for next iteration (will be blended with ideal trajectory)
-                            # NOTE: Do NOT delete predicted_clean here - it's referenced by current_trajectory_latents
-                            current_trajectory_latents = predicted_clean
-
-                            # Free only the t tensor (predicted_clean is kept as current_trajectory_latents)
-                            del t
-
-                        # Free MNT iteration tensors
-                        if model_pred_for_trajectory is not None:
-                            del model_pred_for_trajectory
+                        # Store trajectory latents for next iteration (after backward to avoid keeping in computation graph)
+                        if trajectory_latents_for_next_iter is not None:
+                            current_trajectory_latents = trajectory_latents_for_next_iter
 
                         # Free batch tensors immediately after backward to prevent VRAM accumulation
                         del latents, text_embeddings

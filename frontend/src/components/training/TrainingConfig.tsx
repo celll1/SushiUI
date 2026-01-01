@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
 
@@ -232,9 +232,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Load training run parameters when in edit mode
   useEffect(() => {
     if (editRunId) {
+      console.log(`[TrainingConfig] useEffect triggered for editRunId=${editRunId}`);
       loadTrainingRunParams(editRunId);
     }
-  }, [editRunId]);
+  }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes
   useEffect(() => {
@@ -303,7 +304,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   };
 
   // Load training run parameters for edit mode
-  const loadTrainingRunParams = async (runId: number) => {
+  const loadTrainingRunParams = useCallback(async (runId: number) => {
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
     try {
       const params = await getTrainingRunParams(runId);
@@ -403,10 +404,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
       console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);
-    } catch (err) {
+    } catch (err: any) {
       console.error("[TrainingConfig] Failed to load training run parameters:", err);
+      console.error("[TrainingConfig] Error details:", err.response?.data);
+      console.error("[TrainingConfig] Error message:", err.message);
+      setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
     }
-  };
+  }, []);
 
   // Helper function: Load samplers from API
   const loadSamplers = async () => {

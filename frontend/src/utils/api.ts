@@ -1355,6 +1355,8 @@ export interface TrainingRunCreateRequest {
   use_pinned_memory?: boolean;
   num_optimizer_groups?: number;
   multi_noise_timesteps?: number;
+  multi_noise_mode?: string;
+  trajectory_blend_alpha?: number;
   timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;

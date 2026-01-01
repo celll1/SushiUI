@@ -175,6 +175,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
   // Multi Noise-Timestep (MNT) settings
   const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
+  const [multiNoiseMode, setMultiNoiseMode] = useState<string>("independent");
+  const [trajectoryBlendAlpha, setTrajectoryBlendAlpha] = useState<number>(0.7);
   const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
   const [timestepMin, setTimestepMin] = useState<number>(0.0);
   const [timestepMax, setTimestepMax] = useState<number>(1.0);
@@ -642,6 +644,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       use_pinned_memory: usePinnedMemory,
       num_optimizer_groups: numOptimizerGroups,
       multi_noise_timesteps: multiNoiseTimesteps,
+      multi_noise_mode: multiNoiseMode,
+      trajectory_blend_alpha: trajectoryBlendAlpha,
       timestep_sampling: {
         distribution: timestepDistribution,
         min_timestep: timestepMin,
@@ -1002,6 +1006,48 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 Process each batch with multiple different timesteps (default: 1)
               </p>
             </div>
+
+            {/* MNT Mode */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                MNT Mode
+              </label>
+              <select
+                value={multiNoiseMode}
+                onChange={(e) => setMultiNoiseMode(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="independent">Independent (Different noise)</option>
+                <option value="shared">Shared (Same noise)</option>
+                <option value="trajectory">Trajectory (Sequential learning)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                {multiNoiseMode === "independent" && "Each MNT iteration uses different noise (default)"}
+                {multiNoiseMode === "shared" && "All MNT iterations use same noise (trajectory consistency)"}
+                {multiNoiseMode === "trajectory" && "Sequential trajectory learning with blending"}
+              </p>
+            </div>
+
+            {/* Trajectory Blend Alpha (only for trajectory mode) */}
+            {multiNoiseMode === "trajectory" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Trajectory Blend Alpha
+                </label>
+                <input
+                  type="number"
+                  value={trajectoryBlendAlpha}
+                  onChange={(e) => setTrajectoryBlendAlpha(parseFloat(e.target.value))}
+                  min="0.0"
+                  max="1.0"
+                  step="0.1"
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Blending coefficient: 0.0=ideal only, 1.0=stepped only (default: 0.7)
+                </p>
+              </div>
+            )}
 
             {/* Timestep Sampling */}
             <div className="col-span-2 border-t border-gray-700 pt-4">

@@ -1406,7 +1406,6 @@ class BaseTrainer(ABC):
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
         timesteps: Optional[torch.Tensor] = None,
-        noise: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
@@ -1429,9 +1428,8 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step] Start")
 
-        # Sample noise (or use provided noise for MNT shared/trajectory modes)
-        if noise is None:
-            noise = torch.randn_like(latents)
+        # Sample noise
+        noise = torch.randn_like(latents)
 
         if profile_vram:
             print_vram_usage("[train_step] After noise generation")
@@ -1621,12 +1619,10 @@ class BaseTrainer(ABC):
         prompt_embeds: torch.Tensor,
         attention_mask: torch.Tensor,
         timesteps: Optional[torch.Tensor] = None,
-        noise: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
-        return_model_pred: bool = False,
-    ) -> Tuple[torch.Tensor, float, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, float]:
         """
         Perform single training step (Z-Image).
 
@@ -1652,9 +1648,7 @@ class BaseTrainer(ABC):
             timesteps = torch.rand(batch_size, device=self.device)
 
         # Flow Matching: Sample noise (standard normal distribution)
-        # Use provided noise if available (for MNT shared/trajectory modes)
-        if noise is None:
-            noise = torch.randn_like(latents)
+        noise = torch.randn_like(latents)
 
         # Flow Matching: Interpolate between noise and data
         # x_t = (1 - t) * noise + t * data
@@ -1783,18 +1777,12 @@ class BaseTrainer(ABC):
         # The training loop will call .backward() on the loss tensor.
         recon_loss_value = recon_loss.item()
 
-        # Return model_pred for trajectory mode (caller must delete it after use)
-        model_pred_return = model_pred if return_model_pred else None
-
         # Free intermediate tensors explicitly to reduce VRAM usage
         # But keep 'loss' tensor for backward pass
-        # NOTE: If return_model_pred=True, we keep model_pred alive (caller will delete it)
-        if not return_model_pred:
-            del model_pred
-        del noise, noisy_latents, noisy_latents_4d, target
+        del noise, noisy_latents, noisy_latents_4d, model_pred, target
         del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
-        return loss, recon_loss_value, model_pred_return
+        return loss, recon_loss_value
 
     # ============================================================
     # Sample Generation (to be continued in next section)
@@ -2767,8 +2755,6 @@ class BaseTrainer(ABC):
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
         multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",
-        trajectory_blend_alpha: float = 0.7,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
@@ -2800,15 +2786,6 @@ class BaseTrainer(ABC):
             multi_resolution_mode: Multi-resolution mode ("max", "random")
             gradient_accumulation_steps: Gradient accumulation steps
             max_grad_norm: Max gradient norm for clipping
-            multi_noise_timesteps: Number of noise-timestep iterations per batch
-            multi_noise_mode: MNT mode ("independent", "shared", "trajectory")
-                - "independent": Each MNT iteration uses different noise (default)
-                - "shared": All MNT iterations use same noise (trajectory consistency)
-                - "trajectory": Sequential trajectory learning with blending
-            trajectory_blend_alpha: Blending coefficient for trajectory mode (0.0-1.0)
-                - 0.0: Use ideal trajectory only (equivalent to "shared" mode)
-                - 1.0: Use stepped trajectory only (full drift)
-                - 0.5-0.8: Recommended (balance between drift and stability)
             debug_latents: Enable debug latent saving
             debug_latents_every: Save debug latents every N steps
             progress_callback: Progress callback function
@@ -2855,12 +2832,6 @@ class BaseTrainer(ABC):
         if multi_noise_timesteps < 1:
             raise ValueError(f"multi_noise_timesteps must be >= 1, got {multi_noise_timesteps}")
 
-        if multi_noise_mode not in ["independent", "shared", "trajectory"]:
-            raise ValueError(f"multi_noise_mode must be 'independent', 'shared', or 'trajectory', got '{multi_noise_mode}'")
-
-        if trajectory_blend_alpha < 0.0 or trajectory_blend_alpha > 1.0:
-            raise ValueError(f"trajectory_blend_alpha must be in [0.0, 1.0], got {trajectory_blend_alpha}")
-
         # Setup timestep sampler
         from .timestep_sampler import TimestepSampler
 
@@ -2876,15 +2847,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Timestep sampler: {timestep_sampler.__class__.__name__}")
         print(f"{self.log_prefix} Timestep range: [{timestep_sampler.min_timestep:.3f}, {timestep_sampler.max_timestep:.3f}]")
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
-        print(f"{self.log_prefix} MNT Mode: {multi_noise_mode}")
 
         if multi_noise_timesteps > 1:
-            if multi_noise_mode == "independent":
-                print(f"{self.log_prefix} MNT enabled: Each batch processed {multi_noise_timesteps} times with different noise")
-            elif multi_noise_mode == "shared":
-                print(f"{self.log_prefix} MNT enabled: Each batch processed {multi_noise_timesteps} times with shared noise (trajectory consistency)")
-            elif multi_noise_mode == "trajectory":
-                print(f"{self.log_prefix} MNT enabled: Sequential trajectory learning with blend_alpha={trajectory_blend_alpha}")
+            print(f"{self.log_prefix} MNT enabled: Each batch will be processed {multi_noise_timesteps} times with different timesteps")
 
         # Calculate effective gradient accumulation (MNT acts as additional accumulation)
         effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
@@ -3412,11 +3377,6 @@ class BaseTrainer(ABC):
                     swap_buffer_idx_batch_start = swap_buffer_idx
                     latent_swap_buffer_idx_batch_start = latent_swap_buffer_idx
 
-                    # Generate shared noise for this batch (used by "shared" and "trajectory" modes)
-                    # Will be initialized after latents are loaded
-                    shared_noise = None
-                    current_trajectory_latents = None  # For "trajectory" mode
-
                     for mnt_idx in range(multi_noise_timesteps):
                         # Restore swap buffer indices for each MNT iteration (reuse same embeddings/latents)
                         swap_buffer_idx = swap_buffer_idx_batch_start
@@ -3542,51 +3502,9 @@ class BaseTrainer(ABC):
                         latents = torch.cat(latents_list, dim=0)
                         text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
 
-                        # Initialize shared noise on first MNT iteration
-                        if mnt_idx == 0 and multi_noise_mode in ["shared", "trajectory"]:
-                            shared_noise = torch.randn_like(latents)
-                            if multi_noise_mode == "trajectory":
-                                # For trajectory mode, start from t=min_timestep
-                                current_trajectory_latents = latents.clone()
-
                         # Sample timesteps for this MNT iteration
                         batch_size = latents.shape[0]
                         timesteps = timestep_sampler.sample(batch_size, self.device)
-
-                        # Sort timesteps for trajectory mode (sequential t=0.1 → 0.3 → 0.5 → 0.7)
-                        if multi_noise_mode == "trajectory" and mnt_idx > 0:
-                            # Use sorted timesteps for trajectory learning
-                            # Note: timestep_sampler already provides sorted timesteps if configured
-                            pass  # timesteps are already sorted by sampler
-
-                        # Prepare noise and latents for this MNT iteration
-                        current_noise = None
-                        current_latents = latents  # Default: use original latents
-
-                        if multi_noise_mode == "independent":
-                            # Mode 1: Different noise for each MNT iteration (default, current behavior)
-                            current_noise = None  # Will be generated inside train_step
-                        elif multi_noise_mode == "shared":
-                            # Mode 2: Same noise for all MNT iterations
-                            current_noise = shared_noise
-                        elif multi_noise_mode == "trajectory":
-                            # Mode 3: Sequential trajectory learning with blending
-                            current_noise = shared_noise
-
-                            if mnt_idx > 0:
-                                # Use trajectory latents from previous iteration
-                                # Blending: alpha * stepped + (1-alpha) * ideal
-                                # ideal_latents = (1-t) * noise + t * latents
-                                t_blend = timesteps[:, None, None, None]  # [B, 1, 1, 1]
-                                ideal_latents = (1.0 - t_blend) * shared_noise + t_blend * latents
-
-                                # Blend stepped trajectory with ideal trajectory
-                                current_latents = trajectory_blend_alpha * current_trajectory_latents + \
-                                                 (1.0 - trajectory_blend_alpha) * ideal_latents
-
-                                # Free blending computation tensors
-                                del t_blend, ideal_latents
-                            # else: mnt_idx == 0, use original latents
 
                         # Determine if we should save debug latents (only on first MNT iteration)
                         debug_save_path = None
@@ -3600,22 +3518,17 @@ class BaseTrainer(ABC):
                             batch_captions = [item.get("caption", "") for item, dataset in batch]
 
                         # Training step (architecture-specific calling convention)
-                        model_pred_for_trajectory = None
                         if self.is_zimage:
                             # auxiliary_data_list contains attention_mask for Z-Image
                             attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
-                            # Request model_pred return for trajectory mode
-                            need_model_pred = (multi_noise_mode == "trajectory" and mnt_idx < multi_noise_timesteps - 1)
-                            loss, recon_loss, model_pred_for_trajectory = self.train_step_zimage(
-                                latents=current_latents,  # Use trajectory-adjusted latents
+                            loss, recon_loss = self.train_step_zimage(
+                                latents=latents,
                                 prompt_embeds=text_embeddings,
                                 attention_mask=attention_mask,
                                 timesteps=timesteps,  # Pass sampled timesteps
-                                noise=current_noise,  # Pass noise for MNT modes
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions,
                                 profile_vram=self.debug_vram,
-                                return_model_pred=need_model_pred,
                             )
                         else:
                             # auxiliary_data_list contains pooled_embeddings for SDXL, None for SD1.5
@@ -3623,34 +3536,14 @@ class BaseTrainer(ABC):
                             if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                                 pooled_embeddings = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                             loss, recon_loss = self.train_step(
-                                latents=current_latents,  # Use trajectory-adjusted latents
+                                latents=latents,
                                 text_embeddings=text_embeddings,
                                 pooled_embeddings=pooled_embeddings,
                                 timesteps=timesteps,  # Pass sampled timesteps
-                                noise=current_noise,  # Pass noise for MNT modes
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions,
                                 profile_vram=self.debug_vram,
                             )
-
-                        # Trajectory stepping BEFORE backward (model_pred still has computation graph)
-                        # This must be done before backward() to use model_pred while it's still alive
-                        trajectory_latents_for_next_iter = None
-                        if multi_noise_mode == "trajectory" and model_pred_for_trajectory is not None:
-                            # Use model_pred to compute trajectory stepping
-                            # Flow Matching: x_0_pred = x_t + (1-t) * v_pred
-                            t = timesteps[:, None, None, None]
-                            predicted_clean = current_latents + (1.0 - t) * model_pred_for_trajectory
-
-                            # Detach and store for next iteration (no computation graph needed)
-                            trajectory_latents_for_next_iter = predicted_clean.detach()
-
-                            # Free computation tensors
-                            del t, predicted_clean
-
-                        # Free model_pred now (before backward, as it's no longer needed)
-                        if model_pred_for_trajectory is not None:
-                            del model_pred_for_trajectory
 
                         # Backward pass
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
@@ -3659,10 +3552,6 @@ class BaseTrainer(ABC):
                         # Clear saved activations immediately after backward to prevent VRAM leaks
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
                             self.layer_offload_conductor.clear_activations()
-
-                        # Store trajectory latents for next iteration (after backward to avoid keeping in computation graph)
-                        if trajectory_latents_for_next_iter is not None:
-                            current_trajectory_latents = trajectory_latents_for_next_iter
 
                         # Free batch tensors immediately after backward to prevent VRAM accumulation
                         del latents, text_embeddings
@@ -3674,12 +3563,6 @@ class BaseTrainer(ABC):
 
                         # Increment global step for each MNT iteration
                         global_step += 1
-
-                    # Free MNT batch-level tensors after all iterations complete
-                    if shared_noise is not None:
-                        del shared_noise
-                    if current_trajectory_latents is not None:
-                        del current_trajectory_latents
 
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps

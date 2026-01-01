@@ -310,8 +310,9 @@ class BaseTrainer(ABC):
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
 
-        # SNR Regularization (to prevent overbaking)
+        # Regularization losses (to prevent overbaking)
         self.snr_regularization_loss = None
+        self.energy_regularization_loss = None
         self.config = {}  # Will be set by subclass for factory function access
 
         # Legacy dtype for compatibility
@@ -1699,17 +1700,33 @@ class BaseTrainer(ABC):
         # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
         mse_loss = loss_per_sample.mean()
 
-        # Add SNR or Energy regularization if enabled
+        # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
         regularization_loss = torch.tensor(0.0, device=self.device)
-        if self.snr_regularization_loss is not None:
+
+        # Compute predicted latent once (used by both regularization losses)
+        predicted_latent_for_reg = None
+        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
             # Compute predicted latent from velocity: x_0 = x_t + (1-t) * v_pred
             # Keep gradients to allow regularization loss to affect model_pred
             predicted_latent_for_reg = noisy_latents + (1.0 - t) * model_pred
-            regularization_loss = self.snr_regularization_loss(
+
+        # SNR regularization (周波数領域の過剰デノイズ抑制)
+        if self.snr_regularization_loss is not None:
+            snr_reg_loss = self.snr_regularization_loss(
                 predicted_latent_for_reg,
                 latents,
                 timesteps
             )
+            regularization_loss = regularization_loss + snr_reg_loss
+
+        # Energy regularization (空間領域のエネルギー保存)
+        if self.energy_regularization_loss is not None:
+            energy_reg_loss = self.energy_regularization_loss(
+                predicted_latent_for_reg,
+                latents,
+                timesteps
+            )
+            regularization_loss = regularization_loss + energy_reg_loss
 
         # Total loss
         loss = mse_loss + regularization_loss

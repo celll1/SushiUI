@@ -4223,16 +4223,23 @@ async def get_training_run_params(
     datasets_db: Session = Depends(get_datasets_db)
 ):
     """Get training run parameters in TrainingRunCreateRequest format for editing"""
+    import time
+    start_time = time.time()
+    print(f"[get_training_run_params] Starting for run_id={run_id}")
+
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
+    print(f"[get_training_run_params] DB query took {time.time() - start_time:.3f}s")
 
     # Parse YAML config to extract parameters
     import yaml
+    yaml_start = time.time()
     try:
         config = yaml.safe_load(run.config_yaml)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse config YAML: {str(e)}")
+    print(f"[get_training_run_params] YAML parsing took {time.time() - yaml_start:.3f}s")
 
     # Extract job config (first job in config)
     job = config.get("config", {}).get("job", config.get("job", "lora"))
@@ -4240,7 +4247,9 @@ async def get_training_run_params(
     process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
 
     # Build dataset_configs from YAML
+    dataset_start = time.time()
     dataset_configs = []
+    cache_latents_to_disk = False  # Default
     for ds_config in datasets_config:
         # Try to find dataset by path
         dataset_path = ds_config.get("folder_path", ds_config.get("path", ""))
@@ -4251,11 +4260,16 @@ async def get_training_run_params(
                 "caption_types": ds_config.get("caption_types", []),
                 "filters": {}
             })
+        # Extract cache_latents_to_disk from first dataset
+        if ds_config.get("cache_latents_to_disk") is not None:
+            cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
+    print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s")
 
     # Extract training parameters
-    training_params = process_config.get("training", {})
+    training_params = process_config.get("train", {})
     network_config = process_config.get("network", {})
     sample_config = process_config.get("sample", {})
+    save_config = process_config.get("save", {})
 
     # Build response in TrainingRunCreateRequest format
     params = {
@@ -4282,14 +4296,14 @@ async def get_training_run_params(
         "optimizer_schedule_free_weight_lr_power": training_params.get("optimizer_schedule_free_weight_lr_power", 2.0),
         "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
         "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
-        "save_every": training_params.get("save_every", 100),
-        "save_every_unit": training_params.get("save_every_unit", "steps"),
-        "sample_every": sample_config.get("sample_every", 100),
+        "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
+        "save_every_unit": save_config.get("save_every_unit", training_params.get("save_every_unit", "steps")),
+        "sample_every": sample_config.get("sample_every", training_params.get("sample_every", 100)),
         "sample_prompts": sample_config.get("prompts", []),
         "sample_width": sample_config.get("width", 1024),
         "sample_height": sample_config.get("height", 1024),
-        "sample_steps": sample_config.get("steps", 28),
-        "sample_cfg_scale": sample_config.get("cfg_scale", 7.0),
+        "sample_steps": sample_config.get("sample_steps", sample_config.get("steps", 28)),
+        "sample_cfg_scale": sample_config.get("guidance_scale", sample_config.get("cfg_scale", 7.0)),
         "sample_sampler": sample_config.get("sampler", "euler"),
         "sample_schedule_type": sample_config.get("schedule_type", "sgm_uniform"),
         "sample_seed": sample_config.get("seed", -1),
@@ -4299,7 +4313,7 @@ async def get_training_run_params(
         "base_resolutions": training_params.get("base_resolutions"),
         "bucket_strategy": training_params.get("bucket_strategy", "resize"),
         "multi_resolution_mode": training_params.get("multi_resolution_mode", "max"),
-        "cache_latents_to_disk": training_params.get("cache_latents_to_disk", False),
+        "cache_latents_to_disk": cache_latents_to_disk,
         "train_unet": training_params.get("train_unet", True),
         "train_text_encoder": training_params.get("train_text_encoder", False),
         "unet_lr": training_params.get("unet_lr"),
@@ -4332,13 +4346,9 @@ async def get_training_run_params(
         "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
         "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
         "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
-        "use_sla_attention": training_params.get("use_sla_attention", False),
-        "sla_topk": training_params.get("sla_topk", 0.2),
-        "sla_feature_map": training_params.get("sla_feature_map", "softmax"),
-        "sla_block_q": training_params.get("sla_block_q", 64),
-        "sla_block_k": training_params.get("sla_block_k", 64),
     }
 
+    print(f"[get_training_run_params] Total time: {time.time() - start_time:.3f}s")
     return params
 
 @router.put("/training/runs/{run_id}")
@@ -4454,11 +4464,6 @@ async def update_training_run(
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=None,
                 caption_processing=primary_dataset.caption_processing if primary_dataset else None,
-                use_sla_attention=request.use_sla_attention,
-                sla_topk=request.sla_topk,
-                sla_feature_map=request.sla_feature_map,
-                sla_block_q=request.sla_block_q,
-                sla_block_k=request.sla_block_k,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4505,11 +4510,6 @@ async def update_training_run(
                 vae_dtype=request.vae_dtype,
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
-                use_sla_attention=request.use_sla_attention,
-                sla_topk=request.sla_topk,
-                sla_feature_map=request.sla_feature_map,
-                sla_block_q=request.sla_block_q,
-                sla_block_k=request.sla_block_k,
                 min_snr_gamma=request.min_snr_gamma,
                 blocks_to_swap=request.blocks_to_swap,
                 use_pinned_memory=request.use_pinned_memory,

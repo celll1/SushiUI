@@ -80,8 +80,11 @@ function TrainingPageContent() {
   };
 
   const handleEditRun = (runId: number) => {
+    console.log(`[TrainingPage] handleEditRun called for runId=${runId}`);
+    const startTime = performance.now();
     setEditRunId(runId);
     setShowConfig(true);
+    console.log(`[TrainingPage] State updated in ${performance.now() - startTime}ms`);
   };
 
   const handleRunCreated = (newRun: TrainingRun) => {

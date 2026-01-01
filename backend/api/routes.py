@@ -4243,8 +4243,8 @@ async def get_training_run_params(
 
     # Extract job config (first job in config)
     job = config.get("config", {}).get("job", config.get("job", "lora"))
-    datasets_config = config.get("config", {}).get("datasets", config.get("datasets", []))
     process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
+    datasets_config = process_config.get("datasets", [])
 
     # Build dataset_configs from YAML
     dataset_start = time.time()
@@ -4253,17 +4253,21 @@ async def get_training_run_params(
     for ds_config in datasets_config:
         # Try to find dataset by path
         dataset_path = ds_config.get("folder_path", ds_config.get("path", ""))
+        print(f"[get_training_run_params] Looking for dataset with path: {dataset_path}")
         dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
         if dataset:
+            print(f"[get_training_run_params] Found dataset: id={dataset.id}, name={dataset.name}")
             dataset_configs.append({
                 "dataset_id": dataset.id,
                 "caption_types": ds_config.get("caption_types", []),
                 "filters": {}
             })
+        else:
+            print(f"[get_training_run_params] Dataset not found in database for path: {dataset_path}")
         # Extract cache_latents_to_disk from first dataset
         if ds_config.get("cache_latents_to_disk") is not None:
             cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
-    print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s")
+    print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s, found {len(dataset_configs)} datasets")
 
     # Extract training parameters
     training_params = process_config.get("train", {})
@@ -4370,9 +4374,17 @@ async def update_training_run(
 
     try:
         # Get dataset configs
+        dataset_configs = []
         dataset_configs_for_yaml = []
         if request.dataset_configs:
             for config in request.dataset_configs:
+                # Store dict format for total_steps calculation
+                dataset_configs.append({
+                    "dataset_id": config.dataset_id,
+                    "caption_types": config.caption_types,
+                    "filters": {}
+                })
+                # Build YAML format
                 dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
                 if dataset:
                     yaml_config = {
@@ -4542,12 +4554,23 @@ async def update_training_run(
         # Update config_yaml and base_model_path in database
         run.config_yaml = config_yaml
         run.base_model_path = request.base_model_path
+
+        # Calculate total_steps for database (required by NOT NULL constraint)
         if request.total_steps:
             run.total_steps = request.total_steps
-        elif request.epochs and primary_dataset:
-            # Calculate total_steps from epochs
-            from core.training.training_utils import calculate_total_steps
-            run.total_steps = calculate_total_steps(primary_dataset.path, request.epochs, request.batch_size)
+            run.epochs = None
+        elif request.epochs:
+            # Calculate total_steps from epochs (same logic as create)
+            total_dataset_size = 0
+            for config in dataset_configs:
+                query = datasets_db.query(DatasetItem).filter(DatasetItem.dataset_id == config["dataset_id"])
+                dataset_size = query.count()
+                total_dataset_size += dataset_size
+
+            if total_dataset_size == 0:
+                raise HTTPException(status_code=400, detail="No items in configured datasets")
+            run.total_steps = (total_dataset_size // request.batch_size) * request.epochs
+            run.epochs = request.epochs
 
         # Save config file
         config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")

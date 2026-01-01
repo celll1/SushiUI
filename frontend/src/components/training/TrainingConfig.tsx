@@ -104,6 +104,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [optimizerBeta2, setOptimizerBeta2] = useState<string>("0.999");
   const [optimizerEpsilon, setOptimizerEpsilon] = useState<string>("1e-8");
   const [optimizerWeightDecay, setOptimizerWeightDecay] = useState<string>("0.01");
+  const [optimizerScheduleFree, setOptimizerScheduleFree] = useState(false);
+  const [optimizerScheduleFreeR, setOptimizerScheduleFreeR] = useState<string>("0.0");
+  const [optimizerScheduleFreeWeightLrPower, setOptimizerScheduleFreeWeightLrPower] = useState<string>("2.0");
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
@@ -384,6 +387,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       optimizerBeta2,
       optimizerEpsilon,
       optimizerWeightDecay,
+      optimizerScheduleFree,
+      optimizerScheduleFreeR,
+      optimizerScheduleFreeWeightLrPower,
       loraRank,
       loraAlpha,
       saveEvery,
@@ -476,6 +482,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.optimizerBeta2 !== undefined) setOptimizerBeta2(config.optimizerBeta2);
     if (config.optimizerEpsilon !== undefined) setOptimizerEpsilon(config.optimizerEpsilon);
     if (config.optimizerWeightDecay !== undefined) setOptimizerWeightDecay(config.optimizerWeightDecay);
+    if (config.optimizerScheduleFree !== undefined) setOptimizerScheduleFree(config.optimizerScheduleFree);
+    if (config.optimizerScheduleFreeR !== undefined) setOptimizerScheduleFreeR(config.optimizerScheduleFreeR);
+    if (config.optimizerScheduleFreeWeightLrPower !== undefined) setOptimizerScheduleFreeWeightLrPower(config.optimizerScheduleFreeWeightLrPower);
     if (config.loraRank !== undefined) setLoraRank(config.loraRank);
     if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
     if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
@@ -587,6 +596,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
       optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
       optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
+      optimizer_schedule_free: optimizerScheduleFree,
+      optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
+      optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
       save_every: saveEvery,
@@ -1282,6 +1294,52 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                     <label htmlFor="optimizer-cautious" className="text-xs text-gray-300 cursor-pointer">
                       Cautious (sign mask)
                     </label>
+                  </div>
+                )}
+
+                {/* schedule-free option (Ring Buffer optimizers only) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsCautious && (
+                  <div className="space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="optimizer-schedule-free"
+                        checked={optimizerScheduleFree}
+                        onChange={(e) => setOptimizerScheduleFree(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="optimizer-schedule-free" className="text-xs text-gray-300 cursor-pointer">
+                        Schedule-Free (learning rate scheduling)
+                      </label>
+                    </div>
+
+                    {optimizerScheduleFree && (
+                      <div className="ml-6 space-y-2 border-l-2 border-gray-600 pl-3">
+                        {/* Schedule-Free r */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">r (warmup parameter)</label>
+                          <input
+                            type="text"
+                            value={optimizerScheduleFreeR}
+                            onChange={(e) => setOptimizerScheduleFreeR(e.target.value)}
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Default: 0.0 (no warmup)</p>
+                        </div>
+
+                        {/* Schedule-Free weight_lr_power */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Weight LR Power</label>
+                          <input
+                            type="text"
+                            value={optimizerScheduleFreeWeightLrPower}
+                            onChange={(e) => setOptimizerScheduleFreeWeightLrPower(e.target.value)}
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Default: 2.0</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

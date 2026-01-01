@@ -3817,6 +3817,9 @@ class TrainingRunCreateRequest(BaseModel):
     optimizer_beta2: Optional[float] = None
     optimizer_epsilon: Optional[float] = None
     optimizer_weight_decay: Optional[float] = None
+    optimizer_schedule_free: bool = False  # Enable Schedule-Free optimizer (adamw8bit_ringbuffer, lion8bit_ringbuffer)
+    optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
+    optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -4010,6 +4013,9 @@ async def create_training_run(
                 optimizer_beta2=request.optimizer_beta2,
                 optimizer_epsilon=request.optimizer_epsilon,
                 optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 save_every=request.save_every,
@@ -4081,6 +4087,9 @@ async def create_training_run(
                 optimizer_beta2=request.optimizer_beta2,
                 optimizer_epsilon=request.optimizer_epsilon,
                 optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,

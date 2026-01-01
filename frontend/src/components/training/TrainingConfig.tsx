@@ -97,6 +97,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [batchSize, setBatchSize] = useState(4);
   const [learningRate, setLearningRate] = useState<string>("1e-5");
   const [lrScheduler, setLrScheduler] = useState("constant");
+  const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   const [optimizer, setOptimizer] = useState("adamw8bit");
 
   // Optimizer-specific options

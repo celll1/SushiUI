@@ -4006,6 +4006,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4064,6 +4065,7 @@ async def create_training_run(
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
@@ -4080,6 +4082,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4136,6 +4139,7 @@ async def create_training_run(
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
@@ -4390,6 +4394,7 @@ async def update_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4448,6 +4453,7 @@ async def update_training_run(
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=None,
                 caption_processing=primary_dataset.caption_processing if primary_dataset else None,
@@ -4469,6 +4475,7 @@ async def update_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4520,6 +4527,7 @@ async def update_training_run(
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=None,
                 caption_processing=primary_dataset.caption_processing if primary_dataset else None,

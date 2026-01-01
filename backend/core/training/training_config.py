@@ -24,6 +24,7 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-4,
         lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
         optimizer_is_paged: bool = False,
         optimizer_cautious: bool = False,
@@ -75,6 +76,7 @@ class TrainingConfigGenerator:
         sample_steps: int = 28,
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
+        sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = 42,
         # Resume settings
         resume_from_checkpoint: Optional[str] = None,
@@ -249,6 +251,7 @@ class TrainingConfigGenerator:
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "lr_scheduler": lr_scheduler,
+                            "lr_warmup_steps": lr_warmup_steps,
                             "ema_config": {"use_ema": True, "ema_decay": 0.99},
                             "dtype": training_dtype,  # Training/activation dtype
                             "weight_dtype": weight_dtype,  # Model weight dtype
@@ -292,6 +295,7 @@ class TrainingConfigGenerator:
                         },
                         "sample": {
                             "sampler": sample_sampler,
+                            "schedule_type": sample_schedule_type,
                             "sample_every": sample_every,
                             "width": sample_width,
                             "height": sample_height,
@@ -321,6 +325,7 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-6,
         lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
         optimizer_is_paged: bool = False,
         optimizer_cautious: bool = False,
@@ -370,6 +375,7 @@ class TrainingConfigGenerator:
         sample_steps: int = 28,
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
+        sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = -1,
         resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[dict] = None,
@@ -551,6 +557,7 @@ class TrainingConfigGenerator:
                         },
                         "sample": {
                             "sampler": sample_sampler,
+                            "schedule_type": sample_schedule_type,
                             "sample_every": sample_every,
                             "width": sample_width,
                             "height": sample_height,

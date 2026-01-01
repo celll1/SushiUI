@@ -221,88 +221,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return true;
   });
 
-  useEffect(() => {
-    loadDatasets();
-    loadModels();
-    loadSamplers();
-    loadScheduleTypes();
-    loadPresets();
-  }, []);
-
-  // Load training run parameters when in edit mode
-  useEffect(() => {
-    if (editRunId) {
-      console.log(`[TrainingConfig] useEffect triggered for editRunId=${editRunId}`);
-      loadTrainingRunParams(editRunId);
-    }
-  }, [editRunId, loadTrainingRunParams]);
-
-  // Auto-configure precision settings when model changes
-  useEffect(() => {
-    if (!baseModelPath) return;
-
-    const isZImage = isZImageModel(baseModelPath);
-
-    if (isZImage) {
-      // Z-Image defaults: bf16 for weights/training/output, fp32 for VAE
-      setWeightDtype("bf16");
-      setTrainingDtype("bf16");
-      setOutputDtype("bf16");
-      setVaeDtype("fp32");
-      // Z-Image: Cannot train text encoder (frozen)
-      setTrainTextEncoder(false);
-    } else {
-      // SD/SDXL defaults: fp16 for all
-      setWeightDtype("fp16");
-      setTrainingDtype("fp16");
-      setOutputDtype("fp16");
-      setVaeDtype("fp16");
-    }
-  }, [baseModelPath]);
-
-  // Reset optimizer hyperparameters when optimizer changes
-  useEffect(() => {
-    const config = OPTIMIZER_CONFIGS[optimizer];
-    if (!config) return;
-
-    const { beta1, beta2, epsilon, weight_decay } = config.defaults;
-    if (beta1 !== undefined) setOptimizerBeta1(beta1);
-    if (beta2 !== undefined) setOptimizerBeta2(beta2);
-    if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
-    if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
-
-    // Reset options that are not supported by the new optimizer
-    if (!config.supportsPaged) setOptimizerIsPaged(false);
-    if (!config.supportsCautious) setOptimizerCautious(false);
-  }, [optimizer]);
-
-  const loadDatasets = async () => {
-    try {
-      const response = await listDatasets();
-      setDatasets(response.datasets);
-      if (response.datasets.length > 0) {
-        const firstDatasetId = response.datasets[0].id;
-        // Initialize first dataset config with first available dataset
-        setDatasetConfigs([{ dataset_id: firstDatasetId, caption_types: [], filters: {} }]);
-      }
-    } catch (err) {
-      console.error("Failed to load datasets:", err);
-    }
-  };
-
-  const loadModels = async () => {
-    try {
-      const response = await getModels();
-      const models = response.models || [];
-      setAvailableModels(models);
-      if (models.length > 0) {
-        setBaseModelPath(models[0].path);
-      }
-    } catch (err) {
-      console.error("Failed to load models:", err);
-    }
-  };
-
   // Load training run parameters for edit mode
   const loadTrainingRunParams = useCallback(async (runId: number) => {
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
@@ -411,6 +329,88 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
     }
   }, []);
+
+  useEffect(() => {
+    loadDatasets();
+    loadModels();
+    loadSamplers();
+    loadScheduleTypes();
+    loadPresets();
+  }, []);
+
+  // Load training run parameters when in edit mode
+  useEffect(() => {
+    if (editRunId) {
+      console.log(`[TrainingConfig] useEffect triggered for editRunId=${editRunId}`);
+      loadTrainingRunParams(editRunId);
+    }
+  }, [editRunId, loadTrainingRunParams]);
+
+  // Auto-configure precision settings when model changes
+  useEffect(() => {
+    if (!baseModelPath) return;
+
+    const isZImage = isZImageModel(baseModelPath);
+
+    if (isZImage) {
+      // Z-Image defaults: bf16 for weights/training/output, fp32 for VAE
+      setWeightDtype("bf16");
+      setTrainingDtype("bf16");
+      setOutputDtype("bf16");
+      setVaeDtype("fp32");
+      // Z-Image: Cannot train text encoder (frozen)
+      setTrainTextEncoder(false);
+    } else {
+      // SD/SDXL defaults: fp16 for all
+      setWeightDtype("fp16");
+      setTrainingDtype("fp16");
+      setOutputDtype("fp16");
+      setVaeDtype("fp16");
+    }
+  }, [baseModelPath]);
+
+  // Reset optimizer hyperparameters when optimizer changes
+  useEffect(() => {
+    const config = OPTIMIZER_CONFIGS[optimizer];
+    if (!config) return;
+
+    const { beta1, beta2, epsilon, weight_decay } = config.defaults;
+    if (beta1 !== undefined) setOptimizerBeta1(beta1);
+    if (beta2 !== undefined) setOptimizerBeta2(beta2);
+    if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
+    if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+
+    // Reset options that are not supported by the new optimizer
+    if (!config.supportsPaged) setOptimizerIsPaged(false);
+    if (!config.supportsCautious) setOptimizerCautious(false);
+  }, [optimizer]);
+
+  const loadDatasets = async () => {
+    try {
+      const response = await listDatasets();
+      setDatasets(response.datasets);
+      if (response.datasets.length > 0) {
+        const firstDatasetId = response.datasets[0].id;
+        // Initialize first dataset config with first available dataset
+        setDatasetConfigs([{ dataset_id: firstDatasetId, caption_types: [], filters: {} }]);
+      }
+    } catch (err) {
+      console.error("Failed to load datasets:", err);
+    }
+  };
+
+  const loadModels = async () => {
+    try {
+      const response = await getModels();
+      const models = response.models || [];
+      setAvailableModels(models);
+      if (models.length > 0) {
+        setBaseModelPath(models[0].path);
+      }
+    } catch (err) {
+      console.error("Failed to load models:", err);
+    }
+  };
 
   // Helper function: Load samplers from API
   const loadSamplers = async () => {

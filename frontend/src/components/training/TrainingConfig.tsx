@@ -304,8 +304,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Load training run parameters for edit mode
   const loadTrainingRunParams = async (runId: number) => {
+    console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
     try {
       const params = await getTrainingRunParams(runId);
+      console.log(`[TrainingConfig] Received parameters:`, params);
 
       // Populate all form fields from loaded parameters
       setRunName(params.run_name || "");
@@ -398,9 +400,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Cache
       if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
 
-      console.log(`[TrainingConfig] Loaded parameters for training run ${runId}`);
+      console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
+      console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
+      console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);
     } catch (err) {
-      console.error("Failed to load training run parameters:", err);
+      console.error("[TrainingConfig] Failed to load training run parameters:", err);
     }
   };
 
@@ -702,6 +706,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       batch_size: batchSize,
       learning_rate: parseFloat(learningRate),
       lr_scheduler: lrScheduler,
+      lr_warmup_steps: lrWarmupSteps,
       optimizer: optimizer,
       optimizer_is_paged: optimizerIsPaged,
       optimizer_cautious: optimizerCautious,

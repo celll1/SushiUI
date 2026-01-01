@@ -372,6 +372,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
       if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
 
+      // Sample Generation
+      if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
+      if (params.sample_prompts && params.sample_prompts.length > 0) {
+        setSamplePrompts(params.sample_prompts);
+      }
+      if (params.sample_width !== undefined) setSampleWidth(params.sample_width);
+      if (params.sample_height !== undefined) setSampleHeight(params.sample_height);
+      if (params.sample_steps !== undefined) setSampleSteps(params.sample_steps);
+      if (params.sample_cfg_scale !== undefined) setSampleCfgScale(params.sample_cfg_scale);
+      if (params.sample_sampler !== undefined) setSampleSampler(params.sample_sampler);
+      if (params.sample_schedule_type !== undefined) setSampleScheduleType(params.sample_schedule_type);
+      if (params.sample_seed !== undefined) setSampleSeed(params.sample_seed);
+
+      // Debug Latents
+      if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
+      if (params.debug_latents_every !== undefined) setDebugLatentsEvery(params.debug_latents_every);
+
+      // Bucketing
+      if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
+      if (params.base_resolutions !== undefined) setBaseResolutions(params.base_resolutions);
+      if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
+      if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
+
+      // Cache
+      if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
+
       console.log(`[TrainingConfig] Loaded parameters for training run ${runId}`);
     } catch (err) {
       console.error("Failed to load training run parameters:", err);

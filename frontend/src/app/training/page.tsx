@@ -20,6 +20,7 @@ function TrainingPageContent() {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [editRunId, setEditRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadRuns = useCallback(async () => {
@@ -74,13 +75,29 @@ function TrainingPageContent() {
 
   const handleCreateRun = () => {
     setSelectedRunId(null);
+    setEditRunId(null); // Creating new run
+    setShowConfig(true);
+  };
+
+  const handleEditRun = (runId: number) => {
+    setEditRunId(runId);
     setShowConfig(true);
   };
 
   const handleRunCreated = (newRun: TrainingRun) => {
     setRuns([newRun, ...runs]);
     setShowConfig(false);
+    setEditRunId(null);
     setSelectedRunId(newRun.id);
+  };
+
+  const handleRunUpdated = (updatedRun: TrainingRun) => {
+    setRuns((prevRuns) =>
+      prevRuns.map((r) => (r.id === updatedRun.id ? updatedRun : r))
+    );
+    setShowConfig(false);
+    setEditRunId(null);
+    setSelectedRunId(updatedRun.id);
   };
 
   const handleSelectRun = (id: number) => {
@@ -135,8 +152,13 @@ function TrainingPageContent() {
           <div className="flex-1 overflow-y-auto">
             {showConfig ? (
               <TrainingConfig
-                onClose={() => setShowConfig(false)}
+                onClose={() => {
+                  setShowConfig(false);
+                  setEditRunId(null);
+                }}
                 onRunCreated={handleRunCreated}
+                editRunId={editRunId}
+                onRunUpdated={handleRunUpdated}
               />
             ) : selectedRun ? (
               <TrainingMonitor
@@ -145,6 +167,7 @@ function TrainingPageContent() {
                 onClose={() => setSelectedRunId(null)}
                 onStatusChange={handleStatusChange}
                 onDelete={() => handleDelete(selectedRun.id)}
+                onEditConfig={() => handleEditRun(selectedRun.id)}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400">

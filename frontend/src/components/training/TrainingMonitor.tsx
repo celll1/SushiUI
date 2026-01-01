@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
 import CheckpointList from "./CheckpointList";
 
@@ -11,9 +11,10 @@ interface TrainingMonitorProps {
   onClose: () => void;
   onStatusChange: (updatedRun: TrainingRun) => void;
   onDelete?: () => void;
+  onEditConfig?: () => void;
 }
 
-export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete }: TrainingMonitorProps) {
+export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete, onEditConfig }: TrainingMonitorProps) {
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -26,6 +27,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [editedConfig, setEditedConfig] = useState<string>("");
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isReloadingConfig, setIsReloadingConfig] = useState(false);
 
   // Debug latents
   const [viewMode, setViewMode] = useState<"samples" | "debug">("samples");
@@ -295,15 +297,49 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           <div className="bg-gray-800 rounded-lg p-3 space-y-2 text-sm">
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold">Configuration</h3>
-              <button
-                onClick={() => {
-                  setEditedConfig(currentRun.config_yaml || "");
-                  setShowConfigModal(true);
-                }}
-                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
-              >
-                View Full Config
-              </button>
+              <div className="flex gap-2">
+                {onEditConfig && (
+                  <button
+                    onClick={onEditConfig}
+                    disabled={currentRun.status === "running" || currentRun.status === "starting"}
+                    className="text-xs px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Edit Configuration
+                  </button>
+                )}
+                <button
+                  onClick={async () => {
+                    console.log("[TrainingMonitor] Reloading config from disk for run ID:", currentRun.id);
+                    setIsReloadingConfig(true);
+                    try {
+                      const response = await reloadTrainingConfig(currentRun.id);
+                      console.log("[TrainingMonitor] Config reload response:", response);
+                      setCurrentRun(response.run);
+                      onStatusChange(response.run);
+                      alert("Configuration reloaded from disk successfully!");
+                    } catch (err: any) {
+                      console.error("[TrainingMonitor] Failed to reload config:", err);
+                      console.error("[TrainingMonitor] Error response:", err.response);
+                      alert(err.response?.data?.detail || err.message || "Failed to reload configuration");
+                    } finally {
+                      setIsReloadingConfig(false);
+                    }
+                  }}
+                  disabled={isReloadingConfig || currentRun.status === "running" || currentRun.status === "starting"}
+                  className="text-xs px-2 py-1 bg-green-700 hover:bg-green-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isReloadingConfig ? "Reloading..." : "Reload from Disk"}
+                </button>
+                <button
+                  onClick={() => {
+                    setEditedConfig(currentRun.config_yaml || "");
+                    setShowConfigModal(true);
+                  }}
+                  className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                >
+                  View Full Config
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>

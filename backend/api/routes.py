@@ -4752,6 +4752,42 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
 
+@router.post("/training/runs/{run_id}/config/reload")
+async def reload_training_config(run_id: int, db: Session = Depends(get_training_db)):
+    """Reload training configuration from disk (for external YAML edits)"""
+    print(f"[Training] Reloading config from disk for run_id={run_id}")
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        print(f"[Training] ERROR: Run ID {run_id} not found in database")
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail="Cannot reload config while training is running")
+
+    try:
+        from pathlib import Path
+
+        # Read config from disk
+        config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail=f"Config file not found: {config_path}")
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_yaml = f.read()
+
+        # Update database with disk content
+        run.config_yaml = config_yaml
+        db.commit()
+
+        print(f"[Training] Reloaded config from disk: {config_path}")
+        return {"message": "Configuration reloaded from disk", "run": run.to_dict()}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reload config: {str(e)}")
+
 @router.get("/training/runs/{run_id}/status")
 async def get_training_status(run_id: int, db: Session = Depends(get_training_db)):
     """Get current training status"""

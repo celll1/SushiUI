@@ -1786,7 +1786,8 @@ class BaseTrainer(ABC):
         # Save model_pred for trajectory mode before deletion
         model_pred_return = None
         if return_model_pred:
-            model_pred_return = model_pred.detach()  # Detach to avoid keeping computation graph
+            # Clone and detach to create independent copy (not just reference)
+            model_pred_return = model_pred.clone().detach()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
         # But keep 'loss' tensor for backward pass
@@ -3648,10 +3649,11 @@ class BaseTrainer(ABC):
                             predicted_clean = current_latents + (1.0 - t) * model_pred_for_trajectory
 
                             # Store for next iteration (will be blended with ideal trajectory)
+                            # NOTE: Do NOT delete predicted_clean here - it's referenced by current_trajectory_latents
                             current_trajectory_latents = predicted_clean
 
-                            # Free trajectory computation tensors
-                            del t, predicted_clean
+                            # Free only the t tensor (predicted_clean is kept as current_trajectory_latents)
+                            del t
 
                         # Free MNT iteration tensors
                         if model_pred_for_trajectory is not None:

@@ -244,16 +244,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Training parameters
       if (params.total_steps !== undefined) setTotalSteps(params.total_steps);
-      if (params.learning_rate !== undefined) setLearningRate(params.learning_rate.toString());
+      if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
       if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
       if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
       if (params.optimizer !== undefined) setOptimizer(params.optimizer);
 
       // Optimizer parameters
-      if (params.optimizer_beta1 !== undefined) setOptimizerBeta1(params.optimizer_beta1.toString());
-      if (params.optimizer_beta2 !== undefined) setOptimizerBeta2(params.optimizer_beta2.toString());
-      if (params.optimizer_epsilon !== undefined) setOptimizerEpsilon(params.optimizer_epsilon.toString());
-      if (params.optimizer_weight_decay !== undefined) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
+      if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
+      if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) setOptimizerBeta2(params.optimizer_beta2.toString());
+      if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) setOptimizerEpsilon(params.optimizer_epsilon.toString());
+      if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
       if (params.optimizer_is_paged !== undefined) setOptimizerIsPaged(params.optimizer_is_paged);
       if (params.optimizer_cautious !== undefined) setOptimizerCautious(params.optimizer_cautious);
       if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);

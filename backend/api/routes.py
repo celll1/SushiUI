@@ -4335,6 +4335,228 @@ async def get_training_run_params(
 
     return params
 
+@router.put("/training/runs/{run_id}")
+async def update_training_run(
+    run_id: int,
+    request: TrainingRunCreateRequest,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db)
+):
+    """Update training run configuration by regenerating YAML from parameters"""
+    print(f"[Training] Updating training run {run_id}")
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail="Cannot update config while training is running")
+
+    try:
+        # Get dataset configs
+        dataset_configs_for_yaml = []
+        if request.dataset_configs:
+            for config in request.dataset_configs:
+                dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
+                if dataset:
+                    yaml_config = {
+                        "path": dataset.path,
+                        "caption_processing": dataset.caption_processing or {}
+                    }
+                    if config.caption_types:
+                        yaml_config["caption_types"] = config.caption_types
+                    dataset_configs_for_yaml.append(yaml_config)
+
+        # Get primary dataset
+        primary_dataset_id = request.dataset_configs[0].dataset_id if request.dataset_configs else None
+        primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first() if primary_dataset_id else None
+
+        # Generate YAML config (same as create)
+        config_generator = TrainingConfigGenerator()
+
+        if request.training_method == "lora":
+            config_yaml = config_generator.generate_lora_config(
+                run_name=run.run_name,
+                dataset_path=primary_dataset.path if primary_dataset else "",
+                base_model_path=request.base_model_path,
+                output_dir=run.output_dir,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                lora_rank=request.lora_rank or 16,
+                lora_alpha=request.lora_alpha or 16,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=None,
+                caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                use_sla_attention=request.use_sla_attention,
+                sla_topk=request.sla_topk,
+                sla_feature_map=request.sla_feature_map,
+                sla_block_q=request.sla_block_q,
+                sla_block_k=request.sla_block_k,
+            )
+        else:  # full_finetune
+            config_yaml = config_generator.generate_full_finetune_config(
+                run_name=run.run_name,
+                dataset_path=primary_dataset.path if primary_dataset else "",
+                base_model_path=request.base_model_path,
+                output_dir=run.output_dir,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                use_sla_attention=request.use_sla_attention,
+                sla_topk=request.sla_topk,
+                sla_feature_map=request.sla_feature_map,
+                sla_block_q=request.sla_block_q,
+                sla_block_k=request.sla_block_k,
+                min_snr_gamma=request.min_snr_gamma,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=None,
+                caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+            )
+
+        # Update config_yaml and base_model_path in database
+        run.config_yaml = config_yaml
+        run.base_model_path = request.base_model_path
+        if request.total_steps:
+            run.total_steps = request.total_steps
+        elif request.epochs and primary_dataset:
+            # Calculate total_steps from epochs
+            from core.training.training_utils import calculate_total_steps
+            run.total_steps = calculate_total_steps(primary_dataset.path, request.epochs, request.batch_size)
+
+        # Save config file
+        config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
+        config_generator.save_config(config_yaml, config_path)
+
+        db.commit()
+
+        print(f"[Training] Updated run {run_id}: {run.run_name}")
+        return run.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"[Training] Error updating run: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/training/runs/{run_id}")
 async def delete_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Delete a training run"""

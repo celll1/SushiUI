@@ -3582,6 +3582,9 @@ class BaseTrainer(ABC):
                                 # Blend stepped trajectory with ideal trajectory
                                 current_latents = trajectory_blend_alpha * current_trajectory_latents + \
                                                  (1.0 - trajectory_blend_alpha) * ideal_latents
+
+                                # Free blending computation tensors
+                                del t_blend, ideal_latents
                             # else: mnt_idx == 0, use original latents
 
                         # Determine if we should save debug latents (only on first MNT iteration)
@@ -3647,6 +3650,13 @@ class BaseTrainer(ABC):
                             # Store for next iteration (will be blended with ideal trajectory)
                             current_trajectory_latents = predicted_clean
 
+                            # Free trajectory computation tensors
+                            del t, predicted_clean
+
+                        # Free MNT iteration tensors
+                        if model_pred_for_trajectory is not None:
+                            del model_pred_for_trajectory
+
                         # Free batch tensors immediately after backward to prevent VRAM accumulation
                         del latents, text_embeddings
                         if self.is_zimage:
@@ -3657,6 +3667,12 @@ class BaseTrainer(ABC):
 
                         # Increment global step for each MNT iteration
                         global_step += 1
+
+                    # Free MNT batch-level tensors after all iterations complete
+                    if shared_noise is not None:
+                        del shared_noise
+                    if current_trajectory_latents is not None:
+                        del current_trajectory_latents
 
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps

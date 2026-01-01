@@ -4214,6 +4214,127 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
         raise HTTPException(status_code=404, detail="Training run not found")
     return run.to_dict()
 
+@router.get("/training/runs/{run_id}/params")
+async def get_training_run_params(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db)
+):
+    """Get training run parameters in TrainingRunCreateRequest format for editing"""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    # Parse YAML config to extract parameters
+    import yaml
+    try:
+        config = yaml.safe_load(run.config_yaml)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse config YAML: {str(e)}")
+
+    # Extract job config (first job in config)
+    job = config.get("config", {}).get("job", config.get("job", "lora"))
+    datasets_config = config.get("config", {}).get("datasets", config.get("datasets", []))
+    process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
+
+    # Build dataset_configs from YAML
+    dataset_configs = []
+    for ds_config in datasets_config:
+        # Try to find dataset by path
+        dataset_path = ds_config.get("folder_path", ds_config.get("path", ""))
+        dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
+        if dataset:
+            dataset_configs.append({
+                "dataset_id": dataset.id,
+                "caption_types": ds_config.get("caption_types", []),
+                "filters": {}
+            })
+
+    # Extract training parameters
+    training_params = process_config.get("training", {})
+    network_config = process_config.get("network", {})
+    sample_config = process_config.get("sample", {})
+
+    # Build response in TrainingRunCreateRequest format
+    params = {
+        "run_id": run.id,  # Add run_id for edit mode
+        "dataset_configs": dataset_configs if dataset_configs else None,
+        "run_name": run.run_name,
+        "training_method": "lora" if job == "lora" else "full_finetune",
+        "base_model_path": process_config.get("model", {}).get("name_or_path", run.base_model_path),
+        "total_steps": training_params.get("steps"),
+        "epochs": training_params.get("epochs"),
+        "batch_size": training_params.get("batch_size", 1),
+        "learning_rate": float(training_params.get("lr", 1e-4)),
+        "lr_scheduler": training_params.get("lr_scheduler", "constant"),
+        "optimizer": training_params.get("optimizer", "adamw8bit"),
+        "optimizer_is_paged": training_params.get("optimizer_is_paged", False),
+        "optimizer_cautious": training_params.get("optimizer_cautious", False),
+        "optimizer_beta1": training_params.get("optimizer_beta1"),
+        "optimizer_beta2": training_params.get("optimizer_beta2"),
+        "optimizer_epsilon": training_params.get("optimizer_epsilon"),
+        "optimizer_weight_decay": training_params.get("optimizer_weight_decay"),
+        "optimizer_schedule_free": training_params.get("optimizer_schedule_free", False),
+        "optimizer_schedule_free_r": training_params.get("optimizer_schedule_free_r", 0.0),
+        "optimizer_schedule_free_weight_lr_power": training_params.get("optimizer_schedule_free_weight_lr_power", 2.0),
+        "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
+        "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
+        "save_every": training_params.get("save_every", 100),
+        "save_every_unit": training_params.get("save_every_unit", "steps"),
+        "sample_every": sample_config.get("sample_every", 100),
+        "sample_prompts": sample_config.get("prompts", []),
+        "sample_width": sample_config.get("width", 1024),
+        "sample_height": sample_config.get("height", 1024),
+        "sample_steps": sample_config.get("steps", 28),
+        "sample_cfg_scale": sample_config.get("cfg_scale", 7.0),
+        "sample_sampler": sample_config.get("sampler", "euler"),
+        "sample_seed": sample_config.get("seed", -1),
+        "debug_latents": training_params.get("debug_latents", False),
+        "debug_latents_every": training_params.get("debug_latents_every", 50),
+        "enable_bucketing": training_params.get("enable_bucketing", False),
+        "base_resolutions": training_params.get("base_resolutions"),
+        "bucket_strategy": training_params.get("bucket_strategy", "resize"),
+        "multi_resolution_mode": training_params.get("multi_resolution_mode", "max"),
+        "cache_latents_to_disk": training_params.get("cache_latents_to_disk", False),
+        "train_unet": training_params.get("train_unet", True),
+        "train_text_encoder": training_params.get("train_text_encoder", False),
+        "unet_lr": training_params.get("unet_lr"),
+        "text_encoder_lr": training_params.get("text_encoder_lr"),
+        "text_encoder_1_lr": training_params.get("text_encoder_1_lr"),
+        "text_encoder_2_lr": training_params.get("text_encoder_2_lr"),
+        "weight_dtype": training_params.get("weight_dtype", "fp16"),
+        "training_dtype": training_params.get("dtype", "fp16"),
+        "output_dtype": training_params.get("output_dtype", "fp32"),
+        "vae_dtype": process_config.get("model", {}).get("vae_dtype", "fp16"),
+        "mixed_precision": training_params.get("mixed_precision", True),
+        "use_flash_attention": training_params.get("use_flash_attention", False),
+        "min_snr_gamma": training_params.get("min_snr_gamma", 5.0),
+        "text_encoding_mode": training_params.get("text_encoding_mode", "swap_onthefly"),
+        "text_encoding_swap_interval": training_params.get("text_encoding_swap_interval", 256),
+        "latent_encoding_mode": training_params.get("latent_encoding_mode", "swap_onthefly"),
+        "latent_encoding_swap_interval": training_params.get("latent_encoding_swap_interval", 256),
+        "blocks_to_swap": training_params.get("blocks_to_swap", 0),
+        "use_pinned_memory": training_params.get("use_pinned_memory", False),
+        "num_optimizer_groups": training_params.get("num_optimizer_groups", 0),
+        "multi_noise_timesteps": training_params.get("multi_noise_timesteps", 1),
+        "timestep_sampling": training_params.get("timestep_sampling"),
+        "regularization_type": training_params.get("regularization_type"),
+        "snr_regularization_weight": training_params.get("snr_regularization_weight", 0.0),
+        "snr_timestep_adaptive": training_params.get("snr_timestep_adaptive", True),
+        "snr_penalty_mode": training_params.get("snr_penalty_mode", "relu"),
+        "energy_regularization_weight": training_params.get("energy_regularization_weight", 0.0),
+        "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
+        "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
+        "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
+        "use_sla_attention": training_params.get("use_sla_attention", False),
+        "sla_topk": training_params.get("sla_topk", 0.2),
+        "sla_feature_map": training_params.get("sla_feature_map", "softmax"),
+        "sla_block_q": training_params.get("sla_block_q", 64),
+        "sla_block_k": training_params.get("sla_block_k", 64),
+    }
+
+    return params
+
 @router.delete("/training/runs/{run_id}")
 async def delete_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Delete a training run"""

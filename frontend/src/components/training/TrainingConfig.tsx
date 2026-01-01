@@ -371,20 +371,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   useEffect(() => {
     console.log("[TrainingConfig] Initial useEffect running...");
     const startTime = performance.now();
+
+    // If in edit mode, load YAML parameters first (fast)
+    if (editRunId) {
+      console.log(`[TrainingConfig] Edit mode detected, loading YAML parameters first...`);
+      loadTrainingRunParams(editRunId);
+    }
+
+    // Then load datasets/models/etc (slow, 数分)
     loadDatasets();
     loadModels();
     loadSamplers();
     loadScheduleTypes();
     loadPresets();
     console.log(`[TrainingConfig] All load functions called in ${performance.now() - startTime}ms`);
-  }, []);
-
-  // Load training run parameters when in edit mode
-  useEffect(() => {
-    if (editRunId) {
-      console.log(`[TrainingConfig] useEffect triggered for editRunId=${editRunId}`);
-      loadTrainingRunParams(editRunId);
-    }
   }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes
@@ -433,10 +433,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       const response = await listDatasets();
       console.log(`[TrainingConfig] loadDatasets API took ${performance.now() - startTime}ms`);
       setDatasets(response.datasets);
-      if (response.datasets.length > 0) {
+
+      // Only auto-select first dataset if NOT in edit mode
+      // (edit mode will have already loaded datasetConfigs from YAML)
+      if (!editRunId && response.datasets.length > 0) {
         const firstDatasetId = response.datasets[0].id;
-        // Initialize first dataset config with first available dataset
+        console.log(`[TrainingConfig] New run mode: auto-selecting first dataset ${firstDatasetId}`);
         setDatasetConfigs([{ dataset_id: firstDatasetId, caption_types: [], filters: {} }]);
+      } else if (editRunId) {
+        console.log(`[TrainingConfig] Edit mode: keeping existing datasetConfigs from YAML`);
       }
     } catch (err) {
       console.error("Failed to load datasets:", err);
@@ -451,8 +456,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.log(`[TrainingConfig] loadModels API took ${performance.now() - startTime}ms`);
       const models = response.models || [];
       setAvailableModels(models);
-      if (models.length > 0) {
+
+      // Only auto-select first model if NOT in edit mode
+      // (edit mode will have already loaded baseModelPath from YAML)
+      if (!editRunId && models.length > 0) {
+        console.log(`[TrainingConfig] New run mode: auto-selecting first model ${models[0].path}`);
         setBaseModelPath(models[0].path);
+      } else if (editRunId) {
+        console.log(`[TrainingConfig] Edit mode: keeping existing baseModelPath from YAML`);
       }
     } catch (err) {
       console.error("Failed to load models:", err);

@@ -2755,6 +2755,8 @@ class BaseTrainer(ABC):
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
         multi_noise_timesteps: int = 1,
+        multi_noise_mode: str = "independent",  # Unused (MNT disabled), kept for compatibility
+        trajectory_blend_alpha: float = 0.7,  # Unused (MNT disabled), kept for compatibility
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,

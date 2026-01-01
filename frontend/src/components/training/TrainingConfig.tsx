@@ -711,7 +711,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       batch_size: batchSize,
       learning_rate: parseFloat(learningRate),
       lr_scheduler: lrScheduler,
-      lr_warmup_steps: lrWarmupSteps,
       optimizer: optimizer,
       optimizer_is_paged: optimizerIsPaged,
       optimizer_cautious: optimizerCautious,

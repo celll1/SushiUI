@@ -24,7 +24,6 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-4,
         lr_scheduler: str = "constant",
-        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
         optimizer_is_paged: bool = False,
         optimizer_cautious: bool = False,
@@ -251,7 +250,6 @@ class TrainingConfigGenerator:
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "lr_scheduler": lr_scheduler,
-                            "lr_warmup_steps": lr_warmup_steps,
                             "ema_config": {"use_ema": True, "ema_decay": 0.99},
                             "dtype": training_dtype,  # Training/activation dtype
                             "weight_dtype": weight_dtype,  # Model weight dtype

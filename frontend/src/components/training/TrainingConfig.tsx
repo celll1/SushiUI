@@ -239,11 +239,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         setDatasetConfigs(params.dataset_configs);
       }
 
-      // LoRA rank
+      // LoRA rank & alpha
       if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
+      if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
 
       // Training parameters
-      if (params.total_steps !== undefined) setTotalSteps(params.total_steps);
+      if (params.total_steps !== undefined && params.total_steps !== null) {
+        setTotalSteps(params.total_steps);
+        setUseEpochs(false);
+      }
+      if (params.epochs !== undefined && params.epochs !== null) {
+        setEpochs(params.epochs);
+        setUseEpochs(true);
+      }
+      if (params.batch_size !== undefined) setBatchSize(params.batch_size);
       if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
       if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
       if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
@@ -260,12 +269,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r);
       if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power);
 
+      // Save & Sample intervals
+      if (params.save_every !== undefined) setSaveEvery(params.save_every);
+      if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
+
+      // Component-specific training
+      if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
+      if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
+      if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
+      if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
+      if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
+      if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
+
       // Precision settings
       if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
       if (params.training_dtype !== undefined) setTrainingDtype(params.training_dtype);
       if (params.output_dtype !== undefined) setOutputDtype(params.output_dtype);
       if (params.vae_dtype !== undefined) setVaeDtype(params.vae_dtype);
-      if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
+      if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
+      if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
+      if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
 
       // Memory optimization
       if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
@@ -287,12 +310,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       }
 
       // Regularization
+      if (params.regularization_type !== undefined) setRegularizationType(params.regularization_type);
       if (params.snr_regularization_weight !== undefined) setSnrRegularizationWeight(params.snr_regularization_weight);
       if (params.snr_timestep_adaptive !== undefined) setSnrTimestepAdaptive(params.snr_timestep_adaptive);
       if (params.snr_penalty_mode !== undefined) setSnrPenaltyMode(params.snr_penalty_mode);
       if (params.energy_regularization_weight !== undefined) setEnergyRegularizationWeight(params.energy_regularization_weight);
       if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
       if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
+      if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
 
       // Sample Generation
       if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
@@ -313,12 +338,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Bucketing
       if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
-      if (params.base_resolutions !== undefined) setBaseResolutions(params.base_resolutions);
+      if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
+        setBaseResolutions(params.base_resolutions);
+      } else if (params.base_resolutions === null) {
+        // Old configs might have null, use default
+        setBaseResolutions([1024]);
+      }
       if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
       if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
 
       // Cache
       if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
+      if (params.force_recache !== undefined) setForceRecache(params.force_recache);
 
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);

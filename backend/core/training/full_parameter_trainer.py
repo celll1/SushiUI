@@ -234,9 +234,36 @@ class FullParameterTrainer(BaseTrainer):
                 for key, value in self.text_encoder_2.state_dict().items():
                     checkpoint_data[f"text_encoder_2.{key}"] = value
 
+        # Prepare metadata (ModelSpec 1.0.0)
+        metadata = {
+            "training_step": str(step),
+            "epoch": str(epoch),
+        }
+
+        # Add ModelSpec metadata for prediction configuration
+        if hasattr(self, 'noise_process') and hasattr(self, 'prediction_target'):
+            # ModelSpec standard keys
+            if self.is_zimage:
+                metadata["modelspec.architecture"] = "z-image-transformer"
+            elif self.is_sdxl:
+                metadata["modelspec.architecture"] = "stable-diffusion-xl-v1-base"
+            else:
+                metadata["modelspec.architecture"] = "stable-diffusion-v1"
+
+            metadata["modelspec.implementation"] = "https://github.com/huggingface/diffusers"
+
+            # Prediction configuration (unified training framework)
+            metadata["modelspec.noise_process"] = self.noise_process  # "ddpm" or "flow"
+            metadata["modelspec.prediction_type"] = self.prediction_target  # "epsilon", "velocity", "sample"
+
+            # Legacy compatibility: add v_pred marker for v-prediction models
+            if self.prediction_target == "velocity" and self.noise_process == "ddpm":
+                # Add empty v_pred tensor as marker (NoobAI-XL-Vpred style)
+                checkpoint_data["v_pred"] = torch.tensor([])
+
         # Save as safetensors
         try:
-            save_file(checkpoint_data, str(save_path))
+            save_file(checkpoint_data, str(save_path), metadata=metadata)
         except Exception as e:
             error_msg = str(e)
             if "os error 112" in error_msg or "No space left" in error_msg or "I/O error" in error_msg:

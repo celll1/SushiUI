@@ -738,6 +738,7 @@ def main():
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
+                total_steps=total_steps_config,  # Pass total_steps from YAML
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
@@ -977,6 +978,7 @@ def main():
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
+                total_steps=total_steps_config,  # Pass total_steps from YAML
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),

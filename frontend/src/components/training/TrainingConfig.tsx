@@ -195,6 +195,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("under");  // Changed from "abs" to "under" (recommended)
   const [energyNormalizeByPixels, setEnergyNormalizeByPixels] = useState<boolean>(true);
 
+  // Unified Training Framework settings
+  const [noiseProcess, setNoiseProcess] = useState<string>("auto");  // "auto", "ddpm", "flow"
+  const [predictionTarget, setPredictionTarget] = useState<string>("auto");  // "auto", "epsilon", "velocity", "sample"
+  const [strictValidation, setStrictValidation] = useState<boolean>(false);  // Abort on mismatch
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -323,6 +328,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
       if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
       if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
+
+      // Unified Training Framework
+      if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
+      if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
+      if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
 
       // Sample Generation
       if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
@@ -837,6 +847,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       energy_timestep_adaptive: energyTimestepAdaptive,
       energy_penalty_mode: energyPenaltyMode,
       energy_normalize_by_pixels: energyNormalizeByPixels,
+      // Unified Training Framework settings
+      noise_process: noiseProcess,
+      prediction_target: predictionTarget,
+      strict_validation: strictValidation,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1443,6 +1457,73 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                 </>
               )}
+              </div>
+            </div>
+
+            {/* Unified Training Framework Settings */}
+            <div className="bg-gray-800 p-3 rounded space-y-3">
+              <div>
+                <label className="block text-xs text-gray-300 font-semibold mb-2">
+                  Unified Training Framework
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Configure noise process and prediction target for training
+                </p>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Noise Process
+                    </label>
+                    <select
+                      value={noiseProcess}
+                      onChange={(e) => setNoiseProcess(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="auto">Auto (detect from model)</option>
+                      <option value="ddpm">DDPM (Scheduled, for SDXL/SD1.5)</option>
+                      <option value="flow">Flow Matching (Linear, for Z-Image)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      How noise is added during training. Auto-detect uses model&apos;s original configuration.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Prediction Target
+                    </label>
+                    <select
+                      value={predictionTarget}
+                      onChange={(e) => setPredictionTarget(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="auto">Auto (detect from model)</option>
+                      <option value="epsilon">Epsilon (predict noise)</option>
+                      <option value="velocity">Velocity (predict direction)</option>
+                      <option value="sample">Sample (predict x₀)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      What the model predicts during training. Auto-detect uses model&apos;s original configuration.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="strict-validation"
+                      checked={strictValidation}
+                      onChange={(e) => setStrictValidation(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="strict-validation" className="text-xs text-gray-300 cursor-pointer">
+                      Strict Validation (abort training if mismatch detected)
+                    </label>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    When enabled, training aborts if noise_process/prediction_target doesn&apos;t match model&apos;s config. When disabled, shows warning and continues.
+                  </p>
+                </div>
               </div>
             </div>
 

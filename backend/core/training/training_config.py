@@ -95,6 +95,10 @@ class TrainingConfigGenerator:
         energy_timestep_adaptive: bool = True,
         energy_penalty_mode: str = "abs",
         energy_normalize_by_pixels: bool = True,
+        # Unified training framework settings
+        noise_process: str = "auto",  # "auto", "ddpm", "flow"
+        prediction_target: str = "auto",  # "auto", "epsilon", "velocity", "sample"
+        strict_validation: bool = False,  # If True, error on mismatch; if False, warn only
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -233,7 +237,10 @@ class TrainingConfigGenerator:
                             "train_unet": train_unet,
                             "train_text_encoder": train_text_encoder,
                             "gradient_checkpointing": True,
-                            "noise_scheduler": "ddpm",  # ddpm for epsilon prediction (SDXL standard)
+                            # Unified training framework (replaces noise_scheduler)
+                            "noise_process": noise_process,  # "auto", "ddpm", "flow"
+                            "prediction_target": prediction_target,  # "auto", "epsilon", "velocity", "sample"
+                            "strict_validation": strict_validation,
                             "optimizer": optimizer,
                             "lr": learning_rate,
                             **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),

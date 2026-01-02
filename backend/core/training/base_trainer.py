@@ -153,7 +153,9 @@ def get_target_from_prediction_type(
     timesteps: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Get the target tensor based on prediction type.
+    Get the target tensor based on prediction type (LEGACY - DDPM only).
+
+    DEPRECATED: Use add_noise_unified() and get_target_unified() instead.
 
     Args:
         noise_scheduler: DDPMScheduler instance
@@ -190,6 +192,192 @@ def get_target_from_prediction_type(
 
     else:
         raise ValueError(f"Unknown prediction_type: {prediction_type}")
+
+
+def add_noise_unified(
+    noise_process: str,
+    noise_scheduler,
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Add noise to latents using specified noise process (Unified Framework).
+
+    Args:
+        noise_process: "ddpm" or "flow"
+        noise_scheduler: Noise scheduler instance (DDPMScheduler or FlowMatchEulerDiscreteScheduler)
+        latents: Original latents [B, C, H, W]
+        noise: Sampled noise [B, C, H, W]
+        timesteps: Timesteps (discrete for DDPM, continuous [0,1] for Flow)
+
+    Returns:
+        Noisy latents
+    """
+    if noise_process == "ddpm":
+        # DDPM: x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise
+        # timesteps are discrete [0, num_train_timesteps)
+        return noise_scheduler.add_noise(latents, noise, timesteps)
+
+    elif noise_process == "flow":
+        # Flow Matching: x_t = (1 - t) * noise + t * x_0
+        # timesteps are continuous [0, 1]
+        t = timesteps.float()
+        while t.dim() < latents.dim():
+            t = t.unsqueeze(-1)
+
+        noisy_latents = (1.0 - t) * noise + t * latents
+        return noisy_latents
+
+    else:
+        raise ValueError(f"Unknown noise_process: {noise_process}")
+
+
+def get_target_unified(
+    noise_process: str,
+    prediction_target: str,
+    noise_scheduler,
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Get the training target based on noise process and prediction target (Unified Framework).
+
+    Args:
+        noise_process: "ddpm" or "flow"
+        prediction_target: "epsilon", "velocity", or "sample"
+        noise_scheduler: Noise scheduler instance
+        latents: Original latents [B, C, H, W]
+        noise: Sampled noise [B, C, H, W]
+        timesteps: Timesteps (discrete for DDPM, continuous [0,1] for Flow)
+
+    Returns:
+        Target tensor for loss calculation
+    """
+    if noise_process == "ddpm":
+        # DDPM noise process with discrete timesteps
+        if prediction_target == "epsilon":
+            # Predict noise
+            return noise
+
+        elif prediction_target == "velocity":
+            # Predict velocity: v = sqrt(alpha_bar_t) * noise - sqrt(1 - alpha_bar_t) * x_0
+            alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=latents.device)
+            alpha_bar = alphas_cumprod[timesteps].float()
+
+            while alpha_bar.dim() < latents.dim():
+                alpha_bar = alpha_bar.unsqueeze(-1)
+
+            sqrt_alpha_bar = torch.sqrt(alpha_bar)
+            sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar)
+
+            velocity = sqrt_alpha_bar * noise - sqrt_one_minus_alpha_bar * latents
+            return velocity
+
+        elif prediction_target == "sample":
+            # Predict original sample
+            return latents
+
+        else:
+            raise ValueError(f"Unknown prediction_target: {prediction_target}")
+
+    elif noise_process == "flow":
+        # Flow Matching with continuous timesteps [0, 1]
+        if prediction_target == "epsilon":
+            # Predict noise (Flow + epsilon is unusual but supported)
+            return noise
+
+        elif prediction_target == "velocity":
+            # Predict velocity: v = x_0 - noise (constant direction in flow matching)
+            return latents - noise
+
+        elif prediction_target == "sample":
+            # Predict original sample
+            return latents
+
+        else:
+            raise ValueError(f"Unknown prediction_target: {prediction_target}")
+
+    else:
+        raise ValueError(f"Unknown noise_process: {noise_process}")
+
+
+def predict_original_latent_unified(
+    noise_process: str,
+    prediction_target: str,
+    noise_scheduler,
+    noisy_latents: torch.Tensor,
+    model_pred: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Predict original latent from model prediction (Unified Framework).
+
+    Used for regularization losses (SNR, Energy) and reconstruction loss monitoring.
+
+    Args:
+        noise_process: "ddpm" or "flow"
+        prediction_target: "epsilon", "velocity", or "sample"
+        noise_scheduler: Noise scheduler instance
+        noisy_latents: Noisy latents [B, C, H, W]
+        model_pred: Model prediction [B, C, H, W]
+        timesteps: Timesteps (discrete for DDPM, continuous [0,1] for Flow)
+
+    Returns:
+        Predicted original latent [B, C, H, W]
+    """
+    if noise_process == "ddpm":
+        # DDPM: x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise
+        alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=noisy_latents.device, dtype=noisy_latents.dtype)
+        alpha_bar = alphas_cumprod[timesteps]
+
+        while alpha_bar.dim() < noisy_latents.dim():
+            alpha_bar = alpha_bar.unsqueeze(-1)
+
+        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar)
+
+        if prediction_target == "epsilon":
+            # model_pred = noise, solve for x_0: x_0 = (x_t - sqrt(1 - alpha_bar) * noise) / sqrt(alpha_bar)
+            predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+        elif prediction_target == "velocity":
+            # model_pred = v = sqrt(alpha_bar) * noise - sqrt(1 - alpha_bar) * x_0
+            # Solve for x_0: x_0 = sqrt(alpha_bar) * x_t - sqrt(1 - alpha_bar) * v
+            predicted_latent = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
+        elif prediction_target == "sample":
+            # model_pred = x_0 directly
+            predicted_latent = model_pred
+        else:
+            raise ValueError(f"Unknown prediction_target: {prediction_target}")
+
+    elif noise_process == "flow":
+        # Flow Matching: x_t = (1 - t) * noise + t * x_0
+        t = timesteps.float()
+        while t.dim() < noisy_latents.dim():
+            t = t.unsqueeze(-1)
+
+        if prediction_target == "epsilon":
+            # model_pred = noise, solve for x_0: x_0 = (x_t - (1 - t) * noise) / t
+            # Avoid division by zero at t=0
+            epsilon = 1e-8
+            predicted_latent = (noisy_latents - (1.0 - t) * model_pred) / (t + epsilon)
+        elif prediction_target == "velocity":
+            # model_pred = v = x_0 - noise
+            # x_t = (1 - t) * noise + t * x_0
+            # Let noise = x_0 - v, then x_t = (1 - t) * (x_0 - v) + t * x_0 = x_0 - (1 - t) * v
+            # Solve for x_0: x_0 = x_t + (1 - t) * v
+            predicted_latent = noisy_latents + (1.0 - t) * model_pred
+        elif prediction_target == "sample":
+            # model_pred = x_0 directly
+            predicted_latent = model_pred
+        else:
+            raise ValueError(f"Unknown prediction_target: {prediction_target}")
+
+    else:
+        raise ValueError(f"Unknown noise_process: {noise_process}")
+
+    return predicted_latent
 
 
 # ============================================================
@@ -1436,28 +1624,53 @@ class BaseTrainer(ABC):
 
         # Sample random timestep (or use provided timesteps)
         batch_size = latents.shape[0]
-        if timesteps is None:
-            if self.timestep_sampler is not None:
-                # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
-                timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
-                timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
-                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
-            else:
-                # Legacy behavior: sample uniformly from [0, num_train_timesteps)
-                timesteps = torch.randint(
-                    0,
-                    self.noise_scheduler.config.num_train_timesteps,
-                    (batch_size,),
-                    device=self.device,
-                ).long()
-        else:
-            # MNT: convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
-            # timesteps in [0, 1] -> scale to [0, num_train_timesteps)
-            timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
-            timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
 
-        # Add noise to latents
-        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+        # Determine noise process from trainer config (set by train_runner.py)
+        noise_process = getattr(self, 'noise_process', 'ddpm')  # Default: ddpm for backward compatibility
+
+        if timesteps is None:
+            if noise_process == "ddpm":
+                # DDPM: sample discrete timesteps [0, num_train_timesteps)
+                if self.timestep_sampler is not None:
+                    # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                    timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
+                    timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
+                    timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+                else:
+                    # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+                    timesteps = torch.randint(
+                        0,
+                        self.noise_scheduler.config.num_train_timesteps,
+                        (batch_size,),
+                        device=self.device,
+                    ).long()
+            elif noise_process == "flow":
+                # Flow Matching: sample continuous timesteps [0, 1]
+                if self.timestep_sampler is not None:
+                    # Use timestep sampler (already returns [0, 1])
+                    timesteps = self.timestep_sampler.sample(batch_size, self.device)
+                else:
+                    # Uniform sampling from [0, 1]
+                    timesteps = torch.rand((batch_size,), device=self.device)
+        else:
+            # MNT: timesteps provided externally
+            if noise_process == "ddpm":
+                # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
+                # timesteps in [0, 1] -> scale to [0, num_train_timesteps)
+                timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+            elif noise_process == "flow":
+                # Flow matching: timesteps are already [0, 1]
+                pass
+
+        # Add noise to latents using unified framework
+        noisy_latents = add_noise_unified(
+            noise_process=noise_process,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
 
         # Prepare added_cond_kwargs for SDXL
         added_cond_kwargs = None
@@ -1521,14 +1734,15 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step] After UNet forward")
 
-        # Get target based on prediction type
-        prediction_type = self.noise_scheduler.config.prediction_type
-        target = get_target_from_prediction_type(
-            self.noise_scheduler,
-            prediction_type,
-            latents,
-            noise,
-            timesteps,
+        # Get target based on unified framework
+        prediction_target = getattr(self, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility
+        target = get_target_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
         )
 
         # Calculate loss (always in fp32)
@@ -1550,26 +1764,23 @@ class BaseTrainer(ABC):
         predicted_latent_for_reg = None
         if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
             # Compute predicted latent from model_pred (keep gradients for backprop)
-            alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
-            alpha_bar_t = alphas_cumprod[timesteps]
-            while alpha_bar_t.dim() < latents.dim():
-                alpha_bar_t = alpha_bar_t.unsqueeze(-1)
-            sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
-            sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
-
-            if prediction_type == "epsilon":
-                predicted_latent_for_reg = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
-            elif prediction_type == "v_prediction":
-                predicted_latent_for_reg = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
-            elif prediction_type == "sample":
-                predicted_latent_for_reg = model_pred
-            else:
-                predicted_latent_for_reg = noisy_latents - model_pred
+            predicted_latent_for_reg = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=self.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
 
         # SNR regularization (周波数領域の過剰デノイズ抑制)
         if self.snr_regularization_loss is not None:
-            # Convert discrete timesteps to continuous [0, 1] for regularization
-            timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            # Convert timesteps to continuous [0, 1] for regularization
+            if noise_process == "ddpm":
+                timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            else:  # flow
+                timesteps_continuous = timesteps.float()  # Already [0, 1]
+
             snr_reg_loss = self.snr_regularization_loss(
                 predicted_latent_for_reg,
                 latents,
@@ -1579,8 +1790,12 @@ class BaseTrainer(ABC):
 
         # Energy regularization (空間領域のエネルギー保存)
         if self.energy_regularization_loss is not None:
-            # Convert discrete timesteps to continuous [0, 1] for regularization
-            timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            # Convert timesteps to continuous [0, 1] for regularization
+            if noise_process == "ddpm":
+                timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            else:  # flow
+                timesteps_continuous = timesteps.float()  # Already [0, 1]
+
             energy_reg_loss = self.energy_regularization_loss(
                 predicted_latent_for_reg,
                 latents,
@@ -1597,21 +1812,14 @@ class BaseTrainer(ABC):
             if predicted_latent_for_reg is not None:
                 predicted_latent_for_recon = predicted_latent_for_reg.detach()
             else:
-                alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
-                alpha_bar_t = alphas_cumprod[timesteps]
-                while alpha_bar_t.dim() < latents.dim():
-                    alpha_bar_t = alpha_bar_t.unsqueeze(-1)
-                sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
-                sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
-
-                if prediction_type == "epsilon":
-                    predicted_latent_for_recon = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
-                elif prediction_type == "v_prediction":
-                    predicted_latent_for_recon = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
-                elif prediction_type == "sample":
-                    predicted_latent_for_recon = model_pred
-                else:
-                    predicted_latent_for_recon = noisy_latents - model_pred
+                predicted_latent_for_recon = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
 
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
@@ -1626,14 +1834,14 @@ class BaseTrainer(ABC):
             timestep_value = timesteps[0].item()
 
             with torch.no_grad():
-                if prediction_type == "epsilon":
-                    predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
-                elif prediction_type == "v_prediction":
-                    predicted_latent = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
-                elif prediction_type == "sample":
-                    predicted_latent = model_pred
-                else:
-                    predicted_latent = noisy_latents - model_pred
+                predicted_latent = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
@@ -1699,20 +1907,31 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] Start")
 
-        # Flow Matching: Sample random timesteps from [0, 1] if not provided
+        # Z-Image uses Flow Matching with velocity prediction
+        noise_process = getattr(self, 'noise_process', 'flow')  # Z-Image default: flow
+        prediction_target = getattr(self, 'prediction_target', 'velocity')  # Z-Image default: velocity
+
+        # Sample random timesteps from [0, 1] if not provided
         batch_size = latents.shape[0]
         if timesteps is None:
-            # Legacy behavior: uniform sampling from [0, 1]
-            timesteps = torch.rand(batch_size, device=self.device)
+            if self.timestep_sampler is not None:
+                # Use timestep sampler (returns [0, 1] for flow matching)
+                timesteps = self.timestep_sampler.sample(batch_size, self.device)
+            else:
+                # Legacy behavior: uniform sampling from [0, 1]
+                timesteps = torch.rand(batch_size, device=self.device)
 
-        # Flow Matching: Sample noise (standard normal distribution)
+        # Sample noise (standard normal distribution)
         noise = torch.randn_like(latents)
 
-        # Flow Matching: Interpolate between noise and data
-        # x_t = (1 - t) * noise + t * data
-        # Reshape timesteps for broadcasting: [B] -> [B, 1, 1, 1]
-        t = timesteps[:, None, None, None]
-        noisy_latents = (1.0 - t) * noise + t * latents
+        # Add noise using unified framework
+        noisy_latents = add_noise_unified(
+            noise_process=noise_process,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] Before Transformer forward")
@@ -1748,8 +1967,15 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")
 
-        # Flow Matching target: velocity = data - noise
-        target = latents - noise
+        # Get target using unified framework
+        target = get_target_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
 
         # Calculate MSE loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
@@ -1764,12 +1990,19 @@ class BaseTrainer(ABC):
         # Compute predicted latent once (used by both regularization losses)
         predicted_latent_for_reg = None
         if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
-            # Compute predicted latent from velocity: x_0 = x_t + (1-t) * v_pred
-            # Keep gradients to allow regularization loss to affect model_pred
-            predicted_latent_for_reg = noisy_latents + (1.0 - t) * model_pred
+            # Compute predicted latent using unified framework
+            predicted_latent_for_reg = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=self.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
 
         # SNR regularization (周波数領域の過剰デノイズ抑制)
         if self.snr_regularization_loss is not None:
+            # timesteps are already [0, 1] for flow matching
             snr_reg_loss = self.snr_regularization_loss(
                 predicted_latent_for_reg,
                 latents,

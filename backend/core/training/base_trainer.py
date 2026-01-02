@@ -1437,13 +1437,19 @@ class BaseTrainer(ABC):
         # Sample random timestep (or use provided timesteps)
         batch_size = latents.shape[0]
         if timesteps is None:
-            # Legacy behavior: sample uniformly from [0, num_train_timesteps)
-            timesteps = torch.randint(
-                0,
-                self.noise_scheduler.config.num_train_timesteps,
-                (batch_size,),
-                device=self.device,
-            ).long()
+            if self.timestep_sampler is not None:
+                # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
+                timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+            else:
+                # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+                timesteps = torch.randint(
+                    0,
+                    self.noise_scheduler.config.num_train_timesteps,
+                    (batch_size,),
+                    device=self.device,
+                ).long()
         else:
             # MNT: convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
             # timesteps in [0, 1] -> scale to [0, num_train_timesteps)
@@ -1535,10 +1541,15 @@ class BaseTrainer(ABC):
         else:
             loss_per_sample_weighted = loss_per_sample
 
-        loss = loss_per_sample_weighted.mean()
+        mse_loss = loss_per_sample_weighted.mean()
 
-        # Calculate reconstruction loss for monitoring
-        with torch.no_grad():
+        # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
+        regularization_loss = torch.tensor(0.0, device=self.device)
+
+        # Compute predicted latent once (used by both regularization losses)
+        predicted_latent_for_reg = None
+        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
+            # Compute predicted latent from model_pred (keep gradients for backprop)
             alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
             alpha_bar_t = alphas_cumprod[timesteps]
             while alpha_bar_t.dim() < latents.dim():
@@ -1547,13 +1558,60 @@ class BaseTrainer(ABC):
             sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
 
             if prediction_type == "epsilon":
-                predicted_latent_for_recon = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+                predicted_latent_for_reg = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
             elif prediction_type == "v_prediction":
-                predicted_latent_for_recon = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
+                predicted_latent_for_reg = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
             elif prediction_type == "sample":
-                predicted_latent_for_recon = model_pred
+                predicted_latent_for_reg = model_pred
             else:
-                predicted_latent_for_recon = noisy_latents - model_pred
+                predicted_latent_for_reg = noisy_latents - model_pred
+
+        # SNR regularization (周波数領域の過剰デノイズ抑制)
+        if self.snr_regularization_loss is not None:
+            # Convert discrete timesteps to continuous [0, 1] for regularization
+            timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            snr_reg_loss = self.snr_regularization_loss(
+                predicted_latent_for_reg,
+                latents,
+                timesteps_continuous
+            )
+            regularization_loss = regularization_loss + snr_reg_loss
+
+        # Energy regularization (空間領域のエネルギー保存)
+        if self.energy_regularization_loss is not None:
+            # Convert discrete timesteps to continuous [0, 1] for regularization
+            timesteps_continuous = timesteps.float() / self.noise_scheduler.config.num_train_timesteps
+            energy_reg_loss = self.energy_regularization_loss(
+                predicted_latent_for_reg,
+                latents,
+                timesteps_continuous
+            )
+            regularization_loss = regularization_loss + energy_reg_loss
+
+        # Total loss
+        loss = mse_loss + regularization_loss
+
+        # Calculate reconstruction loss for monitoring
+        with torch.no_grad():
+            # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+            if predicted_latent_for_reg is not None:
+                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+            else:
+                alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device=latents.device, dtype=latents.dtype)
+                alpha_bar_t = alphas_cumprod[timesteps]
+                while alpha_bar_t.dim() < latents.dim():
+                    alpha_bar_t = alpha_bar_t.unsqueeze(-1)
+                sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
+                sqrt_one_minus_alpha_bar = torch.sqrt(1.0 - alpha_bar_t)
+
+                if prediction_type == "epsilon":
+                    predicted_latent_for_recon = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+                elif prediction_type == "v_prediction":
+                    predicted_latent_for_recon = sqrt_alpha_bar * noisy_latents - sqrt_one_minus_alpha_bar * model_pred
+                elif prediction_type == "sample":
+                    predicted_latent_for_recon = model_pred
+                else:
+                    predicted_latent_for_recon = noisy_latents - model_pred
 
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])

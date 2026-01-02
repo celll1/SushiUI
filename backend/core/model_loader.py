@@ -51,50 +51,117 @@ class ModelLoader:
             traceback.print_exc()
 
     @staticmethod
-    def detect_v_prediction(model_path: str) -> bool:
-        """Detect if a model is v-prediction by checking for 'v_pred' key in state_dict
+    def detect_prediction_config(model_path: str, model_type: str) -> Dict[str, str]:
+        """Detect prediction configuration from model metadata and state dict
 
-        V-prediction models have a 'v_pred' key in their state_dict or config.
-        This is different from standard epsilon-prediction models.
+        Supports unified training framework with noise_process and prediction_target.
+
+        Args:
+            model_path: Path to model file or directory
+            model_type: Model type ("sd15", "sdxl", "zimage")
 
         Returns:
-            True if v-prediction model, False otherwise
+            Dict with keys:
+                - noise_process: "ddpm" or "flow"
+                - prediction_target: "epsilon", "velocity", or "sample"
+                - source: "modelspec", "state_dict", "legacy", "inferred"
         """
         try:
+            metadata = {}
+            state_dict_keys = []
+
+            # Load metadata and state dict keys
             if model_path.endswith('.safetensors'):
-                # Check safetensors metadata
                 from safetensors import safe_open
                 with safe_open(model_path, framework="pt", device="cpu") as f:
-                    # Check metadata first
-                    metadata = f.metadata()
-                    if metadata:
-                        # Check for v_pred in metadata
-                        if metadata.get('v_pred') or metadata.get('prediction_type') == 'v_prediction':
-                            print(f"[ModelLoader] Detected v-prediction model from metadata: {model_path}")
-                            return True
-
-                    # Also check state dict keys for v_pred indicator
-                    keys = list(f.keys())
-                    if 'v_pred' in keys:
-                        print(f"[ModelLoader] Detected v-prediction model from state_dict keys: {model_path}")
-                        return True
+                    metadata = f.metadata() or {}
+                    state_dict_keys = list(f.keys())
 
             elif os.path.isdir(model_path):
                 # Check diffusers format config
                 config_path = os.path.join(model_path, "scheduler", "scheduler_config.json")
                 if os.path.exists(config_path):
-                    import json
                     with open(config_path, 'r') as f:
                         config = json.load(f)
-                        if config.get('prediction_type') == 'v_prediction':
-                            print(f"[ModelLoader] Detected v-prediction model from scheduler config: {model_path}")
-                            return True
+                        # Map scheduler config to metadata format
+                        if config.get('prediction_type'):
+                            metadata['prediction_type'] = config['prediction_type']
 
-            return False
+            # Priority 1: ModelSpec metadata (modelspec.noise_process + modelspec.prediction_type)
+            if "modelspec.noise_process" in metadata:
+                print(f"[ModelLoader] Detected prediction config from ModelSpec metadata")
+                return {
+                    "noise_process": metadata["modelspec.noise_process"],
+                    "prediction_target": metadata.get("modelspec.prediction_type", "epsilon"),
+                    "source": "modelspec"
+                }
+
+            # Priority 2: State dict marker (v_pred tensor)
+            if "v_pred" in state_dict_keys:
+                print(f"[ModelLoader] Detected v-prediction from state_dict marker")
+                return {
+                    "noise_process": "ddpm",
+                    "prediction_target": "velocity",
+                    "source": "state_dict"
+                }
+
+            # Priority 3: Legacy metadata (prediction_type or v_pred in metadata)
+            if metadata.get("v_pred") or metadata.get("prediction_type") == "v_prediction":
+                print(f"[ModelLoader] Detected v-prediction from legacy metadata")
+                return {
+                    "noise_process": "ddpm",
+                    "prediction_target": "velocity",
+                    "source": "legacy"
+                }
+
+            if metadata.get("prediction_type") in ["epsilon", "sample"]:
+                print(f"[ModelLoader] Detected prediction_type from legacy metadata: {metadata['prediction_type']}")
+                return {
+                    "noise_process": "ddpm",
+                    "prediction_target": metadata["prediction_type"],
+                    "source": "legacy"
+                }
+
+            # Priority 4: Infer from model architecture
+            if model_type == "zimage":
+                print(f"[ModelLoader] Inferred prediction config from Z-Image architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
+            else:  # sd15, sdxl
+                print(f"[ModelLoader] Inferred prediction config from {model_type.upper()} architecture")
+                return {
+                    "noise_process": "ddpm",
+                    "prediction_target": "epsilon",
+                    "source": "inferred"
+                }
 
         except Exception as e:
-            print(f"[ModelLoader] Warning: Could not detect v-prediction status: {e}")
-            return False
+            print(f"[ModelLoader] Error detecting prediction config: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to safe defaults
+            return {
+                "noise_process": "ddpm" if model_type != "zimage" else "flow",
+                "prediction_target": "epsilon" if model_type != "zimage" else "velocity",
+                "source": "error_fallback"
+            }
+
+    @staticmethod
+    def detect_v_prediction(model_path: str) -> bool:
+        """Legacy method for backward compatibility
+
+        Deprecated: Use detect_prediction_config() instead
+
+        Returns:
+            True if v-prediction model, False otherwise
+        """
+        # Detect model type for prediction config
+        model_type = ModelLoader.detect_model_type(model_path)
+        config = ModelLoader.detect_prediction_config(model_path, model_type)
+        return config["prediction_target"] == "velocity"
 
     @staticmethod
     def has_embedded_vae(model_path: str) -> bool:

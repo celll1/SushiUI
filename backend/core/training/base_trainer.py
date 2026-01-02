@@ -2023,9 +2023,20 @@ class BaseTrainer(ABC):
         loss = mse_loss + regularization_loss
 
         # Calculate reconstruction loss
-        # For Flow Matching, reconstruct using: x_0 = x_t + (1-t) * v_pred
         with torch.no_grad():
-            predicted_latent_for_recon = noisy_latents + (1.0 - t) * model_pred
+            # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+            if predicted_latent_for_reg is not None:
+                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+            else:
+                predicted_latent_for_recon = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
             recon_loss = recon_loss_per_sample.mean()
@@ -2039,7 +2050,14 @@ class BaseTrainer(ABC):
             timestep_value = timesteps[0].item()
 
             with torch.no_grad():
-                predicted_latent = noisy_latents + (1.0 - t) * model_pred
+                predicted_latent = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),

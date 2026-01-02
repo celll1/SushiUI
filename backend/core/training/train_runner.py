@@ -580,7 +580,73 @@ def main():
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
             trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
 
-            # Setup regularization loss (SNR or Energy)
+            # ============================================================
+            # Validate Prediction Configuration (Unified Framework)
+            # ============================================================
+            from core.model_loader import ModelLoader
+
+            # Detect model's prediction configuration
+            model_type = ModelLoader.detect_model_type(run.base_model_path)
+            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
+
+            print(f"[TrainRunner] Model prediction configuration detected:")
+            print(f"  Noise Process: {model_pred_config['noise_process']}")
+            print(f"  Prediction Target: {model_pred_config['prediction_target']}")
+            print(f"  Detection Source: {model_pred_config['source']}")
+
+            # Get training configuration (with "auto" support)
+            training_noise_process = train_config.get('noise_process', 'auto')
+            training_prediction_target = train_config.get('prediction_target', 'auto')
+            strict_validation = train_config.get('strict_validation', False)
+
+            # Auto-detect: use model's configuration
+            if training_noise_process == 'auto':
+                training_noise_process = model_pred_config['noise_process']
+                print(f"[TrainRunner] noise_process='auto' → using model's config: {training_noise_process}")
+
+            if training_prediction_target == 'auto':
+                training_prediction_target = model_pred_config['prediction_target']
+                print(f"[TrainRunner] prediction_target='auto' → using model's config: {training_prediction_target}")
+
+            # Validate compatibility
+            mismatch_warnings = []
+            if training_noise_process != model_pred_config['noise_process']:
+                mismatch_warnings.append(
+                    f"noise_process mismatch: model={model_pred_config['noise_process']}, training={training_noise_process}"
+                )
+            if training_prediction_target != model_pred_config['prediction_target']:
+                mismatch_warnings.append(
+                    f"prediction_target mismatch: model={model_pred_config['prediction_target']}, training={training_prediction_target}"
+                )
+
+            if mismatch_warnings:
+                print(f"\n{'='*60}")
+                print(f"[TrainRunner] ⚠️  PREDICTION CONFIG MISMATCH DETECTED")
+                print(f"{'='*60}")
+                for warning in mismatch_warnings:
+                    print(f"  • {warning}")
+                print(f"\nThis may cause training instability or poor convergence.")
+                print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
+                print(f"You are training with: {training_noise_process} + {training_prediction_target}")
+
+                if strict_validation:
+                    print(f"\n❌ strict_validation=True: Aborting training due to mismatch.")
+                    print(f"{'='*60}\n")
+                    sys.exit(1)
+                else:
+                    print(f"\n⚠️  strict_validation=False: Continuing with warning.")
+                    print(f"Set strict_validation=true in training config to abort on mismatch.")
+                    print(f"{'='*60}\n")
+            else:
+                print(f"[TrainRunner] ✓ Prediction configuration validated successfully")
+
+            # Store final training config for trainer
+            trainer.noise_process = training_noise_process
+            trainer.prediction_target = training_prediction_target
+
+            # ============================================================
+            # Setup Regularization Loss (SNR or Energy)
+            # ============================================================
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:
                 print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
@@ -824,7 +890,73 @@ def main():
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
             trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
 
-            # Setup regularization loss (SNR or Energy)
+            # ============================================================
+            # Validate Prediction Configuration (Unified Framework)
+            # ============================================================
+            from core.model_loader import ModelLoader
+
+            # Detect model's prediction configuration
+            model_type = ModelLoader.detect_model_type(run.base_model_path)
+            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
+
+            print(f"[TrainRunner] Model prediction configuration detected:")
+            print(f"  Noise Process: {model_pred_config['noise_process']}")
+            print(f"  Prediction Target: {model_pred_config['prediction_target']}")
+            print(f"  Detection Source: {model_pred_config['source']}")
+
+            # Get training configuration (with "auto" support)
+            training_noise_process = train_config.get('noise_process', 'auto')
+            training_prediction_target = train_config.get('prediction_target', 'auto')
+            strict_validation = train_config.get('strict_validation', False)
+
+            # Auto-detect: use model's configuration
+            if training_noise_process == 'auto':
+                training_noise_process = model_pred_config['noise_process']
+                print(f"[TrainRunner] noise_process='auto' → using model's config: {training_noise_process}")
+
+            if training_prediction_target == 'auto':
+                training_prediction_target = model_pred_config['prediction_target']
+                print(f"[TrainRunner] prediction_target='auto' → using model's config: {training_prediction_target}")
+
+            # Validate compatibility
+            mismatch_warnings = []
+            if training_noise_process != model_pred_config['noise_process']:
+                mismatch_warnings.append(
+                    f"noise_process mismatch: model={model_pred_config['noise_process']}, training={training_noise_process}"
+                )
+            if training_prediction_target != model_pred_config['prediction_target']:
+                mismatch_warnings.append(
+                    f"prediction_target mismatch: model={model_pred_config['prediction_target']}, training={training_prediction_target}"
+                )
+
+            if mismatch_warnings:
+                print(f"\n{'='*60}")
+                print(f"[TrainRunner] ⚠️  PREDICTION CONFIG MISMATCH DETECTED")
+                print(f"{'='*60}")
+                for warning in mismatch_warnings:
+                    print(f"  • {warning}")
+                print(f"\nThis may cause training instability or poor convergence.")
+                print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
+                print(f"You are training with: {training_noise_process} + {training_prediction_target}")
+
+                if strict_validation:
+                    print(f"\n❌ strict_validation=True: Aborting training due to mismatch.")
+                    print(f"{'='*60}\n")
+                    sys.exit(1)
+                else:
+                    print(f"\n⚠️  strict_validation=False: Continuing with warning.")
+                    print(f"Set strict_validation=true in training config to abort on mismatch.")
+                    print(f"{'='*60}\n")
+            else:
+                print(f"[TrainRunner] ✓ Prediction configuration validated successfully")
+
+            # Store final training config for trainer
+            trainer.noise_process = training_noise_process
+            trainer.prediction_target = training_prediction_target
+
+            # ============================================================
+            # Setup Regularization Loss (SNR or Energy)
+            # ============================================================
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:
                 print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")

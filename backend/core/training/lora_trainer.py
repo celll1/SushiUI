@@ -618,7 +618,7 @@ class LoRATrainer(BaseTrainer):
             # Add alpha value (LoRA scaling parameter)
             state_dict[f"{key_prefix}.alpha"] = torch.tensor(self.lora_alpha, dtype=self.output_dtype)
 
-        # Add metadata (diffusers-compatible format)
+        # Add metadata (diffusers-compatible format + ModelSpec)
         metadata = {
             "format": "diffusers",  # Indicate this is diffusers format, not SD format
             "lora_rank": str(self.lora_rank),
@@ -627,6 +627,23 @@ class LoRATrainer(BaseTrainer):
             "training_step": str(step),
             "output_dtype": str(self.output_dtype),
         }
+
+        # Add ModelSpec 1.0.0 metadata for prediction configuration
+        # Note: LoRA inherits prediction config from base model, so we save it for reference
+        if hasattr(self, 'noise_process') and hasattr(self, 'prediction_target'):
+            # ModelSpec standard keys
+            metadata["modelspec.architecture"] = "lora"
+            metadata["modelspec.implementation"] = "https://github.com/huggingface/diffusers"
+            metadata["modelspec.title"] = f"LoRA trained on {Path(self.model_path).stem}"
+
+            # Prediction configuration (unified training framework)
+            metadata["modelspec.noise_process"] = self.noise_process  # "ddpm" or "flow"
+            metadata["modelspec.prediction_type"] = self.prediction_target  # "epsilon", "velocity", "sample"
+
+            # Legacy compatibility: add v_pred marker for v-prediction models
+            if self.prediction_target == "velocity" and self.noise_process == "ddpm":
+                # Add empty v_pred tensor as marker (NoobAI-XL-Vpred style)
+                state_dict["v_pred"] = torch.tensor([], dtype=self.output_dtype)
 
         # Save as safetensors
         save_file(state_dict, str(save_path), metadata=metadata)

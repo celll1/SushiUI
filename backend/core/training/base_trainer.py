@@ -679,6 +679,10 @@ class BaseTrainer(ABC):
             self.tokenizer = temp_pipeline.tokenizer
             self.unet = temp_pipeline.unet
 
+            # Save original scheduler for inference (sample generation)
+            # This preserves the model's original scheduler config (prediction_type, timestep_spacing, etc.)
+            self.original_scheduler = temp_pipeline.scheduler
+
             # Use DDPMScheduler for training
             self.noise_scheduler = DDPMScheduler(
                 beta_start=0.00085,
@@ -725,6 +729,14 @@ class BaseTrainer(ABC):
                 torch_dtype=self.dtype
             )
 
+            # Save original scheduler for inference (sample generation)
+            from diffusers.schedulers import EulerDiscreteScheduler
+            self.original_scheduler = EulerDiscreteScheduler.from_pretrained(
+                self.model_path,
+                subfolder="scheduler"
+            )
+
+            # Use DDPMScheduler for training
             self.noise_scheduler = DDPMScheduler.from_pretrained(
                 self.model_path,
                 subfolder="scheduler"
@@ -1322,10 +1334,13 @@ class BaseTrainer(ABC):
             context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
 
             with context_manager:
-                text_embeddings_1 = self.text_encoder(
+                # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
+                encoder_output_1 = self.text_encoder(
                     text_inputs_1.input_ids.to(self.device),
-                    output_hidden_states=False,
-                )[0]
+                    output_hidden_states=True,
+                )
+                text_embeddings_1 = encoder_output_1.hidden_states[-2]
 
                 encoder_output_2 = self.text_encoder_2(
                     text_inputs_2.input_ids.to(self.device),
@@ -2122,9 +2137,12 @@ class BaseTrainer(ABC):
         num_inference_steps: int = 28,
         guidance_scale: float = 3.5,
         seed: int = -1,
-    ) -> Image.Image:
+        current_step: int = 0,
+        schedule_type: str = "uniform",
+    ) -> "Image.Image":
         """
         Generate sample image during training (SD/SDXL).
+        Uses custom_sampling_loop() - EXACTLY the same method as normal txt2img generation.
 
         Args:
             prompt: Text prompt
@@ -2133,13 +2151,20 @@ class BaseTrainer(ABC):
             num_inference_steps: Number of denoising steps
             guidance_scale: CFG scale
             seed: Random seed (-1 for random)
+            current_step: Current training step (for logging)
+            schedule_type: Timestep schedule type (uniform, karras, exponential)
 
         Returns:
             PIL Image
         """
+        from PIL import Image
+        from core.inference.custom_sampling import custom_sampling_loop
+        from core.inference.schedulers import get_scheduler
+        import random
+
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
 
-        # Set models to eval mode for inference
+        # Set models to eval mode
         self.unet.eval()
         self.vae.eval()
         self.text_encoder.eval()
@@ -2147,181 +2172,189 @@ class BaseTrainer(ABC):
             self.text_encoder_2.eval()
 
         try:
-            # ============================================================
-            # Stage 1: Text Encoding (Sequential Offloading Pattern)
-            # ============================================================
-            # Move Text Encoder to GPU for encoding
+            # ========================================
+            # STEP 1: Create Temporary Pipeline Object
+            # ========================================
+            # custom_sampling_loop() requires a pipeline object with scheduler, unet, vae, etc.
+            # Create a minimal pipeline-like object with necessary components
+
+            if self.is_sdxl:
+                from diffusers import StableDiffusionXLPipeline
+                # Create a minimal pipeline object
+                class TempPipeline:
+                    def __init__(self, unet, vae, text_encoder, text_encoder_2, scheduler, tokenizer, tokenizer_2):
+                        self.unet = unet
+                        self.vae = vae
+                        self.text_encoder = text_encoder
+                        self.text_encoder_2 = text_encoder_2
+                        self.scheduler = scheduler
+                        self.tokenizer = tokenizer
+                        self.tokenizer_2 = tokenizer_2
+                        # Set default config
+                        self.vae_scale_factor = 8
+                        self.image_processor = None  # Not needed for custom_sampling_loop
+
+                # Map schedule_type (sgm_uniform -> uniform)
+                schedule_type_mapped = schedule_type
+                if schedule_type == "sgm_uniform":
+                    schedule_type_mapped = "uniform"
+
+                # Create scheduler using get_scheduler()
+                class SchedulerContainer:
+                    def __init__(self, scheduler):
+                        self.scheduler = scheduler
+
+                scheduler_container = SchedulerContainer(self.original_scheduler)
+                scheduler = get_scheduler(
+                    pipeline=scheduler_container,
+                    sampler="euler",
+                    schedule_type=schedule_type_mapped
+                )
+
+                # Create temporary pipeline
+                pipeline = TempPipeline(
+                    unet=self.unet,
+                    vae=self.vae,
+                    text_encoder=self.text_encoder,
+                    text_encoder_2=self.text_encoder_2,
+                    scheduler=scheduler,
+                    tokenizer=self.tokenizer,
+                    tokenizer_2=self.tokenizer_2
+                )
+            else:
+                from diffusers import StableDiffusionPipeline
+                # Create a minimal pipeline object for SD1.5
+                class TempPipeline:
+                    def __init__(self, unet, vae, text_encoder, scheduler, tokenizer):
+                        self.unet = unet
+                        self.vae = vae
+                        self.text_encoder = text_encoder
+                        self.scheduler = scheduler
+                        self.tokenizer = tokenizer
+                        # Set default config
+                        self.vae_scale_factor = 8
+                        self.image_processor = None  # Not needed for custom_sampling_loop
+
+                # Map schedule_type (sgm_uniform -> uniform)
+                schedule_type_mapped = schedule_type
+                if schedule_type == "sgm_uniform":
+                    schedule_type_mapped = "uniform"
+
+                # Create scheduler using get_scheduler()
+                class SchedulerContainer:
+                    def __init__(self, scheduler):
+                        self.scheduler = scheduler
+
+                scheduler_container = SchedulerContainer(self.original_scheduler)
+                scheduler = get_scheduler(
+                    pipeline=scheduler_container,
+                    sampler="euler",
+                    schedule_type=schedule_type_mapped
+                )
+
+                # Create temporary pipeline
+                pipeline = TempPipeline(
+                    unet=self.unet,
+                    vae=self.vae,
+                    text_encoder=self.text_encoder,
+                    scheduler=scheduler,
+                    tokenizer=self.tokenizer
+                )
+
+            # ========================================
+            # STEP 2: Text Encoding
+            # ========================================
             self.move_text_encoder_to_gpu()
 
             # Encode prompt
             if self.is_sdxl:
-                text_embeddings, pooled_embeddings = self.encode_prompt(prompt, requires_grad=False)
-                # Generate unconditional embeddings for CFG
-                uncond_embeddings, uncond_pooled = self.encode_prompt("", requires_grad=False)
+                prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt("", requires_grad=False)
             else:
-                text_embeddings = self.encode_prompt(prompt, requires_grad=False)
-                uncond_embeddings = self.encode_prompt("", requires_grad=False)
-                pooled_embeddings = None
-                uncond_pooled = None
+                prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                pooled_prompt_embeds = None
+                negative_pooled_prompt_embeds = None
 
-            # Move Text Encoder back to CPU to free VRAM
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
 
-            # Prepare latents with seed
-            latent_height = height // 8
-            latent_width = width // 8
-            generator = None
-            if seed >= 0:
-                generator = torch.Generator(device=self.device).manual_seed(seed)
-            latents = torch.randn(
-                (1, self.unet.config.in_channels, latent_height, latent_width),
-                device=self.device,
-                dtype=self.training_dtype,
-                generator=generator,
-            )
+            # ========================================
+            # STEP 3: Create Generator
+            # ========================================
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
 
-            # Setup scheduler for inference
-            # CRITICAL: Create fresh inference scheduler with proper config
-            # Do NOT reuse training scheduler config (DDPM has incompatible params)
-            from diffusers import EulerDiscreteScheduler
-            inference_scheduler = EulerDiscreteScheduler(
-                num_train_timesteps=1000,
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                prediction_type=self.noise_scheduler.config.prediction_type,
-                timestep_spacing="leading",  # CRITICAL: Inference config (not "trailing" from training)
-                steps_offset=0,              # CRITICAL: Inference config (not 1 from training)
-            )
-            inference_scheduler.set_timesteps(num_inference_steps)
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
-            # CRITICAL: Scale latents by init_noise_sigma
-            # Latents are sampled from N(0, 1) but scheduler expects N(0, sigma_max^2)
-            latents = latents * inference_scheduler.init_noise_sigma
-
-            # Log scheduler config for debugging
-            print(f"{self.log_prefix} [Sample] Scheduler: {type(inference_scheduler).__name__}")
-            print(f"{self.log_prefix} [Sample] prediction_type: {inference_scheduler.config.prediction_type}")
-            print(f"{self.log_prefix} [Sample] timestep_spacing: {inference_scheduler.config.timestep_spacing}")
-            print(f"{self.log_prefix} [Sample] steps_offset: {inference_scheduler.config.steps_offset}")
-            print(f"{self.log_prefix} [Sample] init_noise_sigma: {inference_scheduler.init_noise_sigma:.4f}")
-
-            # ============================================================
-            # Stage 2: U-Net Inference (Sequential Offloading Pattern)
-            # ============================================================
-            # Move U-Net to GPU for denoising
+            # ========================================
+            # STEP 4: Call custom_sampling_loop (SAME as pipeline.generate_txt2img)
+            # ========================================
             self.move_main_model_to_gpu()
-
-            # Get U-Net dtype (keep it in training_dtype, don't convert to avoid precision loss)
-            unet_dtype = next(self.unet.parameters()).dtype
-            print(f"{self.log_prefix} [Sample] U-Net dtype: {unet_dtype}, keeping as-is for inference")
-
-            # Convert text embeddings to U-Net dtype
-            text_embeddings = text_embeddings.to(dtype=unet_dtype)
-            uncond_embeddings = uncond_embeddings.to(dtype=unet_dtype)
-            if pooled_embeddings is not None:
-                pooled_embeddings = pooled_embeddings.to(dtype=unet_dtype)
-            if uncond_pooled is not None:
-                uncond_pooled = uncond_pooled.to(dtype=unet_dtype)
-
-            # Denoising loop
-            with torch.no_grad():
-                for t in tqdm(inference_scheduler.timesteps, desc="Generating"):
-                    # Check for stop flag during sample generation (allow graceful shutdown)
-                    stop_flag_file = self.output_dir / ".stop_training"
-                    if stop_flag_file.exists():
-                        print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
-                        raise KeyboardInterrupt("Training stopped by user during sample generation")
-
-                    # Prepare latent input (convert to U-Net dtype)
-                    latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
-                    latent_model_input = inference_scheduler.scale_model_input(latent_model_input, t)
-                    latent_model_input = latent_model_input.to(dtype=unet_dtype)
-
-                    # Prepare text embeddings
-                    if guidance_scale > 1.0:
-                        text_input = torch.cat([uncond_embeddings, text_embeddings])
-                    else:
-                        text_input = text_embeddings
-
-                    # Prepare added_cond_kwargs for SDXL
-                    added_cond_kwargs = None
-                    if self.is_sdxl:
-                        if guidance_scale > 1.0:
-                            pooled_input = torch.cat([uncond_pooled, pooled_embeddings])
-                        else:
-                            pooled_input = pooled_embeddings
-
-                        time_ids = torch.tensor([[height, width, 0, 0, height, width]], device=self.device, dtype=unet_dtype)
-                        if guidance_scale > 1.0:
-                            time_ids = time_ids.repeat(2, 1)
-
-                        added_cond_kwargs = {
-                            "text_embeds": pooled_input,
-                            "time_ids": time_ids
-                        }
-
-                    # Predict noise
-                    timestep = t.to(self.device)
-                    if self.is_sdxl and added_cond_kwargs is not None:
-                        noise_pred = self.unet(
-                            latent_model_input,
-                            timestep,
-                            text_input,
-                            added_cond_kwargs=added_cond_kwargs
-                        ).sample
-                    else:
-                        noise_pred = self.unet(
-                            latent_model_input,
-                            timestep,
-                            text_input
-                        ).sample
-
-                    # CFG
-                    if guidance_scale > 1.0:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                    # Denoise step
-                    latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
-
-            # Move U-Net back to CPU to free VRAM
-            # (U-Net remains in training_dtype, no conversion needed)
-            self.move_main_model_to_cpu()
-            torch.cuda.empty_cache()
-
-            # ============================================================
-            # Stage 3: VAE Decode (Sequential Offloading Pattern)
-            # ============================================================
-            # Move VAE to GPU for decoding
             self.move_vae_to_gpu()
 
-            # Decode latents
-            latents = latents / self.vae.config.scaling_factor
-            with torch.no_grad():
-                image = self.vae.decode(latents.to(self.vae.dtype)).sample
+            # Detect v-prediction and apply guidance_rescale if needed
+            is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
+            guidance_rescale = 0.7 if is_v_prediction else 0.0
 
-            # Move VAE back to CPU after decoding
+            print(f"{self.log_prefix} [Sample] Using custom_sampling_loop()")
+            print(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
+            print(f"{self.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
+
+            image = custom_sampling_loop(
+                pipeline=pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                guidance_rescale=guidance_rescale,
+                width=width,
+                height=height,
+                generator=generator,
+                ancestral_generator=None,  # Not needed for training samples
+                latents=None,
+                prompt_embeds_callback=None,  # No prompt editing for training samples
+                progress_callback=None,
+                step_callback=None,
+                developer_mode=False,
+                cfg_schedule_type="constant",  # Simple constant CFG for training samples
+                cfg_schedule_min=1.0,
+                cfg_schedule_max=None,
+                cfg_schedule_power=2.0,
+                cfg_rescale_snr_alpha=0.0,
+                dynamic_threshold_percentile=0.0,
+                dynamic_threshold_mimic_scale=1.0,
+                nag_enable=False,  # No NAG for training samples
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type="normal",  # Normal attention for training samples
+            )
+
+            # Move models back to CPU
+            self.move_main_model_to_cpu()
             self.move_vae_to_cpu()
             torch.cuda.empty_cache()
 
-            # Convert to PIL
-            image = (image / 2 + 0.5).clamp(0, 1)
-            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-            image = (image * 255).astype(np.uint8)[0]
-
-            return Image.fromarray(image)
+            print(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
+            return image
 
         finally:
-            # Restore models to train mode
+            # Restore training mode
             self.unet.train()
             self.vae.train()
             self.text_encoder.train()
             if self.text_encoder_2 is not None:
                 self.text_encoder_2.train()
 
-            # Move U-Net back to GPU for training continuation
+            # Ensure U-Net is back on GPU for training continuation
             self.move_main_model_to_gpu()
 
     def _generate_sample_zimage(
@@ -3157,6 +3190,7 @@ class BaseTrainer(ABC):
         sample_width: int = 1024,
         sample_height: int = 1024,
         sample_seed: int = -1,
+        sample_schedule_type: str = "uniform",
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
@@ -3478,6 +3512,37 @@ class BaseTrainer(ABC):
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
+
+        # Generate step 0 sample to verify base model output
+        if sample_every_n_steps > 0 and global_step == 0:
+            print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
+            print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+            if self.is_zimage:
+                sample = self._generate_sample_zimage(
+                    prompt=sample_prompt,
+                    width=sample_width,
+                    height=sample_height,
+                    num_inference_steps=sample_steps,
+                    guidance_scale=sample_guidance_scale,
+                    seed=sample_seed
+                )
+            else:
+                sample = self.generate_sample(
+                    prompt=sample_prompt,
+                    width=sample_width,
+                    height=sample_height,
+                    num_inference_steps=sample_steps,
+                    guidance_scale=sample_guidance_scale,
+                    seed=sample_seed,
+                    current_step=0,
+                    schedule_type=sample_schedule_type
+                )
+
+            # Save step 0 sample
+            sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+            sample_path.parent.mkdir(parents=True, exist_ok=True)
+            sample.save(sample_path)
+            print(f"{self.log_prefix} [Step 0] Saved sample to {sample_path.relative_to(self.output_dir)}")
 
         try:
             for epoch in range(start_epoch, num_epochs):
@@ -4049,7 +4114,12 @@ class BaseTrainer(ABC):
                             torch.cuda.empty_cache()
 
                         # Generate sample
-                        if global_step % sample_every_n_steps == 0:
+                        # Also generate at step 0 to verify base model output
+                        should_generate_sample = (
+                            (global_step == 0 and sample_every_n_steps > 0) or
+                            (global_step > 0 and global_step % sample_every_n_steps == 0)
+                        )
+                        if should_generate_sample:
                             print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
                             if self.is_zimage:
                                 sample = self._generate_sample_zimage(
@@ -4067,7 +4137,9 @@ class BaseTrainer(ABC):
                                     height=sample_height,
                                     num_inference_steps=sample_steps,
                                     guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed
+                                    seed=sample_seed,
+                                    current_step=global_step,
+                                    schedule_type=sample_schedule_type
                                 )
 
                             # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png

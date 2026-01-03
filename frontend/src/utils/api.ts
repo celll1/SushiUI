@@ -1481,7 +1481,8 @@ export const getTrainingMetrics = async (
   if (sinceStep !== undefined) {
     params.since_step = sinceStep;
   }
-  const response = await api.get(`/training/runs/${runId}/metrics`, { params });
+  // Use new DB endpoint (faster than TensorBoard event file parsing)
+  const response = await api.get(`/training/runs/${runId}/metrics_db`, { params });
   return response.data;
 };
 

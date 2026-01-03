@@ -86,6 +86,7 @@ class LoRATrainer(BaseTrainer):
         model_path: str,
         output_dir: str,
         run_name: str = None,
+        run_id: Optional[int] = None,  # Database run ID for metrics logging
         lora_rank: int = 16,
         lora_alpha: int = 16,
         learning_rate: float = 1e-4,
@@ -155,6 +156,7 @@ class LoRATrainer(BaseTrainer):
             model_path=model_path,
             output_dir=output_dir,
             run_name=run_name,
+            run_id=run_id,  # Pass run_id for DB metrics logging
             learning_rate=learning_rate,
             device=device,
             weight_dtype=weight_dtype,

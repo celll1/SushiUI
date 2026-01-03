@@ -550,6 +550,7 @@ def main():
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
                 run_name=run.run_name,  # Pass run_name for checkpoint filename generation
+                run_id=run_id,  # Pass run_id for DB metrics logging
                 lora_rank=network_config.get('linear', 16),
                 lora_alpha=network_config.get('linear_alpha', 16),
                 learning_rate=train_config.get('lr', 1e-4),

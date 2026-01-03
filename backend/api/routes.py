@@ -5306,6 +5306,97 @@ async def get_training_metrics(
         raise HTTPException(status_code=500, detail=f"Failed to read metrics: {str(e)}")
 
 
+@router.get("/training/runs/{run_id}/metrics_db")
+async def get_training_metrics_db(
+    run_id: int,
+    since_step: Optional[int] = None,
+    max_points: int = 1000,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Get training metrics from database (faster than TensorBoard).
+
+    This endpoint reads metrics from SQLAlchemy DB instead of TensorBoard event files,
+    providing much faster queries for large training runs.
+
+    Features:
+    - Incremental fetching: Use since_step to get only new data points
+    - Automatic decimation: Returns at most max_points data points
+    - Indexed queries: Fast filtering by (run_id, step)
+    - UPSERT-safe: Metrics with same (run_id, step) are overwritten (training restart support)
+
+    Args:
+        run_id: Training run ID
+        since_step: Only return data after this step (for incremental updates)
+        max_points: Maximum number of data points to return (default: 1000)
+
+    Returns:
+        {
+            "loss": [{"step": int, "value": float, "timestamp": str}, ...],
+            "recon_loss": [{"step": int, "value": float, "timestamp": str}, ...],
+            "learning_rate": [{"step": int, "value": float, "timestamp": str}, ...]
+        }
+    """
+    from database.models import TrainingMetrics
+
+    # Check if run exists
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    try:
+        # Build query with filters
+        query = db.query(TrainingMetrics).filter(TrainingMetrics.run_id == run_id)
+
+        if since_step is not None:
+            query = query.filter(TrainingMetrics.step > since_step)
+
+        # Order by step ascending
+        query = query.order_by(TrainingMetrics.step.asc())
+
+        # Decimate if necessary (simple nth-point sampling)
+        total_count = query.count()
+        if total_count > max_points:
+            # Calculate step size for decimation
+            step_size = total_count // max_points
+            # Fetch all, then decimate (SQLite doesn't have ROW_NUMBER)
+            all_metrics = query.all()
+            metrics = [all_metrics[i] for i in range(0, len(all_metrics), step_size)][:max_points]
+        else:
+            metrics = query.all()
+
+        # Convert to response format
+        loss_data = []
+        recon_loss_data = []
+        lr_data = []
+
+        for m in metrics:
+            point = {
+                "step": m.step,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None
+            }
+
+            if m.loss is not None:
+                loss_data.append({**point, "value": m.loss})
+
+            if m.recon_loss is not None:
+                recon_loss_data.append({**point, "value": m.recon_loss})
+
+            if m.learning_rate is not None:
+                lr_data.append({**point, "value": m.learning_rate})
+
+        return {
+            "loss": loss_data,
+            "recon_loss": recon_loss_data,
+            "learning_rate": lr_data
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to read metrics from DB: {str(e)}")
+
+
 @router.get("/training/runs/{run_id}/samples")
 async def get_training_samples(
     run_id: int,

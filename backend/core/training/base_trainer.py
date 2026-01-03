@@ -400,6 +400,7 @@ class BaseTrainer(ABC):
         model_path: str,
         output_dir: str,
         run_name: str = None,
+        run_id: Optional[int] = None,  # Database run ID for metrics logging
         learning_rate: float = 1e-4,
         device: str = "cuda",
         weight_dtype: str = "fp16",
@@ -435,7 +436,7 @@ class BaseTrainer(ABC):
         optimizer_warmup_steps: int = 0,
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
-    optimizer_use_radam: bool = False,
+        optimizer_use_radam: bool = False,
     ):
         """
         Initialize base trainer.
@@ -458,6 +459,7 @@ class BaseTrainer(ABC):
         self.model_path = model_path
         self.output_dir = Path(output_dir)
         self.run_name = run_name or Path(output_dir).name
+        self.run_id = run_id  # Database run ID (for dual logging: TensorBoard + DB)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.learning_rate = learning_rate
@@ -4268,9 +4270,21 @@ class BaseTrainer(ABC):
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()
                         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+                        current_lr = self.lr_scheduler.get_last_lr()[0]
+
+                        # TensorBoard logging (for external tools, backward compatibility)
                         self.writer.add_scalar("train/loss", loss_value, global_step)
                         self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)
-                        self.writer.add_scalar("train/lr", self.lr_scheduler.get_last_lr()[0], global_step)
+                        self.writer.add_scalar("train/lr", current_lr, global_step)
+
+                        # Database logging (for fast frontend queries, UPSERT on duplicate step)
+                        if self.run_id is not None:
+                            self._log_metrics_to_db(
+                                step=global_step,
+                                loss=loss_value,
+                                recon_loss=recon_loss_value,
+                                learning_rate=current_lr
+                            )
 
                         # Flush TensorBoard writer periodically to prevent DRAM accumulation
                         # (TensorBoard buffers events internally, can accumulate GBs over long training)
@@ -4414,6 +4428,61 @@ class BaseTrainer(ABC):
 
         # Cleanup resources
         self.cleanup()
+
+    def _log_metrics_to_db(self, step: int, loss: float, recon_loss: float, learning_rate: float):
+        """
+        Log training metrics to database (dual logging: TensorBoard + DB).
+
+        Features:
+        - UPSERT behavior: Same (run_id, step) will overwrite existing values
+        - Allows training restart from checkpoint without duplicating metrics
+        - Fast queries: indexed by (run_id, step) for incremental fetching
+
+        Args:
+            step: Global training step
+            loss: Total loss value
+            recon_loss: Reconstruction loss value
+            learning_rate: Current learning rate
+        """
+        try:
+            from database.models import TrainingMetrics
+            from database.db_setup import get_training_db
+
+            # Get database session
+            db = next(get_training_db())
+
+            # UPSERT: Check if metric exists for this (run_id, step)
+            existing = db.query(TrainingMetrics).filter(
+                TrainingMetrics.run_id == self.run_id,
+                TrainingMetrics.step == step
+            ).first()
+
+            if existing:
+                # Update existing metric (training restarted from checkpoint)
+                existing.loss = loss
+                existing.recon_loss = recon_loss
+                existing.learning_rate = learning_rate
+                existing.timestamp = datetime.now()
+            else:
+                # Insert new metric
+                metric = TrainingMetrics(
+                    run_id=self.run_id,
+                    step=step,
+                    loss=loss,
+                    recon_loss=recon_loss,
+                    learning_rate=learning_rate
+                )
+                db.add(metric)
+
+            # Commit every 10 steps to reduce I/O overhead
+            if step % 10 == 0:
+                db.commit()
+
+            db.close()
+
+        except Exception as e:
+            # Non-critical: Continue training even if DB logging fails
+            print(f"{self.log_prefix} WARNING: Failed to log metrics to DB: {e}")
 
     def cleanup(self):
         """

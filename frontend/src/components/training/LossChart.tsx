@@ -72,7 +72,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       const data = await getTrainingMetrics(runId, sinceStep);
 
       // Merge new data with existing data and limit total points to prevent memory accumulation
-      const MAX_POINTS = 5000; // Limit frontend memory usage for long-duration training
+      const MAX_POINTS = 1000; // Limit frontend memory usage for long-duration training
 
       setLossData((prevData) => {
         let newData = sinceStep !== undefined ? [...prevData, ...data.loss] : data.loss;

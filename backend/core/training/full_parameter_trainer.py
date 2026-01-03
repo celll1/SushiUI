@@ -41,6 +41,9 @@ class FullParameterTrainer(BaseTrainer):
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
         num_optimizer_groups: int = 0,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",
+        max_prompt_chunks: int = 0,
     ):
         """
         Initialize full parameter trainer.
@@ -92,6 +95,8 @@ class FullParameterTrainer(BaseTrainer):
             blocks_to_swap=blocks_to_swap,
             use_pinned_memory=use_pinned_memory,
             num_optimizer_groups=num_optimizer_groups,
+            prompt_chunking_mode=prompt_chunking_mode,
+            max_prompt_chunks=max_prompt_chunks,
         )
 
         # Override log prefix

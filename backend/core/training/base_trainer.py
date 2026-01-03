@@ -4446,7 +4446,7 @@ class BaseTrainer(ABC):
         """
         try:
             from database.models import TrainingMetrics
-            from database.db_setup import get_training_db
+            from database import get_training_db
 
             # Get database session
             db = next(get_training_db())

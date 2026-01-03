@@ -2309,6 +2309,13 @@ class BaseTrainer(ABC):
         if self.text_encoder_2 is not None:
             self.text_encoder_2.eval()
 
+        # Debug: Check if LoRA is applied to U-Net
+        lora_layers_found = 0
+        for name, module in self.unet.named_modules():
+            if hasattr(module, 'lora_down') or 'LoRA' in type(module).__name__:
+                lora_layers_found += 1
+        print(f"{self.log_prefix} [Sample] U-Net has {lora_layers_found} LoRA layers")
+
         try:
             # ========================================
             # STEP 1: Create Temporary Pipeline Object

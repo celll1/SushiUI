@@ -2184,6 +2184,18 @@ class BaseTrainer(ABC):
         # Move U-Net to GPU for denoising
         self.move_main_model_to_gpu()
 
+        # Get U-Net dtype (keep it in training_dtype, don't convert to avoid precision loss)
+        unet_dtype = next(self.unet.parameters()).dtype
+        print(f"{self.log_prefix} [Sample] U-Net dtype: {unet_dtype}, keeping as-is for inference")
+
+        # Convert text embeddings to U-Net dtype
+        text_embeddings = text_embeddings.to(dtype=unet_dtype)
+        uncond_embeddings = uncond_embeddings.to(dtype=unet_dtype)
+        if pooled_embeddings is not None:
+            pooled_embeddings = pooled_embeddings.to(dtype=unet_dtype)
+        if uncond_pooled is not None:
+            uncond_pooled = uncond_pooled.to(dtype=unet_dtype)
+
         # Denoising loop
         with torch.no_grad():
             for t in tqdm(inference_scheduler.timesteps, desc="Generating"):
@@ -2193,9 +2205,10 @@ class BaseTrainer(ABC):
                     print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
                     raise KeyboardInterrupt("Training stopped by user during sample generation")
 
-                # Prepare latent input
+                # Prepare latent input (convert to U-Net dtype)
                 latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
                 latent_model_input = inference_scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = latent_model_input.to(dtype=unet_dtype)
 
                 # Prepare text embeddings
                 if guidance_scale > 1.0:
@@ -2211,7 +2224,7 @@ class BaseTrainer(ABC):
                     else:
                         pooled_input = pooled_embeddings
 
-                    time_ids = torch.tensor([[height, width, 0, 0, height, width]], device=self.device, dtype=self.training_dtype)
+                    time_ids = torch.tensor([[height, width, 0, 0, height, width]], device=self.device, dtype=unet_dtype)
                     if guidance_scale > 1.0:
                         time_ids = time_ids.repeat(2, 1)
 
@@ -2245,6 +2258,7 @@ class BaseTrainer(ABC):
                 latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
 
         # Move U-Net back to CPU to free VRAM
+        # (U-Net remains in training_dtype, no conversion needed)
         self.move_main_model_to_cpu()
         torch.cuda.empty_cache()
 

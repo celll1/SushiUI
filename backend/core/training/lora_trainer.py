@@ -146,7 +146,7 @@ class LoRATrainer(BaseTrainer):
         self.text_encoder_1_lr = text_encoder_1_lr or text_encoder_lr or (learning_rate * 0.5)
         self.text_encoder_2_lr = text_encoder_2_lr or text_encoder_lr or (learning_rate * 0.5)
 
-        # Call parent __init__ (will call setup_trainable_parameters)
+        # Call parent __init__ (loads model components)
         super().__init__(
             model_path=model_path,
             output_dir=output_dir,
@@ -175,6 +175,11 @@ class LoRATrainer(BaseTrainer):
 
         # Override log prefix
         self.specific_log_prefix = "[LoRATrainer]"
+
+        # Apply LoRA layers to loaded model components
+        # This must be called AFTER parent __init__ (model components loaded)
+        # and BEFORE train_runner calls setup_optimizer()
+        self.setup_trainable_parameters()
 
     def setup_trainable_parameters(self):
         """

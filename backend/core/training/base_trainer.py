@@ -3951,7 +3951,16 @@ class BaseTrainer(ABC):
                             self.save_checkpoint(step=global_step, epoch=epoch)
                             # Save training state (epoch progress) for mid-epoch resume
                             self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
-                            self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                            # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
+                            if hasattr(self, '_cleanup_old_checkpoints'):
+                                import inspect
+                                sig = inspect.signature(self._cleanup_old_checkpoints)
+                                if len(sig.parameters) == 3:
+                                    # LoRATrainer version: (current_step, max_to_keep, save_every)
+                                    self._cleanup_old_checkpoints(global_step, max_step_saves_to_keep, save_every_n_steps)
+                                else:
+                                    # BaseTrainer/FullParameterTrainer version: (max_step_saves_to_keep)
+                                    self._cleanup_old_checkpoints(max_step_saves_to_keep)
                             # Clear CUDA cache after checkpoint save to free temporary buffers
                             torch.cuda.empty_cache()
 

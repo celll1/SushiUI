@@ -398,6 +398,10 @@ class TrainingConfigGenerator:
         energy_timestep_adaptive: bool = True,
         energy_penalty_mode: str = "abs",
         energy_normalize_by_pixels: bool = True,
+        # Unified training framework settings
+        noise_process: str = "add_noise",
+        prediction_target: str = "auto",
+        strict_validation: bool = True,
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -476,6 +480,10 @@ class TrainingConfigGenerator:
             "energy_timestep_adaptive": energy_timestep_adaptive,
             "energy_penalty_mode": energy_penalty_mode,
             "energy_normalize_by_pixels": energy_normalize_by_pixels,
+            # Unified training framework settings
+            "noise_process": noise_process,
+            "prediction_target": prediction_target,
+            "strict_validation": strict_validation,
         }
 
         # Add component-specific learning rates if specified

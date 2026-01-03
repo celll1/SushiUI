@@ -2995,6 +2995,12 @@ class BaseTrainer(ABC):
                         target_height=height,
                     )
 
+                    # DEBUG: Log latent before saving to cache
+                    debug_cache_save = True
+                    if debug_cache_save:
+                        print(f"[cache_save DEBUG] Latent BEFORE save_latent():")
+                        print(f"  Mean: {latent.mean():.6f}, Std: {latent.std():.6f}")
+
                     # Save to cache
                     cache.save_latent(
                         image_path=image_path,
@@ -3002,6 +3008,17 @@ class BaseTrainer(ABC):
                         height=height,
                         latents=latent,
                     )
+
+                    # DEBUG: Verify saved latent
+                    if debug_cache_save:
+                        import torch as verify_torch
+                        cache_hash = cache.compute_image_hash(image_path, width, height)
+                        cache_path = cache.latents_dir / f"{cache_hash}.pt"
+                        saved_data = verify_torch.load(cache_path, map_location='cpu')
+                        saved_latent = saved_data['latents']
+                        print(f"[cache_save DEBUG] Latent AFTER save_latent() (loaded from disk):")
+                        print(f"  Mean: {saved_latent.mean():.6f}, Std: {saved_latent.std():.6f}")
+                        del saved_data, saved_latent
 
                     iteration_count += 1
 

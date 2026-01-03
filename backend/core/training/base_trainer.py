@@ -4261,6 +4261,10 @@ class BaseTrainer(ABC):
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
                         loss.backward()
 
+                        # Verify gradient flow on first step (LoRA training only)
+                        if global_step == 1 and hasattr(self, 'print_gradient_flow_summary'):
+                            self.print_gradient_flow_summary()
+
                         # Clear saved activations immediately after backward to prevent VRAM leaks
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
                             self.layer_offload_conductor.clear_activations()

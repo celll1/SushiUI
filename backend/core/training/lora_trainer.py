@@ -253,14 +253,19 @@ class LoRATrainer(BaseTrainer):
             # CRITICAL: Set embedding layer requires_grad=True for gradient checkpointing (sd-scripts approach)
             # This is required for gradients to flow through embedding layers during checkpointing
             # (embeddings are leaf tensors in the computation graph)
+            # Also ensure embedding layer is on the correct device
             if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
                 self.text_encoder.text_model.embeddings.requires_grad_(True)
-                print(f"{self.log_prefix} Text Encoder 1 embedding layer set to requires_grad=True")
+                # Ensure embedding layer is on GPU (may be on CPU after requires_grad_ call)
+                self.text_encoder.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
+                print(f"{self.log_prefix} Text Encoder 1 embedding layer set to requires_grad=True and moved to {self.device}")
 
             if self.text_encoder_2 is not None:
                 if hasattr(self.text_encoder_2, 'text_model') and hasattr(self.text_encoder_2.text_model, 'embeddings'):
                     self.text_encoder_2.text_model.embeddings.requires_grad_(True)
-                    print(f"{self.log_prefix} Text Encoder 2 embedding layer set to requires_grad=True")
+                    # Ensure embedding layer is on GPU
+                    self.text_encoder_2.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
+                    print(f"{self.log_prefix} Text Encoder 2 embedding layer set to requires_grad=True and moved to {self.device}")
 
             # Note: Gradient checkpointing re-enable DISABLED
             # Reason: gradient_checkpointing_enable() causes device placement issues
@@ -613,6 +618,97 @@ class LoRATrainer(BaseTrainer):
             num_warmup_steps=0,
             num_training_steps=total_steps,
         )
+
+    def verify_gradient_flow(self, verbose: bool = False) -> Dict[str, Any]:
+        """
+        Verify that gradients are flowing to all LoRA layers.
+
+        Args:
+            verbose: If True, print detailed gradient statistics for each layer
+
+        Returns:
+            Dictionary with gradient flow statistics:
+            {
+                "total_lora_params": int,
+                "params_with_grad": int,
+                "params_without_grad": int,
+                "layers_with_grad": List[str],
+                "layers_without_grad": List[str],
+                "grad_stats": Dict[str, Dict] (if verbose=True)
+            }
+        """
+        total_params = 0
+        params_with_grad = 0
+        params_without_grad = 0
+        layers_with_grad = []
+        layers_without_grad = []
+        grad_stats = {}
+
+        # Check all LoRA layers
+        for lora_name, lora_module in self.lora_layers.items():
+            # Check lora_up and lora_down parameters
+            for param_name in ['lora_up', 'lora_down']:
+                if hasattr(lora_module, param_name):
+                    param_module = getattr(lora_module, param_name)
+                    for param in param_module.parameters():
+                        total_params += 1
+                        full_name = f"{lora_name}.{param_name}"
+
+                        if param.grad is not None:
+                            params_with_grad += 1
+                            if full_name not in layers_with_grad:
+                                layers_with_grad.append(full_name)
+
+                            if verbose:
+                                grad_stats[full_name] = {
+                                    "grad_mean": param.grad.mean().item(),
+                                    "grad_std": param.grad.std().item(),
+                                    "grad_max": param.grad.abs().max().item(),
+                                    "grad_min": param.grad.abs().min().item(),
+                                    "param_shape": list(param.shape),
+                                }
+                        else:
+                            params_without_grad += 1
+                            if full_name not in layers_without_grad:
+                                layers_without_grad.append(full_name)
+
+        result = {
+            "total_lora_params": total_params,
+            "params_with_grad": params_with_grad,
+            "params_without_grad": params_without_grad,
+            "layers_with_grad": layers_with_grad,
+            "layers_without_grad": layers_without_grad,
+        }
+
+        if verbose:
+            result["grad_stats"] = grad_stats
+
+        return result
+
+    def print_gradient_flow_summary(self):
+        """Print a summary of gradient flow to all LoRA layers."""
+        stats = self.verify_gradient_flow(verbose=False)
+
+        print(f"\n{'='*60}")
+        print(f"[LoRA Trainer] Gradient Flow Verification")
+        print(f"{'='*60}")
+        print(f"Total LoRA parameters: {stats['total_lora_params']}")
+        print(f"Parameters WITH gradients: {stats['params_with_grad']} ({stats['params_with_grad']/stats['total_lora_params']*100:.1f}%)")
+        print(f"Parameters WITHOUT gradients: {stats['params_without_grad']} ({stats['params_without_grad']/stats['total_lora_params']*100:.1f}%)")
+
+        if stats['params_without_grad'] > 0:
+            print(f"\n⚠️  WARNING: {stats['params_without_grad']} parameters have NO gradients!")
+            print(f"Layers without gradients:")
+            for layer_name in stats['layers_without_grad'][:10]:  # Show first 10
+                print(f"  - {layer_name}")
+            if len(stats['layers_without_grad']) > 10:
+                print(f"  ... and {len(stats['layers_without_grad']) - 10} more")
+        else:
+            print(f"\n✓ All LoRA parameters have gradients!")
+
+        print(f"{'='*60}\n")
+
+        return stats
 
     def save_checkpoint(
         self,

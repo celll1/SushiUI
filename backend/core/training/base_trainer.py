@@ -4272,10 +4272,6 @@ class BaseTrainer(ABC):
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
                         loss.backward()
 
-                        # Verify gradient flow on first step (LoRA training only)
-                        if global_step == 1 and hasattr(self, 'print_gradient_flow_summary'):
-                            self.print_gradient_flow_summary()
-
                         # Clear saved activations immediately after backward to prevent VRAM leaks
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
                             self.layer_offload_conductor.clear_activations()
@@ -4290,6 +4286,10 @@ class BaseTrainer(ABC):
 
                         # Increment global step for each MNT iteration
                         global_step += 1
+
+                        # Verify gradient flow on first step (LoRA training only)
+                        if global_step == 1 and hasattr(self, 'print_gradient_flow_summary'):
+                            self.print_gradient_flow_summary()
 
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps

@@ -782,6 +782,8 @@ def custom_sampling_loop(
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
         image = pipeline.vae.decode(latents).sample
 
@@ -1362,6 +1364,8 @@ def custom_img2img_sampling_loop(
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
         image = pipeline.vae.decode(latents).sample
 
@@ -1960,6 +1964,8 @@ def custom_inpaint_sampling_loop(
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
         image = pipeline.vae.decode(latents).sample
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -599,16 +599,16 @@ class TrainingSample(TrainingBase):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     step = Column(Integer, nullable=False)
     prompt = Column(Text, nullable=False)
     image_path = Column(String, nullable=False)
-    
+
     created_at = Column(DateTime, default=get_local_now, index=True)
-    
+
     # Relationships
     run = relationship("TrainingRun", back_populates="samples")
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -617,4 +617,42 @@ class TrainingSample(TrainingBase):
             "prompt": self.prompt,
             "image_path": self.image_path,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TrainingMetrics(TrainingBase):
+    """Training metrics (loss, learning_rate) logged during training.
+
+    Features:
+    - Dual logging: TensorBoard (for external tools) + DB (for fast queries)
+    - UPSERT behavior: Same (run_id, step) will overwrite existing values
+    - Indexed for fast filtering: WHERE run_id=? AND step>?
+    """
+    __tablename__ = "training_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    step = Column(Integer, nullable=False)
+
+    # Metrics
+    loss = Column(Float, nullable=True)
+    recon_loss = Column(Float, nullable=True)
+    learning_rate = Column(Float, nullable=True)
+
+    # Timestamp
+    timestamp = Column(DateTime, default=get_local_now)
+
+    # Composite unique constraint: (run_id, step) must be unique (UPSERT target)
+    __table_args__ = (
+        UniqueConstraint('run_id', 'step', name='uq_run_step'),
+        Index('idx_run_step', 'run_id', 'step'),  # Composite index for fast queries
+    )
+
+    def to_dict(self):
+        return {
+            "step": self.step,
+            "loss": self.loss,
+            "recon_loss": self.recon_loss,
+            "learning_rate": self.learning_rate,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

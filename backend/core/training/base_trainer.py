@@ -3823,7 +3823,8 @@ class BaseTrainer(ABC):
 
                         # Stack batch
                         latents = torch.cat(latents_list, dim=0)
-                        text_embeddings = torch.stack(text_embeddings_list, dim=0) if text_embeddings_list else None
+                        # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
+                        text_embeddings = torch.cat(text_embeddings_list, dim=0) if text_embeddings_list else None
 
                         # Sample timesteps for this MNT iteration
                         batch_size = latents.shape[0]

@@ -3924,6 +3924,11 @@ class BaseTrainer(ABC):
                     next_latent_swap_at_step = latent_encoding_swap_interval
                     print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")
 
+                # onthefly_gpu mode: Ensure text encoders are on GPU for entire epoch
+                if text_encoding_mode == "onthefly_gpu":
+                    print(f"{self.log_prefix} Moving text encoders to GPU for onthefly_gpu mode...")
+                    self.move_text_encoder_to_gpu()
+
                 # Training loop
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}")):
                     # Reset fused optimizer groups counters (start of each step)

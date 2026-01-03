@@ -758,6 +758,23 @@ class BaseTrainer(ABC):
         if self.use_flash_attention:
             self._setup_flash_attention_sd_sdxl()
 
+        # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
+        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            self.unet.enable_gradient_checkpointing()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
+        else:
+            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
+
+        # Enable gradient checkpointing for Text Encoders
+        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
+
+        if self.text_encoder_2 is not None:
+            if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+                self.text_encoder_2.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
+
         print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
 
     def _setup_flash_attention_zimage(self):

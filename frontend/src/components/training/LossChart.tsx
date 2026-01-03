@@ -42,6 +42,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [error, setError] = useState<string | null>(null);
   const [lastStep, setLastStep] = useState<number>(-1);
 
+  // Use ref to track lastStep without causing useCallback dependency issues
+  const lastStepRef = useRef<number>(-1);
+
   // UI controls
   const [smoothingFactor, setSmoothingFactor] = useState(0.9);
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
@@ -69,8 +72,11 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       setLoading(true);
       setError(null);
 
-      const sinceStep = isIncremental && lastStep >= 0 ? lastStep : undefined;
+      // Use lastStep ref to avoid dependency issues
+      const sinceStep = isIncremental && lastStepRef.current >= 0 ? lastStepRef.current : undefined;
       const data = await getTrainingMetrics(runId, sinceStep);
+
+      console.log(`[LossChart] Fetched metrics: ${data.loss.length} loss points, incremental=${isIncremental}, sinceStep=${sinceStep}`);
 
       // Merge new data with existing data and limit total points to prevent memory accumulation
       const MAX_POINTS = 1000; // Limit frontend memory usage for long-duration training
@@ -81,6 +87,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         // Update lastStep
         if (newData.length > 0) {
           const maxStep = Math.max(...newData.map((d) => d.step));
+          lastStepRef.current = maxStep;
           setLastStep(maxStep);
         }
 
@@ -116,39 +123,57 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         return newData;
       });
     } catch (err: any) {
-      console.error("Error fetching metrics:", err);
+      console.error("[LossChart] Error fetching metrics:", err);
       setError(err.message || "Failed to load metrics");
     } finally {
       setLoading(false);
     }
-  }, [runId, lastStep]);
+  }, [runId]);
 
   // Initial fetch
   useEffect(() => {
+    console.log(`[LossChart] Initial fetch for runId=${runId}`);
     fetchMetrics(false);
-  }, [runId]);
+  }, [runId, fetchMetrics]);
 
   // Auto-refresh based on polling interval
   useEffect(() => {
     if (pollingInterval > 0) {
-      const interval = setInterval(() => fetchMetrics(true), pollingInterval * 1000);
-      return () => clearInterval(interval);
+      console.log(`[LossChart] Starting auto-refresh (every ${pollingInterval}s)`);
+      const interval = setInterval(() => {
+        console.log(`[LossChart] Auto-refresh triggered (interval=${pollingInterval}s)`);
+        fetchMetrics(true);
+      }, pollingInterval * 1000);
+      return () => {
+        console.log(`[LossChart] Stopping auto-refresh`);
+        clearInterval(interval);
+      };
     }
   }, [pollingInterval, fetchMetrics]);
 
   // Real-time SSE update for training metrics (when training is running)
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning) {
+      console.log(`[LossChart] Training not running, skipping SSE subscription`);
+      return;
+    }
+
+    console.log(`[LossChart] Training is running, subscribing to SSE for runId=${runId}`);
 
     // Connect to SSE if not already connected
     wsClient.connect();
 
     // Subscribe to training metrics SSE messages
     const handleTrainingMetrics = (metrics: TrainingMetrics) => {
-      // Only update if this metric is for the current run
-      if (metrics.run_id !== runId) return;
+      console.log(`[LossChart] SSE metric received: run_id=${metrics.run_id}, step=${metrics.step}, loss=${metrics.loss?.toFixed(6)}`);
 
-      console.log(`[LossChart] Real-time metric: step=${metrics.step}, loss=${metrics.loss?.toFixed(6)}`);
+      // Only update if this metric is for the current run
+      if (metrics.run_id !== runId) {
+        console.log(`[LossChart] Ignoring metric for different run (expected ${runId}, got ${metrics.run_id})`);
+        return;
+      }
+
+      console.log(`[LossChart] Applying real-time metric: step=${metrics.step}, loss=${metrics.loss?.toFixed(6)}`);
 
       // Add new metric point to lossData
       const newLossPoint: MetricPoint = {
@@ -191,13 +216,19 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         });
       }
 
-      // Update lastStep
-      setLastStep((prevLastStep) => Math.max(prevLastStep, metrics.step));
+      // Update lastStep (both state and ref)
+      setLastStep((prevLastStep) => {
+        const newLastStep = Math.max(prevLastStep, metrics.step);
+        lastStepRef.current = newLastStep;
+        return newLastStep;
+      });
     };
 
     wsClient.subscribeToTrainingMetrics(handleTrainingMetrics);
+    console.log(`[LossChart] Subscribed to SSE training metrics`);
 
     return () => {
+      console.log(`[LossChart] Unsubscribing from SSE training metrics`);
       wsClient.unsubscribeFromTrainingMetrics(handleTrainingMetrics);
     };
   }, [isRunning, runId]);
@@ -382,7 +413,11 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
             <label className="text-xs text-gray-400">Auto-refresh:</label>
             <select
               value={pollingInterval}
-              onChange={(e) => setPollingInterval(Number(e.target.value))}
+              onChange={(e) => {
+                const newInterval = Number(e.target.value);
+                console.log(`[LossChart] Auto-refresh interval changed: ${pollingInterval}s → ${newInterval}s`);
+                setPollingInterval(newInterval);
+              }}
               className="text-xs px-2 py-1 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
             >
               <option value="0">Off</option>
@@ -395,7 +430,10 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
           {/* Manual refresh button */}
           <button
-            onClick={() => fetchMetrics(true)}
+            onClick={() => {
+              console.log("[LossChart] Manual refresh button clicked");
+              fetchMetrics(true);
+            }}
             disabled={loading}
             className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Refresh data"

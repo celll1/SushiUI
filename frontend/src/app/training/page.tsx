@@ -44,7 +44,7 @@ function TrainingPageContent() {
 
   useEffect(() => {
     const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
-    console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
+    // console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
 
     // Clear existing interval
     if (pollingIntervalRef.current) {
@@ -53,20 +53,20 @@ function TrainingPageContent() {
     }
 
     if (!hasRunningTraining) {
-      console.log(`[TrainingPage] No running training, skipping poll`);
+      // console.log(`[TrainingPage] No running training, skipping poll`);
       return;
     }
 
-    console.log(`[TrainingPage] Starting list polling (every 3s)`);
+    // console.log(`[TrainingPage] Starting list polling (every 3s)`);
 
     pollingIntervalRef.current = setInterval(() => {
-      console.log(`[TrainingPage] Polling training runs list...`);
+      // console.log(`[TrainingPage] Polling training runs list...`);
       loadRuns();
     }, 3000); // Poll every 3 seconds
 
     return () => {
       if (pollingIntervalRef.current) {
-        console.log(`[TrainingPage] Stopping list polling`);
+        // console.log(`[TrainingPage] Stopping list polling`);
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }

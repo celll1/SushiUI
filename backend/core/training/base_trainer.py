@@ -1595,8 +1595,14 @@ class BaseTrainer(ABC):
         """Move Text Encoder(s) to GPU for encoding."""
         if self.text_encoder is not None:
             self.text_encoder.to(self.device)
+            # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
+            if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+                self.text_encoder.text_model.embeddings.to(self.device)
         if self.is_sdxl and self.text_encoder_2 is not None:
             self.text_encoder_2.to(self.device)
+            # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
+            if hasattr(self.text_encoder_2, 'text_model') and hasattr(self.text_encoder_2.text_model, 'embeddings'):
+                self.text_encoder_2.text_model.embeddings.to(self.device)
 
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""

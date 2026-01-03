@@ -539,6 +539,7 @@ def main():
             optimizer_warmup_steps = train_config.get('optimizer_warmup_steps', 0)
             optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
+            optimizer_use_radam = train_config.get('optimizer_use_radam', False)
 
             # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -577,6 +578,7 @@ def main():
                 optimizer_warmup_steps=optimizer_warmup_steps,
                 optimizer_schedule_free_r=optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=optimizer_use_radam,
                 # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,

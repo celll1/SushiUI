@@ -135,6 +135,7 @@ class OptimizerFactory:
             warmup_steps = kwargs.get("warmup_steps", 0)
             r = kwargs.get("r", 0.0)
             weight_lr_power = kwargs.get("weight_lr_power", 2.0)
+            use_radam = kwargs.get("use_radam", False)
 
             optimizer = AdamW8bit_RingBuffer(
                 params,
@@ -148,13 +149,17 @@ class OptimizerFactory:
                 warmup_steps=warmup_steps,
                 r=r,
                 weight_lr_power=weight_lr_power,
+                use_radam=use_radam,
                 get_state_buffer=get_state_buffer,
             )
             options_str = []
             if cautious:
                 options_str.append("cautious")
             if schedule_free:
-                options_str.append("schedule-free")
+                if use_radam:
+                    options_str.append("schedule-free (RAdam)")
+                else:
+                    options_str.append("schedule-free")
             options_desc = f" ({', '.join(options_str)})" if options_str else ""
             print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer{options_desc}")
             return optimizer

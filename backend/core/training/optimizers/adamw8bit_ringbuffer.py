@@ -102,6 +102,7 @@ class AdamW8bit_RingBuffer(Optimizer):
         warmup_steps: int = 0,
         r: float = 0.0,
         weight_lr_power: float = 2.0,
+        use_radam: bool = False,
         get_state_buffer: Optional[Callable] = None,
     ):
         # Lazy load CUDA extension (compile on first optimizer creation)
@@ -118,6 +119,11 @@ class AdamW8bit_RingBuffer(Optimizer):
             print("[AdamW8bit_RingBuffer] WARNING: cautious is disabled when schedule_free=True")
             cautious = False
 
+        # RAdam: warmup is incompatible (automatic adaptive LR)
+        if use_radam and warmup_steps > 0:
+            print("[AdamW8bit_RingBuffer] WARNING: warmup_steps is ignored when use_radam=True (RAdam uses automatic adaptive LR)")
+            warmup_steps = 0
+
         defaults = dict(
             lr=lr,
             betas=betas,
@@ -129,6 +135,7 @@ class AdamW8bit_RingBuffer(Optimizer):
             warmup_steps=warmup_steps,
             r=r,
             weight_lr_power=weight_lr_power,
+            use_radam=use_radam,
         )
         super().__init__(params, defaults)
 
@@ -136,6 +143,7 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.step_count = 0
         self.cautious = cautious
         self.schedule_free = schedule_free
+        self.use_radam = use_radam
 
         # Schedule-Free specific state
         if schedule_free:
@@ -419,23 +427,70 @@ class AdamW8bit_RingBuffer(Optimizer):
             # Schedule-Free: Compute learning rate schedule and weight
             # ============================================================
             if schedule_free:
-                warmup_steps = group['warmup_steps']
+                use_radam = group.get('use_radam', False)
                 r = group['r']
                 weight_lr_power = group['weight_lr_power']
-
-                # Linear warmup (use k+1 because k increments at end of step)
                 k = self.k
-                if k < warmup_steps:
-                    sched = (k + 1) / warmup_steps
+
+                if use_radam:
+                    # ============================================================
+                    # RAdam Schedule-Free: Adaptive LR via Rectified Adam
+                    # ============================================================
+                    # Reference: https://arxiv.org/abs/1908.03265 (RAdam paper)
+                    # Based on: schedulefree/radam_schedulefree.py (Facebook Research)
+
+                    import math
+
+                    step = k + 1  # Use k+1 for all calculations
+
+                    # Bias correction for second moment
+                    beta2_t = beta2 ** step
+                    bias_correction2 = 1 - beta2_t
+
+                    # SMA (Simple Moving Average) length calculation
+                    rho_inf = 2 / (1 - beta2) - 1  # Maximum SMA length
+                    rho_t = rho_inf - 2 * step * beta2_t / bias_correction2  # Current SMA length
+
+                    # Rectification term (adaptive LR adjustment)
+                    if rho_t > 4.0:
+                        # Adam mode: Use rectified adaptive LR
+                        rect = math.sqrt(
+                            (rho_t - 4) * (rho_t - 2) * rho_inf /
+                            ((rho_inf - 4) * (rho_inf - 2) * rho_t)
+                        )
+                    else:
+                        # Early training phase: No parameter update (momentum only)
+                        # This stabilizes training by ensuring smooth warmup
+                        rect = 0.0
+
+                    scheduled_lr = lr * rect
+
+                    # Update lr_max (for weight calculation)
+                    self.lr_max = max(scheduled_lr, self.lr_max)
+
+                    # Bias correction for Schedule-Free
+                    bias_correction2_sf = bias_correction2
                 else:
-                    sched = 1.0
+                    # ============================================================
+                    # AdamW Schedule-Free: Linear warmup
+                    # ============================================================
+                    warmup_steps = group['warmup_steps']
 
-                scheduled_lr = lr * sched
+                    # Linear warmup (use k+1 because k increments at end of step)
+                    if k < warmup_steps:
+                        sched = (k + 1) / warmup_steps
+                    else:
+                        sched = 1.0
 
-                # Update lr_max
-                self.lr_max = max(scheduled_lr, self.lr_max)
+                    scheduled_lr = lr * sched
 
-                # Compute weight for averaging (use k+1)
+                    # Update lr_max
+                    self.lr_max = max(scheduled_lr, self.lr_max)
+
+                    # Bias correction (use k+1, not step_count)
+                    bias_correction2_sf = 1 - beta2 ** (k + 1)
+
+                # Compute weight for averaging (common for both AdamW and RAdam)
                 weight = ((k + 1) ** r) * (self.lr_max ** weight_lr_power)
                 self.weight_sum += weight
 
@@ -444,9 +499,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                     ckp1 = weight / self.weight_sum
                 except ZeroDivisionError:
                     ckp1 = 0.0
-
-                # Bias correction (use k+1, not step_count)
-                bias_correction2_sf = 1 - beta2 ** (k + 1)
             else:
                 scheduled_lr = lr
                 ckp1 = 0.0

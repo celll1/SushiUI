@@ -2139,150 +2139,169 @@ class BaseTrainer(ABC):
         """
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
 
-        # ============================================================
-        # Stage 1: Text Encoding (Sequential Offloading Pattern)
-        # ============================================================
-        # Move Text Encoder to GPU for encoding
-        self.move_text_encoder_to_gpu()
+        # Set models to eval mode for inference
+        self.unet.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.eval()
 
-        # Encode prompt
-        if self.is_sdxl:
-            text_embeddings, pooled_embeddings = self.encode_prompt(prompt, requires_grad=False)
-            # Generate unconditional embeddings for CFG
-            uncond_embeddings, uncond_pooled = self.encode_prompt("", requires_grad=False)
-        else:
-            text_embeddings = self.encode_prompt(prompt, requires_grad=False)
-            uncond_embeddings = self.encode_prompt("", requires_grad=False)
-            pooled_embeddings = None
-            uncond_pooled = None
+        try:
+            # ============================================================
+            # Stage 1: Text Encoding (Sequential Offloading Pattern)
+            # ============================================================
+            # Move Text Encoder to GPU for encoding
+            self.move_text_encoder_to_gpu()
 
-        # Move Text Encoder back to CPU to free VRAM
-        self.move_text_encoder_to_cpu()
-        torch.cuda.empty_cache()
+            # Encode prompt
+            if self.is_sdxl:
+                text_embeddings, pooled_embeddings = self.encode_prompt(prompt, requires_grad=False)
+                # Generate unconditional embeddings for CFG
+                uncond_embeddings, uncond_pooled = self.encode_prompt("", requires_grad=False)
+            else:
+                text_embeddings = self.encode_prompt(prompt, requires_grad=False)
+                uncond_embeddings = self.encode_prompt("", requires_grad=False)
+                pooled_embeddings = None
+                uncond_pooled = None
 
-        # Prepare latents with seed
-        latent_height = height // 8
-        latent_width = width // 8
-        generator = None
-        if seed >= 0:
-            generator = torch.Generator(device=self.device).manual_seed(seed)
-        latents = torch.randn(
-            (1, self.unet.config.in_channels, latent_height, latent_width),
-            device=self.device,
-            dtype=self.training_dtype,
-            generator=generator,
-        )
+            # Move Text Encoder back to CPU to free VRAM
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
 
-        # Setup scheduler for inference
-        from diffusers import EulerDiscreteScheduler
-        inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
-        inference_scheduler.set_timesteps(num_inference_steps)
+            # Prepare latents with seed
+            latent_height = height // 8
+            latent_width = width // 8
+            generator = None
+            if seed >= 0:
+                generator = torch.Generator(device=self.device).manual_seed(seed)
+            latents = torch.randn(
+                (1, self.unet.config.in_channels, latent_height, latent_width),
+                device=self.device,
+                dtype=self.training_dtype,
+                generator=generator,
+            )
 
-        # ============================================================
-        # Stage 2: U-Net Inference (Sequential Offloading Pattern)
-        # ============================================================
-        # Move U-Net to GPU for denoising
-        self.move_main_model_to_gpu()
+            # Setup scheduler for inference
+            from diffusers import EulerDiscreteScheduler
+            inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
+            inference_scheduler.set_timesteps(num_inference_steps)
 
-        # Get U-Net dtype (keep it in training_dtype, don't convert to avoid precision loss)
-        unet_dtype = next(self.unet.parameters()).dtype
-        print(f"{self.log_prefix} [Sample] U-Net dtype: {unet_dtype}, keeping as-is for inference")
+            # ============================================================
+            # Stage 2: U-Net Inference (Sequential Offloading Pattern)
+            # ============================================================
+            # Move U-Net to GPU for denoising
+            self.move_main_model_to_gpu()
 
-        # Convert text embeddings to U-Net dtype
-        text_embeddings = text_embeddings.to(dtype=unet_dtype)
-        uncond_embeddings = uncond_embeddings.to(dtype=unet_dtype)
-        if pooled_embeddings is not None:
-            pooled_embeddings = pooled_embeddings.to(dtype=unet_dtype)
-        if uncond_pooled is not None:
-            uncond_pooled = uncond_pooled.to(dtype=unet_dtype)
+            # Get U-Net dtype (keep it in training_dtype, don't convert to avoid precision loss)
+            unet_dtype = next(self.unet.parameters()).dtype
+            print(f"{self.log_prefix} [Sample] U-Net dtype: {unet_dtype}, keeping as-is for inference")
 
-        # Denoising loop
-        with torch.no_grad():
-            for t in tqdm(inference_scheduler.timesteps, desc="Generating"):
-                # Check for stop flag during sample generation (allow graceful shutdown)
-                stop_flag_file = self.output_dir / ".stop_training"
-                if stop_flag_file.exists():
-                    print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
-                    raise KeyboardInterrupt("Training stopped by user during sample generation")
+            # Convert text embeddings to U-Net dtype
+            text_embeddings = text_embeddings.to(dtype=unet_dtype)
+            uncond_embeddings = uncond_embeddings.to(dtype=unet_dtype)
+            if pooled_embeddings is not None:
+                pooled_embeddings = pooled_embeddings.to(dtype=unet_dtype)
+            if uncond_pooled is not None:
+                uncond_pooled = uncond_pooled.to(dtype=unet_dtype)
 
-                # Prepare latent input (convert to U-Net dtype)
-                latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
-                latent_model_input = inference_scheduler.scale_model_input(latent_model_input, t)
-                latent_model_input = latent_model_input.to(dtype=unet_dtype)
+            # Denoising loop
+            with torch.no_grad():
+                for t in tqdm(inference_scheduler.timesteps, desc="Generating"):
+                    # Check for stop flag during sample generation (allow graceful shutdown)
+                    stop_flag_file = self.output_dir / ".stop_training"
+                    if stop_flag_file.exists():
+                        print(f"\n{self.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
+                        raise KeyboardInterrupt("Training stopped by user during sample generation")
 
-                # Prepare text embeddings
-                if guidance_scale > 1.0:
-                    text_input = torch.cat([uncond_embeddings, text_embeddings])
-                else:
-                    text_input = text_embeddings
+                    # Prepare latent input (convert to U-Net dtype)
+                    latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
+                    latent_model_input = inference_scheduler.scale_model_input(latent_model_input, t)
+                    latent_model_input = latent_model_input.to(dtype=unet_dtype)
 
-                # Prepare added_cond_kwargs for SDXL
-                added_cond_kwargs = None
-                if self.is_sdxl:
+                    # Prepare text embeddings
                     if guidance_scale > 1.0:
-                        pooled_input = torch.cat([uncond_pooled, pooled_embeddings])
+                        text_input = torch.cat([uncond_embeddings, text_embeddings])
                     else:
-                        pooled_input = pooled_embeddings
+                        text_input = text_embeddings
 
-                    time_ids = torch.tensor([[height, width, 0, 0, height, width]], device=self.device, dtype=unet_dtype)
+                    # Prepare added_cond_kwargs for SDXL
+                    added_cond_kwargs = None
+                    if self.is_sdxl:
+                        if guidance_scale > 1.0:
+                            pooled_input = torch.cat([uncond_pooled, pooled_embeddings])
+                        else:
+                            pooled_input = pooled_embeddings
+
+                        time_ids = torch.tensor([[height, width, 0, 0, height, width]], device=self.device, dtype=unet_dtype)
+                        if guidance_scale > 1.0:
+                            time_ids = time_ids.repeat(2, 1)
+
+                        added_cond_kwargs = {
+                            "text_embeds": pooled_input,
+                            "time_ids": time_ids
+                        }
+
+                    # Predict noise
+                    timestep = t.to(self.device)
+                    if self.is_sdxl and added_cond_kwargs is not None:
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            timestep,
+                            text_input,
+                            added_cond_kwargs=added_cond_kwargs
+                        ).sample
+                    else:
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            timestep,
+                            text_input
+                        ).sample
+
+                    # CFG
                     if guidance_scale > 1.0:
-                        time_ids = time_ids.repeat(2, 1)
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    added_cond_kwargs = {
-                        "text_embeds": pooled_input,
-                        "time_ids": time_ids
-                    }
+                    # Denoise step
+                    latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
 
-                # Predict noise
-                timestep = t.to(self.device)
-                if self.is_sdxl and added_cond_kwargs is not None:
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        timestep,
-                        text_input,
-                        added_cond_kwargs=added_cond_kwargs
-                    ).sample
-                else:
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        timestep,
-                        text_input
-                    ).sample
+            # Move U-Net back to CPU to free VRAM
+            # (U-Net remains in training_dtype, no conversion needed)
+            self.move_main_model_to_cpu()
+            torch.cuda.empty_cache()
 
-                # CFG
-                if guidance_scale > 1.0:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            # ============================================================
+            # Stage 3: VAE Decode (Sequential Offloading Pattern)
+            # ============================================================
+            # Move VAE to GPU for decoding
+            self.move_vae_to_gpu()
 
-                # Denoise step
-                latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
+            # Decode latents
+            latents = latents / self.vae.config.scaling_factor
+            with torch.no_grad():
+                image = self.vae.decode(latents.to(self.vae.dtype)).sample
 
-        # Move U-Net back to CPU to free VRAM
-        # (U-Net remains in training_dtype, no conversion needed)
-        self.move_main_model_to_cpu()
-        torch.cuda.empty_cache()
+            # Move VAE back to CPU after decoding
+            self.move_vae_to_cpu()
+            torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 3: VAE Decode (Sequential Offloading Pattern)
-        # ============================================================
-        # Move VAE to GPU for decoding
-        self.move_vae_to_gpu()
+            # Convert to PIL
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image * 255).astype(np.uint8)[0]
 
-        # Decode latents
-        latents = latents / self.vae.config.scaling_factor
-        with torch.no_grad():
-            image = self.vae.decode(latents.to(self.vae.dtype)).sample
+            return Image.fromarray(image)
 
-        # Move VAE back to CPU after decoding
-        self.move_vae_to_cpu()
-        torch.cuda.empty_cache()
+        finally:
+            # Restore models to train mode
+            self.unet.train()
+            self.vae.train()
+            self.text_encoder.train()
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.train()
 
-        # Convert to PIL
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-        image = (image * 255).astype(np.uint8)[0]
-
-        return Image.fromarray(image)
+            # Move U-Net back to GPU for training continuation
+            self.move_main_model_to_gpu()
 
     def _generate_sample_zimage(
         self,

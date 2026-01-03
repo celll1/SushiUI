@@ -401,6 +401,17 @@ def custom_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
+    # ============================================================
+    # DEBUG: Scheduler initialization (for comparison with training)
+    # ============================================================
+    print(f"\n[CustomSampling] [Debug] ========== SCHEDULER INITIALIZATION ==========")
+    print(f"[CustomSampling] [Debug] Scheduler timesteps (first 5): {scheduler.timesteps[:5].tolist()}")
+    print(f"[CustomSampling] [Debug] Scheduler timesteps (last 5): {scheduler.timesteps[-5:].tolist()}")
+    print(f"[CustomSampling] [Debug] init_noise_sigma: {scheduler.init_noise_sigma}")
+    print(f"[CustomSampling] [Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
+    print(f"[CustomSampling] [Debug] Latents AFTER init_noise_sigma scaling:")
+    print(f"[CustomSampling] [Debug]   - min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+
     print(f"[CustomSampling] Starting sampling loop with {num_inference_steps} steps")
     print(f"[CustomSampling] Actual timesteps: {len(timesteps)} (some schedulers like DPM2 use 2x steps)")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
@@ -414,6 +425,7 @@ def custom_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
+    first_iteration_debug = True
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -638,6 +650,16 @@ def custom_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
+            # ============================================================
+            # DEBUG: First iteration details (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
             if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -677,6 +699,13 @@ def custom_sampling_loop(
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
+
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
                 noise_pred = dynamic_thresholding(
@@ -696,6 +725,15 @@ def custom_sampling_loop(
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+
+        # ============================================================
+        # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
+        # ============================================================
+        if first_iteration_debug:
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
+            first_iteration_debug = False
 
         # Progress callback
         # Note: Some schedulers (DPM2, DPM2a) create more timesteps than num_inference_steps
@@ -971,6 +1009,7 @@ def custom_img2img_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
+    first_iteration_debug = True
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -1193,6 +1232,16 @@ def custom_img2img_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
+            # ============================================================
+            # DEBUG: First iteration details (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
             if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -1232,6 +1281,13 @@ def custom_img2img_sampling_loop(
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
+
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
                 noise_pred = dynamic_thresholding(
@@ -1251,6 +1307,15 @@ def custom_img2img_sampling_loop(
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+
+        # ============================================================
+        # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
+        # ============================================================
+        if first_iteration_debug:
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
+            first_iteration_debug = False
 
         # Progress callback
         if progress_callback is not None:
@@ -1766,6 +1831,16 @@ def custom_inpaint_sampling_loop(
             if is_sdxl and added_cond_kwargs:
                 unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
+            # ============================================================
+            # DEBUG: First iteration details (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
             if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -1804,6 +1879,13 @@ def custom_inpaint_sampling_loop(
 
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:

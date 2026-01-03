@@ -2186,10 +2186,15 @@ class BaseTrainer(ABC):
             inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
             inference_scheduler.set_timesteps(num_inference_steps)
 
+            # CRITICAL: Scale latents by init_noise_sigma
+            # Latents are sampled from N(0, 1) but scheduler expects N(0, sigma_max^2)
+            latents = latents * inference_scheduler.init_noise_sigma
+
             # Log scheduler config for debugging
             print(f"{self.log_prefix} [Sample] Scheduler: {type(inference_scheduler).__name__}")
             print(f"{self.log_prefix} [Sample] prediction_type: {inference_scheduler.config.prediction_type}")
             print(f"{self.log_prefix} [Sample] timestep_spacing: {inference_scheduler.config.get('timestep_spacing', 'N/A')}")
+            print(f"{self.log_prefix} [Sample] init_noise_sigma: {inference_scheduler.init_noise_sigma:.4f}")
 
             # ============================================================
             # Stage 2: U-Net Inference (Sequential Offloading Pattern)

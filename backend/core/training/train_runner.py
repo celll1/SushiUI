@@ -585,10 +585,8 @@ def main():
                 max_prompt_chunks=max_prompt_chunks,
             )
 
-            # Setup optimizer
-            optimizer_type = train_config.get('optimizer', 'adamw8bit')
-            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
-            trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
+            # Note: setup_optimizer() is now called inside train() method
+            # This avoids double initialization and provides clearer separation of concerns
 
             # ============================================================
             # Validate Prediction Configuration (Unified Framework)
@@ -902,10 +900,8 @@ def main():
                 max_prompt_chunks=max_prompt_chunks,
             )
 
-            # Setup optimizer
-            optimizer_type = train_config.get('optimizer', 'adamw8bit')
-            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
-            trainer.setup_optimizer(optimizer_type, lr_scheduler_type)
+            # Note: setup_optimizer() is now called inside train() method
+            # This avoids double initialization and provides clearer separation of concerns
 
             # ============================================================
             # Validate Prediction Configuration (Unified Framework)

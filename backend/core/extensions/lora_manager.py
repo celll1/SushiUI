@@ -106,8 +106,8 @@ class LoRAManager:
         Validate if a file is a valid LoRA model file.
 
         Checks:
-        1. File extension (.safetensors, .pt, .bin)
-        2. File contains LoRA-specific keys (lora_unet_*, lora_te*, etc.)
+        1. File extension (.safetensors only - .pt/.bin excluded to avoid debug latents)
+        2. File contains LoRA-specific keys (lora_down, lora_up, etc.)
         3. Excludes training artifacts (optimizer states, debug latents, etc.)
 
         Returns:
@@ -127,98 +127,51 @@ class LoRAManager:
                 print(f"[LoRAManager] Excluding training artifact: {file_path.name}")
                 return False
 
-        # Check file extension
-        if file_path.suffix not in ['.safetensors', '.pt', '.bin']:
+        # Check file extension (only .safetensors - exclude .pt to avoid debug latents)
+        if file_path.suffix not in ['.safetensors']:
             return False
 
-        # For .safetensors files, verify they contain LoRA keys by checking architecture
-        if file_path.suffix == '.safetensors':
-            try:
-                from safetensors import safe_open
+        # Verify .safetensors files contain LoRA keys
+        try:
+            from safetensors import safe_open
 
-                with safe_open(file_path, framework="pt", device="cpu") as f:
-                    keys = list(f.keys())
+            with safe_open(file_path, framework="pt", device="cpu") as f:
+                keys = list(f.keys())
 
-                    # LoRA architecture detection:
-                    # LoRA files have lora_down AND lora_up weights (rank decomposition)
-                    # Full parameter fine-tune has only full weights (unet.*.weight without lora)
+                # LoRA architecture detection:
+                # LoRA files have lora_down AND lora_up weights (rank decomposition)
+                # Full parameter fine-tune has only full weights (unet.*.weight without lora)
 
-                    has_lora_down = any('lora_down' in key for key in keys)
-                    has_lora_up = any('lora_up' in key for key in keys)
+                has_lora_down = any('lora_down' in key for key in keys)
+                has_lora_up = any('lora_up' in key for key in keys)
 
-                    # Alternative LoRA formats (diffusers, kohya-ss variants)
-                    has_lora_A = any('.lora_A.' in key for key in keys)
-                    has_lora_B = any('.lora_B.' in key for key in keys)
-                    has_lora_unet = any('lora_unet' in key for key in keys)
-                    has_lora_te = any('lora_te' in key for key in keys)
+                # Alternative LoRA formats (diffusers, kohya-ss variants)
+                has_lora_A = any('.lora_A.' in key for key in keys)
+                has_lora_B = any('.lora_B.' in key for key in keys)
+                has_lora_unet = any('lora_unet' in key for key in keys)
+                has_lora_te = any('lora_te' in key for key in keys)
 
-                    # Z-Image LoRA format (transformer-based)
-                    # Keys: transformer.layers.0.attn1.to_q.lora_down.weight
-                    has_lora_transformer = any('transformer.' in key and ('lora_down' in key or 'lora_up' in key) for key in keys)
+                # Z-Image LoRA format (transformer-based)
+                # Keys: transformer.layers.0.attn1.to_q.lora_down.weight
+                has_lora_transformer = any('transformer.' in key and ('lora_down' in key or 'lora_up' in key) for key in keys)
 
-                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
-                    is_lora = (has_lora_down and has_lora_up) or \
-                              (has_lora_A and has_lora_B) or \
-                              (has_lora_unet or has_lora_te) or \
-                              has_lora_transformer
+                # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
+                is_lora = (has_lora_down and has_lora_up) or \
+                          (has_lora_A and has_lora_B) or \
+                          (has_lora_unet or has_lora_te) or \
+                          has_lora_transformer
 
-                    if not is_lora:
-                        print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
-                        if len(keys) > 0:
-                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
-                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                        return False
-
-            except Exception as e:
-                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
-                # If we can't read it, exclude it to be safe
-                return False
-
-        # For .pt/.bin files, check contents to distinguish LoRA from optimizer
-        elif file_path.suffix in ['.pt', '.bin']:
-            try:
-                import torch
-
-                # Load state dict keys only (without loading full tensors)
-                state_dict = torch.load(file_path, map_location='cpu', weights_only=False)
-
-                # Check if it's an optimizer state (has 'state', 'param_groups' keys)
-                if isinstance(state_dict, dict):
-                    keys = list(state_dict.keys())
-
-                    # Optimizer state has these keys
-                    if 'state' in keys and 'param_groups' in keys:
-                        print(f"[LoRAManager] Excluding optimizer state: {file_path.name}")
-                        return False
-
-                    # Check for LoRA architecture (same as .safetensors)
-                    has_lora_down = any('lora_down' in key for key in keys)
-                    has_lora_up = any('lora_up' in key for key in keys)
-                    has_lora_A = any('.lora_A.' in key for key in keys)
-                    has_lora_B = any('.lora_B.' in key for key in keys)
-                    has_lora_unet = any('lora_unet' in key for key in keys)
-                    has_lora_te = any('lora_te' in key for key in keys)
-
-                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
-                    is_lora = (has_lora_down and has_lora_up) or \
-                              (has_lora_A and has_lora_B) or \
-                              (has_lora_unet or has_lora_te)
-
-                    if not is_lora:
-                        print(f"[LoRAManager] Excluding non-LoRA .pt file (full parameter or other): {file_path.name}")
-                        if len(keys) > 0:
-                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
-                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                        return False
-                else:
-                    # Not a dict, probably not a LoRA
-                    print(f"[LoRAManager] Excluding non-dict .pt file: {file_path.name}")
+                if not is_lora:
+                    print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
+                    if len(keys) > 0:
+                        print(f"[LoRAManager]   Sample keys: {keys[:5]}")
+                        print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
                     return False
 
-            except Exception as e:
-                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
-                # If we can't read it, exclude it to be safe
-                return False
+        except Exception as e:
+            print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
+            # If we can't read it, exclude it to be safe
+            return False
 
         return True
 
@@ -260,7 +213,8 @@ class LoRAManager:
                     print(f"[LoRAManager] Skipping non-existent directory: {lora_dir}")
                 continue
 
-            for ext in [".safetensors", ".pt", ".bin"]:
+            # Only scan .safetensors files (exclude .pt to avoid debug latents and training artifacts)
+            for ext in [".safetensors"]:
                 found = list(lora_dir.rglob(f"*{ext}"))
                 print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
 

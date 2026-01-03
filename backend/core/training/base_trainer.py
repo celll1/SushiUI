@@ -4474,10 +4474,8 @@ class BaseTrainer(ABC):
                 )
                 db.add(metric)
 
-            # Commit every 10 steps to reduce I/O overhead
-            if step % 10 == 0:
-                db.commit()
-
+            # Commit every step (same as TensorBoard logging)
+            db.commit()
             db.close()
 
         except Exception as e:

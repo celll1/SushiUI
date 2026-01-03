@@ -4405,6 +4405,10 @@ class BaseTrainer(ABC):
                             del sample, image_tensor
                             torch.cuda.empty_cache()
 
+                            # onthefly_gpu mode: Restore text encoders to GPU after sample generation
+                            if text_encoding_mode == "onthefly_gpu":
+                                self.move_text_encoder_to_gpu()
+
                         # Progress callback
                         if progress_callback:
                             progress_callback(

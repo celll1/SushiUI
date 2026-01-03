@@ -115,6 +115,9 @@ class LoRATrainer(BaseTrainer):
         optimizer_warmup_steps: int = 0,
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",
+        max_prompt_chunks: int = 0,
     ):
         """
         Initialize LoRA trainer.
@@ -171,6 +174,8 @@ class LoRATrainer(BaseTrainer):
             optimizer_warmup_steps=optimizer_warmup_steps,
             optimizer_schedule_free_r=optimizer_schedule_free_r,
             optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+            prompt_chunking_mode=prompt_chunking_mode,
+            max_prompt_chunks=max_prompt_chunks,
         )
 
         # Override log prefix

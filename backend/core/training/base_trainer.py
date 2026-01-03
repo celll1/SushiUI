@@ -2414,6 +2414,19 @@ class BaseTrainer(ABC):
                 pooled_prompt_embeds = None
                 negative_pooled_prompt_embeds = None
 
+            # Pad negative embeddings to match positive embeddings sequence length (for prompt chunking)
+            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
+                # Positive prompt has more tokens (chunking applied)
+                # Pad negative embeddings with zeros to match
+                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
+                padding = torch.zeros(
+                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
+                    dtype=negative_prompt_embeds.dtype,
+                    device=negative_prompt_embeds.device
+                )
+                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+                print(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
+
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
 

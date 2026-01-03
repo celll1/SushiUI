@@ -250,6 +250,18 @@ class LoRATrainer(BaseTrainer):
                 self.text_encoder_2.train()
             print(f"{self.log_prefix} U-Net and Text Encoders set to train mode for gradient checkpointing")
 
+            # CRITICAL: Set embedding layer requires_grad=True for gradient checkpointing (sd-scripts approach)
+            # This is required for gradients to flow through embedding layers during checkpointing
+            # (embeddings are leaf tensors in the computation graph)
+            if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+                self.text_encoder.text_model.embeddings.requires_grad_(True)
+                print(f"{self.log_prefix} Text Encoder 1 embedding layer set to requires_grad=True")
+
+            if self.text_encoder_2 is not None:
+                if hasattr(self.text_encoder_2, 'text_model') and hasattr(self.text_encoder_2.text_model, 'embeddings'):
+                    self.text_encoder_2.text_model.embeddings.requires_grad_(True)
+                    print(f"{self.log_prefix} Text Encoder 2 embedding layer set to requires_grad=True")
+
             # Note: Gradient checkpointing re-enable DISABLED
             # Reason: gradient_checkpointing_enable() causes device placement issues
             # with Transformers library (Embedding layers stay on CPU when model moved to GPU)

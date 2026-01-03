@@ -1736,6 +1736,14 @@ class BaseTrainer(ABC):
         vae_device = next(self.vae.parameters()).device
         image_tensor = image_tensor.to(device=vae_device, dtype=self.vae.dtype)
 
+        # DEBUG: Log preprocessing
+        debug_preprocessing = True  # Set to True to debug latent encoding
+        if debug_preprocessing:
+            print(f"[encode_image DEBUG] Image tensor before VAE:")
+            print(f"  Shape: {image_tensor.shape}, dtype: {image_tensor.dtype}, device: {image_tensor.device}")
+            print(f"  Mean: {image_tensor.mean():.6f}, Std: {image_tensor.std():.6f}")
+            print(f"  Min: {image_tensor.min():.6f}, Max: {image_tensor.max():.6f}")
+
         # Encode to latents
         with torch.no_grad():
             if self.is_zimage:
@@ -1753,7 +1761,22 @@ class BaseTrainer(ABC):
                 # SD/SDXL VAE
                 encoder_output = self.vae.encode(image_tensor)
                 latents = encoder_output.latent_dist.sample()
+
+                # DEBUG: Log raw latents before scaling
+                if debug_preprocessing:
+                    print(f"[encode_image DEBUG] Raw latents (before scaling):")
+                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+                    print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
+                    print(f"  scaling_factor: {self.vae.config.scaling_factor}")
+
                 latents = latents * self.vae.config.scaling_factor
+
+                # DEBUG: Log scaled latents
+                if debug_preprocessing:
+                    print(f"[encode_image DEBUG] Scaled latents (after * scaling_factor):")
+                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+                    print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
+
                 # Clean up intermediate tensors
                 del encoder_output
 
@@ -1762,6 +1785,12 @@ class BaseTrainer(ABC):
 
         # Convert to training dtype and move to CPU immediately to free VRAM
         latents = latents.to(dtype=self.training_dtype, device='cpu')
+
+        # DEBUG: Log final latents after dtype conversion
+        if debug_preprocessing:
+            print(f"[encode_image DEBUG] Final latents (after dtype={self.training_dtype}, device=cpu):")
+            print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+            print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
 
         return latents
 

@@ -588,6 +588,10 @@ def main():
             # Note: setup_optimizer() is now called inside train() method
             # This avoids double initialization and provides clearer separation of concerns
 
+            # Get optimizer settings (passed to train() method)
+            optimizer_type = train_config.get('optimizer', 'adamw8bit')
+            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
+
             # ============================================================
             # Validate Prediction Configuration (Unified Framework)
             # ============================================================
@@ -902,6 +906,10 @@ def main():
 
             # Note: setup_optimizer() is now called inside train() method
             # This avoids double initialization and provides clearer separation of concerns
+
+            # Get optimizer settings (passed to train() method)
+            optimizer_type = train_config.get('optimizer', 'adamw8bit')
+            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
 
             # ============================================================
             # Validate Prediction Configuration (Unified Framework)

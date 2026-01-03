@@ -2182,8 +2182,18 @@ class BaseTrainer(ABC):
             )
 
             # Setup scheduler for inference
+            # CRITICAL: Create fresh inference scheduler with proper config
+            # Do NOT reuse training scheduler config (DDPM has incompatible params)
             from diffusers import EulerDiscreteScheduler
-            inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
+            inference_scheduler = EulerDiscreteScheduler(
+                num_train_timesteps=1000,
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                prediction_type=self.noise_scheduler.config.prediction_type,
+                timestep_spacing="leading",  # CRITICAL: Inference config (not "trailing" from training)
+                steps_offset=0,              # CRITICAL: Inference config (not 1 from training)
+            )
             inference_scheduler.set_timesteps(num_inference_steps)
 
             # CRITICAL: Scale latents by init_noise_sigma
@@ -2193,7 +2203,8 @@ class BaseTrainer(ABC):
             # Log scheduler config for debugging
             print(f"{self.log_prefix} [Sample] Scheduler: {type(inference_scheduler).__name__}")
             print(f"{self.log_prefix} [Sample] prediction_type: {inference_scheduler.config.prediction_type}")
-            print(f"{self.log_prefix} [Sample] timestep_spacing: {inference_scheduler.config.get('timestep_spacing', 'N/A')}")
+            print(f"{self.log_prefix} [Sample] timestep_spacing: {inference_scheduler.config.timestep_spacing}")
+            print(f"{self.log_prefix} [Sample] steps_offset: {inference_scheduler.config.steps_offset}")
             print(f"{self.log_prefix} [Sample] init_noise_sigma: {inference_scheduler.init_noise_sigma:.4f}")
 
             # ============================================================

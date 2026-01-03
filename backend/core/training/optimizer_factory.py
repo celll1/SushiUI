@@ -175,6 +175,13 @@ class OptimizerFactory:
             # Lion uses different default betas
             lion_betas = kwargs.get("lion_betas", (0.9, 0.99))
 
+            # Schedule-Free parameters
+            schedule_free = kwargs.get("schedule_free", False)
+            warmup_steps = kwargs.get("warmup_steps", 0)
+            r = kwargs.get("r", 0.0)
+            weight_lr_power = kwargs.get("weight_lr_power", 2.0)
+            use_radam = kwargs.get("use_radam", False)
+
             optimizer = Lion8bit_RingBuffer(
                 params,
                 lr=learning_rate,
@@ -182,10 +189,25 @@ class OptimizerFactory:
                 weight_decay=weight_decay,
                 use_8bit=True,
                 cautious=cautious,
+                schedule_free=schedule_free,
+                warmup_steps=warmup_steps,
+                r=r,
+                weight_lr_power=weight_lr_power,
+                use_radam=use_radam,
                 get_state_buffer=get_state_buffer,
             )
-            cautious_str = " (cautious mode)" if cautious else ""
-            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer{cautious_str}")
+
+            # Build description string
+            options_str = []
+            if cautious:
+                options_str.append("cautious")
+            if schedule_free:
+                if use_radam:
+                    options_str.append("schedule-free (RAdam)")
+                else:
+                    options_str.append("schedule-free")
+            options_desc = f" ({', '.join(options_str)})" if options_str else ""
+            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer{options_desc}")
             return optimizer
 
         # bitsandbytes optimizers

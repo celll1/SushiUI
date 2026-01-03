@@ -3714,6 +3714,11 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
 
+        # Clean up future steps in database (old data from previous interrupted training)
+        # This prevents duplicate metrics when training resumes from an earlier step
+        if self.run_id is not None:
+            self._cleanup_future_metrics(global_step)
+
         # Generate step 0 sample to verify base model output
         if sample_every_n_steps > 0 and global_step == 0:
             print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
@@ -4529,9 +4534,73 @@ class BaseTrainer(ABC):
             db.commit()
             db.close()
 
+            # Broadcast metrics to WebSocket clients for real-time graph update
+            try:
+                from api.websocket import manager as ws_manager
+                ws_manager.send_training_metrics(
+                    run_id=self.run_id,
+                    step=step,
+                    loss=loss,
+                    recon_loss=recon_loss,
+                    learning_rate=learning_rate
+                )
+            except Exception as ws_error:
+                # Non-critical: Continue even if WebSocket broadcast fails
+                pass
+
         except Exception as e:
             # Non-critical: Continue training even if DB logging fails
             print(f"{self.log_prefix} WARNING: Failed to log metrics to DB: {e}")
+
+    def _cleanup_future_metrics(self, current_step: int):
+        """
+        Clean up future metrics in database (old data from previous interrupted training).
+
+        When training resumes from an earlier step (e.g., resume from step 100 when previous
+        run reached step 500), the UPSERT logic will overwrite steps 1-100, but steps 101-500
+        from the old run will remain in the database, causing duplicate/stale data.
+
+        This method removes all metrics with step > current_step to prevent this issue.
+
+        Args:
+            current_step: Current global step (resume point)
+        """
+        try:
+            from database.models import TrainingMetrics
+            from database import get_training_db
+
+            # Get database session
+            db = next(get_training_db())
+
+            # Find future metrics (step > current_step)
+            future_metrics = db.query(TrainingMetrics).filter(
+                TrainingMetrics.run_id == self.run_id,
+                TrainingMetrics.step > current_step
+            ).all()
+
+            if future_metrics:
+                # Get range for logging
+                future_steps = [m.step for m in future_metrics]
+                min_future_step = min(future_steps)
+                max_future_step = max(future_steps)
+
+                print(f"{self.log_prefix} Found {len(future_metrics)} old metrics (steps {min_future_step}-{max_future_step}) beyond current step {current_step}")
+                print(f"{self.log_prefix} Cleaning up old metrics to prevent duplicates...")
+
+                # Delete future metrics
+                for metric in future_metrics:
+                    db.delete(metric)
+
+                db.commit()
+                print(f"{self.log_prefix} Deleted {len(future_metrics)} old metrics")
+            else:
+                print(f"{self.log_prefix} No old metrics beyond current step {current_step} (clean start)")
+
+            db.close()
+
+        except Exception as e:
+            # Non-critical: Log warning but continue training
+            print(f"{self.log_prefix} WARNING: Failed to cleanup future metrics: {e}")
 
     def cleanup(self):
         """

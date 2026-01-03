@@ -24,9 +24,20 @@ export interface CFGMetrics {
 
 type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string, cfgMetrics?: CFGMetrics) => void;
 
+interface TrainingMetrics {
+  run_id: number;
+  step: number;
+  loss: number;
+  recon_loss?: number;
+  learning_rate?: number;
+}
+
+type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;
+
 class ProgressClient {
   private eventSource: EventSource | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
+  private trainingMetricsCallbacks: Set<TrainingMetricsCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
 
   connect() {
@@ -64,6 +75,21 @@ class ProgressClient {
 
           this.callbacks.forEach((callback) => {
             callback(data.step, data.total_steps, data.message, data.preview_image, data.cfg_metrics);
+          });
+        } else if (data.type === "training_metrics") {
+          // Training metrics: loss, recon_loss, learning_rate
+          console.log(`[SSE] Training metrics: run_id=${data.run_id}, step=${data.step}, loss=${data.loss?.toFixed(6) || 'N/A'}`);
+
+          const metrics: TrainingMetrics = {
+            run_id: data.run_id,
+            step: data.step,
+            loss: data.loss,
+            recon_loss: data.recon_loss,
+            learning_rate: data.learning_rate
+          };
+
+          this.trainingMetricsCallbacks.forEach((callback) => {
+            callback(metrics);
           });
         } else if (data.type === "error") {
           console.error("[SSE] Error from server:", data.message);
@@ -116,7 +142,18 @@ class ProgressClient {
   unsubscribe(callback: ProgressCallback) {
     this.callbacks.delete(callback);
   }
+
+  subscribeToTrainingMetrics(callback: TrainingMetricsCallback) {
+    this.trainingMetricsCallbacks.add(callback);
+  }
+
+  unsubscribeFromTrainingMetrics(callback: TrainingMetricsCallback) {
+    this.trainingMetricsCallbacks.delete(callback);
+  }
 }
 
 // Export with same name for backwards compatibility
 export const wsClient = new ProgressClient();
+
+// Export types
+export type { TrainingMetrics, TrainingMetricsCallback };

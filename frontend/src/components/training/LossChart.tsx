@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import { getTrainingMetrics } from "@/utils/api";
+import { wsClient, type TrainingMetrics } from "@/utils/websocket";
 
 interface MetricPoint {
   step: number;
@@ -134,6 +135,72 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       return () => clearInterval(interval);
     }
   }, [pollingInterval, fetchMetrics]);
+
+  // Real-time SSE update for training metrics (when training is running)
+  useEffect(() => {
+    if (!isRunning) return;
+
+    // Connect to SSE if not already connected
+    wsClient.connect();
+
+    // Subscribe to training metrics SSE messages
+    const handleTrainingMetrics = (metrics: TrainingMetrics) => {
+      // Only update if this metric is for the current run
+      if (metrics.run_id !== runId) return;
+
+      console.log(`[LossChart] Real-time metric: step=${metrics.step}, loss=${metrics.loss?.toFixed(6)}`);
+
+      // Add new metric point to lossData
+      const newLossPoint: MetricPoint = {
+        step: metrics.step,
+        value: metrics.loss,
+        wall_time: Date.now() / 1000 // Current timestamp in seconds
+      };
+
+      setLossData((prevData) => {
+        // Check if this step already exists (UPSERT behavior)
+        const existingIndex = prevData.findIndex((p) => p.step === metrics.step);
+        if (existingIndex >= 0) {
+          // Update existing point
+          const newData = [...prevData];
+          newData[existingIndex] = newLossPoint;
+          return newData;
+        } else {
+          // Add new point
+          return [...prevData, newLossPoint];
+        }
+      });
+
+      // Add recon_loss if available
+      if (metrics.recon_loss !== undefined && metrics.recon_loss !== null) {
+        const newReconLossPoint: MetricPoint = {
+          step: metrics.step,
+          value: metrics.recon_loss,
+          wall_time: Date.now() / 1000
+        };
+
+        setReconLossData((prevData) => {
+          const existingIndex = prevData.findIndex((p) => p.step === metrics.step);
+          if (existingIndex >= 0) {
+            const newData = [...prevData];
+            newData[existingIndex] = newReconLossPoint;
+            return newData;
+          } else {
+            return [...prevData, newReconLossPoint];
+          }
+        });
+      }
+
+      // Update lastStep
+      setLastStep((prevLastStep) => Math.max(prevLastStep, metrics.step));
+    };
+
+    wsClient.subscribeToTrainingMetrics(handleTrainingMetrics);
+
+    return () => {
+      wsClient.unsubscribeFromTrainingMetrics(handleTrainingMetrics);
+    };
+  }, [isRunning, runId]);
 
   // Monitor SVG width for responsive layout
   useEffect(() => {

@@ -45,6 +45,26 @@ class ConnectionManager:
         # Put message in queue (thread-safe)
         self.message_queue.put(data)
 
+    def send_training_metrics(self, run_id: int, step: int, loss: float, recon_loss: float = None, learning_rate: float = None):
+        """Send training metrics (loss, recon_loss, lr) to all connected clients.
+
+        Called from training loop (base_trainer.py) after each step.
+        Thread-safe: uses message queue.
+        """
+        data = {
+            "type": "training_metrics",
+            "run_id": run_id,
+            "step": step,
+            "loss": loss,
+        }
+        if recon_loss is not None:
+            data["recon_loss"] = recon_loss
+        if learning_rate is not None:
+            data["learning_rate"] = learning_rate
+
+        # Put message in queue (thread-safe)
+        self.message_queue.put(data)
+
     async def start_sender(self):
         """Background task to send queued messages"""
         while True:

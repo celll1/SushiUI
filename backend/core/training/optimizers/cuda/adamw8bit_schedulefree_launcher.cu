@@ -2,25 +2,13 @@
  * CUDA Kernel Launcher for AdamW 8-bit Schedule-Free
  *
  * Handles kernel launch configuration and grid/block dimensions.
+ *
+ * NOTE: We include the kernel definition file here because CUDA template
+ * functions must have their definitions visible at the call site.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <stdint.h>
-
-#define THREADS_PER_BLOCK 256
-
-// Forward declare kernel template
-template<typename T>
-__global__ void adamw_8bit_schedulefree_update_kernel(
-    T* param, const T* grad,
-    uint8_t* state_z, uint8_t* state_exp_avg_sq,
-    float* absmax_z, float* absmax2,
-    const float beta1, const float beta2, const float eps, const float lr,
-    const float weight_decay, const float ckp1, const float gnorm_scale,
-    const float bias_correction2, const int numel
-);
+// Include kernel implementation (contains template definition)
+#include "adamw8bit_schedulefree_kernel.cu"
 
 
 // ============================================================

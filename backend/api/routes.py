@@ -3897,6 +3897,11 @@ class TrainingRunCreateRequest(BaseModel):
     sample_schedule_type: str = "sgm_uniform"
     sample_seed: int = -1  # -1 for random
 
+    # Unified Training Framework (Phase 2)
+    noise_process: str = "auto"  # "auto", "ddpm", "flow"
+    prediction_target: str = "auto"  # "auto", "epsilon", "velocity", "sample"
+    strict_validation: bool = False  # Abort training if mismatch detected
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -4068,6 +4073,9 @@ async def create_training_run(
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4141,6 +4149,9 @@ async def create_training_run(
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
 
         # Save config file
@@ -4477,6 +4488,9 @@ async def update_training_run(
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=request.resume_from_checkpoint,
                 caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4550,6 +4564,9 @@ async def update_training_run(
                 sample_seed=request.sample_seed,
                 resume_from_checkpoint=request.resume_from_checkpoint,
                 caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
 
         # Update config_yaml and base_model_path in database

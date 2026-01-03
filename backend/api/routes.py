@@ -3820,6 +3820,7 @@ class TrainingRunCreateRequest(BaseModel):
     optimizer_schedule_free: bool = False  # Enable Schedule-Free optimizer (adamw8bit_ringbuffer, lion8bit_ringbuffer)
     optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
     optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
+    optimizer_use_radam: bool = False  # Use RAdam (Rectified Adam) with Schedule-Free (adamw8bit_ringbuffer, lion8bit_ringbuffer)
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -4021,6 +4022,7 @@ async def create_training_run(
                 optimizer_schedule_free=request.optimizer_schedule_free,
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 save_every=request.save_every,
@@ -4099,6 +4101,7 @@ async def create_training_run(
                 optimizer_schedule_free=request.optimizer_schedule_free,
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
@@ -4309,6 +4312,7 @@ async def get_training_run_params(
         "optimizer_schedule_free": training_params.get("optimizer_schedule_free", False),
         "optimizer_schedule_free_r": training_params.get("optimizer_schedule_free_r", 0.0),
         "optimizer_schedule_free_weight_lr_power": training_params.get("optimizer_schedule_free_weight_lr_power", 2.0),
+        "optimizer_use_radam": training_params.get("optimizer_use_radam", False),
         "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
         "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
         "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
@@ -4436,6 +4440,7 @@ async def update_training_run(
                 optimizer_schedule_free=request.optimizer_schedule_free,
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 save_every=request.save_every,
@@ -4514,6 +4519,7 @@ async def update_training_run(
                 optimizer_schedule_free=request.optimizer_schedule_free,
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,

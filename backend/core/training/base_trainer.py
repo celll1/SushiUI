@@ -435,6 +435,7 @@ class BaseTrainer(ABC):
         optimizer_warmup_steps: int = 0,
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
+    optimizer_use_radam: bool = False,
     ):
         """
         Initialize base trainer.
@@ -490,6 +491,7 @@ class BaseTrainer(ABC):
         self.optimizer_warmup_steps = optimizer_warmup_steps
         self.optimizer_schedule_free_r = optimizer_schedule_free_r
         self.optimizer_schedule_free_weight_lr_power = optimizer_schedule_free_weight_lr_power
+        self.optimizer_use_radam = optimizer_use_radam
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -1113,6 +1115,7 @@ class BaseTrainer(ABC):
                 optimizer_kwargs["warmup_steps"] = self.optimizer_warmup_steps
                 optimizer_kwargs["r"] = self.optimizer_schedule_free_r
                 optimizer_kwargs["weight_lr_power"] = self.optimizer_schedule_free_weight_lr_power
+                optimizer_kwargs["use_radam"] = self.optimizer_use_radam
 
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,

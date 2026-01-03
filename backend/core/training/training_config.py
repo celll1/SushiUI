@@ -34,6 +34,7 @@ class TrainingConfigGenerator:
         optimizer_schedule_free: bool = False,
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
+        optimizer_use_radam: bool = False,
         lora_rank: int = 16,
         lora_alpha: int = 16,
         save_every: int = 100,
@@ -255,6 +256,7 @@ class TrainingConfigGenerator:
                             **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
                             **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
                             **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
+                            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
                             "unet_lr": unet_lr if unet_lr is not None else learning_rate,
                             "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
@@ -460,6 +462,7 @@ class TrainingConfigGenerator:
             **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
             **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
             **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
+            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
             "weight_dtype": weight_dtype,
             "dtype": training_dtype,  # Training/activation dtype
             "output_dtype": output_dtype,

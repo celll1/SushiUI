@@ -111,6 +111,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [optimizerScheduleFree, setOptimizerScheduleFree] = useState(false);
   const [optimizerScheduleFreeR, setOptimizerScheduleFreeR] = useState<string>("0.0");
   const [optimizerScheduleFreeWeightLrPower, setOptimizerScheduleFreeWeightLrPower] = useState<string>("2.0");
+  const [optimizerUseRadam, setOptimizerUseRadam] = useState(false);
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
@@ -277,6 +278,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);
       if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r);
       if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power);
+      if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
 
       // Save & Sample intervals
       if (params.save_every !== undefined) setSaveEvery(params.save_every);
@@ -788,6 +790,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_schedule_free: optimizerScheduleFree,
       optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
       optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
+      optimizer_use_radam: optimizerUseRadam,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
       save_every: saveEvery,
@@ -1629,17 +1632,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
                     {optimizerScheduleFree && (
                       <div className="ml-6 space-y-2 border-l-2 border-gray-600 pl-3">
-                        {/* Schedule-Free r */}
-                        <div>
-                          <label className="block text-xs text-gray-400 mb-1">r (warmup parameter)</label>
+                        {/* RAdam toggle */}
+                        <div className="flex items-center gap-2">
                           <input
-                            type="text"
-                            value={optimizerScheduleFreeR}
-                            onChange={(e) => setOptimizerScheduleFreeR(e.target.value)}
-                            className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                            type="checkbox"
+                            id="optimizer-use-radam"
+                            checked={optimizerUseRadam}
+                            onChange={(e) => setOptimizerUseRadam(e.target.checked)}
+                            className="w-4 h-4"
                           />
-                          <p className="text-xs text-gray-500 mt-1">Default: 0.0 (no warmup)</p>
+                          <label htmlFor="optimizer-use-radam" className="text-xs text-gray-300 cursor-pointer">
+                            Use RAdam (Rectified Adam)
+                          </label>
                         </div>
+
+                        {/* Schedule-Free r (hidden when RAdam is enabled) */}
+                        {!optimizerUseRadam && (
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">r (warmup parameter)</label>
+                            <input
+                              type="text"
+                              value={optimizerScheduleFreeR}
+                              onChange={(e) => setOptimizerScheduleFreeR(e.target.value)}
+                              className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Default: 0.0 (no warmup)</p>
+                          </div>
+                        )}
 
                         {/* Schedule-Free weight_lr_power */}
                         <div>

@@ -2186,6 +2186,11 @@ class BaseTrainer(ABC):
             inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
             inference_scheduler.set_timesteps(num_inference_steps)
 
+            # Log scheduler config for debugging
+            print(f"{self.log_prefix} [Sample] Scheduler: {type(inference_scheduler).__name__}")
+            print(f"{self.log_prefix} [Sample] prediction_type: {inference_scheduler.config.prediction_type}")
+            print(f"{self.log_prefix} [Sample] timestep_spacing: {inference_scheduler.config.get('timestep_spacing', 'N/A')}")
+
             # ============================================================
             # Stage 2: U-Net Inference (Sequential Offloading Pattern)
             # ============================================================

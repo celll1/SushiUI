@@ -540,6 +540,10 @@ def main():
             optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
 
+            # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+            prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
+            max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -573,6 +577,9 @@ def main():
                 optimizer_warmup_steps=optimizer_warmup_steps,
                 optimizer_schedule_free_r=optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+                # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+                prompt_chunking_mode=prompt_chunking_mode,
+                max_prompt_chunks=max_prompt_chunks,
             )
 
             # Setup optimizer
@@ -867,6 +874,10 @@ def main():
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
 
+            # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+            prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
+            max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
+
             # Initialize trainer
             trainer = FullParameterTrainer(
                 model_path=run.base_model_path,
@@ -883,6 +894,9 @@ def main():
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
                 use_pinned_memory=train_config.get('use_pinned_memory', False),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
+                # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+                prompt_chunking_mode=prompt_chunking_mode,
+                max_prompt_chunks=max_prompt_chunks,
             )
 
             # Setup optimizer

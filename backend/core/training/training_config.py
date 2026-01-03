@@ -77,6 +77,9 @@ class TrainingConfigGenerator:
         sample_sampler: str = "euler",
         sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = 42,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
+        max_prompt_chunks: int = 0,  # 0 = unlimited
         # Resume settings
         resume_from_checkpoint: Optional[str] = None,
         # Caption processing settings
@@ -311,6 +314,9 @@ class TrainingConfigGenerator:
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
                         },
+                        # Prompt chunking settings (for long prompts >75 tokens)
+                        "prompt_chunking_mode": prompt_chunking_mode,
+                        "max_prompt_chunks": max_prompt_chunks,
                     }
                 ],
             },
@@ -382,6 +388,9 @@ class TrainingConfigGenerator:
         sample_sampler: str = "euler",
         sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = -1,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
+        max_prompt_chunks: int = 0,  # 0 = unlimited
         resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[dict] = None,
         # Multi Noise-Timestep (MNT) settings
@@ -582,6 +591,9 @@ class TrainingConfigGenerator:
                             "sample_steps": sample_steps,
                             "schedule_type": "sgm_uniform",
                         },
+                        # Prompt chunking settings (for long prompts >75 tokens)
+                        "prompt_chunking_mode": prompt_chunking_mode,
+                        "max_prompt_chunks": max_prompt_chunks,
                     }
                 ],
             },

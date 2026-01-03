@@ -410,6 +410,9 @@ class BaseTrainer(ABC):
         debug_vram: bool = False,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
+        max_prompt_chunks: int = 0,  # 0 = unlimited
         # Component-specific learning rates
         unet_lr: Optional[float] = None,
         text_encoder_lr: Optional[float] = None,
@@ -497,6 +500,10 @@ class BaseTrainer(ABC):
         self.debug_vram = debug_vram
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
+
+        # Prompt chunking settings (SD/SDXL only)
+        self.prompt_chunking_mode = prompt_chunking_mode
+        self.max_prompt_chunks = max_prompt_chunks
 
         # Regularization losses (to prevent overbaking)
         self.snr_regularization_loss = None
@@ -1303,7 +1310,7 @@ class BaseTrainer(ABC):
 
     def encode_prompt(self, prompt: str, requires_grad: bool = False):
         """
-        Encode text prompt to embeddings.
+        Encode text prompt to embeddings with chunking support for long prompts (>75 tokens).
 
         Args:
             prompt: Text prompt to encode
@@ -1312,6 +1319,21 @@ class BaseTrainer(ABC):
         Returns:
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
+        """
+        # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
+        tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
+        tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+
+        # If prompt is short (<=75 tokens), use simple encoding
+        if len(tokens) <= 75:
+            return self._encode_prompt_simple(prompt, requires_grad)
+
+        # Long prompt - use chunking
+        return self._encode_prompt_chunked(prompt, requires_grad)
+
+    def _encode_prompt_simple(self, prompt: str, requires_grad: bool = False):
+        """
+        Encode short prompt (<=75 tokens) using standard method.
         """
         if self.is_sdxl:
             # SDXL: Two text encoders
@@ -1370,6 +1392,122 @@ class BaseTrainer(ABC):
                 )[0]
 
                 return text_embeddings
+
+    def _encode_prompt_chunked(self, prompt: str, requires_grad: bool = False):
+        """
+        Encode long prompt (>75 tokens) using chunking.
+        Splits prompt into 75-token chunks and concatenates embeddings.
+        """
+        tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
+        tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+
+        # Split tokens into 75-token chunks
+        chunk_size = 75
+        chunks = []
+        for i in range(0, len(tokens), chunk_size):
+            chunk_tokens = tokens[i:i + chunk_size]
+            chunks.append(chunk_tokens)
+
+        # Limit chunks if max_prompt_chunks is set
+        if self.max_prompt_chunks > 0 and len(chunks) > self.max_prompt_chunks:
+            chunks = chunks[:self.max_prompt_chunks]
+
+        # Encode each chunk
+        chunk_embeds_list = []
+        pooled_embeddings = None
+
+        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+        with context_manager:
+            for idx, chunk_tokens in enumerate(chunks):
+                # Decode tokens back to text
+                chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+
+                # Encode chunk
+                if self.is_sdxl:
+                    # SDXL: Encode with both text encoders
+                    text_inputs_1 = self.tokenizer(
+                        chunk_text,
+                        padding="max_length",
+                        max_length=self.tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+
+                    text_inputs_2 = self.tokenizer_2(
+                        chunk_text,
+                        padding="max_length",
+                        max_length=self.tokenizer_2.model_max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+
+                    encoder_output_1 = self.text_encoder(
+                        text_inputs_1.input_ids.to(self.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                    encoder_output_2 = self.text_encoder_2(
+                        text_inputs_2.input_ids.to(self.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
+
+                    # Use pooled embeddings from first chunk only
+                    if idx == 0:
+                        pooled_embeddings = encoder_output_2[0]
+
+                    chunk_embeds = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
+                    chunk_embeds_list.append(chunk_embeds)
+                else:
+                    # SD1.5: Single text encoder
+                    text_inputs = self.tokenizer(
+                        chunk_text,
+                        padding="max_length",
+                        max_length=self.tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+
+                    text_embeddings = self.text_encoder(
+                        text_inputs.input_ids.to(self.device),
+                    )[0]
+
+                    chunk_embeds_list.append(text_embeddings)
+
+        # Concatenate chunks based on chunking mode
+        if self.prompt_chunking_mode == "a1111":
+            # A1111 mode: concatenate all chunks as-is
+            text_embeddings = torch.cat(chunk_embeds_list, dim=1)
+        elif self.prompt_chunking_mode == "sd_scripts":
+            # sd-scripts mode: strip BOS/EOS between chunks
+            processed_chunks = []
+            for idx, chunk_emb in enumerate(chunk_embeds_list):
+                if len(chunk_embeds_list) == 1:
+                    processed_chunks.append(chunk_emb)
+                elif idx == 0:
+                    # First chunk: remove EOS (last token before padding)
+                    processed_chunks.append(chunk_emb[:, :-1, :])
+                elif idx == len(chunk_embeds_list) - 1:
+                    # Last chunk: remove BOS (first token)
+                    processed_chunks.append(chunk_emb[:, 1:, :])
+                else:
+                    # Middle chunks: remove both BOS and EOS
+                    processed_chunks.append(chunk_emb[:, 1:-1, :])
+            text_embeddings = torch.cat(processed_chunks, dim=1)
+        else:  # nobos
+            # NoBOS mode: strip all BOS/EOS tokens
+            processed_chunks = []
+            for chunk_emb in chunk_embeds_list:
+                # Remove first (BOS) and last (EOS) tokens
+                processed_chunks.append(chunk_emb[:, 1:-1, :])
+            text_embeddings = torch.cat(processed_chunks, dim=1)
+
+        if self.is_sdxl:
+            return text_embeddings, pooled_embeddings
+        else:
+            return text_embeddings
 
     def encode_prompt_zimage(
         self,
@@ -3989,8 +4127,34 @@ class BaseTrainer(ABC):
 
                         # Stack batch
                         latents = torch.cat(latents_list, dim=0)
+
                         # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
-                        text_embeddings = torch.cat(text_embeddings_list, dim=0) if text_embeddings_list else None
+                        # IMPORTANT: Pad embeddings to same sequence length if chunking is used
+                        if text_embeddings_list:
+                            # Check if all embeddings have same sequence length
+                            seq_lengths = [emb.shape[1] for emb in text_embeddings_list]
+                            max_seq_len = max(seq_lengths)
+
+                            if len(set(seq_lengths)) > 1:
+                                # Different sequence lengths - need padding
+                                padded_embeddings = []
+                                for emb in text_embeddings_list:
+                                    if emb.shape[1] < max_seq_len:
+                                        # Pad to max_seq_len with zeros
+                                        pad_length = max_seq_len - emb.shape[1]
+                                        padding = torch.zeros(
+                                            (emb.shape[0], pad_length, emb.shape[2]),
+                                            dtype=emb.dtype,
+                                            device=emb.device
+                                        )
+                                        emb = torch.cat([emb, padding], dim=1)
+                                    padded_embeddings.append(emb)
+                                text_embeddings = torch.cat(padded_embeddings, dim=0)
+                            else:
+                                # All same length - direct concatenation
+                                text_embeddings = torch.cat(text_embeddings_list, dim=0)
+                        else:
+                            text_embeddings = None
 
                         # Sample timesteps for this MNT iteration
                         batch_size = latents.shape[0]

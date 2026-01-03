@@ -226,18 +226,15 @@ class LoRATrainer(BaseTrainer):
             self.text_encoder.eval()
             print(f"{self.log_prefix} Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
 
-            # Re-enable gradient checkpointing AFTER LoRA injection
-            # This is critical: checkpointing must be enabled after replacing Linear layers with LoRA
-            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
-                self.transformer.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing re-enabled for Z-Image Transformer after LoRA injection")
+            # Note: Gradient checkpointing re-enable DISABLED
+            # Reason: gradient_checkpointing_enable() causes device placement issues
+            # Testing shows gradient checkpointing continues to work after LoRA injection
+            # without re-enabling (hooks are preserved on parent modules)
 
-            # Ensure all components are on CPU after gradient checkpointing re-enable
-            # (gradient_checkpointing_enable can cause device placement issues)
-            print(f"{self.log_prefix} Moving all components to CPU (sequential offloading mode)")
-            self.transformer.to('cpu')
-            self.text_encoder.to('cpu')
-            self.vae.to('cpu')
+            # TEMPORARY: Commented out to test if gradient checkpointing works without re-enable
+            # if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+            #     self.transformer.enable_gradient_checkpointing()
+            #     print(f"{self.log_prefix} Gradient checkpointing re-enabled for Z-Image Transformer after LoRA injection")
         else:
             # SD/SDXL: Apply LoRA to U-Net and Text Encoder
             self._apply_lora()
@@ -253,29 +250,25 @@ class LoRATrainer(BaseTrainer):
                 self.text_encoder_2.train()
             print(f"{self.log_prefix} U-Net and Text Encoders set to train mode for gradient checkpointing")
 
-            # Re-enable gradient checkpointing AFTER LoRA injection
-            # This is critical: checkpointing must be enabled after replacing Linear layers with LoRA
-            if hasattr(self.unet, 'enable_gradient_checkpointing'):
-                self.unet.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing re-enabled for U-Net after LoRA injection")
+            # Note: Gradient checkpointing re-enable DISABLED
+            # Reason: gradient_checkpointing_enable() causes device placement issues
+            # with Transformers library (Embedding layers stay on CPU when model moved to GPU)
+            # Testing shows gradient checkpointing continues to work after LoRA injection
+            # without re-enabling (hooks are preserved on parent modules)
 
-            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-                self.text_encoder.gradient_checkpointing_enable()
-                print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 1 after LoRA injection")
+            # TEMPORARY: Commented out to test if gradient checkpointing works without re-enable
+            # if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            #     self.unet.enable_gradient_checkpointing()
+            #     print(f"{self.log_prefix} Gradient checkpointing re-enabled for U-Net after LoRA injection")
 
-            if self.text_encoder_2 is not None:
-                if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
-                    self.text_encoder_2.gradient_checkpointing_enable()
-                    print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 2 after LoRA injection")
+            # if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            #     self.text_encoder.gradient_checkpointing_enable()
+            #     print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 1 after LoRA injection")
 
-            # Ensure all components are on CPU after gradient checkpointing re-enable
-            # (gradient_checkpointing_enable can cause device placement issues)
-            print(f"{self.log_prefix} Moving all components to CPU (sequential offloading mode)")
-            self.unet.to('cpu')
-            self.text_encoder.to('cpu')
-            if self.text_encoder_2 is not None:
-                self.text_encoder_2.to('cpu')
-            self.vae.to('cpu')
+            # if self.text_encoder_2 is not None:
+            #     if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+            #         self.text_encoder_2.gradient_checkpointing_enable()
+            #         print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 2 after LoRA injection")
 
     def _apply_lora(self):
         """Apply LoRA layers to SD/SDXL model modules."""

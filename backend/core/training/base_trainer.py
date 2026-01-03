@@ -2139,6 +2139,12 @@ class BaseTrainer(ABC):
         """
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
 
+        # ============================================================
+        # Stage 1: Text Encoding (Sequential Offloading Pattern)
+        # ============================================================
+        # Move Text Encoder to GPU for encoding
+        self.move_text_encoder_to_gpu()
+
         # Encode prompt
         if self.is_sdxl:
             text_embeddings, pooled_embeddings = self.encode_prompt(prompt, requires_grad=False)
@@ -2149,6 +2155,10 @@ class BaseTrainer(ABC):
             uncond_embeddings = self.encode_prompt("", requires_grad=False)
             pooled_embeddings = None
             uncond_pooled = None
+
+        # Move Text Encoder back to CPU to free VRAM
+        self.move_text_encoder_to_cpu()
+        torch.cuda.empty_cache()
 
         # Prepare latents with seed
         latent_height = height // 8
@@ -2167,6 +2177,12 @@ class BaseTrainer(ABC):
         from diffusers import EulerDiscreteScheduler
         inference_scheduler = EulerDiscreteScheduler.from_config(self.noise_scheduler.config)
         inference_scheduler.set_timesteps(num_inference_steps)
+
+        # ============================================================
+        # Stage 2: U-Net Inference (Sequential Offloading Pattern)
+        # ============================================================
+        # Move U-Net to GPU for denoising
+        self.move_main_model_to_gpu()
 
         # Denoising loop
         with torch.no_grad():
@@ -2228,10 +2244,24 @@ class BaseTrainer(ABC):
                 # Denoise step
                 latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
 
+        # Move U-Net back to CPU to free VRAM
+        self.move_main_model_to_cpu()
+        torch.cuda.empty_cache()
+
+        # ============================================================
+        # Stage 3: VAE Decode (Sequential Offloading Pattern)
+        # ============================================================
+        # Move VAE to GPU for decoding
+        self.move_vae_to_gpu()
+
         # Decode latents
         latents = latents / self.vae.config.scaling_factor
         with torch.no_grad():
             image = self.vae.decode(latents.to(self.vae.dtype)).sample
+
+        # Move VAE back to CPU after decoding
+        self.move_vae_to_cpu()
+        torch.cuda.empty_cache()
 
         # Convert to PIL
         image = (image / 2 + 0.5).clamp(0, 1)

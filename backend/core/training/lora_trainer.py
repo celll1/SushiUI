@@ -591,6 +591,7 @@ class LoRATrainer(BaseTrainer):
 
         print(f"{self.log_prefix} Saving checkpoint to {save_path}")
         print(f"{self.log_prefix} Converting weights to {self.output_dtype} for saving")
+        print(f"{self.log_prefix} [Debug] Total LoRA layers in self.lora_layers: {len(self.lora_layers)}")
 
         # Collect all LoRA weights and convert to output_dtype
         state_dict = {}
@@ -656,6 +657,10 @@ class LoRATrainer(BaseTrainer):
                 state_dict["v_pred"] = torch.tensor([], dtype=self.output_dtype)
 
         # Save as safetensors
+        print(f"{self.log_prefix} [Debug] state_dict keys: {len(state_dict)}")
+        if len(state_dict) > 0:
+            print(f"{self.log_prefix} [Debug] Sample keys: {list(state_dict.keys())[:5]}")
+
         save_file(state_dict, str(save_path), metadata=metadata)
         print(f"{self.log_prefix} Checkpoint saved: {save_path}")
 

@@ -151,6 +151,14 @@ class LoRATrainer(BaseTrainer):
         self.text_encoder_1_lr = text_encoder_1_lr or text_encoder_lr or (learning_rate * 0.5)
         self.text_encoder_2_lr = text_encoder_2_lr or text_encoder_lr or (learning_rate * 0.5)
 
+        # Debug: Log LR values
+        print(f"[LoRATrainer.__init__] LR parameters received:")
+        print(f"  learning_rate={learning_rate}")
+        print(f"  unet_lr={unet_lr} → self.unet_lr={self.unet_lr}")
+        print(f"  text_encoder_lr={text_encoder_lr}")
+        print(f"  text_encoder_1_lr={text_encoder_1_lr} → self.text_encoder_1_lr={self.text_encoder_1_lr}")
+        print(f"  text_encoder_2_lr={text_encoder_2_lr} → self.text_encoder_2_lr={self.text_encoder_2_lr}")
+
         # Call parent __init__ (loads model components)
         super().__init__(
             model_path=model_path,
@@ -167,6 +175,12 @@ class LoRATrainer(BaseTrainer):
             debug_vram=debug_vram,
             use_flash_attention=use_flash_attention,
             min_snr_gamma=min_snr_gamma,
+            # Component-specific learning rates (pass to BaseTrainer)
+            unet_lr=unet_lr,
+            text_encoder_lr=text_encoder_lr,
+            text_encoder_1_lr=text_encoder_1_lr,
+            text_encoder_2_lr=text_encoder_2_lr,
+            # Optimizer options
             optimizer_is_paged=optimizer_is_paged,
             optimizer_cautious=optimizer_cautious,
             optimizer_beta1=optimizer_beta1,
@@ -178,6 +192,7 @@ class LoRATrainer(BaseTrainer):
             optimizer_schedule_free_r=optimizer_schedule_free_r,
             optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
             optimizer_use_radam=optimizer_use_radam,
+            # Prompt chunking
             prompt_chunking_mode=prompt_chunking_mode,
             max_prompt_chunks=max_prompt_chunks,
         )
@@ -210,6 +225,19 @@ class LoRATrainer(BaseTrainer):
             self.transformer.train()
             self.text_encoder.eval()
             print(f"{self.log_prefix} Z-Image Transformer set to train mode, Text Encoder to eval mode (frozen)")
+
+            # Re-enable gradient checkpointing AFTER LoRA injection
+            # This is critical: checkpointing must be enabled after replacing Linear layers with LoRA
+            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+                self.transformer.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing re-enabled for Z-Image Transformer after LoRA injection")
+
+            # Ensure all components are on CPU after gradient checkpointing re-enable
+            # (gradient_checkpointing_enable can cause device placement issues)
+            print(f"{self.log_prefix} Moving all components to CPU (sequential offloading mode)")
+            self.transformer.to('cpu')
+            self.text_encoder.to('cpu')
+            self.vae.to('cpu')
         else:
             # SD/SDXL: Apply LoRA to U-Net and Text Encoder
             self._apply_lora()
@@ -224,6 +252,30 @@ class LoRATrainer(BaseTrainer):
             if self.text_encoder_2 is not None:
                 self.text_encoder_2.train()
             print(f"{self.log_prefix} U-Net and Text Encoders set to train mode for gradient checkpointing")
+
+            # Re-enable gradient checkpointing AFTER LoRA injection
+            # This is critical: checkpointing must be enabled after replacing Linear layers with LoRA
+            if hasattr(self.unet, 'enable_gradient_checkpointing'):
+                self.unet.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing re-enabled for U-Net after LoRA injection")
+
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 1 after LoRA injection")
+
+            if self.text_encoder_2 is not None:
+                if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+                    self.text_encoder_2.gradient_checkpointing_enable()
+                    print(f"{self.log_prefix} Gradient checkpointing re-enabled for Text Encoder 2 after LoRA injection")
+
+            # Ensure all components are on CPU after gradient checkpointing re-enable
+            # (gradient_checkpointing_enable can cause device placement issues)
+            print(f"{self.log_prefix} Moving all components to CPU (sequential offloading mode)")
+            self.unet.to('cpu')
+            self.text_encoder.to('cpu')
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.to('cpu')
+            self.vae.to('cpu')
 
     def _apply_lora(self):
         """Apply LoRA layers to SD/SDXL model modules."""

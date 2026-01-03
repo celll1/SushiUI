@@ -3857,7 +3857,8 @@ class BaseTrainer(ABC):
                             # auxiliary_data_list contains pooled_embeddings for SDXL, None for SD1.5
                             pooled_embeddings = None
                             if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
-                                pooled_embeddings = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
+                                # Pooled embeddings are [1, dim], use cat to get [batch_size, dim]
+                                pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                             loss, recon_loss = self.train_step(
                                 latents=latents,
                                 text_embeddings=text_embeddings,

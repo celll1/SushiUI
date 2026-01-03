@@ -3412,6 +3412,38 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
 
+        # Validate text_encoding_mode when Text Encoder is trainable
+        # Check if any Text Encoder has trainable parameters (works for both LoRA and full fine-tune)
+        text_encoder_trainable = False
+        te1_trainable_params = 0
+        te2_trainable_params = 0
+
+        if hasattr(self, 'text_encoder') and self.text_encoder is not None:
+            te1_trainable_params = sum(1 for p in self.text_encoder.parameters() if p.requires_grad)
+            text_encoder_trainable = te1_trainable_params > 0
+
+        if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
+            te2_trainable_params = sum(1 for p in self.text_encoder_2.parameters() if p.requires_grad)
+            text_encoder_trainable = text_encoder_trainable or (te2_trainable_params > 0)
+
+        # Log trainable parameter counts
+        if text_encoder_trainable:
+            print(f"{self.log_prefix} Text Encoder trainable parameters detected:")
+            if te1_trainable_params > 0:
+                print(f"{self.log_prefix}   Text Encoder 1: {te1_trainable_params} trainable params")
+            if te2_trainable_params > 0:
+                print(f"{self.log_prefix}   Text Encoder 2: {te2_trainable_params} trainable params")
+
+        # If Text Encoder is trainable, embeddings must be recomputed each step
+        if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache']:
+            print(f"{self.log_prefix} WARNING: Text Encoder is trainable but text_encoding_mode='{text_encoding_mode}'")
+            print(f"{self.log_prefix} Text embeddings would be cached and NOT updated during training!")
+            print(f"{self.log_prefix} Overriding to 'onthefly_gpu' - embeddings must be recomputed each step")
+            text_encoding_mode = 'onthefly_gpu'
+
+        # Log final text encoding mode
+        print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
+
         # Setup debug directory
         debug_dir = None
         if debug_latents:

@@ -102,7 +102,7 @@ def get_extension():
             sources=[
                 str(wrapper_cpp),
                 str(kernel_cu),
-                str(schedulefree_kernel_cu),
+                # str(schedulefree_kernel_cu),  # Included by launcher
                 str(schedulefree_launcher_cu)
             ],
             extra_cflags=["-O3"],

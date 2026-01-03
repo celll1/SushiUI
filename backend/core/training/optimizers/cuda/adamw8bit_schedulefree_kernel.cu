@@ -236,26 +236,8 @@ __global__ void adamw_8bit_schedulefree_update_kernel(
 
 
 // ============================================================
-// Kernel Launcher (Template Instantiation)
+// Note: Kernel instantiation is done in launcher
 // ============================================================
-
-// Explicit instantiation for FP32
-template __global__ void adamw_8bit_schedulefree_update_kernel<float>(
-    float*, const float*, uint8_t*, uint8_t*, float*, float*,
-    const float, const float, const float, const float, const float,
-    const float, const float, const float, const int
-);
-
-// Explicit instantiation for FP16
-template __global__ void adamw_8bit_schedulefree_update_kernel<__half>(
-    __half*, const __half*, uint8_t*, uint8_t*, float*, float*,
-    const float, const float, const float, const float, const float,
-    const float, const float, const float, const int
-);
-
-// Explicit instantiation for BF16
-template __global__ void adamw_8bit_schedulefree_update_kernel<__nv_bfloat16>(
-    __nv_bfloat16*, const __nv_bfloat16*, uint8_t*, uint8_t*, float*, float*,
-    const float, const float, const float, const float, const float,
-    const float, const float, const float, const int
-);
+// __global__ function templates cannot be explicitly instantiated
+// in CUDA. The launcher (adamw8bit_schedulefree_launcher.cu) will
+// call the kernel template for each dtype (float, __half, __nv_bfloat16).

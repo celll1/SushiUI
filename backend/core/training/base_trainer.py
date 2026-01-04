@@ -1161,6 +1161,11 @@ class BaseTrainer(ABC):
                 eps=1e-8,
             )
 
+        # Set optimizer to train mode (required for RingBuffer optimizers)
+        if hasattr(self.optimizer, 'train'):
+            self.optimizer.train()
+            print(f"{self.log_prefix} Optimizer set to train mode")
+
         # Setup LR scheduler
         from diffusers.optimization import get_scheduler as get_diffusers_scheduler
         self.lr_scheduler = get_diffusers_scheduler(
@@ -1303,6 +1308,12 @@ class BaseTrainer(ABC):
 
         # Replace self.optimizer with first optimizer (for compatibility)
         self.optimizer = optimizers[0]
+
+        # Set all optimizers to train mode (required for RingBuffer optimizers)
+        for optimizer in optimizers:
+            if hasattr(optimizer, 'train'):
+                optimizer.train()
+        print(f"{self.log_prefix} All {len(optimizers)} optimizers set to train mode")
 
         # Create LR schedulers for all optimizers
         from diffusers.optimization import get_scheduler as get_diffusers_scheduler
@@ -2992,7 +3003,7 @@ class BaseTrainer(ABC):
             latent_caches: Dictionary of latent caches
             progress_callback: Progress callback function
         """
-        print(f"{self.log_prefix} Generating latent cache with model offloading...")
+        log_verbose(f"[Latent Cache] Generating latent cache with model offloading...")
 
         # Count total items
         total_items = sum(len(dataset.items) for dataset in datasets)
@@ -3010,7 +3021,10 @@ class BaseTrainer(ABC):
         for dataset in datasets:
             cache = latent_caches[dataset.unique_id]
 
-            for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}"):
+            # Log to file only (no console spam)
+            log_verbose(f"[Latent Cache] Caching dataset {dataset.unique_id} ({len(dataset.items)} items)...")
+
+            for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}", disable=True):
                 # Check if already cached (skip if force_recache is False)
                 image_path = item["image_path"]
                 width = item["width"]
@@ -3087,7 +3101,7 @@ class BaseTrainer(ABC):
                     )
 
         # VAE stays on CPU (already there)
-        print(f"{self.log_prefix} Latent cache generation complete ({iteration_count} images encoded)")
+        log_verbose(f"[Latent Cache] Generation complete ({iteration_count} images encoded)")
 
     def _regenerate_single_latent(
         self,

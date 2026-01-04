@@ -4562,10 +4562,16 @@ class BaseTrainer(ABC):
                         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
                         current_lr = self.lr_scheduler.get_last_lr()[0]
 
+                        # Calculate gradient norms before optimizer.step() clears gradients
+                        grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+
                         # TensorBoard logging (for external tools, backward compatibility)
                         self.writer.add_scalar("train/loss", loss_value, global_step)
                         self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)
                         self.writer.add_scalar("train/lr", current_lr, global_step)
+                        self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
+                        self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
+                        self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
 
                         # Database logging (for fast frontend queries, UPSERT on duplicate step)
                         if self.run_id is not None:
@@ -4573,7 +4579,10 @@ class BaseTrainer(ABC):
                                 step=global_step,
                                 loss=loss_value,
                                 recon_loss=recon_loss_value,
-                                learning_rate=current_lr
+                                learning_rate=current_lr,
+                                grad_norm=grad_norm_total,
+                                grad_norm_text_encoder=grad_norm_te,
+                                grad_norm_unet=grad_norm_unet
                             )
 
                         # Flush TensorBoard writer periodically to prevent DRAM accumulation
@@ -4734,7 +4743,46 @@ class BaseTrainer(ABC):
         # Cleanup resources
         self.cleanup()
 
-    def _log_metrics_to_db(self, step: int, loss: float, recon_loss: float, learning_rate: float):
+    def _calculate_grad_norms(self):
+        """
+        Calculate gradient norms for different parameter groups.
+
+        Returns:
+            Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm)
+        """
+        total_grad_norm = 0.0
+        text_encoder_grad_norm = 0.0
+        unet_grad_norm = 0.0
+
+        # Collect all parameters with gradients
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2).item()
+                total_grad_norm += param_norm ** 2
+
+                # Categorize by parameter name
+                if 'text_encoder' in name:
+                    text_encoder_grad_norm += param_norm ** 2
+                elif 'unet' in name or 'transformer' in name:
+                    unet_grad_norm += param_norm ** 2
+
+        # Take square root to get L2 norm
+        total_grad_norm = total_grad_norm ** 0.5
+        text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
+        unet_grad_norm = unet_grad_norm ** 0.5
+
+        return total_grad_norm, text_encoder_grad_norm, unet_grad_norm
+
+    def _log_metrics_to_db(
+        self,
+        step: int,
+        loss: float,
+        recon_loss: float,
+        learning_rate: float,
+        grad_norm: float = None,
+        grad_norm_text_encoder: float = None,
+        grad_norm_unet: float = None
+    ):
         """
         Log training metrics to database (dual logging: TensorBoard + DB).
 
@@ -4748,6 +4796,9 @@ class BaseTrainer(ABC):
             loss: Total loss value
             recon_loss: Reconstruction loss value
             learning_rate: Current learning rate
+            grad_norm: Total gradient norm (optional)
+            grad_norm_text_encoder: Text encoder gradient norm (optional)
+            grad_norm_unet: U-Net/Transformer gradient norm (optional)
         """
         try:
             from database.models import TrainingMetrics
@@ -4767,6 +4818,9 @@ class BaseTrainer(ABC):
                 existing.loss = loss
                 existing.recon_loss = recon_loss
                 existing.learning_rate = learning_rate
+                existing.grad_norm = grad_norm
+                existing.grad_norm_text_encoder = grad_norm_text_encoder
+                existing.grad_norm_unet = grad_norm_unet
                 existing.timestamp = datetime.now()
             else:
                 # Insert new metric
@@ -4775,7 +4829,10 @@ class BaseTrainer(ABC):
                     step=step,
                     loss=loss,
                     recon_loss=recon_loss,
-                    learning_rate=learning_rate
+                    learning_rate=learning_rate,
+                    grad_norm=grad_norm,
+                    grad_norm_text_encoder=grad_norm_text_encoder,
+                    grad_norm_unet=grad_norm_unet
                 )
                 db.add(metric)
 
@@ -4791,7 +4848,10 @@ class BaseTrainer(ABC):
                     step=step,
                     loss=loss,
                     recon_loss=recon_loss,
-                    learning_rate=learning_rate
+                    learning_rate=learning_rate,
+                    grad_norm=grad_norm,
+                    grad_norm_text_encoder=grad_norm_text_encoder,
+                    grad_norm_unet=grad_norm_unet
                 )
             except Exception as ws_error:
                 # Non-critical: Continue even if WebSocket broadcast fails

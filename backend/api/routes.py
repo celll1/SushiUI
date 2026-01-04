@@ -5353,7 +5353,10 @@ async def get_training_metrics_db(
         {
             "loss": [{"step": int, "value": float, "timestamp": str}, ...],
             "recon_loss": [{"step": int, "value": float, "timestamp": str}, ...],
-            "learning_rate": [{"step": int, "value": float, "timestamp": str}, ...]
+            "learning_rate": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm_text_encoder": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm_unet": [{"step": int, "value": float, "timestamp": str}, ...]
         }
     """
     from database.models import TrainingMetrics
@@ -5388,6 +5391,9 @@ async def get_training_metrics_db(
         loss_data = []
         recon_loss_data = []
         lr_data = []
+        grad_norm_data = []
+        grad_norm_te_data = []
+        grad_norm_unet_data = []
 
         for m in metrics:
             point = {
@@ -5404,10 +5410,22 @@ async def get_training_metrics_db(
             if m.learning_rate is not None:
                 lr_data.append({**point, "value": m.learning_rate})
 
+            if m.grad_norm is not None:
+                grad_norm_data.append({**point, "value": m.grad_norm})
+
+            if m.grad_norm_text_encoder is not None:
+                grad_norm_te_data.append({**point, "value": m.grad_norm_text_encoder})
+
+            if m.grad_norm_unet is not None:
+                grad_norm_unet_data.append({**point, "value": m.grad_norm_unet})
+
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
-            "learning_rate": lr_data
+            "learning_rate": lr_data,
+            "grad_norm": grad_norm_data,
+            "grad_norm_text_encoder": grad_norm_te_data,
+            "grad_norm_unet": grad_norm_unet_data
         }
 
     except Exception as e:

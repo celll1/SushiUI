@@ -1076,6 +1076,16 @@ class BaseTrainer(ABC):
             # Attempt to load state dict with error handling
             try:
                 self.optimizer.load_state_dict(optimizer_state)
+
+                # IMPORTANT: After load_state_dict(), move all tensors in optimizer.state to GPU
+                # load_state_dict() may create new tensor references, so we need to move again
+                print(f"{self.log_prefix} Verifying all optimizer state tensors are on {self.device}...")
+                for param_state in self.optimizer.state.values():
+                    for key, value in param_state.items():
+                        if isinstance(value, torch.Tensor) and not value.is_cuda:
+                            param_state[key] = value.to(self.device)
+                            print(f"{self.log_prefix}   Moved {key} to {self.device}")
+
                 print(f"{self.log_prefix} Successfully loaded optimizer state from {optimizer_file.name}")
                 return True
             except Exception as e:

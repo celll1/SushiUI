@@ -1050,16 +1050,28 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Starting with fresh optimizer state")
             return False
 
+        def move_tensors_to_device(obj, device):
+            """Recursively move all tensors in nested dict/list to target device."""
+            if isinstance(obj, torch.Tensor):
+                return obj.to(device)
+            elif isinstance(obj, dict):
+                return {k: move_tensors_to_device(v, device) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [move_tensors_to_device(v, device) for v in obj]
+            elif isinstance(obj, tuple):
+                return tuple(move_tensors_to_device(v, device) for v in obj)
+            else:
+                return obj
+
         try:
             # Load optimizer state dict
             optimizer_state = torch.load(optimizer_file, map_location='cpu')
 
-            # Move optimizer state tensors to GPU
-            # This is necessary for 8-bit optimizers that have CUDA-only buffers (absmax, etc.)
-            for state_key, state_value in optimizer_state['state'].items():
-                for key, value in state_value.items():
-                    if isinstance(value, torch.Tensor):
-                        state_value[key] = value.to(self.device)
+            # Recursively move all optimizer state tensors to GPU
+            # This is necessary for 8-bit optimizers that have CUDA-only buffers
+            # (absmax_z, absmax1, absmax2, etc.) which must be on CUDA device
+            print(f"{self.log_prefix} Moving optimizer state tensors to {self.device}...")
+            optimizer_state = move_tensors_to_device(optimizer_state, self.device)
 
             # Attempt to load state dict with error handling
             try:

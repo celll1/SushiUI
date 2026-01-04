@@ -1097,7 +1097,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraRank}
-                  onChange={(e) => setLoraRank(parseInt(e.target.value))}
+                  onChange={(e) => setLoraRank(parseInt(e.target.value) || 1)}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1109,7 +1109,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraAlpha}
-                  onChange={(e) => setLoraAlpha(parseInt(e.target.value))}
+                  onChange={(e) => setLoraAlpha(parseInt(e.target.value) || 1)}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1152,7 +1152,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={totalSteps}
-                  onChange={(e) => setTotalSteps(parseInt(e.target.value))}
+                  onChange={(e) => setTotalSteps(parseInt(e.target.value) || 1)}
                   min="1"
                   max="50000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1164,7 +1164,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={epochs}
-                  onChange={(e) => setEpochs(parseInt(e.target.value))}
+                  onChange={(e) => setEpochs(parseInt(e.target.value) || 1)}
                   min="1"
                   max="1000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1177,7 +1177,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={batchSize}
-                onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                onChange={(e) => setBatchSize(parseInt(e.target.value) || 1)}
                 min="1"
                 max="16"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1191,7 +1191,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={multiNoiseTimesteps}
-                onChange={(e) => setMultiNoiseTimesteps(parseInt(e.target.value))}
+                onChange={(e) => setMultiNoiseTimesteps(parseInt(e.target.value) || 1)}
                 min="1"
                 max="10"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1231,7 +1231,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={trajectoryBlendAlpha}
-                  onChange={(e) => setTrajectoryBlendAlpha(parseFloat(e.target.value))}
+                  onChange={(e) => setTrajectoryBlendAlpha(parseFloat(e.target.value) || 0.0)}
                   min="0.0"
                   max="1.0"
                   step="0.1"
@@ -1270,7 +1270,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={timestepMin}
-                      onChange={(e) => setTimestepMin(parseFloat(e.target.value))}
+                      onChange={(e) => setTimestepMin(parseFloat(e.target.value) || 0.0)}
                       min="0.0"
                       max="1.0"
                       step="0.05"
@@ -1282,7 +1282,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={timestepMax}
-                      onChange={(e) => setTimestepMax(parseFloat(e.target.value))}
+                      onChange={(e) => setTimestepMax(parseFloat(e.target.value) || 0.0)}
                       min="0.0"
                       max="1.0"
                       step="0.05"
@@ -1339,7 +1339,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={snrRegularizationWeight}
-                      onChange={(e) => setSnrRegularizationWeight(parseFloat(e.target.value))}
+                      onChange={(e) => setSnrRegularizationWeight(parseFloat(e.target.value) || 0.0)}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -1410,7 +1410,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={energyRegularizationWeight}
-                      onChange={(e) => setEnergyRegularizationWeight(parseFloat(e.target.value))}
+                      onChange={(e) => setEnergyRegularizationWeight(parseFloat(e.target.value) || 0.0)}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -2183,7 +2183,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="1"
               value={saveEvery}
-              onChange={(e) => setSaveEvery(parseInt(e.target.value))}
+              onChange={(e) => setSaveEvery(parseInt(e.target.value) || 1)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
@@ -2222,7 +2222,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="0"
               value={sampleEvery}
-              onChange={(e) => setSampleEvery(parseInt(e.target.value))}
+              onChange={(e) => setSampleEvery(parseInt(e.target.value) || 1)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="e.g., 100 (0 to disable)"
             />
@@ -2320,7 +2320,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleWidth}
-                onChange={(e) => setSampleWidth(parseInt(e.target.value))}
+                onChange={(e) => setSampleWidth(parseInt(e.target.value) || 1)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2332,7 +2332,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleHeight}
-                onChange={(e) => setSampleHeight(parseInt(e.target.value))}
+                onChange={(e) => setSampleHeight(parseInt(e.target.value) || 1)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2343,7 +2343,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => setSampleSteps(parseInt(e.target.value))}
+                onChange={(e) => setSampleSteps(parseInt(e.target.value) || 1)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2355,7 +2355,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="30"
                 step="0.5"
                 value={sampleCfgScale}
-                onChange={(e) => setSampleCfgScale(parseFloat(e.target.value))}
+                onChange={(e) => setSampleCfgScale(parseFloat(e.target.value) || 0.0)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2395,7 +2395,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <input
               type="number"
               value={sampleSeed}
-              onChange={(e) => setSampleSeed(parseInt(e.target.value))}
+              onChange={(e) => setSampleSeed(parseInt(e.target.value) || 1)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="-1 for random"
             />
@@ -2431,7 +2431,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 min="1"
                 value={debugLatentsEvery}
-                onChange={(e) => setDebugLatentsEvery(parseInt(e.target.value))}
+                onChange={(e) => setDebugLatentsEvery(parseInt(e.target.value) || 1)}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 placeholder="e.g., 50"
               />

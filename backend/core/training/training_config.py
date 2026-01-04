@@ -24,6 +24,7 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-4,
         lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
         optimizer_is_paged: bool = False,
         optimizer_cautious: bool = False,
@@ -39,6 +40,7 @@ class TrainingConfigGenerator:
         lora_alpha: int = 16,
         save_every: int = 100,
         save_every_unit: str = "steps",
+        max_step_saves_to_keep: int = 10,
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
@@ -221,7 +223,6 @@ class TrainingConfigGenerator:
                         "type": "sd_trainer",
                         "training_folder": output_dir,
                         "device": "cuda:0",
-                        "trigger_word": "",  # Can be customized
                         "network": {
                             "type": "lora",
                             "linear": lora_rank,
@@ -231,7 +232,7 @@ class TrainingConfigGenerator:
                             "dtype": "float16",
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": 10,
+                            "max_step_saves_to_keep": max_step_saves_to_keep,
                         },
                         "datasets": datasets_array,
                         "train": {
@@ -240,13 +241,15 @@ class TrainingConfigGenerator:
                             "gradient_accumulation_steps": 1,
                             "train_unet": train_unet,
                             "train_text_encoder": train_text_encoder,
-                            "gradient_checkpointing": True,
+                            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
                             # Unified training framework (replaces noise_scheduler)
                             "noise_process": noise_process,  # "auto", "ddpm", "flow"
                             "prediction_target": prediction_target,  # "auto", "epsilon", "velocity", "sample"
                             "strict_validation": strict_validation,
                             "optimizer": optimizer,
                             "lr": learning_rate,
+                            "lr_scheduler": lr_scheduler,
+                            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
                             **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
                             **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
                             **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
@@ -261,8 +264,6 @@ class TrainingConfigGenerator:
                             "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
-                            "lr_scheduler": lr_scheduler,
-                            "ema_config": {"use_ema": True, "ema_decay": 0.99},
                             "dtype": training_dtype,  # Training/activation dtype
                             "weight_dtype": weight_dtype,  # Model weight dtype
                             "output_dtype": output_dtype,  # Output latent dtype
@@ -299,8 +300,6 @@ class TrainingConfigGenerator:
                         },
                         "model": {
                             "name_or_path": base_model_path,
-                            "is_flux": False,
-                            "quantize": False,
                             "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
@@ -312,7 +311,6 @@ class TrainingConfigGenerator:
                             "prompts": sample_prompts or [],
                             "neg": "",
                             "seed": sample_seed,
-                            "walk_seed": True,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
                         },
@@ -351,6 +349,7 @@ class TrainingConfigGenerator:
         optimizer_schedule_free_weight_lr_power: float = 2.0,
         save_every: int = 100,
         save_every_unit: str = "steps",
+        max_step_saves_to_keep: int = 3,  # Fewer for full models (larger checkpoint size)
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
@@ -448,11 +447,11 @@ class TrainingConfigGenerator:
             "gradient_accumulation_steps": 1,
             "train_unet": train_unet,
             "train_text_encoder": train_text_encoder,
-            "gradient_checkpointing": True,
-            "noise_scheduler": "ddpm",
+            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
             "optimizer": optimizer,
             "lr": learning_rate,
             "lr_scheduler": lr_scheduler,
+            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
             **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
             **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
             **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
@@ -562,7 +561,6 @@ class TrainingConfigGenerator:
                         "type": "sd_trainer",
                         "training_folder": output_dir,
                         "device": "cuda:0",
-                        "trigger_word": "",
                         "network": {
                             "type": "full_finetune",
                         },
@@ -570,14 +568,12 @@ class TrainingConfigGenerator:
                             "dtype": output_dtype,
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
+                            "max_step_saves_to_keep": max_step_saves_to_keep,
                         },
                         "datasets": datasets_array,
                         "train": train_config,
                         "model": {
                             "name_or_path": base_model_path,
-                            "is_flux": False,
-                            "quantize": False,
                             "vae_dtype": vae_dtype,
                         },
                         "sample": {
@@ -589,10 +585,8 @@ class TrainingConfigGenerator:
                             "prompts": sample_prompts or [],
                             "neg": "",
                             "seed": sample_seed,
-                            "walk_seed": True,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
-                            "schedule_type": "sgm_uniform",
                         },
                         # Prompt chunking settings (for long prompts >75 tokens)
                         "prompt_chunking_mode": prompt_chunking_mode,

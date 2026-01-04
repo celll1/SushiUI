@@ -149,20 +149,21 @@ class LoRATrainer(BaseTrainer):
         Returns:
             Step number from checkpoint
         """
+        from safetensors import safe_open
         from safetensors.torch import load_file
+        import torch
 
         print(f"{self.log_prefix} Loading LoRA checkpoint: {checkpoint_path}")
 
-        # Load checkpoint
-        checkpoint = load_file(checkpoint_path)
-
-        # Extract metadata
-        # Note: safetensors metadata is string-only
+        # Extract metadata using safe_open
         step = 0
-        if hasattr(checkpoint, '__metadata__'):
-            metadata = checkpoint.__metadata__
+        with safe_open(checkpoint_path, framework="pt", device="cpu") as f:
+            metadata = f.metadata()
             if metadata and 'step' in metadata:
                 step = int(metadata['step'])
+
+        # Load checkpoint weights
+        checkpoint = load_file(checkpoint_path)
 
         # Load LoRA weights into existing layers
         for lora_name, lora_layer in self.lora_layers.items():

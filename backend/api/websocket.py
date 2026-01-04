@@ -45,8 +45,18 @@ class ConnectionManager:
         # Put message in queue (thread-safe)
         self.message_queue.put(data)
 
-    def send_training_metrics(self, run_id: int, step: int, loss: float, recon_loss: float = None, learning_rate: float = None):
-        """Send training metrics (loss, recon_loss, lr) to all connected clients.
+    def send_training_metrics(
+        self,
+        run_id: int,
+        step: int,
+        loss: float,
+        recon_loss: float = None,
+        learning_rate: float = None,
+        grad_norm: float = None,
+        grad_norm_text_encoder: float = None,
+        grad_norm_unet: float = None
+    ):
+        """Send training metrics (loss, recon_loss, lr, grad_norm) to all connected clients.
 
         Called from training loop (base_trainer.py) after each step.
         Thread-safe: uses message queue.
@@ -61,6 +71,12 @@ class ConnectionManager:
             data["recon_loss"] = recon_loss
         if learning_rate is not None:
             data["learning_rate"] = learning_rate
+        if grad_norm is not None:
+            data["grad_norm"] = grad_norm
+        if grad_norm_text_encoder is not None:
+            data["grad_norm_text_encoder"] = grad_norm_text_encoder
+        if grad_norm_unet is not None:
+            data["grad_norm_unet"] = grad_norm_unet
 
         # Put message in queue (thread-safe)
         self.message_queue.put(data)

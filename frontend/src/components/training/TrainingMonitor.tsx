@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
 import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
+import GradNormChart from "./GradNormChart";
 import CheckpointList from "./CheckpointList";
 
 interface TrainingMonitorProps {
@@ -441,10 +442,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
           {/* Loss Chart */}
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
-            <div className="bg-gray-800 rounded-lg p-3">
-              <h3 className="font-semibold mb-2 text-sm">Loss</h3>
-              <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
-            </div>
+            <>
+              <div className="bg-gray-800 rounded-lg p-3">
+                <h3 className="font-semibold mb-2 text-sm">Loss</h3>
+                <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+              </div>
+              <div className="bg-gray-800 rounded-lg p-3">
+                <h3 className="font-semibold mb-2 text-sm">Gradient Norm</h3>
+                <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+              </div>
+            </>
           )}
 
           {/* Checkpoint List */}

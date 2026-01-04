@@ -30,6 +30,9 @@ interface TrainingMetrics {
   loss: number;
   recon_loss?: number;
   learning_rate?: number;
+  grad_norm?: number;
+  grad_norm_text_encoder?: number;
+  grad_norm_unet?: number;
 }
 
 type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;

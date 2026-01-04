@@ -161,6 +161,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
   const [outputDtype, setOutputDtype] = useState<string>("fp32");
   const [vaeDtype, setVaeDtype] = useState<string>("fp32");
+  const [loraDtype, setLoraDtype] = useState<string>("fp32");
   const [mixedPrecision, setMixedPrecision] = useState(true);
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
@@ -823,6 +824,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       training_dtype: trainingDtype,
       output_dtype: outputDtype,
       vae_dtype: vaeDtype,
+      lora_dtype: loraDtype,
       mixed_precision: mixedPrecision,
       use_flash_attention: useFlashAttention,
       min_snr_gamma: minSnrGamma,
@@ -1928,6 +1930,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
+
+            {/* LoRA dtype (only for LoRA training) */}
+            {trainingMethod === "lora" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">LoRA dtype</label>
+                <select
+                  value={loraDtype}
+                  onChange={(e) => setLoraDtype(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="fp32">FP32 (推奨)</option>
+                  <option value="bf16">BF16</option>
+                  <option value="fp16">FP16</option>
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

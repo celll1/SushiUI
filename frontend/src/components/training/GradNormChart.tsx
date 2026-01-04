@@ -55,6 +55,9 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const [yAxisMode, setYAxisMode] = useState<"auto" | "custom">("auto");
   const [customYMin, setCustomYMin] = useState<number>(0);
   const [customYMax, setCustomYMax] = useState<number>(1);
+  const [xAxisMode, setXAxisMode] = useState<"auto" | "custom">("auto");
+  const [customXMin, setCustomXMin] = useState<number>(0);
+  const [customXMax, setCustomXMax] = useState<number>(1000);
 
   // Tooltip state
   const [tooltip, setTooltip] = useState<{
@@ -345,8 +348,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const chartWidth = svgWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  const maxStep = Math.max(...gradNormData.map((d) => d.step));
-  const minStep = Math.min(...gradNormData.map((d) => d.step));
+  const autoMaxStep = Math.max(...gradNormData.map((d) => d.step));
+  const autoMinStep = Math.min(...gradNormData.map((d) => d.step));
 
   // Calculate min/max considering all grad norms
   const allValues = [
@@ -358,6 +361,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const autoMinGradNorm = allValues.length > 0 ? Math.min(...allValues) : 0;
 
   // Use custom scale if enabled, otherwise use auto scale
+  const maxStep = xAxisMode === "custom" ? customXMax : autoMaxStep;
+  const minStep = xAxisMode === "custom" ? customXMin : autoMinStep;
   const maxGradNorm = yAxisMode === "custom" ? customYMax : autoMaxGradNorm;
   const minGradNorm = yAxisMode === "custom" ? customYMin : autoMinGradNorm;
 
@@ -582,91 +587,179 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
         )}
       </div>
 
-      {/* Y-axis Scale Controls */}
-      <div className="mb-3">
-        <div className="flex items-center gap-3 mb-2">
-          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={yAxisMode === "custom"}
-              onChange={(e) => {
-                const newMode = e.target.checked ? "custom" : "auto";
-                setYAxisMode(newMode);
-                if (newMode === "custom" && yAxisMode === "auto") {
+      {/* Axis Scale Controls (2-column layout) */}
+      <div className="grid grid-cols-2 gap-4 mb-3">
+        {/* Y-axis Scale Controls */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={yAxisMode === "custom"}
+                onChange={(e) => {
+                  const newMode = e.target.checked ? "custom" : "auto";
+                  setYAxisMode(newMode);
+                  if (newMode === "custom" && yAxisMode === "auto") {
+                    setCustomYMin(autoMinGradNorm);
+                    setCustomYMax(autoMaxGradNorm);
+                  }
+                }}
+                className="w-4 h-4"
+              />
+              <span>Y-axis</span>
+            </label>
+            {yAxisMode === "custom" && (
+              <button
+                onClick={() => {
                   setCustomYMin(autoMinGradNorm);
                   setCustomYMax(autoMaxGradNorm);
-                }
-              }}
-              className="w-4 h-4"
-            />
-            <span>Custom Y-axis Scale</span>
-          </label>
+                }}
+                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                title="Reset to auto values"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+
           {yAxisMode === "custom" && (
-            <button
-              onClick={() => {
-                setCustomYMin(autoMinGradNorm);
-                setCustomYMax(autoMaxGradNorm);
-              }}
-              className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
-              title="Reset to auto values"
-            >
-              Reset
-            </button>
+            <div className="flex items-center gap-2 pl-6">
+              <div className="flex-1 relative">
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxGradNorm * 2}
+                  step={autoMaxGradNorm / 1000}
+                  value={customYMin}
+                  onChange={(e) => {
+                    const newMin = parseFloat(e.target.value);
+                    if (newMin < customYMax) {
+                      setCustomYMin(newMin);
+                    }
+                  }}
+                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                  style={{
+                    background: 'transparent',
+                  }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxGradNorm * 2}
+                  step={autoMaxGradNorm / 1000}
+                  value={customYMax}
+                  onChange={(e) => {
+                    const newMax = parseFloat(e.target.value);
+                    if (newMax > customYMin) {
+                      setCustomYMax(newMax);
+                    }
+                  }}
+                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                  style={{
+                    background: 'transparent',
+                  }}
+                />
+                <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
+                <div
+                  className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
+                  style={{
+                    left: `${(customYMin / (autoMaxGradNorm * 2)) * 100}%`,
+                    right: `${100 - (customYMax / (autoMaxGradNorm * 2)) * 100}%`,
+                  }}
+                />
+              </div>
+              <span className="text-xs text-gray-400 w-28 text-right">
+                {customYMin.toFixed(3)} - {customYMax.toFixed(3)}
+              </span>
+            </div>
           )}
         </div>
 
-        {yAxisMode === "custom" && (
-          <div className="flex items-center gap-3 pl-6">
-            <label className="text-xs text-gray-400">Range:</label>
-            <div className="flex-1 relative">
+        {/* X-axis Scale Controls */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
               <input
-                type="range"
-                min={0}
-                max={autoMaxGradNorm * 2}
-                step={autoMaxGradNorm / 1000}
-                value={customYMin}
+                type="checkbox"
+                checked={xAxisMode === "custom"}
                 onChange={(e) => {
-                  const newMin = parseFloat(e.target.value);
-                  if (newMin < customYMax) {
-                    setCustomYMin(newMin);
+                  const newMode = e.target.checked ? "custom" : "auto";
+                  setXAxisMode(newMode);
+                  if (newMode === "custom" && xAxisMode === "auto") {
+                    setCustomXMin(autoMinStep);
+                    setCustomXMax(autoMaxStep);
                   }
                 }}
-                className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                style={{
-                  background: 'transparent',
-                }}
+                className="w-4 h-4"
               />
-              <input
-                type="range"
-                min={0}
-                max={autoMaxGradNorm * 2}
-                step={autoMaxGradNorm / 1000}
-                value={customYMax}
-                onChange={(e) => {
-                  const newMax = parseFloat(e.target.value);
-                  if (newMax > customYMin) {
-                    setCustomYMax(newMax);
-                  }
+              <span>X-axis</span>
+            </label>
+            {xAxisMode === "custom" && (
+              <button
+                onClick={() => {
+                  setCustomXMin(autoMinStep);
+                  setCustomXMax(autoMaxStep);
                 }}
-                className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                style={{
-                  background: 'transparent',
-                }}
-              />
-              <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
-              <div
-                className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
-                style={{
-                  left: `${(customYMin / (autoMaxGradNorm * 2)) * 100}%`,
-                  right: `${100 - (customYMax / (autoMaxGradNorm * 2)) * 100}%`,
-                }}
-              />
-            </div>
-            <span className="text-xs text-gray-400 w-32 text-right">
-              {customYMin.toFixed(3)} - {customYMax.toFixed(3)}
-            </span>
+                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                title="Reset to auto values"
+              >
+                Reset
+              </button>
+            )}
           </div>
-        )}
+
+          {xAxisMode === "custom" && (
+            <div className="flex items-center gap-2 pl-6">
+              <div className="flex-1 relative">
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxStep * 2}
+                  step={Math.max(1, Math.floor(autoMaxStep / 1000))}
+                  value={customXMin}
+                  onChange={(e) => {
+                    const newMin = parseFloat(e.target.value);
+                    if (newMin < customXMax) {
+                      setCustomXMin(newMin);
+                    }
+                  }}
+                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                  style={{
+                    background: 'transparent',
+                  }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxStep * 2}
+                  step={Math.max(1, Math.floor(autoMaxStep / 1000))}
+                  value={customXMax}
+                  onChange={(e) => {
+                    const newMax = parseFloat(e.target.value);
+                    if (newMax > customXMin) {
+                      setCustomXMax(newMax);
+                    }
+                  }}
+                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                  style={{
+                    background: 'transparent',
+                  }}
+                />
+                <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
+                <div
+                  className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
+                  style={{
+                    left: `${(customXMin / (autoMaxStep * 2)) * 100}%`,
+                    right: `${100 - (customXMax / (autoMaxStep * 2)) * 100}%`,
+                  }}
+                />
+              </div>
+              <span className="text-xs text-gray-400 w-28 text-right">
+                {customXMin.toFixed(0)} - {customXMax.toFixed(0)}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       <svg

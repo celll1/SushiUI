@@ -1054,6 +1054,13 @@ class BaseTrainer(ABC):
             # Load optimizer state dict
             optimizer_state = torch.load(optimizer_file, map_location='cpu')
 
+            # Move optimizer state tensors to GPU
+            # This is necessary for 8-bit optimizers that have CUDA-only buffers (absmax, etc.)
+            for state_key, state_value in optimizer_state['state'].items():
+                for key, value in state_value.items():
+                    if isinstance(value, torch.Tensor):
+                        state_value[key] = value.to(self.device)
+
             # Attempt to load state dict with error handling
             try:
                 self.optimizer.load_state_dict(optimizer_state)

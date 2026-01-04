@@ -3470,6 +3470,7 @@ class BaseTrainer(ABC):
         debug_latents: bool = False,
         debug_latents_every: int = 50,
         progress_callback: Optional[Callable] = None,
+        update_total_steps_callback: Optional[Callable[[int], None]] = None,
         run_id: Optional[int] = None,
         resume_from_checkpoint: Optional[str] = None,
         force_recache: bool = False,
@@ -3620,6 +3621,10 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batches per epoch: {batches_per_epoch}")
         print(f"{self.log_prefix} Steps per epoch (with MNT): {steps_per_epoch}")
         print(f"{self.log_prefix} Total training steps: {actual_total_steps}")
+
+        # Update DB with calculated total_steps (for resume correctness)
+        if update_total_steps_callback is not None:
+            update_total_steps_callback(actual_total_steps)
 
         # Setup optimizer
         self.setup_optimizer(

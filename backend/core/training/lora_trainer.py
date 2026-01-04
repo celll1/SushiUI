@@ -41,8 +41,9 @@ class LoRALinearLayer(torch.nn.Module):
         torch.nn.init.zeros_(self.lora_up.weight)
 
         # Move to same device/dtype as original
-        self.lora_down.to(original_module.weight.device, dtype=original_module.weight.dtype)
-        self.lora_up.to(original_module.weight.device, dtype=original_module.weight.dtype)
+        # TEMPORARY: Force FP32
+        self.lora_down.to(original_module.weight.device, dtype=torch.float32)  # dtype=original_module.weight.dtype
+        self.lora_up.to(original_module.weight.device, dtype=torch.float32)  # dtype=original_module.weight.dtype
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Original layer output + LoRA adjustment
@@ -120,6 +121,8 @@ class LoRATrainer(BaseTrainer):
         # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
         prompt_chunking_mode: str = "a1111",
         max_prompt_chunks: int = 0,
+        # Training scope control
+        train_text_encoder: bool = False,
     ):
         """
         Initialize LoRA trainer.
@@ -145,6 +148,7 @@ class LoRATrainer(BaseTrainer):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.lora_layers = {}  # Storage for LoRA layers
+        self.train_text_encoder = train_text_encoder
 
         # Component-specific learning rates (for optimizer setup)
         self.unet_lr = unet_lr or learning_rate
@@ -253,19 +257,24 @@ class LoRATrainer(BaseTrainer):
             # CRITICAL: Set embedding layer requires_grad=True for gradient checkpointing (sd-scripts approach)
             # This is required for gradients to flow through embedding layers during checkpointing
             # (embeddings are leaf tensors in the computation graph)
-            # Also ensure embedding layer is on the correct device
-            if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
-                self.text_encoder.text_model.embeddings.requires_grad_(True)
-                # Ensure embedding layer is on GPU (may be on CPU after requires_grad_ call)
-                self.text_encoder.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
-                print(f"{self.log_prefix} Text Encoder 1 embedding layer set to requires_grad=True and moved to {self.device}")
+            # IMPORTANT: Only enable if train_text_encoder=True to avoid unintended gradient flow
+            if self.train_text_encoder:
+                if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+                    self.text_encoder.text_model.embeddings.requires_grad_(True)
+                    # Ensure embedding layer is on GPU (may be on CPU after requires_grad_ call)
+                    # TEMPORARY: self.weight_dtype is already FP32
+                    self.text_encoder.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
+                    print(f"{self.log_prefix} Text Encoder 1 embedding layer set to requires_grad=True and moved to {self.device}")
 
-            if self.text_encoder_2 is not None:
-                if hasattr(self.text_encoder_2, 'text_model') and hasattr(self.text_encoder_2.text_model, 'embeddings'):
-                    self.text_encoder_2.text_model.embeddings.requires_grad_(True)
-                    # Ensure embedding layer is on GPU
-                    self.text_encoder_2.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
-                    print(f"{self.log_prefix} Text Encoder 2 embedding layer set to requires_grad=True and moved to {self.device}")
+                if self.text_encoder_2 is not None:
+                    if hasattr(self.text_encoder_2, 'text_model') and hasattr(self.text_encoder_2.text_model, 'embeddings'):
+                        self.text_encoder_2.text_model.embeddings.requires_grad_(True)
+                        # Ensure embedding layer is on GPU
+                        # TEMPORARY: self.weight_dtype is already FP32
+                        self.text_encoder_2.text_model.embeddings.to(self.device, dtype=self.weight_dtype)
+                        print(f"{self.log_prefix} Text Encoder 2 embedding layer set to requires_grad=True and moved to {self.device}")
+            else:
+                print(f"{self.log_prefix} Text Encoder embeddings left as requires_grad=False (train_text_encoder=False)")
 
             # Note: Gradient checkpointing re-enable DISABLED
             # Reason: gradient_checkpointing_enable() causes device placement issues
@@ -293,22 +302,26 @@ class LoRATrainer(BaseTrainer):
         unet_lora_count = self._apply_lora_to_unet_transformers()
         print(f"{self.log_prefix} Injected {unet_lora_count} LoRA layers into U-Net")
 
-        # Apply LoRA to Text Encoder 1
-        te1_lora_count = self._apply_lora_to_module(
-            self.text_encoder,
-            prefix="te1",
-            target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
-        )
-        print(f"{self.log_prefix} Injected {te1_lora_count} LoRA layers into Text Encoder 1")
-
-        # Apply LoRA to Text Encoder 2 (SDXL)
-        if self.text_encoder_2 is not None:
-            te2_lora_count = self._apply_lora_to_module(
-                self.text_encoder_2,
-                prefix="te2",
-                target_modules=["mlp.fc1", "mlp.fc2"]
+        # Apply LoRA to Text Encoder only if train_text_encoder=True
+        if self.train_text_encoder:
+            # Apply LoRA to Text Encoder 1
+            te1_lora_count = self._apply_lora_to_module(
+                self.text_encoder,
+                prefix="te1",
+                target_modules=["mlp.fc1", "mlp.fc2"]  # MLP layers in text encoder
             )
-            print(f"{self.log_prefix} Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+            print(f"{self.log_prefix} Injected {te1_lora_count} LoRA layers into Text Encoder 1")
+
+            # Apply LoRA to Text Encoder 2 (SDXL)
+            if self.text_encoder_2 is not None:
+                te2_lora_count = self._apply_lora_to_module(
+                    self.text_encoder_2,
+                    prefix="te2",
+                    target_modules=["mlp.fc1", "mlp.fc2"]
+                )
+                print(f"{self.log_prefix} Injected {te2_lora_count} LoRA layers into Text Encoder 2")
+        else:
+            print(f"{self.log_prefix} Text Encoder LoRA skipped (train_text_encoder=False)")
 
     def _apply_lora_zimage(self):
         """

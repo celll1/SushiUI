@@ -294,8 +294,9 @@ def update_training_progress(
         # Update phase
         run.phase = phase
 
-        # Calculate phase progress
+        # Calculate phase progress (cap at 100% to prevent exceeding due to mid-epoch resume)
         phase_progress = (step / total * 100.0) if total > 0 else 0.0
+        phase_progress = min(phase_progress, 100.0)  # Cap at 100%
         run.phase_progress = phase_progress
 
         # Update phase detail
@@ -312,7 +313,7 @@ def update_training_progress(
                 run.loss = loss
             if lr is not None:
                 run.learning_rate = lr
-            # Overall progress = phase_progress during training
+            # Overall progress = phase_progress during training (capped at 100%)
             run.progress = phase_progress
 
         db.commit()

@@ -4037,7 +4037,11 @@ class BaseTrainer(ABC):
                     self.move_main_model_to_gpu()
 
                 # Training loop
-                for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}")):
+                # Calculate expected steps for this epoch (accounting for MNT and mid-epoch resume)
+                epoch_batches = len(batches)  # After mid-epoch resume slicing
+                epoch_steps = epoch_batches * multi_noise_timesteps
+                epoch_start_step = global_step
+                for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     # Reset fused optimizer groups counters (start of each step)
                     if self.fused_optimizer_groups is not None:
                         self.fused_optimizer_groups.reset_counters()

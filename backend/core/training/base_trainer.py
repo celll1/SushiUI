@@ -4528,9 +4528,14 @@ class BaseTrainer(ABC):
                             # Normal flow: optimizer.step() and zero_grad() here
                             if self.use_grad_scaler:
                                 # GradScaler flow
-                                # Gradient clipping (unscale first for accurate clipping)
+                                # Unscale first for accurate grad norm and clipping
+                                self.grad_scaler.unscale_(self.optimizer)
+
+                                # Calculate gradient norms AFTER unscale, BEFORE clipping
+                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+
+                                # Gradient clipping
                                 if max_grad_norm > 0:
-                                    self.grad_scaler.unscale_(self.optimizer)
                                     torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
 
                                 # Optimizer step with GradScaler
@@ -4539,6 +4544,9 @@ class BaseTrainer(ABC):
                                 self.optimizer.zero_grad()
                             else:
                                 # Normal flow without GradScaler
+                                # Calculate gradient norms BEFORE clipping
+                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+
                                 # Gradient clipping
                                 if max_grad_norm > 0:
                                     torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
@@ -4546,6 +4554,9 @@ class BaseTrainer(ABC):
                                 # Optimizer step
                                 self.optimizer.step()
                                 self.optimizer.zero_grad()
+                        else:
+                            # Fused backward/groups flow - calculate grad norm here (step/zero_grad already called by hooks)
+                            grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
                         # else: Fused backward/groups flow - step() and zero_grad() already called by hooks
 
                         # LR scheduler step
@@ -4561,9 +4572,6 @@ class BaseTrainer(ABC):
                         loss_value = loss.item()
                         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
                         current_lr = self.lr_scheduler.get_last_lr()[0]
-
-                        # Calculate gradient norms before optimizer.step() clears gradients
-                        grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
 
                         # TensorBoard logging (for external tools, backward compatibility)
                         self.writer.add_scalar("train/loss", loss_value, global_step)
@@ -4754,22 +4762,73 @@ class BaseTrainer(ABC):
         text_encoder_grad_norm = 0.0
         unet_grad_norm = 0.0
 
-        # Collect all parameters with gradients
-        for name, param in self.named_parameters():
-            if param.grad is not None:
-                param_norm = param.grad.data.norm(2).item()
-                total_grad_norm += param_norm ** 2
+        # For LoRA training, iterate through lora_layers dict
+        if hasattr(self, 'lora_layers'):
+            grad_count = 0
+            for lora_name, lora_layer in self.lora_layers.items():
+                for param in lora_layer.parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        grad_count += 1
 
-                # Categorize by parameter name
-                if 'text_encoder' in name:
-                    text_encoder_grad_norm += param_norm ** 2
-                elif 'unet' in name or 'transformer' in name:
-                    unet_grad_norm += param_norm ** 2
+                        # Categorize by LoRA layer name
+                        if 'text_encoder' in lora_name or 'te_' in lora_name or 'clip_' in lora_name:
+                            text_encoder_grad_norm += param_norm ** 2
+                        elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
+                            unet_grad_norm += param_norm ** 2
+
+            # Debug: Print first calculation only
+            if grad_count > 0 and not hasattr(self, '_grad_norm_debug_printed'):
+                print(f"{self.log_prefix} [GradNorm] Calculated from {grad_count} parameters with gradients")
+                print(f"{self.log_prefix} [GradNorm] Sample LoRA layer names (first 3):")
+                for i, name in enumerate(list(self.lora_layers.keys())[:3]):
+                    print(f"{self.log_prefix}   {name}")
+                self._grad_norm_debug_printed = True
+
+        # For Full Fine-Tuning, iterate through base model parameters
+        else:
+            # Iterate through text encoder parameters (if trainable)
+            if hasattr(self, 'text_encoder') and self.text_encoder is not None:
+                for name, param in self.text_encoder.named_parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        text_encoder_grad_norm += param_norm ** 2
+
+            # Iterate through text encoder 2 parameters (if trainable, SDXL)
+            if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
+                for name, param in self.text_encoder_2.named_parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        text_encoder_grad_norm += param_norm ** 2
+
+            # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
+            if hasattr(self, 'unet') and self.unet is not None:
+                for name, param in self.unet.named_parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        unet_grad_norm += param_norm ** 2
+
+            # Iterate through Transformer parameters (if trainable, Z-Image)
+            if hasattr(self, 'transformer_original') and self.transformer_original is not None:
+                for name, param in self.transformer_original.named_parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        unet_grad_norm += param_norm ** 2
 
         # Take square root to get L2 norm
         total_grad_norm = total_grad_norm ** 0.5
         text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
         unet_grad_norm = unet_grad_norm ** 0.5
+
+        # Debug: Print values once
+        if not hasattr(self, '_grad_norm_values_printed'):
+            print(f"{self.log_prefix} [GradNorm] Total: {total_grad_norm:.6f}, TE: {text_encoder_grad_norm:.6f}, UNet: {unet_grad_norm:.6f}")
+            self._grad_norm_values_printed = True
 
         return total_grad_norm, text_encoder_grad_norm, unet_grad_norm
 

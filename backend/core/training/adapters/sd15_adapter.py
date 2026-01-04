@@ -64,8 +64,16 @@ class LoRALinearLayer(nn.Module):
 
         # Move to same device as original, but use lora_dtype
         device = original_module.weight.device
-        self.lora_down.to(device=device, dtype=lora_dtype)
-        self.lora_up.to(device=device, dtype=lora_dtype)
+        current_dtype = self.lora_down.weight.dtype
+
+        # Only convert dtype if different from target (avoid unnecessary copy)
+        if current_dtype != lora_dtype:
+            self.lora_down.to(device=device, dtype=lora_dtype)
+            self.lora_up.to(device=device, dtype=lora_dtype)
+        else:
+            # Just move to device (dtype already matches)
+            self.lora_down.to(device=device)
+            self.lora_up.to(device=device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

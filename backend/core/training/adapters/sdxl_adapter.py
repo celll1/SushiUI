@@ -69,8 +69,9 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                         if isinstance(original_linear, nn.Linear):
                             # Build LoRA name: lora_unet_{block}_{attn}_{attr}
                             lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(original_linear, self.lora_rank, self.lora_alpha, lora_name
-                            , self.lora_dtype)
+                            lora_layer = LoRALinearLayer(
+                                original_linear, self.lora_rank, self.lora_alpha, lora_name
+                            )
                             setattr(attn_module, attr_name, lora_layer)
                             lora_layers[lora_name] = lora_layer
                             count += 1
@@ -80,8 +81,9 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], nn.Linear):
                         original_linear = attn_module.to_out[0]
                         lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_to_out_0"
-                        lora_layer = LoRALinearLayer(original_linear, self.lora_rank, self.lora_alpha, lora_name
-                        , self.lora_dtype)
+                        lora_layer = LoRALinearLayer(
+                            original_linear, self.lora_rank, self.lora_alpha, lora_name
+                        )
                         attn_module.to_out[0] = lora_layer
                         lora_layers[lora_name] = lora_layer
                         count += 1
@@ -110,16 +112,18 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             for layer_idx, layer in enumerate(self.trainer.text_encoder.text_model.encoder.layers):
                 # mlp.fc1
                 lora_name = f"lora_te1_layer{layer_idx}_mlp_fc1"
-                lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
-                , self.lora_dtype)
+                lora_layer = LoRALinearLayer(
+                    layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
+                )
                 layer.mlp.fc1 = lora_layer
                 lora_layers[lora_name] = lora_layer
                 count += 1
 
                 # mlp.fc2
                 lora_name = f"lora_te1_layer{layer_idx}_mlp_fc2"
-                lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
-                , self.lora_dtype)
+                lora_layer = LoRALinearLayer(
+                    layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
+                )
                 layer.mlp.fc2 = lora_layer
                 lora_layers[lora_name] = lora_layer
                 count += 1
@@ -129,16 +133,18 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             for layer_idx, layer in enumerate(self.trainer.text_encoder_2.text_model.encoder.layers):
                 # mlp.fc1
                 lora_name = f"lora_te2_layer{layer_idx}_mlp_fc1"
-                lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
-                , self.lora_dtype)
+                lora_layer = LoRALinearLayer(
+                    layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
+                )
                 layer.mlp.fc1 = lora_layer
                 lora_layers[lora_name] = lora_layer
                 count += 1
 
                 # mlp.fc2
                 lora_name = f"lora_te2_layer{layer_idx}_mlp_fc2"
-                lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
-                , self.lora_dtype)
+                lora_layer = LoRALinearLayer(
+                    layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
+                )
                 layer.mlp.fc2 = lora_layer
                 lora_layers[lora_name] = lora_layer
                 count += 1

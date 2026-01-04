@@ -20,7 +20,7 @@ class BaseLoRAAdapter(ABC):
     checkpoint saving logic.
     """
 
-    def __init__(self, trainer, lora_rank: int, lora_alpha: int, lora_dtype: torch.dtype = torch.float32):
+    def __init__(self, trainer, lora_rank: int, lora_alpha: int):
         """
         Initialize adapter.
 
@@ -28,13 +28,11 @@ class BaseLoRAAdapter(ABC):
             trainer: Parent trainer instance (BaseTrainer subclass)
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha (scaling factor = alpha / rank)
-            lora_dtype: dtype for LoRA weights (can differ from main model dtype)
         """
         self.trainer = trainer
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.lora_scale = lora_alpha / lora_rank
-        self.lora_dtype = lora_dtype
 
     @abstractmethod
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:

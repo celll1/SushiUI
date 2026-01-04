@@ -36,6 +36,7 @@ class LoRALinearLayer(nn.Module):
         rank: int,
         alpha: float,
         lora_name: str,
+        lora_dtype: torch.dtype = torch.float32,
     ):
         """Initialize LoRA layer."""
         super().__init__()
@@ -44,6 +45,7 @@ class LoRALinearLayer(nn.Module):
         self.alpha = alpha
         self.scale = alpha / rank
         self.lora_name = lora_name
+        self.lora_dtype = lora_dtype
 
         in_features = original_module.in_features
         out_features = original_module.out_features
@@ -52,6 +54,7 @@ class LoRALinearLayer(nn.Module):
         self.original_module.requires_grad_(False)
 
         # LoRA matrices (no bias)
+        # Use lora_dtype for LoRA weights (can be different from main model dtype)
         self.lora_down = nn.Linear(in_features, rank, bias=False)
         self.lora_up = nn.Linear(rank, out_features, bias=False)
 
@@ -59,10 +62,35 @@ class LoRALinearLayer(nn.Module):
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
 
+        # Move to same device as original, but use lora_dtype
+        device = original_module.weight.device
+        self.lora_down.to(device=device, dtype=lora_dtype)
+        self.lora_up.to(device=device, dtype=lora_dtype)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with LoRA adaptation."""
+        """
+        Forward pass with LoRA adaptation.
+
+        If input dtype != lora_dtype (e.g., fp16 input, fp32 LoRA weights),
+        performs dtype conversion dynamically to ensure gradients flow correctly.
+        """
         org_out = self.original_module(x)
-        lora_out = self.lora_up(self.lora_down(x))
+
+        # Check if we need dtype conversion
+        input_dtype = x.dtype
+
+        if input_dtype != self.lora_dtype:
+            # Mixed precision: input is fp16/bf16, LoRA weights are fp32
+            # Convert input to lora_dtype, compute, then convert back
+            # This ensures gradients flow correctly to master weights
+            x_converted = x.to(dtype=self.lora_dtype)
+            lora_out = self.lora_up(self.lora_down(x_converted))
+            # Convert back to input dtype for addition with org_out
+            lora_out = lora_out.to(dtype=input_dtype)
+        else:
+            # Same dtype: use LoRA weights directly
+            lora_out = self.lora_up(self.lora_down(x))
+
         return org_out + lora_out * self.scale
 
 
@@ -103,9 +131,8 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
                         if isinstance(original_linear, nn.Linear):
                             # Build LoRA name: lora_unet_{block}_{attn}_{attr}
                             lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name
-                            )
+                            lora_layer = LoRALinearLayer(original_linear, self.lora_rank, self.lora_alpha, lora_name
+                            , self.lora_dtype)
                             setattr(attn_module, attr_name, lora_layer)
                             lora_layers[lora_name] = lora_layer
                             count += 1
@@ -115,9 +142,8 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
                     if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], nn.Linear):
                         original_linear = attn_module.to_out[0]
                         lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_to_out_0"
-                        lora_layer = LoRALinearLayer(
-                            original_linear, self.lora_rank, self.lora_alpha, lora_name
-                        )
+                        lora_layer = LoRALinearLayer(original_linear, self.lora_rank, self.lora_alpha, lora_name
+                        , self.lora_dtype)
                         attn_module.to_out[0] = lora_layer
                         lora_layers[lora_name] = lora_layer
                         count += 1
@@ -146,18 +172,16 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
         for layer_idx, layer in enumerate(text_encoder.text_model.encoder.layers):
             # mlp.fc1
             lora_name = f"lora_te1_layer{layer_idx}_mlp_fc1"
-            lora_layer = LoRALinearLayer(
-                layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
-            )
+            lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
+            , self.lora_dtype)
             layer.mlp.fc1 = lora_layer
             lora_layers[lora_name] = lora_layer
             count += 1
 
             # mlp.fc2
             lora_name = f"lora_te1_layer{layer_idx}_mlp_fc2"
-            lora_layer = LoRALinearLayer(
-                layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
-            )
+            lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
+            , self.lora_dtype)
             layer.mlp.fc2 = lora_layer
             lora_layers[lora_name] = lora_layer
             count += 1

@@ -35,6 +35,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [selectedDebugStep, setSelectedDebugStep] = useState<number | null>(null);
   const [debugVisualization, setDebugVisualization] = useState<DebugLatentVisualization | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
+  const [, setTimeTick] = useState(0); // Force re-render for time update
 
   // Poll training status
   useEffect(() => {
@@ -65,6 +66,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
     return () => clearInterval(interval);
   }, [currentRun.status, currentRun.id]);
+
+  // Update time display every second
+  useEffect(() => {
+    if (currentRun.status !== "running") {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTimeTick(prev => prev + 1); // Force re-render
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [currentRun.status]);
 
   // Load sample images
   useEffect(() => {
@@ -170,6 +184,48 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   };
 
+  // Calculate elapsed time and ETA
+  const calculateTimeInfo = () => {
+    if (!currentRun.started_at || currentRun.status === "pending") {
+      return { elapsed: "N/A", eta: "N/A" };
+    }
+
+    const startTime = new Date(currentRun.started_at).getTime();
+    const now = Date.now();
+    const elapsedMs = now - startTime;
+
+    // Format elapsed time
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+    const elapsedHours = Math.floor(elapsedSeconds / 3600);
+    const elapsedMinutes = Math.floor((elapsedSeconds % 3600) / 60);
+    const elapsedSecs = elapsedSeconds % 60;
+    const elapsed = `${elapsedHours}h ${elapsedMinutes}m ${elapsedSecs}s`;
+
+    // Calculate ETA (only if training is running and progress > 0)
+    if (currentRun.status !== "running" || currentRun.progress <= 0 || currentRun.current_step === 0) {
+      return { elapsed, eta: "N/A" };
+    }
+
+    const progressRatio = currentRun.current_step / currentRun.total_steps;
+    if (progressRatio >= 1.0) {
+      return { elapsed, eta: "Completed" };
+    }
+
+    const totalEstimatedMs = elapsedMs / progressRatio;
+    const remainingMs = totalEstimatedMs - elapsedMs;
+
+    // Format ETA
+    const remainingSeconds = Math.floor(remainingMs / 1000);
+    const etaHours = Math.floor(remainingSeconds / 3600);
+    const etaMinutes = Math.floor((remainingSeconds % 3600) / 60);
+    const etaSecs = remainingSeconds % 60;
+    const eta = `${etaHours}h ${etaMinutes}m ${etaSecs}s`;
+
+    return { elapsed, eta };
+  };
+
+  const timeInfo = calculateTimeInfo();
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -245,7 +301,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="grid grid-cols-2 gap-2 text-sm mb-2">
               <div>
                 <span className="text-gray-400">Loss:</span>{" "}
                 <span className="font-mono">{currentRun.loss?.toFixed(6) || "N/A"}</span>
@@ -253,6 +309,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <div>
                 <span className="text-gray-400">LR:</span>{" "}
                 <span className="font-mono">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
+              </div>
+            </div>
+
+            {/* Time Info */}
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <span className="text-gray-400">Elapsed:</span>{" "}
+                <span className="font-mono text-blue-400">{timeInfo.elapsed}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">ETA:</span>{" "}
+                <span className="font-mono text-green-400">{timeInfo.eta}</span>
               </div>
             </div>
           </div>

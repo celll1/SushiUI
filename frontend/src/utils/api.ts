@@ -1292,6 +1292,7 @@ export interface TrainingRun {
   created_at: string;
   started_at?: string;
   last_resumed_at?: string;  // Last resume time (for accurate ETA calculation)
+  resumed_from_step?: number;  // Step at resume (for accurate ETA calculation)
   completed_at?: string;
   updated_at: string;
 }

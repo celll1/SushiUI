@@ -488,6 +488,7 @@ class TrainingRun(TrainingBase):
     created_at = Column(DateTime, default=get_local_now, index=True)
     started_at = Column(DateTime, nullable=True)
     last_resumed_at = Column(DateTime, nullable=True)  # Last resume time (for accurate ETA calculation)
+    resumed_from_step = Column(Integer, nullable=True)  # Step at resume (for accurate ETA calculation)
     completed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -525,6 +526,7 @@ class TrainingRun(TrainingBase):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "last_resumed_at": self.last_resumed_at.isoformat() if self.last_resumed_at else None,
+            "resumed_from_step": self.resumed_from_step,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -208,13 +208,22 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       return { elapsed, eta: "N/A" };
     }
 
-    const progressRatio = currentRun.current_step / currentRun.total_steps;
-    if (progressRatio >= 1.0) {
+    // Calculate progress based on steps completed since resume (or from start)
+    const startStep = currentRun.resumed_from_step ?? 0;  // Step at resume (or 0 if first start)
+    const stepsCompleted = currentRun.current_step - startStep;
+    const remainingSteps = currentRun.total_steps - currentRun.current_step;
+
+    if (stepsCompleted <= 0) {
+      return { elapsed, eta: "Calculating..." };
+    }
+
+    if (remainingSteps <= 0) {
       return { elapsed, eta: "Completed" };
     }
 
-    const totalEstimatedMs = elapsedMs / progressRatio;
-    const remainingMs = totalEstimatedMs - elapsedMs;
+    // ETA = (elapsed time / steps completed) * remaining steps
+    const msPerStep = elapsedMs / stepsCompleted;
+    const remainingMs = msPerStep * remainingSteps;
 
     // Format ETA
     const remainingSeconds = Math.floor(remainingMs / 1000);

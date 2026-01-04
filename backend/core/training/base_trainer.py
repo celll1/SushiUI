@@ -1361,19 +1361,19 @@ class BaseTrainer(ABC):
             context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
 
             with context_manager:
-                # CRITICAL: TE1 uses LAST layer, TE2 uses PENULTIMATE layer
-                # This matches sd-scripts, ai-toolkit, and OneTrainer implementations
+                # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
                 encoder_output_1 = self.text_encoder(
                     text_inputs_1.input_ids.to(self.device),
                     output_hidden_states=True,
                 )
-                text_embeddings_1 = encoder_output_1.hidden_states[-1]  # TE1: LAST layer
+                text_embeddings_1 = encoder_output_1.hidden_states[-2]
 
                 encoder_output_2 = self.text_encoder_2(
                     text_inputs_2.input_ids.to(self.device),
                     output_hidden_states=True,
                 )
-                text_embeddings_2 = encoder_output_2.hidden_states[-2]  # TE2: PENULTIMATE layer
+                text_embeddings_2 = encoder_output_2.hidden_states[-2]
                 pooled_embeddings = encoder_output_2[0]
 
                 text_embeddings = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
@@ -1451,13 +1451,13 @@ class BaseTrainer(ABC):
                         text_inputs_1.input_ids.to(self.device),
                         output_hidden_states=True,
                     )
-                    text_embeddings_1 = encoder_output_1.hidden_states[-1]  # TE1: LAST layer
+                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
 
                     encoder_output_2 = self.text_encoder_2(
                         text_inputs_2.input_ids.to(self.device),
                         output_hidden_states=True,
                     )
-                    text_embeddings_2 = encoder_output_2.hidden_states[-2]  # TE2: PENULTIMATE layer
+                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
 
                     # Use pooled embeddings from first chunk only
                     if idx == 0:

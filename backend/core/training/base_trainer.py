@@ -4394,9 +4394,12 @@ class BaseTrainer(ABC):
                                 profile_vram=self.debug_vram,
                             )
 
-                        # Backward pass
+                        # Backward pass with GradScaler if enabled
                         # loss is already a tensor with computation graph from train_step/train_step_zimage
-                        loss.backward()
+                        if self.use_grad_scaler:
+                            self.grad_scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
 
                         # Clear saved activations immediately after backward to prevent VRAM leaks
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
@@ -4422,13 +4425,26 @@ class BaseTrainer(ABC):
                     if global_step % effective_gradient_accumulation == 0:
                         if not self.use_fused_backward and self.fused_optimizer_groups is None:
                             # Normal flow: optimizer.step() and zero_grad() here
-                            # Gradient clipping
-                            if max_grad_norm > 0:
-                                torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                            if self.use_grad_scaler:
+                                # GradScaler flow
+                                # Gradient clipping (unscale first for accurate clipping)
+                                if max_grad_norm > 0:
+                                    self.grad_scaler.unscale_(self.optimizer)
+                                    torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
 
-                            # Optimizer step
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
+                                # Optimizer step with GradScaler
+                                self.grad_scaler.step(self.optimizer)
+                                self.grad_scaler.update()
+                                self.optimizer.zero_grad()
+                            else:
+                                # Normal flow without GradScaler
+                                # Gradient clipping
+                                if max_grad_norm > 0:
+                                    torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+
+                                # Optimizer step
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
                         # else: Fused backward/groups flow - step() and zero_grad() already called by hooks
 
                         # LR scheduler step

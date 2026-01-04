@@ -228,8 +228,13 @@ class TrainingConfigGenerator:
                             "linear": lora_rank,
                             "linear_alpha": lora_alpha,
                         },
+                        "dtype": {
+                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
+                            "training": training_dtype,    # Training/activation dtype (autocast)
+                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
+                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                        },
                         "save": {
-                            "dtype": "float16",
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": max_step_saves_to_keep,
@@ -264,9 +269,6 @@ class TrainingConfigGenerator:
                             "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
-                            "dtype": training_dtype,  # Training/activation dtype
-                            "weight_dtype": weight_dtype,  # Model weight dtype
-                            "output_dtype": output_dtype,  # Output latent dtype
                             "mixed_precision": mixed_precision,  # Enable autocast for mixed precision
                             "debug_latents": debug_latents,
                             "debug_latents_every": debug_latents_every,
@@ -300,7 +302,6 @@ class TrainingConfigGenerator:
                         },
                         "model": {
                             "name_or_path": base_model_path,
-                            "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
                             "sampler": sample_sampler,
@@ -462,9 +463,6 @@ class TrainingConfigGenerator:
             **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
             **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
             **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
-            "weight_dtype": weight_dtype,
-            "dtype": training_dtype,  # Training/activation dtype
-            "output_dtype": output_dtype,
             "mixed_precision": mixed_precision,
             "use_flash_attention": use_flash_attention,
             "min_snr_gamma": min_snr_gamma,
@@ -564,8 +562,13 @@ class TrainingConfigGenerator:
                         "network": {
                             "type": "full_finetune",
                         },
+                        "dtype": {
+                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
+                            "training": training_dtype,    # Training/activation dtype (autocast)
+                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
+                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                        },
                         "save": {
-                            "dtype": output_dtype,
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
                             "max_step_saves_to_keep": max_step_saves_to_keep,
@@ -574,7 +577,6 @@ class TrainingConfigGenerator:
                         "train": train_config,
                         "model": {
                             "name_or_path": base_model_path,
-                            "vae_dtype": vae_dtype,
                         },
                         "sample": {
                             "sampler": sample_sampler,

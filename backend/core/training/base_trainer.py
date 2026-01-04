@@ -2562,48 +2562,50 @@ class BaseTrainer(ABC):
             log_verbose(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
             log_verbose(f"{self.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
 
-            image = custom_sampling_loop(
-                pipeline=pipeline,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                pooled_prompt_embeds=pooled_prompt_embeds,
-                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                guidance_rescale=guidance_rescale,
-                width=width,
-                height=height,
-                generator=generator,
-                ancestral_generator=None,  # Not needed for training samples
-                latents=None,
-                prompt_embeds_callback=None,  # No prompt editing for training samples
-                progress_callback=None,
-                step_callback=None,
-                developer_mode=False,
-                cfg_schedule_type="constant",  # Simple constant CFG for training samples
-                cfg_schedule_min=1.0,
-                cfg_schedule_max=None,
-                cfg_schedule_power=2.0,
-                cfg_rescale_snr_alpha=0.0,
-                dynamic_threshold_percentile=0.0,
-                dynamic_threshold_mimic_scale=1.0,
-                nag_enable=False,  # No NAG for training samples
-                nag_scale=5.0,
-                nag_tau=3.5,
-                nag_alpha=0.25,
-                nag_sigma_end=0.0,
-                nag_negative_prompt_embeds=None,
-                nag_negative_pooled_prompt_embeds=None,
-                attention_type="normal",  # Normal attention for training samples
-            )
+            # Use autocast for sample generation (ensures LoRA dtype compatibility)
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                image = custom_sampling_loop(
+                    pipeline=pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    pooled_prompt_embeds=pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    guidance_rescale=guidance_rescale,
+                    width=width,
+                    height=height,
+                    generator=generator,
+                    ancestral_generator=None,  # Not needed for training samples
+                    latents=None,
+                    prompt_embeds_callback=None,  # No prompt editing for training samples
+                    progress_callback=None,
+                    step_callback=None,
+                    developer_mode=False,
+                    cfg_schedule_type="constant",  # Simple constant CFG for training samples
+                    cfg_schedule_min=1.0,
+                    cfg_schedule_max=None,
+                    cfg_schedule_power=2.0,
+                    cfg_rescale_snr_alpha=0.0,
+                    dynamic_threshold_percentile=0.0,
+                    dynamic_threshold_mimic_scale=1.0,
+                    nag_enable=False,  # No NAG for training samples
+                    nag_scale=5.0,
+                    nag_tau=3.5,
+                    nag_alpha=0.25,
+                    nag_sigma_end=0.0,
+                    nag_negative_prompt_embeds=None,
+                    nag_negative_pooled_prompt_embeds=None,
+                    attention_type="normal",  # Normal attention for training samples
+                )
 
-            # Move models back to CPU
-            self.move_main_model_to_cpu()
-            self.move_vae_to_cpu()
-            torch.cuda.empty_cache()
+                # Move models back to CPU
+                self.move_main_model_to_cpu()
+                self.move_vae_to_cpu()
+                torch.cuda.empty_cache()
 
-            log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
-            return image
+                log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
+                return image
 
         finally:
             # Restore training mode

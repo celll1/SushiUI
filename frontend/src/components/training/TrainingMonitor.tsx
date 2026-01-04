@@ -190,7 +190,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       return { elapsed: "N/A", eta: "N/A" };
     }
 
-    const startTime = new Date(currentRun.started_at).getTime();
+    // Use last_resumed_at if available (resume case), otherwise use started_at (first start)
+    const referenceTime = currentRun.last_resumed_at || currentRun.started_at;
+    const startTime = new Date(referenceTime).getTime();
     const now = Date.now();
     const elapsedMs = now - startTime;
 

@@ -600,7 +600,7 @@ def main():
             from core.training.lora_trainer import LoRATrainer
 
             # Get dtype settings from unified dtype section
-            dtype_config = config_dict.get('dtype', {})
+            dtype_config = process_config.get('dtype', {})
             weight_dtype = dtype_config.get('weight', 'fp16')
             training_dtype = dtype_config.get('training', 'fp16')
             output_dtype = dtype_config.get('save', 'fp32')
@@ -966,7 +966,7 @@ def main():
             from core.training.full_parameter_trainer import FullParameterTrainer
 
             # Get dtype settings from unified dtype section
-            dtype_config = config_dict.get('dtype', {})
+            dtype_config = process_config.get('dtype', {})
             weight_dtype = dtype_config.get('weight', 'fp16')
             training_dtype = dtype_config.get('training', 'fp16')
             output_dtype = dtype_config.get('save', 'fp32')

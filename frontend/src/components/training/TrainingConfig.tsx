@@ -157,10 +157,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
 
   // Precision and dtype settings (VRAM optimization)
-  const [weightDtype, setWeightDtype] = useState<string>("fp16");
+  const [weightDtype, setWeightDtype] = useState<string>("fp32");
   const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
   const [outputDtype, setOutputDtype] = useState<string>("fp32");
-  const [vaeDtype, setVaeDtype] = useState<string>("fp16");
+  const [vaeDtype, setVaeDtype] = useState<string>("fp32");
   const [mixedPrecision, setMixedPrecision] = useState(true);
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
@@ -1873,11 +1873,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => setWeightDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default)</option>
-                <option value="fp32">FP32 (Higher precision)</option>
-                <option value="bf16">BF16 (Balanced)</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN (~50% VRAM)</option>
-                <option value="fp8_e5m2">FP8 E5M2 (~50% VRAM)</option>
+                <option value="fp32">FP32 (推奨)</option>
+                <option value="bf16">BF16</option>
+                <option value="fp16">FP16 (非推奨)</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (非推奨)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (非推奨)</option>
               </select>
             </div>
 
@@ -1889,10 +1889,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => setTrainingDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default)</option>
+                <option value="fp32">FP32</option>
+                <option value="fp16">FP16</option>
                 <option value="bf16">BF16</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
-                <option value="fp8_e5m2">FP8 E5M2</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (動作保証対象外)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
           </div>
@@ -1906,11 +1907,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => setOutputDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp32">FP32 (Default, highest precision)</option>
+                <option value="fp32">FP32</option>
                 <option value="fp16">FP16</option>
                 <option value="bf16">BF16</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
-                <option value="fp8_e5m2">FP8 E5M2</option>
               </select>
             </div>
 
@@ -1922,9 +1921,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => setVaeDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default, SDXL VAE works fine)</option>
-                <option value="fp32">FP32 (Higher precision)</option>
-                <option value="bf16">BF16 (Balanced)</option>
+                <option value="fp32">FP32 (推奨)</option>
+                <option value="fp16">FP16 (SDXL madebyollin VAEのみ許容)</option>
+                <option value="bf16">BF16 (非推奨)</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (動作保証対象外)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
           </div>

@@ -1472,6 +1472,9 @@ export interface TrainingMetrics {
   loss: MetricPoint[];
   recon_loss: MetricPoint[];
   learning_rate: MetricPoint[];
+  grad_norm: MetricPoint[];
+  grad_norm_text_encoder: MetricPoint[];
+  grad_norm_unet: MetricPoint[];
 }
 
 export const getTrainingMetrics = async (

@@ -625,7 +625,7 @@ class TrainingSample(TrainingBase):
 
 
 class TrainingMetrics(TrainingBase):
-    """Training metrics (loss, learning_rate) logged during training.
+    """Training metrics (loss, learning_rate, grad_norm) logged during training.
 
     Features:
     - Dual logging: TensorBoard (for external tools) + DB (for fast queries)
@@ -643,6 +643,11 @@ class TrainingMetrics(TrainingBase):
     recon_loss = Column(Float, nullable=True)
     learning_rate = Column(Float, nullable=True)
 
+    # Gradient norms
+    grad_norm = Column(Float, nullable=True)  # Total gradient norm (all parameters)
+    grad_norm_text_encoder = Column(Float, nullable=True)  # Text encoder gradient norm
+    grad_norm_unet = Column(Float, nullable=True)  # U-Net/Transformer gradient norm
+
     # Timestamp
     timestamp = Column(DateTime, default=get_local_now)
 
@@ -658,5 +663,8 @@ class TrainingMetrics(TrainingBase):
             "loss": self.loss,
             "recon_loss": self.recon_loss,
             "learning_rate": self.learning_rate,
+            "grad_norm": self.grad_norm,
+            "grad_norm_text_encoder": self.grad_norm_text_encoder,
+            "grad_norm_unet": self.grad_norm_unet,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

@@ -1826,7 +1826,11 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step] Start")
 
-        # Sample noise
+        # Move latents to GPU with correct dtype
+        # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
+        # Sample noise (now on GPU)
         noise = torch.randn_like(latents)
 
         if profile_vram:
@@ -2121,6 +2125,10 @@ class BaseTrainer(ABC):
         noise_process = getattr(self, 'noise_process', 'flow')  # Z-Image default: flow
         prediction_target = getattr(self, 'prediction_target', 'velocity')  # Z-Image default: velocity
 
+        # Move latents to GPU with correct dtype
+        # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
         # Sample random timesteps from [0, 1] if not provided
         batch_size = latents.shape[0]
         if timesteps is None:
@@ -2131,7 +2139,7 @@ class BaseTrainer(ABC):
                 # Legacy behavior: uniform sampling from [0, 1]
                 timesteps = torch.rand(batch_size, device=self.device)
 
-        # Sample noise (standard normal distribution)
+        # Sample noise (standard normal distribution, now on GPU)
         noise = torch.randn_like(latents)
 
         # Add noise using unified framework

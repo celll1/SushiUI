@@ -60,6 +60,7 @@ class TrainingConfigGenerator:
         training_dtype: str = "fp16",
         output_dtype: str = "fp32",
         vae_dtype: str = "fp16",
+        lora_dtype: str = "fp32",
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
@@ -233,6 +234,7 @@ class TrainingConfigGenerator:
                             "training": training_dtype,    # Training/activation dtype (autocast)
                             "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
                             "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                            "lora": lora_dtype,            # LoRA weight dtype (推奨: fp32 for better precision)
                         },
                         "save": {
                             "save_every": save_every,
@@ -370,6 +372,7 @@ class TrainingConfigGenerator:
         training_dtype: str = "fp16",
         output_dtype: str = "fp32",
         vae_dtype: str = "fp16",
+        lora_dtype: str = "fp32",
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,

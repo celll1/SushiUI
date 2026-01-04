@@ -4258,6 +4258,14 @@ async def get_training_run_params(
     # Extract job config (first job in config)
     job = config.get("config", {}).get("job", config.get("job", "lora"))
     process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
+
+    # Detect training method from network.type (more reliable than job)
+    network_config = process_config.get("network", {})
+    if network_config.get("type") == "lora":
+        job = "lora"
+    elif not network_config:  # No network section means full fine-tune
+        job = "full_finetune"
+    # Otherwise keep job from config.job
     datasets_config = process_config.get("datasets", [])
 
     # Build dataset_configs from YAML
@@ -4285,7 +4293,7 @@ async def get_training_run_params(
 
     # Extract training parameters
     training_params = process_config.get("train", {})
-    network_config = process_config.get("network", {})
+    # network_config already extracted above for training method detection
     sample_config = process_config.get("sample", {})
     save_config = process_config.get("save", {})
 

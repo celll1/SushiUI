@@ -34,6 +34,29 @@ from abc import ABC, abstractmethod
 
 
 # ============================================================
+# Training Logger Helper
+# ============================================================
+
+def log_verbose(message: str):
+    """
+    Log verbose messages only to file (not to console).
+    Uses global logger from train_runner.py if available.
+
+    Args:
+        message: Message to log
+    """
+    # Import logger from train_runner (circular import avoided by late import)
+    try:
+        from core.training.train_runner import logger
+        if logger is not None:
+            logger.log_only(message)
+        # If logger not initialized, silently ignore (avoid spamming console during tests)
+    except (ImportError, AttributeError):
+        # Logger not available (e.g., during unit tests), silently ignore
+        pass
+
+
+# ============================================================
 # Utility Functions
 # ============================================================
 
@@ -2366,7 +2389,7 @@ class BaseTrainer(ABC):
         for name, module in self.unet.named_modules():
             if hasattr(module, 'lora_down') or 'LoRA' in type(module).__name__:
                 lora_layers_found += 1
-        print(f"{self.log_prefix} [Sample] U-Net has {lora_layers_found} LoRA layers")
+        log_verbose(f"{self.log_prefix} [Sample] U-Net has {lora_layers_found} LoRA layers")
 
         try:
             # ========================================
@@ -2484,7 +2507,7 @@ class BaseTrainer(ABC):
                     device=negative_prompt_embeds.device
                 )
                 negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
-                print(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
+                log_verbose(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
 
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
@@ -2509,9 +2532,9 @@ class BaseTrainer(ABC):
             is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
             guidance_rescale = 0.7 if is_v_prediction else 0.0
 
-            print(f"{self.log_prefix} [Sample] Using custom_sampling_loop()")
-            print(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
-            print(f"{self.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
+            log_verbose(f"{self.log_prefix} [Sample] Using custom_sampling_loop()")
+            log_verbose(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
+            log_verbose(f"{self.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
 
             image = custom_sampling_loop(
                 pipeline=pipeline,
@@ -2553,7 +2576,7 @@ class BaseTrainer(ABC):
             self.move_vae_to_cpu()
             torch.cuda.empty_cache()
 
-            print(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
+            log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
             return image
 
         finally:
@@ -2607,7 +2630,7 @@ class BaseTrainer(ABC):
             # ============================================================
             # Stage 0: Offload Transformer AND Optimizer State to CPU
             # ============================================================
-            print(f"{self.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
+            log_verbose(f"{self.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
 
             # Move Transformer to CPU
             self.transformer_original.to("cpu")
@@ -2623,14 +2646,14 @@ class BaseTrainer(ABC):
             self.optimizer.load_state_dict(optimizer_state_dict)
 
             torch.cuda.empty_cache()
-            print(f"{self.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
+            log_verbose(f"{self.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
 
             # ============================================================
             # Stage 1: Text Encoding (Sequential Offloading Pattern)
             # ============================================================
             # Move Text Encoder to GPU for encoding
             if text_encoder_device != self.device:
-                print(f"{self.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
+                log_verbose(f"{self.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
                 self.text_encoder.to(self.device)
 
             # Encode prompt
@@ -2644,14 +2667,14 @@ class BaseTrainer(ABC):
 
             # Move Text Encoder back to CPU to free VRAM
             if text_encoder_device != self.device:
-                print(f"{self.log_prefix} [Sample] Moving Text Encoder back to CPU")
+                log_verbose(f"{self.log_prefix} [Sample] Moving Text Encoder back to CPU")
                 self.text_encoder.to(text_encoder_device)
             torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Move Transformer back to GPU for denoising
             # ============================================================
-            print(f"{self.log_prefix} [Sample] Moving Transformer to GPU for denoising")
+            log_verbose(f"{self.log_prefix} [Sample] Moving Transformer to GPU for denoising")
             self.transformer_original.to(transformer_device)
             torch.cuda.empty_cache()
 
@@ -2665,7 +2688,7 @@ class BaseTrainer(ABC):
             # ============================================================
             # Stage 2: Denoising Loop (Transformer already on GPU from training)
             # ============================================================
-            print(f"{self.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
+            log_verbose(f"{self.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
 
             # Prepare latents with seed
             latent_height = height // 8

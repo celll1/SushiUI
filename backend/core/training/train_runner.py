@@ -46,6 +46,34 @@ class TeeOutput:
             self.file.flush()
 
 
+class TrainingLogger:
+    """
+    Logger for training that supports both console+file and file-only output.
+
+    Usage:
+        logger.info("This goes to both console and file")
+        logger.log_only("This goes only to file (verbose logs)")
+    """
+    def __init__(self, log_file=None):
+        self.log_file = log_file
+        self.original_stdout = sys.stdout
+
+    def info(self, message):
+        """Print to both console and log file."""
+        print(message)
+
+    def log_only(self, message):
+        """Print only to log file, not to console (for verbose logs)."""
+        if self.log_file:
+            self.log_file.write(message + "\n")
+            self.log_file.flush()
+        # If no log file, silently ignore (don't spam console)
+
+
+# Global logger instance (initialized in main)
+logger: TrainingLogger = None
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load YAML configuration file."""
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -314,6 +342,9 @@ def main():
     original_stdout = sys.stdout
     original_stderr = sys.stderr
 
+    # Declare global logger
+    global logger
+
     # Set up signal handlers to convert SIGTERM to KeyboardInterrupt
     # This allows graceful shutdown with checkpoint saving when user stops training
     def signal_handler(signum, frame):
@@ -353,12 +384,18 @@ def main():
             sys.stdout = TeeOutput(original_stdout, log_file)
             sys.stderr = TeeOutput(original_stderr, log_file)
 
+            # Initialize global logger
+            logger = TrainingLogger(log_file=log_file)
+
             print(f"[TrainRunner] Training log will be saved to: {log_file_path}")
         else:
             print(f"[TrainRunner] Warning: training_folder not found in config, log file not created")
+            # Initialize logger without file
+            logger = TrainingLogger(log_file=None)
     except Exception as e:
         print(f"[TrainRunner] Warning: Failed to set up log file: {e}")
-        # Continue without log file
+        # Initialize logger without file
+        logger = TrainingLogger(log_file=None)
 
     # ============================================================
     # Unload Generate Pipeline to Free Memory

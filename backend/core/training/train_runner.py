@@ -25,6 +25,27 @@ from sqlalchemy.orm import Session
 from core.training.caption_processor import process_caption, get_default_caption_processing_config
 
 
+class TeeOutput:
+    """
+    Redirects output to both console and file (like Unix tee command).
+    """
+    def __init__(self, console, file):
+        self.console = console
+        self.file = file
+
+    def write(self, message):
+        self.console.write(message)
+        self.console.flush()
+        if self.file:
+            self.file.write(message)
+            self.file.flush()
+
+    def flush(self):
+        self.console.flush()
+        if self.file:
+            self.file.flush()
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load YAML configuration file."""
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -288,6 +309,11 @@ def main():
     print(f"[TrainRunner] Config: {config_path}")
     print(f"[TrainRunner] Run ID: {run_id}")
 
+    # Set up training log file (will be created after we load config and get output_dir)
+    log_file = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
     # Set up signal handlers to convert SIGTERM to KeyboardInterrupt
     # This allows graceful shutdown with checkpoint saving when user stops training
     def signal_handler(signum, frame):
@@ -301,6 +327,38 @@ def main():
     # Load config
     config = load_config(config_path)
     print(f"[TrainRunner] Loaded config: {config['job']}")
+
+    # ============================================================
+    # Set Up Training Log File
+    # ============================================================
+    try:
+        # Get training folder from config
+        training_folder = config['config']['process'][0].get('training_folder')
+        if training_folder:
+            training_folder_path = Path(training_folder)
+
+            # Create logs directory
+            logs_dir = training_folder_path / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create log file with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f"training_{timestamp}.log"
+            log_file_path = logs_dir / log_filename
+
+            # Open log file
+            log_file = open(log_file_path, 'w', encoding='utf-8')
+
+            # Redirect stdout and stderr to both console and file
+            sys.stdout = TeeOutput(original_stdout, log_file)
+            sys.stderr = TeeOutput(original_stderr, log_file)
+
+            print(f"[TrainRunner] Training log will be saved to: {log_file_path}")
+        else:
+            print(f"[TrainRunner] Warning: training_folder not found in config, log file not created")
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to set up log file: {e}")
+        # Continue without log file
 
     # ============================================================
     # Unload Generate Pipeline to Free Memory
@@ -545,6 +603,9 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
+            # Training scope control
+            train_text_encoder = train_config.get('train_text_encoder', False)
+
             # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
@@ -583,6 +644,8 @@ def main():
                 # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,
+                # Training scope control
+                train_text_encoder=train_text_encoder,
             )
 
             # Note: setup_optimizer() is now called inside train() method
@@ -1194,6 +1257,13 @@ def main():
     finally:
         training_db.close()
         datasets_db.close()
+
+        # Close log file and restore original stdout/stderr
+        if log_file:
+            print(f"[TrainRunner] Closing training log file...")
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            log_file.close()
 
 
 if __name__ == "__main__":

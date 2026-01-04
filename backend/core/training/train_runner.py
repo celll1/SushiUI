@@ -605,7 +605,6 @@ def main():
             training_dtype = dtype_config.get('training', 'fp16')
             output_dtype = dtype_config.get('save', 'fp32')
             vae_dtype = dtype_config.get('vae', 'fp16')
-            lora_dtype = dtype_config.get('lora', 'fp32')
 
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
@@ -659,7 +658,6 @@ def main():
                 training_dtype=training_dtype,
                 output_dtype=output_dtype,
                 vae_dtype=vae_dtype,
-                lora_dtype=lora_dtype,
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
@@ -973,7 +971,6 @@ def main():
             training_dtype = dtype_config.get('training', 'fp16')
             output_dtype = dtype_config.get('save', 'fp32')
             vae_dtype = dtype_config.get('vae', 'fp16')
-            lora_dtype = dtype_config.get('lora', 'fp32')
 
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():

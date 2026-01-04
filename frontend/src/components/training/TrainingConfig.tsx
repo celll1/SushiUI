@@ -1097,7 +1097,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraRank}
-                  onChange={(e) => setLoraRank(parseInt(e.target.value) || 1)}
+                  onChange={(e) => setLoraRank(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraRank(16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1109,7 +1109,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraAlpha}
-                  onChange={(e) => setLoraAlpha(parseInt(e.target.value) || 1)}
+                  onChange={(e) => setLoraAlpha(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraAlpha(16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1152,7 +1152,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={totalSteps}
-                  onChange={(e) => setTotalSteps(parseInt(e.target.value) || 1)}
+                  onChange={(e) => setTotalSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTotalSteps(1000); }}
                   min="1"
                   max="50000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1164,7 +1164,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={epochs}
-                  onChange={(e) => setEpochs(parseInt(e.target.value) || 1)}
+                  onChange={(e) => setEpochs(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setEpochs(10); }}
                   min="1"
                   max="1000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1177,7 +1177,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={batchSize}
-                onChange={(e) => setBatchSize(parseInt(e.target.value) || 1)}
+                onChange={(e) => setBatchSize(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBatchSize(4); }}
                 min="1"
                 max="16"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1191,7 +1191,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={multiNoiseTimesteps}
-                onChange={(e) => setMultiNoiseTimesteps(parseInt(e.target.value) || 1)}
+                onChange={(e) => setMultiNoiseTimesteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setMultiNoiseTimesteps(1); }}
                 min="1"
                 max="10"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1231,7 +1231,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={trajectoryBlendAlpha}
-                  onChange={(e) => setTrajectoryBlendAlpha(parseFloat(e.target.value) || 0.0)}
+                  onChange={(e) => setTrajectoryBlendAlpha(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTrajectoryBlendAlpha(0.7); }}
                   min="0.0"
                   max="1.0"
                   step="0.1"
@@ -1270,7 +1270,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={timestepMin}
-                      onChange={(e) => setTimestepMin(parseFloat(e.target.value) || 0.0)}
+                      onChange={(e) => setTimestepMin(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMin(0.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.05"
@@ -1282,7 +1282,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={timestepMax}
-                      onChange={(e) => setTimestepMax(parseFloat(e.target.value) || 0.0)}
+                      onChange={(e) => setTimestepMax(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMax(1.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.05"
@@ -1339,7 +1339,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={snrRegularizationWeight}
-                      onChange={(e) => setSnrRegularizationWeight(parseFloat(e.target.value) || 0.0)}
+                      onChange={(e) => setSnrRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSnrRegularizationWeight(0.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -1410,7 +1410,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={energyRegularizationWeight}
-                      onChange={(e) => setEnergyRegularizationWeight(parseFloat(e.target.value) || 0.0)}
+                      onChange={(e) => setEnergyRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setEnergyRegularizationWeight(0.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -1967,7 +1967,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="min-snr-gamma"
                 value={minSnrGamma}
-                onChange={(e) => setMinSnrGamma(parseFloat(e.target.value) || 0)}
+                onChange={(e) => setMinSnrGamma(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setMinSnrGamma(5.0); }}
                 step={0.5}
                 min={0}
                 max={20}
@@ -1998,7 +1999,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="blocks-to-swap"
                 value={blocksToSwap}
-                onChange={(e) => setBlocksToSwap(parseInt(e.target.value) || 0)}
+                onChange={(e) => setBlocksToSwap(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBlocksToSwap(0); }}
                 min={0}
                 max={29}
                 step={1}
@@ -2040,7 +2041,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="number"
                   id="num-optimizer-groups"
                   value={numOptimizerGroups}
-                  onChange={(e) => setNumOptimizerGroups(parseInt(e.target.value) || 0)}
+                  onChange={(e) => setNumOptimizerGroups(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setNumOptimizerGroups(0); }}
                   min={0}
                   max={20}
                   step={1}
@@ -2088,7 +2089,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="text-encoding-swap-interval"
                 value={textEncodingSwapInterval}
-                onChange={(e) => setTextEncodingSwapInterval(parseInt(e.target.value) || 256)}
+                onChange={(e) => setTextEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTextEncodingSwapInterval(256); }}
                 min={1}
                 max={1024}
                 step={1}
@@ -2133,7 +2134,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="latent-encoding-swap-interval"
                 value={latentEncodingSwapInterval}
-                onChange={(e) => setLatentEncodingSwapInterval(parseInt(e.target.value) || 256)}
+                onChange={(e) => setLatentEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLatentEncodingSwapInterval(256); }}
                 min={1}
                 max={1024}
                 step={1}
@@ -2183,7 +2184,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="1"
               value={saveEvery}
-              onChange={(e) => setSaveEvery(parseInt(e.target.value) || 1)}
+              onChange={(e) => setSaveEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSaveEvery(100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
@@ -2222,7 +2223,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="0"
               value={sampleEvery}
-              onChange={(e) => setSampleEvery(parseInt(e.target.value) || 1)}
+              onChange={(e) => setSampleEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleEvery(100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="e.g., 100 (0 to disable)"
             />
@@ -2320,7 +2321,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleWidth}
-                onChange={(e) => setSampleWidth(parseInt(e.target.value) || 1)}
+                onChange={(e) => setSampleWidth(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleWidth(1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2332,7 +2333,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleHeight}
-                onChange={(e) => setSampleHeight(parseInt(e.target.value) || 1)}
+                onChange={(e) => setSampleHeight(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleHeight(1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2343,7 +2344,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => setSampleSteps(parseInt(e.target.value) || 1)}
+                onChange={(e) => setSampleSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSteps(28); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2355,7 +2356,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="30"
                 step="0.5"
                 value={sampleCfgScale}
-                onChange={(e) => setSampleCfgScale(parseFloat(e.target.value) || 0.0)}
+                onChange={(e) => setSampleCfgScale(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSampleCfgScale(7.0); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -2395,7 +2396,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <input
               type="number"
               value={sampleSeed}
-              onChange={(e) => setSampleSeed(parseInt(e.target.value) || 1)}
+              onChange={(e) => setSampleSeed(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSeed(42); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="-1 for random"
             />
@@ -2431,7 +2432,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 min="1"
                 value={debugLatentsEvery}
-                onChange={(e) => setDebugLatentsEvery(parseInt(e.target.value) || 1)}
+                onChange={(e) => setDebugLatentsEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setDebugLatentsEvery(50); }}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 placeholder="e.g., 50"
               />

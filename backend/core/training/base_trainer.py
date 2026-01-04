@@ -496,11 +496,13 @@ class BaseTrainer(ABC):
         self.optimizer_use_radam = optimizer_use_radam
 
         # Convert dtype strings to torch.dtype
-        self.weight_dtype = get_torch_dtype(weight_dtype)
-        self.training_dtype = get_torch_dtype(training_dtype)
-        self.output_dtype = get_torch_dtype(output_dtype)
-        self.vae_dtype = get_torch_dtype(vae_dtype)
-        self.mixed_precision = mixed_precision
+        # TEMPORARY: Force FP32 for debugging divergence issue
+        print("[TEMPORARY DEBUG] Forcing all dtypes to FP32")
+        self.weight_dtype = torch.float32  # get_torch_dtype(weight_dtype)
+        self.training_dtype = torch.float32  # get_torch_dtype(training_dtype)
+        self.output_dtype = torch.float32  # get_torch_dtype(output_dtype)
+        self.vae_dtype = torch.float32  # get_torch_dtype(vae_dtype)
+        self.mixed_precision = False  # mixed_precision
         self.debug_vram = debug_vram
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
@@ -1734,7 +1736,8 @@ class BaseTrainer(ABC):
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
 
         vae_device = next(self.vae.parameters()).device
-        image_tensor = image_tensor.to(device=vae_device, dtype=self.vae.dtype)
+        # TEMPORARY: Force FP32
+        image_tensor = image_tensor.to(device=vae_device, dtype=torch.float32)  # dtype=self.vae.dtype
 
         # DEBUG: Log preprocessing
         debug_preprocessing = True  # Set to True to debug latent encoding
@@ -1960,6 +1963,7 @@ class BaseTrainer(ABC):
         )
 
         # Calculate loss (always in fp32)
+        # TEMPORARY: .float() is redundant since everything is FP32, but kept for safety
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 

@@ -4657,7 +4657,16 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # Update status to "starting" immediately
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
-        run.started_at = datetime.utcnow()
+
+        # Set started_at on first start, last_resumed_at on resume
+        current_time = datetime.utcnow()
+        if run.started_at is None:
+            run.started_at = current_time
+            print(f"[API] First start: started_at set")
+        else:
+            run.last_resumed_at = current_time
+            print(f"[API] Resuming: last_resumed_at set")
+
         db.commit()
         print(f"[API] Status updated and committed")
 

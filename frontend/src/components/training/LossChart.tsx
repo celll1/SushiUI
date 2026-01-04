@@ -50,6 +50,9 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
   const [showLoss, setShowLoss] = useState(true);
   const [showReconLoss, setShowReconLoss] = useState(true);
+  const [yAxisMode, setYAxisMode] = useState<"auto" | "custom">("auto");
+  const [customYMin, setCustomYMin] = useState<number>(0);
+  const [customYMax, setCustomYMax] = useState<number>(1);
 
   // Tooltip state
   const [tooltip, setTooltip] = useState<{ x: number; y: number; step: number; loss: number; smoothLoss: number; reconLoss?: number; smoothReconLoss?: number } | null>(null);
@@ -294,8 +297,12 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     ...(showLoss ? lossData.map((d) => d.value) : []),
     ...(showReconLoss ? reconLossData.map((d) => d.value) : [])
   ];
-  const maxLoss = allValues.length > 0 ? Math.max(...allValues) : 1;
-  const minLoss = allValues.length > 0 ? Math.min(...allValues) : 0;
+  const autoMaxLoss = allValues.length > 0 ? Math.max(...allValues) : 1;
+  const autoMinLoss = allValues.length > 0 ? Math.min(...allValues) : 0;
+
+  // Use custom scale if enabled, otherwise use auto scale
+  const maxLoss = yAxisMode === "custom" ? customYMax : autoMaxLoss;
+  const minLoss = yAxisMode === "custom" ? customYMin : autoMinLoss;
 
   const scaleX = (step: number) =>
     padding.left + ((step - minStep) / (maxStep - minStep || 1)) * chartWidth;
@@ -483,6 +490,93 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
             />
             <span>Reconstruction Loss</span>
           </label>
+        )}
+      </div>
+
+      {/* Y-axis Scale Controls */}
+      <div className="mb-3">
+        <div className="flex items-center gap-3 mb-2">
+          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={yAxisMode === "custom"}
+              onChange={(e) => {
+                const newMode = e.target.checked ? "custom" : "auto";
+                setYAxisMode(newMode);
+                if (newMode === "custom" && yAxisMode === "auto") {
+                  setCustomYMin(autoMinLoss);
+                  setCustomYMax(autoMaxLoss);
+                }
+              }}
+              className="w-4 h-4"
+            />
+            <span>Custom Y-axis Scale</span>
+          </label>
+          {yAxisMode === "custom" && (
+            <button
+              onClick={() => {
+                setCustomYMin(autoMinLoss);
+                setCustomYMax(autoMaxLoss);
+              }}
+              className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              title="Reset to auto values"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+
+        {yAxisMode === "custom" && (
+          <div className="flex items-center gap-3 pl-6">
+            <label className="text-xs text-gray-400">Range:</label>
+            <div className="flex-1 relative">
+              <input
+                type="range"
+                min={0}
+                max={autoMaxLoss * 2}
+                step={autoMaxLoss / 1000}
+                value={customYMin}
+                onChange={(e) => {
+                  const newMin = parseFloat(e.target.value);
+                  if (newMin < customYMax) {
+                    setCustomYMin(newMin);
+                  }
+                }}
+                className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                style={{
+                  background: 'transparent',
+                }}
+              />
+              <input
+                type="range"
+                min={0}
+                max={autoMaxLoss * 2}
+                step={autoMaxLoss / 1000}
+                value={customYMax}
+                onChange={(e) => {
+                  const newMax = parseFloat(e.target.value);
+                  if (newMax > customYMin) {
+                    setCustomYMax(newMax);
+                  }
+                }}
+                className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
+                style={{
+                  background: 'transparent',
+                }}
+              />
+              <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
+              <div
+                className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
+                style={{
+                  left: `${(customYMin / (autoMaxLoss * 2)) * 100}%`,
+                  right: `${100 - (customYMax / (autoMaxLoss * 2)) * 100}%`,
+                }}
+              />
+            </div>
+            <span className="text-xs text-gray-400 w-32 text-right">
+              {customYMin.toFixed(3)} - {customYMax.toFixed(3)}
+            </span>
+          </div>
         )}
       </div>
 

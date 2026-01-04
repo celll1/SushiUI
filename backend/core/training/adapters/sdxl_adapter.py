@@ -36,7 +36,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         """
-        Apply LoRA to all Transformer2DModel modules in SDXL U-Net.
+        Apply LoRA to all Linear layers in Transformer2DModel modules (diffusers style).
 
         SDXL has 11 transformer blocks:
         - down_blocks.1.attentions.0-1 (IN04, IN05)
@@ -44,6 +44,12 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         - mid_block.attentions.0 (MID)
         - up_blocks.0.attentions.0-2 (OUT00-OUT02)
         - up_blocks.1.attentions.0-2 (OUT03-OUT05)
+
+        Following sd-scripts approach: iterate ALL Linear layers within Transformer2DModel.
+        This includes:
+        - Attention: to_q, to_k, to_v, to_out.0
+        - Projection: proj_in, proj_out
+        - FeedForward: ff.net.0.proj, ff.net.2
 
         Args:
             lora_layers: Dictionary to store LoRA layer references
@@ -60,46 +66,42 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             if block_module.__class__.__name__ != "Transformer2DModel":
                 continue
 
-            # Apply LoRA to proj_in and proj_out (Transformer2DModel level)
-            for proj_name in ["proj_in", "proj_out"]:
-                if hasattr(block_module, proj_name):
-                    proj_module = getattr(block_module, proj_name)
-                    if isinstance(proj_module, nn.Linear):
-                        lora_name = f"lora_unet_{block_name.replace('.', '_')}_{proj_name}"
-                        lora_layer = LoRALinearLayer(
-                            proj_module, self.lora_rank, self.lora_alpha, lora_name
-                        )
-                        setattr(block_module, proj_name, lora_layer)
-                        lora_layers[lora_name] = lora_layer
-                        count += 1
+            # Iterate ALL child Linear modules within this Transformer2DModel (sd-scripts approach)
+            for child_name, child_module in block_module.named_modules():
+                if child_module.__class__.__name__ == "Linear":
+                    # Build LoRA name: lora_unet_{block_name}_{child_name}
+                    # Replace '.' with '_' for diffusers style naming
+                    lora_name = f"lora_unet_{block_name}_{child_name}".replace(".", "_")
 
-            # Find attention modules within transformer blocks
-            for attn_name, attn_module in block_module.named_modules():
-                # Target: to_q, to_k, to_v, to_out.0
-                for attr_name in ["to_q", "to_k", "to_v"]:
-                    if hasattr(attn_module, attr_name):
-                        original_linear = getattr(attn_module, attr_name)
-                        if isinstance(original_linear, nn.Linear):
-                            # Build LoRA name: lora_unet_{block}_{attn}_{attr}
-                            lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name
-                            )
-                            setattr(attn_module, attr_name, lora_layer)
-                            lora_layers[lora_name] = lora_layer
-                            count += 1
+                    # Create LoRA layer
+                    lora_layer = LoRALinearLayer(
+                        child_module, self.lora_rank, self.lora_alpha, lora_name
+                    )
 
-                # Handle to_out.0 (first layer of to_out Sequential)
-                if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, nn.Sequential):
-                    if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], nn.Linear):
-                        original_linear = attn_module.to_out[0]
-                        lora_name = f"lora_unet_{block_name.replace('.', '_')}_{attn_name.replace('.', '_')}_to_out_0"
-                        lora_layer = LoRALinearLayer(
-                            original_linear, self.lora_rank, self.lora_alpha, lora_name
-                        )
-                        attn_module.to_out[0] = lora_layer
-                        lora_layers[lora_name] = lora_layer
-                        count += 1
+                    # Replace original Linear with LoRA layer
+                    # Navigate to parent module and set attribute
+                    if "." in child_name:
+                        # Child is nested (e.g., "to_out.0", "ff.net.0.proj")
+                        path_parts = child_name.split(".")
+                        parent_module = block_module
+                        for part in path_parts[:-1]:
+                            if part.isdigit():
+                                parent_module = parent_module[int(part)]
+                            else:
+                                parent_module = getattr(parent_module, part)
+
+                        # Set the final attribute
+                        attr_name = path_parts[-1]
+                        if attr_name.isdigit():
+                            parent_module[int(attr_name)] = lora_layer
+                        else:
+                            setattr(parent_module, attr_name, lora_layer)
+                    else:
+                        # Child is direct attribute (e.g., "proj_in", "proj_out")
+                        setattr(block_module, child_name, lora_layer)
+
+                    lora_layers[lora_name] = lora_layer
+                    count += 1
 
         return count
 

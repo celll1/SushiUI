@@ -615,20 +615,31 @@ class LoRAManager:
                             blocks.add(f"OUT{block_num:02d}")
 
                     # Check for down_blocks / mid_block / up_blocks (SDXL/diffusers format)
+                    # Conversion follows sd-scripts mapping (library/sdxl_model_util.py:make_unet_conversion_map)
+                    # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
+                    # up_blocks.i.attentions.j → output_blocks[3*i + j]
                     elif 'down_blocks' in key:
-                        match = re.search(r'down_blocks[_.](\d+)', key)
+                        # Match: down_blocks.{i}.attentions.{j} or down_blocks_{i}_attentions_{j}
+                        match = re.search(r'down_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
                         if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"IN{block_num:02d}")
+                            i = int(match.group(1))
+                            j = int(match.group(2))
+                            # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
+                            kohya_block_num = 3 * i + j + 1
+                            blocks.add(f"IN{kohya_block_num:02d}")
 
                     elif 'mid_block' in key:
                         blocks.add("MID")
 
                     elif 'up_blocks' in key:
-                        match = re.search(r'up_blocks[_.](\d+)', key)
+                        # Match: up_blocks.{i}.attentions.{j} or up_blocks_{i}_attentions_{j}
+                        match = re.search(r'up_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
                         if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"OUT{block_num:02d}")
+                            i = int(match.group(1))
+                            j = int(match.group(2))
+                            # up_blocks.i.attentions.j → output_blocks[3*i + j]
+                            kohya_block_num = 3 * i + j
+                            blocks.add(f"OUT{kohya_block_num:02d}")
 
                     # Check for Z-Image transformer structure
                     elif 'noise_refiner' in key:

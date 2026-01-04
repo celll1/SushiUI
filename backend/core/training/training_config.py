@@ -287,7 +287,7 @@ class TrainingConfigGenerator:
                             "multi_noise_mode": multi_noise_mode,
                             "trajectory_blend_alpha": trajectory_blend_alpha,
                             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
-                            **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
+                            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
                             # Regularization settings
                             **({"regularization_type": regularization_type} if regularization_type else {}),
                             "snr_regularization_weight": snr_regularization_weight,
@@ -481,7 +481,7 @@ class TrainingConfigGenerator:
             "multi_noise_mode": multi_noise_mode,
             "trajectory_blend_alpha": trajectory_blend_alpha,
             **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
-            **({"resume_from_checkpoint": resume_from_checkpoint} if resume_from_checkpoint else {}),
+            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
             # Regularization settings
             **({"regularization_type": regularization_type} if regularization_type else {}),
             "snr_regularization_weight": snr_regularization_weight,

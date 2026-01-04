@@ -599,11 +599,12 @@ def main():
             print("[TrainRunner] Training method: LoRA")
             from core.training.lora_trainer import LoRATrainer
 
-            # Get dtype settings from config
-            weight_dtype = train_config.get('weight_dtype', 'fp16')
-            training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
-            output_dtype = train_config.get('output_dtype', 'fp32')
-            vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
+            # Get dtype settings from unified dtype section
+            dtype_config = config_dict.get('dtype', {})
+            weight_dtype = dtype_config.get('weight', 'fp16')
+            training_dtype = dtype_config.get('training', 'fp16')
+            output_dtype = dtype_config.get('save', 'fp32')
+            vae_dtype = dtype_config.get('vae', 'fp16')
 
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
@@ -964,11 +965,12 @@ def main():
             print("[TrainRunner] Training method: Full Parameter Fine-Tuning")
             from core.training.full_parameter_trainer import FullParameterTrainer
 
-            # Get dtype settings from config
-            weight_dtype = train_config.get('weight_dtype', 'fp16')
-            training_dtype = train_config.get('dtype', 'fp16')  # 'dtype' is legacy name for training_dtype
-            output_dtype = train_config.get('output_dtype', 'fp32')
-            vae_dtype = model_config.get('vae_dtype', 'fp16')  # VAE-specific dtype (SDXL VAE works with fp16)
+            # Get dtype settings from unified dtype section
+            dtype_config = config_dict.get('dtype', {})
+            weight_dtype = dtype_config.get('weight', 'fp16')
+            training_dtype = dtype_config.get('training', 'fp16')
+            output_dtype = dtype_config.get('save', 'fp32')
+            vae_dtype = dtype_config.get('vae', 'fp16')
 
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():

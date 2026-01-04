@@ -529,21 +529,25 @@ class BaseTrainer(ABC):
         self.min_snr_gamma = min_snr_gamma
 
         # Initialize GradScaler for mixed precision training
-        # Only use GradScaler when training_dtype is fp16 or bf16 (autocast-compatible)
-        # FP8 and FP32 don't need GradScaler
+        # GradScaler is needed when:
+        # - training_dtype is fp16/bf16 (autocast is used)
+        # - This includes cases where LoRA weights (fp32) are autocast to training dtype
+        # GradScaler prevents gradient underflow during fp16/bf16 backward pass
         self.use_grad_scaler = (
             self.mixed_precision and
-            self.training_dtype in [torch.float16, torch.bfloat16] and
-            self.weight_dtype != self.training_dtype  # Only when dtypes differ
+            self.training_dtype in [torch.float16, torch.bfloat16]
         )
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
             self.grad_scaler = GradScaler()
-            print(f"[Trainer] GradScaler enabled (weight={weight_dtype}, training={training_dtype})")
+            print(f"[Trainer] GradScaler enabled for {training_dtype} training")
+            print(f"[Trainer]   Weight dtype: {weight_dtype}")
+            print(f"[Trainer]   Training dtype: {training_dtype}")
+            if hasattr(self, 'lora_dtype'):
+                print(f"[Trainer]   LoRA dtype: {self.lora_dtype}")
         else:
             self.grad_scaler = None
-            if self.mixed_precision:
-                print(f"[Trainer] Mixed precision enabled but GradScaler disabled (not needed for {training_dtype})")
+            print(f"[Trainer] GradScaler disabled (training_dtype={training_dtype}, not fp16/bf16)")
 
         # Prompt chunking settings (SD/SDXL only)
         self.prompt_chunking_mode = prompt_chunking_mode
@@ -4542,6 +4546,8 @@ class BaseTrainer(ABC):
                             print(f"  LoRA params with grad: {grad_count}")
                             print(f"  LoRA params without grad: {no_grad_count}")
                             print(f"  Average grad norm: {avg_grad_norm:.6f}")
+                            if self.use_grad_scaler:
+                                print(f"  GradScaler scale: {self.grad_scaler.get_scale():.1f}")
 
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps

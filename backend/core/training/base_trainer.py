@@ -4521,34 +4521,6 @@ class BaseTrainer(ABC):
                         # Increment global step for each MNT iteration
                         global_step += 1
 
-                        # Verify gradient flow on first step (LoRA training only)
-                        if global_step == 1 and hasattr(self, 'lora_layers'):
-                            # Simple gradient check for LoRA layers
-                            grad_count = 0
-                            no_grad_count = 0
-                            total_grad_norm = 0.0
-                            for lora_name, lora_layer in self.lora_layers.items():
-                                # Check lora_down
-                                if lora_layer.lora_down.weight.grad is not None:
-                                    grad_count += 1
-                                    total_grad_norm += lora_layer.lora_down.weight.grad.norm().item()
-                                else:
-                                    no_grad_count += 1
-                                # Check lora_up
-                                if lora_layer.lora_up.weight.grad is not None:
-                                    grad_count += 1
-                                    total_grad_norm += lora_layer.lora_up.weight.grad.norm().item()
-                                else:
-                                    no_grad_count += 1
-
-                            avg_grad_norm = total_grad_norm / grad_count if grad_count > 0 else 0.0
-                            print(f"{self.log_prefix} [Gradient Check] Step 1:")
-                            print(f"  LoRA params with grad: {grad_count}")
-                            print(f"  LoRA params without grad: {no_grad_count}")
-                            print(f"  Average grad norm: {avg_grad_norm:.6f}")
-                            if self.use_grad_scaler:
-                                print(f"  GradScaler scale: {self.grad_scaler.get_scale():.1f}")
-
                     # Gradient accumulation check (after all MNT iterations)
                     # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
                     if global_step % effective_gradient_accumulation == 0:

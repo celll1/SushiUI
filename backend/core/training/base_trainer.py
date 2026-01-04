@@ -1785,11 +1785,11 @@ class BaseTrainer(ABC):
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
 
         vae_device = next(self.vae.parameters()).device
-        # TEMPORARY: Force FP32
-        image_tensor = image_tensor.to(device=vae_device, dtype=torch.float32)  # dtype=self.vae.dtype
+        # Match VAE dtype to prevent type mismatch errors
+        image_tensor = image_tensor.to(device=vae_device, dtype=self.vae_dtype)
 
         # DEBUG: Log preprocessing
-        debug_preprocessing = True  # Set to True to debug latent encoding
+        debug_preprocessing = False  # Set to True to debug latent encoding
         if debug_preprocessing:
             print(f"[encode_image DEBUG] Image tensor before VAE:")
             print(f"  Shape: {image_tensor.shape}, dtype: {image_tensor.dtype}, device: {image_tensor.device}")

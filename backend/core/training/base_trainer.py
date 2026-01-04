@@ -995,6 +995,84 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Loaded training state: epoch={state['epoch']}, batch_idx={state['batch_idx']}")
         return state
 
+    def save_optimizer_state(self, step: int):
+        """
+        Save optimizer state dict to .pt file.
+
+        Args:
+            step: Current global step
+        """
+        import re
+
+        if self.optimizer is None:
+            return
+
+        # Extract short name from run_name (same logic as checkpoint saving)
+        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+        if match:
+            short_name = match.group(1)
+        else:
+            short_name = self.run_name
+
+        optimizer_file = self.output_dir / f"{short_name}_step_{step}_optimizer.pt"
+
+        # Save optimizer state dict
+        torch.save(self.optimizer.state_dict(), optimizer_file)
+        print(f"{self.log_prefix} Saved optimizer state to {optimizer_file.name}")
+
+    def load_optimizer_state(self, step: int) -> bool:
+        """
+        Load optimizer state dict from .pt file.
+
+        Args:
+            step: Step number to load optimizer state for
+
+        Returns:
+            True if successfully loaded, False otherwise
+        """
+        import re
+
+        if self.optimizer is None:
+            print(f"{self.log_prefix} WARNING: Cannot load optimizer state (optimizer not initialized)")
+            return False
+
+        # Extract short name from run_name (same logic as checkpoint saving)
+        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+        if match:
+            short_name = match.group(1)
+        else:
+            short_name = self.run_name
+
+        optimizer_file = self.output_dir / f"{short_name}_step_{step}_optimizer.pt"
+
+        if not optimizer_file.exists():
+            print(f"{self.log_prefix} No optimizer state file found: {optimizer_file.name}")
+            print(f"{self.log_prefix} Starting with fresh optimizer state")
+            return False
+
+        try:
+            # Load optimizer state dict
+            optimizer_state = torch.load(optimizer_file, map_location='cpu')
+
+            # Attempt to load state dict with error handling
+            try:
+                self.optimizer.load_state_dict(optimizer_state)
+                print(f"{self.log_prefix} Successfully loaded optimizer state from {optimizer_file.name}")
+                return True
+            except Exception as e:
+                # Fallback: Optimizer configuration changed (e.g., different optimizer type, LR, etc.)
+                print(f"{self.log_prefix} WARNING: Failed to load optimizer state: {e}")
+                print(f"{self.log_prefix} This can happen if:")
+                print(f"{self.log_prefix}   - Optimizer type was changed")
+                print(f"{self.log_prefix}   - Model architecture was changed")
+                print(f"{self.log_prefix}   - Number of trainable parameters changed")
+                print(f"{self.log_prefix} Continuing with fresh optimizer state (momentum/variance will be reset)")
+                return False
+        except Exception as e:
+            print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
+            print(f"{self.log_prefix} Continuing with fresh optimizer state")
+            return False
+
     def find_latest_checkpoint(self) -> Optional[Tuple[str, int]]:
         """
         Find the latest checkpoint in output directory.
@@ -1091,16 +1169,19 @@ class BaseTrainer(ABC):
         # Delete old checkpoints
         checkpoints_to_delete = checkpoint_files[max_step_saves_to_keep:]
         for checkpoint_path in checkpoints_to_delete:
-            # Also delete associated .pt file (optimizer state) and _state.json file (training state)
-            pt_path = checkpoint_path.with_suffix(".pt")
+            # Also delete associated _optimizer.pt file and _state.json file
+            # Pattern: {short_name}_step_{step}.safetensors
+            #          {short_name}_step_{step}_optimizer.pt
+            #          {short_name}_step_{step}_state.json
+            optimizer_pt_path = checkpoint_path.parent / f"{checkpoint_path.stem}_optimizer.pt"
             state_json_path = checkpoint_path.parent / f"{checkpoint_path.stem}_state.json"
 
             print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}")
             checkpoint_path.unlink()
 
-            if pt_path.exists():
-                print(f"{self.log_prefix} Deleting old optimizer state: {pt_path.name}")
-                pt_path.unlink()
+            if optimizer_pt_path.exists():
+                print(f"{self.log_prefix} Deleting old optimizer state: {optimizer_pt_path.name}")
+                optimizer_pt_path.unlink()
 
             if state_json_path.exists():
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
@@ -3758,6 +3839,9 @@ class BaseTrainer(ABC):
                                 self.lr_scheduler.base_lrs[i] = self.learning_rate
                                 if old_base_lr != self.learning_rate:
                                     print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {self.learning_rate:.2e}")
+
+                    # Load optimizer state (momentum, variance, etc.)
+                    self.load_optimizer_state(loaded_step)
                 else:
                     print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
             else:
@@ -3810,6 +3894,9 @@ class BaseTrainer(ABC):
                                 self.lr_scheduler.base_lrs[i] = self.learning_rate
                                 if old_base_lr != self.learning_rate:
                                     print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {self.learning_rate:.2e}")
+
+                    # Load optimizer state (momentum, variance, etc.)
+                    self.load_optimizer_state(loaded_step)
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
@@ -4497,6 +4584,8 @@ class BaseTrainer(ABC):
                             self.save_checkpoint(step=global_step, epoch=epoch)
                             # Save training state (epoch progress) for mid-epoch resume
                             self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
+                            # Save optimizer state (momentum, variance, etc.)
+                            self.save_optimizer_state(step=global_step)
                             # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
                             if hasattr(self, '_cleanup_old_checkpoints'):
                                 import inspect
@@ -4601,6 +4690,15 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Training state saved successfully")
             except Exception as e:
                 print(f"{self.log_prefix} ERROR: Failed to save training state: {e}")
+
+            # Try to save optimizer state (independent of checkpoint/state save)
+            optimizer_saved = False
+            try:
+                self.save_optimizer_state(step=global_step)
+                optimizer_saved = True
+                print(f"{self.log_prefix} Optimizer state saved successfully")
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to save optimizer state: {e}")
                 import traceback
                 traceback.print_exc()
 

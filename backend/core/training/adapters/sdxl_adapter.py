@@ -60,6 +60,19 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             if block_module.__class__.__name__ != "Transformer2DModel":
                 continue
 
+            # Apply LoRA to proj_in and proj_out (Transformer2DModel level)
+            for proj_name in ["proj_in", "proj_out"]:
+                if hasattr(block_module, proj_name):
+                    proj_module = getattr(block_module, proj_name)
+                    if isinstance(proj_module, nn.Linear):
+                        lora_name = f"lora_unet_{block_name.replace('.', '_')}_{proj_name}"
+                        lora_layer = LoRALinearLayer(
+                            proj_module, self.lora_rank, self.lora_alpha, lora_name
+                        )
+                        setattr(block_module, proj_name, lora_layer)
+                        lora_layers[lora_name] = lora_layer
+                        count += 1
+
             # Find attention modules within transformer blocks
             for attn_name, attn_module in block_module.named_modules():
                 # Target: to_q, to_k, to_v, to_out.0

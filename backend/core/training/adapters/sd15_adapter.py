@@ -71,25 +71,17 @@ class LoRALinearLayer(nn.Module):
         """
         Forward pass with LoRA adaptation.
 
-        If input dtype != lora_dtype (e.g., fp16 input, fp32 LoRA weights),
-        performs dtype conversion dynamically to ensure gradients flow correctly.
+        Uses autocast to automatically handle mixed precision:
+        - LoRA weights (fp32) are automatically converted to training dtype during forward
+        - Gradients flow back to fp32 master weights correctly
+        - GradScaler handles gradient scaling for fp16/bf16 training
         """
         org_out = self.original_module(x)
 
-        # Check if we need dtype conversion
-        input_dtype = x.dtype
-
-        if input_dtype != self.lora_dtype:
-            # Mixed precision: input is fp16/bf16, LoRA weights are fp32
-            # Convert input to lora_dtype, compute, then convert back
-            # This ensures gradients flow correctly to master weights
-            x_converted = x.to(dtype=self.lora_dtype)
-            lora_out = self.lora_up(self.lora_down(x_converted))
-            # Convert back to input dtype for addition with org_out
-            lora_out = lora_out.to(dtype=input_dtype)
-        else:
-            # Same dtype: use LoRA weights directly
-            lora_out = self.lora_up(self.lora_down(x))
+        # LoRA computation (autocast will handle dtype conversion automatically)
+        # If we're in an autocast context (training_dtype), this will run in that dtype
+        # Gradients will still flow back to fp32 master weights correctly
+        lora_out = self.lora_up(self.lora_down(x))
 
         return org_out + lora_out * self.scale
 

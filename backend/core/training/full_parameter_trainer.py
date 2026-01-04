@@ -111,3 +111,58 @@ class FullParameterTrainer(BaseTrainer):
         """
         checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}"
         self.adapter.save_checkpoint(step, epoch, checkpoint_path)
+
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """
+        Load full parameter checkpoint for resuming training.
+
+        Args:
+            checkpoint_path: Path to checkpoint directory (diffusers format)
+
+        Returns:
+            Step number from checkpoint
+        """
+        import json
+
+        print(f"{self.log_prefix} Loading checkpoint: {checkpoint_path}")
+
+        checkpoint_dir = Path(checkpoint_path)
+        if not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
+
+        # Load metadata to get step number
+        metadata_path = checkpoint_dir / "metadata.json"
+        step = 0
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                step = metadata.get('step', 0)
+
+        # Load U-Net
+        if self.train_unet:
+            unet_path = checkpoint_dir / "unet"
+            if unet_path.exists() and self.unet is not None:
+                from diffusers import UNet2DConditionModel
+                loaded_unet = UNet2DConditionModel.from_pretrained(unet_path)
+                self.unet.load_state_dict(loaded_unet.state_dict())
+                print(f"{self.log_prefix} Loaded U-Net from {unet_path}")
+
+        # Load Text Encoders
+        if self.train_text_encoder:
+            te1_path = checkpoint_dir / "text_encoder"
+            if te1_path.exists() and self.text_encoder is not None:
+                from transformers import CLIPTextModel
+                loaded_te1 = CLIPTextModel.from_pretrained(te1_path)
+                self.text_encoder.load_state_dict(loaded_te1.state_dict())
+                print(f"{self.log_prefix} Loaded Text Encoder 1 from {te1_path}")
+
+            if self.is_sdxl:
+                te2_path = checkpoint_dir / "text_encoder_2"
+                if te2_path.exists() and self.text_encoder_2 is not None:
+                    from transformers import CLIPTextModelWithProjection
+                    loaded_te2 = CLIPTextModelWithProjection.from_pretrained(te2_path)
+                    self.text_encoder_2.load_state_dict(loaded_te2.state_dict())
+                    print(f"{self.log_prefix} Loaded Text Encoder 2 from {te2_path}")
+
+        print(f"{self.log_prefix} Loaded checkpoint from step {step}")
+        return step

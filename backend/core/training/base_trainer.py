@@ -519,16 +519,31 @@ class BaseTrainer(ABC):
         self.optimizer_use_radam = optimizer_use_radam
 
         # Convert dtype strings to torch.dtype
-        # TEMPORARY: Force FP32 for debugging divergence issue
-        print("[TEMPORARY DEBUG] Forcing all dtypes to FP32")
-        self.weight_dtype = torch.float32  # get_torch_dtype(weight_dtype)
-        self.training_dtype = torch.float32  # get_torch_dtype(training_dtype)
-        self.output_dtype = torch.float32  # get_torch_dtype(output_dtype)
-        self.vae_dtype = torch.float32  # get_torch_dtype(vae_dtype)
-        self.mixed_precision = False  # mixed_precision
+        self.weight_dtype = get_torch_dtype(weight_dtype)
+        self.training_dtype = get_torch_dtype(training_dtype)
+        self.output_dtype = get_torch_dtype(output_dtype)
+        self.vae_dtype = get_torch_dtype(vae_dtype)
+        self.mixed_precision = mixed_precision
         self.debug_vram = debug_vram
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
+
+        # Initialize GradScaler for mixed precision training
+        # Only use GradScaler when training_dtype is fp16 or bf16 (autocast-compatible)
+        # FP8 and FP32 don't need GradScaler
+        self.use_grad_scaler = (
+            self.mixed_precision and
+            self.training_dtype in [torch.float16, torch.bfloat16] and
+            self.weight_dtype != self.training_dtype  # Only when dtypes differ
+        )
+        if self.use_grad_scaler:
+            from torch.cuda.amp import GradScaler
+            self.grad_scaler = GradScaler()
+            print(f"[Trainer] GradScaler enabled (weight={weight_dtype}, training={training_dtype})")
+        else:
+            self.grad_scaler = None
+            if self.mixed_precision:
+                print(f"[Trainer] Mixed precision enabled but GradScaler disabled (not needed for {training_dtype})")
 
         # Prompt chunking settings (SD/SDXL only)
         self.prompt_chunking_mode = prompt_chunking_mode
@@ -4719,7 +4734,7 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Cleaning up training resources...")
 
         # Cleanup Layer Offload Conductor
-        if self.layer_offload_conductor is not None:
+        if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
             print(f"{self.log_prefix} Cleaning up LayerOffloadConductor...")
             self.layer_offload_conductor.cleanup()
             self.layer_offload_conductor = None

@@ -4232,7 +4232,8 @@ class BaseTrainer(ABC):
 
                 # Update total_steps with actual batch count (first epoch only)
                 # This corrects for bucketing overhead (each bucket rounds up batch count)
-                if epoch == start_epoch and resume_training_state is None:
+                # Works for both new training and resumed training
+                if epoch == start_epoch:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if bucket_manager:
                         # For bucketing: use the full batch count before resume slicing

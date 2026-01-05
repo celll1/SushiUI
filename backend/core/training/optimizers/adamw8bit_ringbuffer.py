@@ -425,6 +425,10 @@ class AdamW8bit_RingBuffer(Optimizer):
         # Update parameter groups
         def update_group(group, new_group):
             new_group["params"] = group["params"]
+            # Add missing keys from current defaults (for backward compatibility)
+            for key in group.keys():
+                if key not in new_group:
+                    new_group[key] = group[key]
             return new_group
 
         param_groups = [update_group(g, ng) for g, ng in zip(groups, saved_groups)]

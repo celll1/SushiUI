@@ -126,7 +126,8 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         if hasattr(self.trainer, "text_encoder") and self.trainer.text_encoder is not None:
             for layer_idx, layer in enumerate(self.trainer.text_encoder.text_model.encoder.layers):
                 # mlp.fc1
-                lora_name = f"lora_te1_layer{layer_idx}_mlp_fc1"
+                # Use sd-scripts compatible naming: lora_te1_text_model_encoder_layers_{N}_mlp_fc1
+                lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc1"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
                 )
@@ -135,7 +136,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                 count += 1
 
                 # mlp.fc2
-                lora_name = f"lora_te1_layer{layer_idx}_mlp_fc2"
+                lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc2"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
                 )
@@ -147,7 +148,8 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         if hasattr(self.trainer, "text_encoder_2") and self.trainer.text_encoder_2 is not None:
             for layer_idx, layer in enumerate(self.trainer.text_encoder_2.text_model.encoder.layers):
                 # mlp.fc1
-                lora_name = f"lora_te2_layer{layer_idx}_mlp_fc1"
+                # Use sd-scripts compatible naming: lora_te2_text_model_encoder_layers_{N}_mlp_fc1
+                lora_name = f"lora_te2_text_model_encoder_layers_{layer_idx}_mlp_fc1"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
                 )
@@ -156,7 +158,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                 count += 1
 
                 # mlp.fc2
-                lora_name = f"lora_te2_layer{layer_idx}_mlp_fc2"
+                lora_name = f"lora_te2_text_model_encoder_layers_{layer_idx}_mlp_fc2"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
                 )

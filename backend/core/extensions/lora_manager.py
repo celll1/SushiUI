@@ -366,50 +366,15 @@ class LoRAManager:
                     os.remove(temp_lora_path)
                     print(f"[LoRAManager] Temporary file removed")
                 else:
-                    # SD format (Kohya-ss format: lora_te1_*, lora_unet_*) - convert to diffusers format
-                    print(f"[LoRAManager] Converting SD (Kohya-ss) format to diffusers format...")
-
-                    # Load SD format state dict
-                    sd_state_dict = {}
-                    with safe_open(str(lora_path), framework="pt", device="cpu") as f:
-                        for key in f.keys():
-                            sd_state_dict[key] = f.get_tensor(key)
-
-                    # Use diffusers' conversion utility
-                    from diffusers.loaders.lora_conversion_utils import _convert_non_diffusers_lora_to_diffusers
-
-                    print(f"[LoRAManager] Input state dict: {len(sd_state_dict)} keys")
-
-                    # Convert SD format to diffusers format
-                    # This handles lora_te1_* -> text_encoder.*, lora_unet_* -> unet.*, etc.
-                    # IMPORTANT: Pass a copy because conversion function modifies the input dict
-                    converted_state_dict, network_alphas = _convert_non_diffusers_lora_to_diffusers(
-                        sd_state_dict.copy(),
-                        unet_name="unet",
-                        text_encoder_name="text_encoder"
-                    )
-
-                    print(f"[LoRAManager] Conversion complete: {len(converted_state_dict)} keys, {len(network_alphas)} alphas")
-
-                    # Save converted LoRA to temporary file
-                    from safetensors.torch import save_file
-                    temp_dir = tempfile.gettempdir()
-                    temp_lora_path = os.path.join(temp_dir, f"converted_sd_lora_{adapter_name}.safetensors")
-                    save_file(converted_state_dict, temp_lora_path)
-
-                    print(f"[LoRAManager] Converted LoRA saved to: {temp_lora_path}")
+                    # SD format (Kohya-ss format: lora_te1_*, lora_unet_*) - load directly
+                    # diffusers' pipeline.load_lora_weights natively supports SD/Kohya-ss format
+                    print(f"[LoRAManager] SD/Kohya-ss format detected - loading directly")
                     print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
-
-                    # Load converted LoRA
                     pipeline.load_lora_weights(
-                        temp_dir,
-                        weight_name=f"converted_sd_lora_{adapter_name}.safetensors",
+                        str(lora_path.parent),
+                        weight_name=lora_path.name,
                         adapter_name=adapter_name
                     )
-
-                    # Clean up temporary file
-                    os.remove(temp_lora_path)
-                    print(f"[LoRAManager] Temporary file removed")
 
                 print(f"[LoRAManager] Successfully loaded LoRA weights")
 

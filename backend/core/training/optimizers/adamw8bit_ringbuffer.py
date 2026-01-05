@@ -103,6 +103,7 @@ class AdamW8bit_RingBuffer(Optimizer):
         r: float = 0.0,
         weight_lr_power: float = 2.0,
         use_radam: bool = False,
+        stochastic_rounding: bool = False,
         get_state_buffer: Optional[Callable] = None,
     ):
         # Lazy load CUDA extension (compile on first optimizer creation)
@@ -136,6 +137,7 @@ class AdamW8bit_RingBuffer(Optimizer):
             r=r,
             weight_lr_power=weight_lr_power,
             use_radam=use_radam,
+            stochastic_rounding=stochastic_rounding,
         )
         super().__init__(params, defaults)
 
@@ -144,6 +146,7 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.cautious = cautious
         self.schedule_free = schedule_free
         self.use_radam = use_radam
+        self.stochastic_rounding = stochastic_rounding
 
         # Schedule-Free specific state
         if schedule_free:
@@ -177,6 +180,44 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.ext.init_quantization_maps(qmap_signed, qmap_unsigned)
 
         print("[AdamW8bit_RingBuffer] Quantization maps initialized on device")
+
+    @staticmethod
+    def _copy_stochastic_bf16(target: torch.Tensor, source: torch.Tensor):
+        """
+        Stochastic rounding from FP32 to BF16.
+
+        Based on: https://github.com/pytorch/pytorch/issues/120376
+
+        BF16 has 7-bit mantissa (vs FP32's 23-bit), so rounding error is significant
+        for small updates. Stochastic rounding removes bias in repeated small updates
+        by randomly rounding up or down based on the fractional part.
+
+        Args:
+            target: Target tensor in BF16 (modified in-place)
+            source: Source tensor in FP32
+        """
+        assert target.dtype == torch.bfloat16, f"Target must be BF16, got {target.dtype}"
+        assert source.dtype == torch.float32, f"Source must be FP32, got {source.dtype}"
+
+        # Create random 16-bit integer [0, 65536)
+        # This will be added to the lower 16 bits of FP32 mantissa
+        result = torch.randint_like(
+            source,
+            dtype=torch.int32,
+            low=0,
+            high=(1 << 16),
+        )
+
+        # Add random to lower 16 bits of mantissa (probabilistic rounding)
+        # View as int32 to manipulate bits directly
+        result.add_(source.view(dtype=torch.int32))
+
+        # Mask off lower 16 bits (keep upper 16 bits = BF16 format)
+        result.bitwise_and_(-65536)  # 0xFFFF0000 as signed int32
+
+        # Copy upper 16 bits to target (BF16)
+        # This effectively does: target = round(source) with stochastic rounding
+        target.copy_(result.view(dtype=torch.float32))
 
     def _init_param_state(self, p: nn.Parameter):
         """Initialize optimizer state for a parameter."""
@@ -523,6 +564,29 @@ class AdamW8bit_RingBuffer(Optimizer):
                 # Gradient norm scaling (for gradient clipping, if applied)
                 gnorm_scale = 1.0
 
+                # ============================================================
+                # Stochastic Rounding for BF16 Parameters
+                # ============================================================
+                # If stochastic_rounding is enabled and param is BF16:
+                # 1. Create FP32 buffer
+                # 2. CUDA kernel updates FP32 buffer
+                # 3. Python applies stochastic rounding: FP32 → BF16
+                use_stochastic_rounding = (
+                    group['stochastic_rounding'] and
+                    p.dtype == torch.bfloat16 and
+                    use_8bit  # Only for 8-bit quantized updates
+                )
+
+                # Create FP32 buffer if needed
+                if use_stochastic_rounding:
+                    if 'p_fp32' not in state:
+                        # Allocate FP32 buffer (same shape as param)
+                        state['p_fp32'] = p.detach().clone().to(dtype=torch.float32)
+                    p_fp32 = state['p_fp32']
+                    p_for_kernel = p_fp32  # CUDA kernel updates FP32 buffer
+                else:
+                    p_for_kernel = p  # CUDA kernel updates param directly
+
                 if use_8bit:
                     # ============================================================
                     # 8-bit Quantized Update (CUDA Kernel)
@@ -544,7 +608,7 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                         # Call Schedule-Free CUDA kernel
                         self.ext.adamw_8bit_schedulefree_update(
-                            p,                      # param (y, GPU)
+                            p_for_kernel,           # param (y, GPU) - FP32 buffer if stochastic_rounding
                             grad,                   # grad (GPU)
                             z_gpu,                  # z (UINT8, GPU/async transferred)
                             exp_avg_sq_gpu,         # exp_avg_sq (UINT8, GPU/async transferred)
@@ -566,6 +630,10 @@ class AdamW8bit_RingBuffer(Optimizer):
                             state['z'].copy_(z_gpu, non_blocking=True)
                             state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
+                        # Stochastic rounding: FP32 buffer → BF16 param
+                        if use_stochastic_rounding:
+                            self._copy_stochastic_bf16(p, p_fp32)
+
                     else:
                         # ============================================================
                         # Standard AdamW 8-bit Update
@@ -582,7 +650,7 @@ class AdamW8bit_RingBuffer(Optimizer):
                             exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
 
                         self.ext.adamw_8bit_update(
-                            p,                      # param (GPU)
+                            p_for_kernel,           # param (GPU) - FP32 buffer if stochastic_rounding
                             grad,                   # grad (GPU)
                             exp_avg_gpu,            # state1 (GPU, async transferred if needed)
                             exp_avg_sq_gpu,         # state2 (GPU, async transferred if needed)
@@ -604,17 +672,28 @@ class AdamW8bit_RingBuffer(Optimizer):
                             state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
                             state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
+                        # Stochastic rounding: FP32 buffer → BF16 param
+                        if use_stochastic_rounding:
+                            self._copy_stochastic_bf16(p, p_fp32)
+
                 else:
                     # ============================================================
                     # FP32 Update
                     # ============================================================
+                    # Note: Even though states remain FP32, parameter updates
+                    # still need stochastic rounding when writing to BF16 params
 
                     if schedule_free:
                         # ============================================================
                         # Schedule-Free FP32 Update
                         # ============================================================
 
-                        y = p  # p is y (training parameters)
+                        # Use p_for_kernel (FP32 buffer) if stochastic rounding enabled
+                        if use_stochastic_rounding:
+                            y = p_fp32  # Update FP32 buffer
+                        else:
+                            y = p  # Update param directly
+
                         z = state['z']
                         exp_avg_sq = state['exp_avg_sq']
 
@@ -639,6 +718,10 @@ class AdamW8bit_RingBuffer(Optimizer):
                         # Update z (main sequence)
                         z.sub_(grad_normalized, alpha=scheduled_lr)
 
+                        # Stochastic rounding: FP32 buffer → BF16 param
+                        if use_stochastic_rounding:
+                            self._copy_stochastic_bf16(p, p_fp32)
+
                     else:
                         # ============================================================
                         # Standard AdamW FP32 Update
@@ -662,12 +745,22 @@ class AdamW8bit_RingBuffer(Optimizer):
                         denom = corrected_exp_avg_sq.sqrt().add_(eps)
                         step_size = scheduled_lr / bias_correction1
 
+                        # Use p_for_kernel (FP32 buffer) if stochastic rounding enabled
+                        if use_stochastic_rounding:
+                            p_update = p_fp32  # Update FP32 buffer
+                        else:
+                            p_update = p  # Update param directly
+
                         # Decoupled weight decay
                         if weight_decay > 0:
-                            p.mul_(1 - scheduled_lr * weight_decay)
+                            p_update.mul_(1 - scheduled_lr * weight_decay)
 
                         # Apply update
-                        p.addcdiv_(corrected_exp_avg, denom, value=-step_size)
+                        p_update.addcdiv_(corrected_exp_avg, denom, value=-step_size)
+
+                        # Stochastic rounding: FP32 buffer → BF16 param
+                        if use_stochastic_rounding:
+                            self._copy_stochastic_bf16(p, p_fp32)
 
         # Schedule-Free: Increment k after all parameter updates
         if self.schedule_free:

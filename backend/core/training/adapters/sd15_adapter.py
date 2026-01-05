@@ -178,7 +178,8 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
         # Text Encoder 1: All layers
         for layer_idx, layer in enumerate(text_encoder.text_model.encoder.layers):
             # mlp.fc1
-            lora_name = f"lora_te1_layer{layer_idx}_mlp_fc1"
+            # Use sd-scripts compatible naming: lora_te1_text_model_encoder_layers_{N}_mlp_fc1
+            lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc1"
             lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
             , self.lora_dtype)
             layer.mlp.fc1 = lora_layer
@@ -186,7 +187,7 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
             count += 1
 
             # mlp.fc2
-            lora_name = f"lora_te1_layer{layer_idx}_mlp_fc2"
+            lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc2"
             lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
             , self.lora_dtype)
             layer.mlp.fc2 = lora_layer

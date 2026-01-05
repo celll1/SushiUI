@@ -4229,6 +4229,27 @@ class BaseTrainer(ABC):
                 epoch_batches = len(batches)  # After mid-epoch resume slicing
                 epoch_steps = epoch_batches * multi_noise_timesteps
                 epoch_start_step = global_step
+
+                # Update total_steps with actual batch count (first epoch only)
+                # This corrects for bucketing overhead (each bucket rounds up batch count)
+                if epoch == start_epoch and resume_training_state is None:
+                    # Calculate actual steps per epoch (before mid-epoch slicing)
+                    if bucket_manager:
+                        # For bucketing: use the full batch count before resume slicing
+                        full_batch_count = len(item_batches)  # item_batches before resume slicing
+                    else:
+                        # For simple batching: calculate from total items
+                        full_batch_count = (len(all_items) + batch_size - 1) // batch_size
+
+                    actual_steps_per_epoch = full_batch_count * multi_noise_timesteps
+                    actual_total_steps = actual_steps_per_epoch * num_epochs
+
+                    # Update DB if actual differs from initial estimate
+                    if actual_total_steps != steps_per_epoch * num_epochs:
+                        print(f"{self.log_prefix} Correcting total_steps: {steps_per_epoch * num_epochs} → {actual_total_steps} (bucketing overhead)")
+                        if update_total_steps_callback is not None:
+                            update_total_steps_callback(actual_total_steps)
+
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     # Reset fused optimizer groups counters (start of each step)
                     if self.fused_optimizer_groups is not None:

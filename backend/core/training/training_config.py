@@ -38,6 +38,7 @@ class TrainingConfigGenerator:
         optimizer_use_radam: bool = False,
         lora_rank: int = 16,
         lora_alpha: int = 16,
+        lora_dtype: str = "fp32",
         save_every: int = 100,
         save_every_unit: str = "steps",
         max_step_saves_to_keep: int = 10,
@@ -227,6 +228,7 @@ class TrainingConfigGenerator:
                             "type": "lora",
                             "linear": lora_rank,
                             "linear_alpha": lora_alpha,
+                            "lora_dtype": lora_dtype,
                         },
                         "dtype": {
                             "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)

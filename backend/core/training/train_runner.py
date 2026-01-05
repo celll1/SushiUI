@@ -653,6 +653,7 @@ def main():
                 run_id=run_id,  # Pass run_id for DB metrics logging
                 lora_rank=network_config.get('linear', 16),
                 lora_alpha=network_config.get('linear_alpha', 16),
+                lora_dtype=network_config.get('lora_dtype', 'fp32'),
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,

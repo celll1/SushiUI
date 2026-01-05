@@ -44,6 +44,7 @@ class LoRATrainer(BaseTrainer):
         self,
         lora_rank: int = 16,
         lora_alpha: int = 16,
+        lora_dtype: str = 'fp32',
         train_unet: bool = True,
         train_text_encoder: bool = False,
         **kwargs
@@ -54,6 +55,7 @@ class LoRATrainer(BaseTrainer):
         Args:
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha (scaling factor = alpha / rank)
+            lora_dtype: Data type for LoRA weights ('fp32', 'fp16', 'bf16')
             train_unet: Whether to train U-Net/Transformer
             train_text_encoder: Whether to train Text Encoder(s)
             **kwargs: Additional arguments passed to BaseTrainer
@@ -71,6 +73,10 @@ class LoRATrainer(BaseTrainer):
         # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
+        # Convert lora_dtype string to torch.dtype (after super().__init__ to have access to get_torch_dtype)
+        from .base_trainer import get_torch_dtype
+        self.lora_dtype = get_torch_dtype(lora_dtype)
+
         # Override log prefix
         self.log_prefix = "[LoRA Trainer]"
 
@@ -86,13 +92,13 @@ class LoRATrainer(BaseTrainer):
     def _create_adapter(self):
         """Create model-specific LoRA adapter based on detected model type."""
         if self.is_zimage:
-            self.adapter = ZImageLoRAAdapter(self, self.lora_rank, self.lora_alpha)
+            self.adapter = ZImageLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using ZImageLoRAAdapter")
         elif self.is_sdxl:
-            self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha)
+            self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")
         else:
-            self.adapter = SD15LoRAAdapter(self, self.lora_rank, self.lora_alpha)
+            self.adapter = SD15LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SD15LoRAAdapter")
 
     def _apply_lora(self):

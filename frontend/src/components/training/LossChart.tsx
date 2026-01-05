@@ -500,92 +500,6 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
       {/* Axis Scale Controls (2-column layout) */}
       <div className="grid grid-cols-2 gap-4 mb-3">
-        {/* Y-axis Scale Controls */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={yAxisMode === "custom"}
-                onChange={(e) => {
-                  const newMode = e.target.checked ? "custom" : "auto";
-                  setYAxisMode(newMode);
-                  if (newMode === "custom" && yAxisMode === "auto") {
-                    setCustomYMin(autoMinLoss);
-                    setCustomYMax(autoMaxLoss);
-                  }
-                }}
-                className="w-4 h-4"
-              />
-              <span>Y-axis</span>
-            </label>
-            {yAxisMode === "custom" && (
-              <button
-                onClick={() => {
-                  setCustomYMin(autoMinLoss);
-                  setCustomYMax(autoMaxLoss);
-                }}
-                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
-                title="Reset to auto values"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-
-          {yAxisMode === "custom" && (
-            <div className="flex items-center gap-2 pl-6">
-              <div className="flex-1 relative">
-                <input
-                  type="range"
-                  min={0}
-                  max={autoMaxLoss * 2}
-                  step={autoMaxLoss / 1000}
-                  value={customYMin}
-                  onChange={(e) => {
-                    const newMin = parseFloat(e.target.value);
-                    if (newMin < customYMax) {
-                      setCustomYMin(newMin);
-                    }
-                  }}
-                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                  style={{
-                    background: 'transparent',
-                  }}
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={autoMaxLoss * 2}
-                  step={autoMaxLoss / 1000}
-                  value={customYMax}
-                  onChange={(e) => {
-                    const newMax = parseFloat(e.target.value);
-                    if (newMax > customYMin) {
-                      setCustomYMax(newMax);
-                    }
-                  }}
-                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                  style={{
-                    background: 'transparent',
-                  }}
-                />
-                <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
-                <div
-                  className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
-                  style={{
-                    left: `${(customYMin / (autoMaxLoss * 2)) * 100}%`,
-                    right: `${100 - (customYMax / (autoMaxLoss * 2)) * 100}%`,
-                  }}
-                />
-              </div>
-              <span className="text-xs text-gray-400 w-28 text-right">
-                {customYMin.toFixed(3)} - {customYMax.toFixed(3)}
-              </span>
-            </div>
-          )}
-        </div>
-
         {/* X-axis Scale Controls */}
         <div>
           <div className="flex items-center gap-2 mb-2">
@@ -621,11 +535,22 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
           {xAxisMode === "custom" && (
             <div className="flex items-center gap-2 pl-6">
-              <div className="flex-1 relative">
+              <div className="flex-1 relative h-8">
+                {/* Visual track background */}
+                <div className="absolute top-1/2 -translate-y-1/2 w-full h-1 bg-gray-700 rounded-full" />
+                {/* Active track */}
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 h-1 bg-blue-500 rounded-full"
+                  style={{
+                    left: `${(customXMin / autoMaxStep) * 100}%`,
+                    right: `${100 - (customXMax / autoMaxStep) * 100}%`,
+                  }}
+                />
+                {/* Min slider */}
                 <input
                   type="range"
                   min={0}
-                  max={autoMaxStep * 2}
+                  max={autoMaxStep}
                   step={Math.max(1, Math.floor(autoMaxStep / 1000))}
                   value={customXMin}
                   onChange={(e) => {
@@ -634,15 +559,14 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
                       setCustomXMin(newMin);
                     }
                   }}
-                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                  style={{
-                    background: 'transparent',
-                  }}
+                  className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
+                  style={{ zIndex: customXMin > autoMaxStep - (autoMaxStep / 2) ? 5 : 3 }}
                 />
+                {/* Max slider */}
                 <input
                   type="range"
                   min={0}
-                  max={autoMaxStep * 2}
+                  max={autoMaxStep}
                   step={Math.max(1, Math.floor(autoMaxStep / 1000))}
                   value={customXMax}
                   onChange={(e) => {
@@ -651,22 +575,98 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
                       setCustomXMax(newMax);
                     }
                   }}
-                  className="absolute w-full h-1.5 bg-transparent appearance-none cursor-pointer pointer-events-auto z-10"
-                  style={{
-                    background: 'transparent',
-                  }}
-                />
-                <div className="absolute w-full h-1.5 bg-gray-700 rounded-lg pointer-events-none" />
-                <div
-                  className="absolute h-1.5 bg-blue-500 rounded pointer-events-none"
-                  style={{
-                    left: `${(customXMin / (autoMaxStep * 2)) * 100}%`,
-                    right: `${100 - (customXMax / (autoMaxStep * 2)) * 100}%`,
-                  }}
+                  className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
+                  style={{ zIndex: 4 }}
                 />
               </div>
               <span className="text-xs text-gray-400 w-28 text-right">
                 {customXMin.toFixed(0)} - {customXMax.toFixed(0)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Y-axis Scale Controls */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={yAxisMode === "custom"}
+                onChange={(e) => {
+                  const newMode = e.target.checked ? "custom" : "auto";
+                  setYAxisMode(newMode);
+                  if (newMode === "custom" && yAxisMode === "auto") {
+                    setCustomYMin(autoMinLoss);
+                    setCustomYMax(autoMaxLoss);
+                  }
+                }}
+                className="w-4 h-4"
+              />
+              <span>Y-axis</span>
+            </label>
+            {yAxisMode === "custom" && (
+              <button
+                onClick={() => {
+                  setCustomYMin(autoMinLoss);
+                  setCustomYMax(autoMaxLoss);
+                }}
+                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                title="Reset to auto values"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+
+          {yAxisMode === "custom" && (
+            <div className="flex items-center gap-2 pl-6">
+              <div className="flex-1 relative h-8">
+                {/* Visual track background */}
+                <div className="absolute top-1/2 -translate-y-1/2 w-full h-1 bg-gray-700 rounded-full" />
+                {/* Active track */}
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 h-1 bg-blue-500 rounded-full"
+                  style={{
+                    left: `${(customYMin / (autoMaxLoss * 1.1)) * 100}%`,
+                    right: `${100 - (customYMax / (autoMaxLoss * 1.1)) * 100}%`,
+                  }}
+                />
+                {/* Min slider */}
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxLoss * 1.1}
+                  step={autoMaxLoss / 1000}
+                  value={customYMin}
+                  onChange={(e) => {
+                    const newMin = parseFloat(e.target.value);
+                    if (newMin < customYMax) {
+                      setCustomYMin(newMin);
+                    }
+                  }}
+                  className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
+                  style={{ zIndex: customYMin > (autoMaxLoss * 1.1) - ((autoMaxLoss * 1.1) / 2) ? 5 : 3 }}
+                />
+                {/* Max slider */}
+                <input
+                  type="range"
+                  min={0}
+                  max={autoMaxLoss * 1.1}
+                  step={autoMaxLoss / 1000}
+                  value={customYMax}
+                  onChange={(e) => {
+                    const newMax = parseFloat(e.target.value);
+                    if (newMax > customYMin) {
+                      setCustomYMax(newMax);
+                    }
+                  }}
+                  className="absolute top-1/2 -translate-y-1/2 w-full h-1 appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500"
+                  style={{ zIndex: 4 }}
+                />
+              </div>
+              <span className="text-xs text-gray-400 w-28 text-right">
+                {customYMin.toFixed(3)} - {customYMax.toFixed(3)}
               </span>
             </div>
           )}
@@ -682,6 +682,18 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       >
+        {/* Clip path to restrict drawing to chart area */}
+        <defs>
+          <clipPath id="chart-clip-loss">
+            <rect
+              x={padding.left}
+              y={padding.top}
+              width={chartWidth}
+              height={chartHeight}
+            />
+          </clipPath>
+        </defs>
+
         {/* Y-axis */}
         <line
           x1={padding.left}
@@ -805,6 +817,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               strokeWidth="1.5"
               strokeLinejoin="round"
               opacity="0.3"
+              clipPath="url(#chart-clip-loss)"
             />
 
             {/* Smooth loss line */}
@@ -816,6 +829,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
                 strokeWidth="2.5"
                 strokeLinejoin="round"
                 opacity="0.9"
+                clipPath="url(#chart-clip-loss)"
               />
             )}
           </>
@@ -832,6 +846,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               strokeWidth="1.5"
               strokeLinejoin="round"
               opacity="0.3"
+              clipPath="url(#chart-clip-loss)"
             />
 
             {/* Smooth recon loss line */}
@@ -843,6 +858,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
                 strokeWidth="2.5"
                 strokeLinejoin="round"
                 opacity="0.9"
+                clipPath="url(#chart-clip-loss)"
               />
             )}
           </>

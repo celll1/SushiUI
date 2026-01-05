@@ -539,8 +539,27 @@ class BaseTrainer(ABC):
         )
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
-            self.grad_scaler = GradScaler()
+
+            # Use higher init_scale for FP16 to prevent gradient underflow
+            # Problem: Initial gradients in LoRA training are very small (1e-7 ~ 1e-8)
+            # FP16 smallest normal: ~6e-5, so gradients < 6e-5 underflow to 0
+            # Solution: Use higher init_scale for FP16 (2^20 = 1048576)
+            # - 1e-7 × 2^20 = 0.105 (representable in FP16)
+            # - 1e-8 × 2^20 = 0.01 (representable in FP16)
+            # BF16 has same exponent range as FP32, so default scale (2^16) is sufficient
+            if self.training_dtype == torch.float16:
+                init_scale = 2**20  # 1048576
+            else:
+                init_scale = 2**16  # 65536 (default)
+
+            self.grad_scaler = GradScaler(
+                init_scale=init_scale,
+                growth_factor=2.0,
+                backoff_factor=0.5,
+                growth_interval=2000
+            )
             print(f"[Trainer] GradScaler enabled for {training_dtype} training")
+            print(f"[Trainer]   Init scale: {init_scale} (2^{init_scale.bit_length()-1})")
             print(f"[Trainer]   Weight dtype: {weight_dtype}")
             print(f"[Trainer]   Training dtype: {training_dtype}")
             if hasattr(self, 'lora_dtype'):

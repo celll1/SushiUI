@@ -3336,10 +3336,15 @@ class DiffusionPipelineManager:
             # Create ancestral generator for stochastic samplers
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                ancestral_generator = None
+                # Generate random ancestral seed for reproducibility tracking
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+                print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
+                # Use specified ancestral seed
+                actual_ancestral_seed = ancestral_seed
                 ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
-                print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+                print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
             # Detect v-prediction and apply guidance_rescale if needed
             is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"

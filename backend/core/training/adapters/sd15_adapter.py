@@ -247,6 +247,8 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
         for lora_name, lora_layer in lora_layers.items():
             lora_state_dict[f"{lora_name}.lora_down.weight"] = lora_layer.lora_down.weight
             lora_state_dict[f"{lora_name}.lora_up.weight"] = lora_layer.lora_up.weight
+            # Add alpha for diffusers compatibility (required by _create_lora_config)
+            lora_state_dict[f"{lora_name}.alpha"] = torch.tensor(self.lora_alpha, dtype=torch.float32)
 
         # Add metadata
         metadata = {

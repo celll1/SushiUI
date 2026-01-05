@@ -75,7 +75,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
 
                     # Create LoRA layer
                     lora_layer = LoRALinearLayer(
-                        child_module, self.lora_rank, self.lora_alpha, lora_name
+                        child_module, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                     )
 
                     # Replace original Linear with LoRA layer

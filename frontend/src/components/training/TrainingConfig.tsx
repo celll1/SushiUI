@@ -116,6 +116,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
   const [loraAlpha, setLoraAlpha] = useState(16);
+  const [loraDtype, setLoraDtype] = useState<"fp32" | "fp16" | "bf16">("fp32");
 
   // Advanced
   const [saveEvery, setSaveEvery] = useState(100);
@@ -249,9 +250,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         setDatasetConfigs(params.dataset_configs);
       }
 
-      // LoRA rank & alpha
+      // LoRA rank & alpha & dtype
       if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
       if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
+      if (params.lora_dtype !== undefined) setLoraDtype(params.lora_dtype as "fp32" | "fp16" | "bf16");
 
       // Training parameters
       if (params.total_steps !== undefined && params.total_steps !== null) {
@@ -793,6 +795,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_use_radam: optimizerUseRadam,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
+      lora_dtype: trainingMethod === "lora" ? loraDtype : undefined,
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
@@ -1115,6 +1118,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">LoRA Weight Dtype</label>
+              <select
+                value={loraDtype}
+                onChange={(e) => setLoraDtype(e.target.value as "fp32" | "fp16" | "bf16")}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp32">FP32 (Full Precision)</option>
+                <option value="bf16">BF16 (Brain Float 16)</option>
+                <option value="fp16">FP16 (Half Precision)</option>
+              </select>
             </div>
           </div>
         )}

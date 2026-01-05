@@ -3825,6 +3825,7 @@ class TrainingRunCreateRequest(BaseModel):
     # LoRA specific
     lora_rank: Optional[int] = 16
     lora_alpha: Optional[int] = 16
+    lora_dtype: Optional[str] = "fp32"  # fp32, fp16, bf16 (LoRA weight dtype, independent of main model)
     network_type: Optional[str] = "lora"
 
     # Advanced
@@ -4025,6 +4026,7 @@ async def create_training_run(
                 optimizer_use_radam=request.optimizer_use_radam,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
+                lora_dtype=request.lora_dtype or "fp32",
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
@@ -4323,6 +4325,7 @@ async def get_training_run_params(
         "optimizer_use_radam": training_params.get("optimizer_use_radam", False),
         "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
         "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
+        "lora_dtype": network_config.get("lora_dtype", "fp32") if job == "lora" else None,
         "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
         "save_every_unit": save_config.get("save_every_unit", training_params.get("save_every_unit", "steps")),
         "resume_from_checkpoint": training_params.get("resume_from_checkpoint"),
@@ -4452,6 +4455,7 @@ async def update_training_run(
                 optimizer_use_radam=request.optimizer_use_radam,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
+                lora_dtype=request.lora_dtype or "fp32",
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,

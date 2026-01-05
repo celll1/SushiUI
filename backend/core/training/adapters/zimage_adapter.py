@@ -91,7 +91,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                         # Create LoRA layer
                         lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_{attr_name}"
                         lora_layer = LoRALinearLayer(
-                            original_linear, self.lora_rank, self.lora_alpha, lora_name
+                            original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                         )
 
                         # Replace in attention module
@@ -109,7 +109,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                     # Create LoRA layer
                     lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_to_out_0"
                     lora_layer = LoRALinearLayer(
-                        original_linear, self.lora_rank, self.lora_alpha, lora_name
+                        original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                     )
 
                     # Replace in ModuleList

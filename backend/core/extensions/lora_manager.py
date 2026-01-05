@@ -378,15 +378,18 @@ class LoRAManager:
                     # Use diffusers' conversion utility
                     from diffusers.loaders.lora_conversion_utils import _convert_non_diffusers_lora_to_diffusers
 
+                    print(f"[LoRAManager] Input state dict: {len(sd_state_dict)} keys")
+
                     # Convert SD format to diffusers format
                     # This handles lora_te1_* -> text_encoder.*, lora_unet_* -> unet.*, etc.
+                    # IMPORTANT: Pass a copy because conversion function modifies the input dict
                     converted_state_dict, network_alphas = _convert_non_diffusers_lora_to_diffusers(
-                        sd_state_dict,
+                        sd_state_dict.copy(),
                         unet_name="unet",
                         text_encoder_name="text_encoder"
                     )
 
-                    print(f"[LoRAManager] Conversion complete: {len(sd_state_dict)} keys -> {len(converted_state_dict)} keys")
+                    print(f"[LoRAManager] Conversion complete: {len(converted_state_dict)} keys, {len(network_alphas)} alphas")
 
                     # Save converted LoRA to temporary file
                     from safetensors.torch import save_file

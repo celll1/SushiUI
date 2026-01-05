@@ -1478,6 +1478,29 @@ class BaseTrainer(ABC):
     # Prompt Encoding
     # ============================================================
 
+    def _has_fp8_text_encoder(self) -> bool:
+        """
+        Check if text encoder has FP8 quantized weights.
+
+        Returns:
+            True if any text encoder has FP8 weights
+        """
+        # Check text_encoder
+        if self.text_encoder is not None:
+            for module in self.text_encoder.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        return True
+
+        # Check text_encoder_2 (SDXL)
+        if self.text_encoder_2 is not None:
+            for module in self.text_encoder_2.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        return True
+
+        return False
+
     def encode_prompt(self, prompt: str, requires_grad: bool = False):
         """
         Encode text prompt to embeddings with chunking support for long prompts (>75 tokens).
@@ -1525,21 +1548,43 @@ class BaseTrainer(ABC):
 
             context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
 
-            with context_manager:
-                # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
-                # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
-                encoder_output_1 = self.text_encoder(
-                    text_inputs_1.input_ids.to(self.device),
-                    output_hidden_states=True,
-                )
-                text_embeddings_1 = encoder_output_1.hidden_states[-2]
+            # Check if text encoders have FP8 weights (requires autocast)
+            has_fp8_weights = self._has_fp8_text_encoder()
 
-                encoder_output_2 = self.text_encoder_2(
-                    text_inputs_2.input_ids.to(self.device),
-                    output_hidden_states=True,
-                )
-                text_embeddings_2 = encoder_output_2.hidden_states[-2]
-                pooled_embeddings = encoder_output_2[0]
+            with context_manager:
+                # For FP8 quantized text encoders, use autocast for mixed precision
+                # This prevents "ufunc_add_CUDA not implemented for Float8_e4m3fn" errors
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                        # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                        # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
+                        encoder_output_1 = self.text_encoder(
+                            text_inputs_1.input_ids.to(self.device),
+                            output_hidden_states=True,
+                        )
+                        text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                        encoder_output_2 = self.text_encoder_2(
+                            text_inputs_2.input_ids.to(self.device),
+                            output_hidden_states=True,
+                        )
+                        text_embeddings_2 = encoder_output_2.hidden_states[-2]
+                        pooled_embeddings = encoder_output_2[0]
+                else:
+                    # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                    # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
+                    encoder_output_1 = self.text_encoder(
+                        text_inputs_1.input_ids.to(self.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                    encoder_output_2 = self.text_encoder_2(
+                        text_inputs_2.input_ids.to(self.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
+                    pooled_embeddings = encoder_output_2[0]
 
                 text_embeddings = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
 
@@ -1556,10 +1601,20 @@ class BaseTrainer(ABC):
 
             context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
 
+            # Check if text encoder has FP8 weights (requires autocast)
+            has_fp8_weights = self._has_fp8_text_encoder()
+
             with context_manager:
-                text_embeddings = self.text_encoder(
-                    text_inputs.input_ids.to(self.device),
-                )[0]
+                # For FP8 quantized text encoder, use autocast for mixed precision
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                        text_embeddings = self.text_encoder(
+                            text_inputs.input_ids.to(self.device),
+                        )[0]
+                else:
+                    text_embeddings = self.text_encoder(
+                        text_inputs.input_ids.to(self.device),
+                    )[0]
 
                 return text_embeddings
 
@@ -1716,13 +1771,26 @@ class BaseTrainer(ABC):
         attention_mask = text_inputs.attention_mask.to(self.device).bool()
 
         # Encode with penultimate layer
+        # Check if text encoder has FP8 weights (requires autocast)
+        has_fp8_weights = self._has_fp8_text_encoder()
+
         with torch.no_grad():
-            encoder_output = self.text_encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
-            prompt_embeds = encoder_output.hidden_states[-2]
+            # For FP8 quantized text encoder, use autocast for mixed precision
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                    encoder_output = self.text_encoder(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                    )
+                    prompt_embeds = encoder_output.hidden_states[-2]
+            else:
+                encoder_output = self.text_encoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
+                prompt_embeds = encoder_output.hidden_states[-2]
 
         # Extract and detach outputs
         result_embeds = prompt_embeds[0].detach()

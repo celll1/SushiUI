@@ -4863,7 +4863,7 @@ class BaseTrainer(ABC):
                         grad_count += 1
 
                         # Categorize by LoRA layer name
-                        if 'text_encoder' in lora_name or 'te_' in lora_name or 'clip_' in lora_name:
+                        if 'text_encoder' in lora_name or 'te1_' in lora_name or 'te2_' in lora_name or 'clip_' in lora_name:
                             text_encoder_grad_norm += param_norm ** 2
                         elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
                             unet_grad_norm += param_norm ** 2

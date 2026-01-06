@@ -44,6 +44,10 @@ class DiffusionPipelineManager:
         self.zimage_components: Optional[Dict[str, Any]] = None
         self.is_zimage_model: bool = False
 
+        # DEUS pipeline (component-based architecture)
+        self.deus_pipeline: Optional[Any] = None
+        self.is_deus_model: bool = False
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -641,6 +645,74 @@ class DiffusionPipelineManager:
             scheduler_config["stochastic_sampling"] = is_ancestral
 
             return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
+
+    def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from text using DEUS architecture
+
+        Args:
+            params: Generation parameters
+            progress_callback: Progress callback (step, total_steps)
+            step_callback: Step callback (not used for DEUS)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.deus_pipeline:
+            raise RuntimeError("DEUS pipeline not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting txt2img generation")
+
+        # Extract parameters
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        height = params.get("height", 1024)
+        width = params.get("width", 1024)
+        num_inference_steps = params.get("steps", 28)
+        guidance_scale = params.get("cfg_scale", 7.0)
+
+        # Seed handling
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        print(f"[DEUS] Generating {width}x{height} image")
+        print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+        print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+        # Create progress callback wrapper
+        def deus_progress_callback(step: int, total_steps: int):
+            if progress_callback:
+                # Legacy callback format: (step, timestep, latents)
+                # DEUS doesn't expose timestep/latents, so pass None
+                progress_callback(step, total_steps, None)
+
+        try:
+            # Call DEUS pipeline
+            images = self.deus_pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                progress_callback=deus_progress_callback
+            )
+
+            # DEUS pipeline returns list of PIL Images
+            if not images or len(images) == 0:
+                raise RuntimeError("DEUS pipeline returned no images")
+
+            image = images[0]
+
+            print(f"[DEUS] Generation complete!")
+            return image, seed
+
+        except Exception as e:
+            print(f"[DEUS] ERROR during generation: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
@@ -2611,6 +2683,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # DEUS handling
+        if self.is_deus_model:
+            return self._generate_txt2img_deus(params, progress_callback, step_callback)
+
         # Z-Image handling
         if self.is_zimage_model:
             return self._generate_txt2img_zimage(params, progress_callback, step_callback)

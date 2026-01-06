@@ -548,6 +548,15 @@ class UpBlock(nn.Module):
 
         # Concatenate with skip connection (if provided)
         if skip is not None:
+            # Interpolate skip to match x's spatial size (if they don't match)
+            # This handles cases where downsampling/upsampling has rounding errors
+            if skip.shape[2:] != x.shape[2:]:
+                skip = torch.nn.functional.interpolate(
+                    skip,
+                    size=x.shape[2:],  # Match (H, W) of x
+                    mode='nearest'
+                )
+
             x = torch.cat([x, skip], dim=1)
 
         # Resnet blocks
@@ -692,6 +701,9 @@ class DeusUNet(nn.Module):
         Returns:
             Predicted noise [batch, 16, height, width]
         """
+        # Save input spatial size for final interpolation
+        input_size = sample.shape[2:]  # (H, W)
+
         # Time embedding
         if len(timestep.shape) == 0:
             timestep = timestep.unsqueeze(0)
@@ -729,11 +741,20 @@ class DeusUNet(nn.Module):
 
         # Up blocks (with sparse skip connections)
         # Use reversed() iterator to avoid creating new list
-        for up_block, skip in zip(self.up_blocks, reversed(skip_connections)):
+        for i, (up_block, skip) in enumerate(zip(self.up_blocks, reversed(skip_connections))):
             x = up_block(x, skip, t_emb, encoder_hidden_states)
 
         # Output projection
         x = self.conv_out(x)
+
+        # Ensure output matches input spatial size (fix upsampling rounding errors)
+        # This follows the Diffusers approach of enforcing exact size match
+        if x.shape[2:] != input_size:
+            x = torch.nn.functional.interpolate(
+                x,
+                size=input_size,
+                mode='nearest'
+            )
 
         return x
 

@@ -646,7 +646,7 @@ class DiffusionPipelineManager:
 
             return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
 
-    def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+    def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text using DEUS architecture with VRAM optimization
 
         Args:
@@ -655,7 +655,7 @@ class DiffusionPipelineManager:
             step_callback: Step callback (not used for DEUS)
 
         Returns:
-            tuple: (image, actual_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed)
         """
         if not self.deus_pipeline:
             raise RuntimeError("DEUS pipeline not loaded. Please load a DEUS model first.")
@@ -720,6 +720,11 @@ class DiffusionPipelineManager:
             encoder_hidden_states = self._deus_encode_prompt(
                 encoder, prompt, negative_prompt, guidance_scale, clip_skip
             )
+            
+            # Log text embeddings shape for verification
+            print(f"[DEUS] Text embeddings shape: {encoder_hidden_states.shape}")
+            print(f"[DEUS] Text embeddings dtype: {encoder_hidden_states.dtype}")
+            print(f"[DEUS] Text embeddings device: {encoder_hidden_states.device}")
 
             # Offload text encoder to CPU
             move_zimage_text_encoder_to_cpu(text_encoder)
@@ -745,10 +750,12 @@ class DiffusionPipelineManager:
             })
 
             # Run denoising loop
+            # Note: step_callback is for LoRA step ranges, not preview
+            # The progress_callback already handles latent preview
             latents = self._deus_denoising_loop(
                 unet, encoder_hidden_states,
                 height, width, num_inference_steps, guidance_scale,
-                seed, progress_callback
+                seed, progress_callback, step_callback
             )
 
             # Offload U-Net to CPU
@@ -791,7 +798,10 @@ class DiffusionPipelineManager:
             })
 
             print("[DEUS] Generation complete!")
-            return images[0], seed
+            # Return same format as other methods: (image, seed, ancestral_seed)
+            # DEUS doesn't use ancestral seed, so return -1
+            actual_ancestral_seed = params.get("ancestral_seed", -1)
+            return images[0], seed, actual_ancestral_seed
 
         except Exception as e:
             print(f"[DEUS] ERROR during generation: {e}")
@@ -2105,6 +2115,7 @@ class DiffusionPipelineManager:
             # Encode both prompts together (ensures same sequence length)
             all_prompts = [negative_prompt, prompt]
             all_text_embeddings = encoder.text_encoder.encode(all_prompts, clip_skip=clip_skip)
+            print(f"[DEUS] Raw text embeddings shape (before CFG): {all_text_embeddings.shape}")
 
             # Split into negative and positive
             negative_text_embeddings = all_text_embeddings[0:1]
@@ -2114,6 +2125,7 @@ class DiffusionPipelineManager:
             null_image_embedding = encoder.null_image_embedding  # [1, 1, 1152]
             negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
             encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
+            print(f"[DEUS] After adding null image embedding - negative: {negative_encoder_hidden_states.shape}, positive: {encoder_hidden_states.shape}")
 
             # Concatenate for CFG
             encoder_hidden_states = torch.cat([negative_encoder_hidden_states, encoder_hidden_states])
@@ -2125,10 +2137,11 @@ class DiffusionPipelineManager:
                 use_null_image=True,
                 clip_skip=clip_skip
             )
+            print(f"[DEUS] Text embeddings shape (no CFG): {encoder_hidden_states.shape}")
 
         return encoder_hidden_states
 
-    def _deus_denoising_loop(self, unet, encoder_hidden_states, height, width, num_inference_steps, guidance_scale, seed, progress_callback):
+    def _deus_denoising_loop(self, unet, encoder_hidden_states, height, width, num_inference_steps, guidance_scale, seed, progress_callback, step_callback=None):
         """
         Run DEUS denoising loop
 
@@ -2140,6 +2153,7 @@ class DiffusionPipelineManager:
             guidance_scale: CFG scale
             seed: Random seed
             progress_callback: Progress callback (step, total_steps, latents)
+            step_callback: Step callback for latent preview (step, latents)
 
         Returns:
             latents: Denoised latents [1, 16, H//8, W//8]
@@ -2204,9 +2218,14 @@ class DiffusionPipelineManager:
 
             latents.sub_(noise_pred * dt)  # In-place operation
 
-            # Progress callback
+            # Progress callback with latent preview
             if progress_callback:
-                progress_callback(i + 1, num_inference_steps, None)
+                # Pass latents for preview generation
+                progress_callback(i, num_inference_steps, latents)
+
+            # Step callback for LoRA step ranges (not preview)
+            if step_callback:
+                step_callback(i, num_inference_steps)
 
         print(f"[DEUS] Denoising complete")
         return latents
@@ -2236,7 +2255,8 @@ class DiffusionPipelineManager:
         images = torch.clamp(images, 0, 1)
 
         # To numpy: [batch, 3, H, W] -> [batch, H, W, 3]
-        images = images.cpu().permute(0, 2, 3, 1).float().numpy()
+        # Detach from computation graph before converting to numpy
+        images = images.cpu().detach().permute(0, 2, 3, 1).float().numpy()
 
         # To uint8
         images = (images * 255).round().astype(np.uint8)
@@ -2940,7 +2960,7 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
-    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text
 
         Args:
@@ -2949,7 +2969,7 @@ class DiffusionPipelineManager:
             step_callback: New style callback for step-based control (pipe, step, timestep, callback_kwargs)
 
         Returns:
-            tuple: (image, actual_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed)
         """
         # DEUS handling
         if self.is_deus_model:

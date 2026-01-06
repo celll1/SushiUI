@@ -156,7 +156,18 @@ class FluxVAEWrapper(nn.Module):
         if return_dict:
             return decoded
 
-        return decoded.sample
+        # Handle different return types from vae.decode()
+        # When return_dict=False, vae.decode() may return:
+        # - A tuple: (sample,) -> use decoded[0]
+        # - An object with .sample attribute -> use decoded.sample
+        # - A tensor directly -> use decoded
+        if isinstance(decoded, tuple):
+            return decoded[0]
+        elif hasattr(decoded, 'sample'):
+            return decoded.sample
+        else:
+            # Direct tensor return
+            return decoded
 
     def forward(
         self,

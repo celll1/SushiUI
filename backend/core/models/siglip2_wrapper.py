@@ -8,8 +8,9 @@ SigLIP-2 has no token limit and supports variable-length inputs.
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoProcessor, AutoTokenizer
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Any
 from PIL import Image
+import time
 
 
 class SigLIP2TextEncoder(nn.Module):
@@ -28,7 +29,8 @@ class SigLIP2TextEncoder(nn.Module):
         model_name: str = "google/siglip2-so400m-patch16-naflex",
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
-        load_from_checkpoint: bool = False
+        load_from_checkpoint: bool = False,
+        shared_config: Optional[Any] = None
     ):
         super().__init__()
 
@@ -40,28 +42,41 @@ class SigLIP2TextEncoder(nn.Module):
             # Create empty model structure (weights will be loaded via load_state_dict)
             print(f"[SigLIP2] Creating text encoder structure (loading from checkpoint)...")
 
-            # Load config only (no weights)
+            # Load config only (no weights) - reuse shared config if provided
             from transformers import AutoConfig
-            config = AutoConfig.from_pretrained(
-                model_name,
-                trust_remote_code=True
-            )
+            if shared_config is not None:
+                print(f"[SigLIP2] Reusing shared config (skipping download)...")
+                config = shared_config
+            else:
+                start_time = time.time()
+                config = AutoConfig.from_pretrained(
+                    model_name,
+                    trust_remote_code=True
+                )
+                config_time = time.time() - start_time
+                print(f"[SigLIP2] Config loaded in {config_time:.2f}s")
 
             # Create model with config but no weights
+            start_time = time.time()
             self.model = AutoModel.from_config(
                 config,
                 trust_remote_code=True,
                 torch_dtype=dtype
             )
+            model_time = time.time() - start_time
+            print(f"[SigLIP2] Model structure created in {model_time:.2f}s")
 
             # Get text model component
             self.text_model = self.model.text_model
 
             # Load tokenizer
+            start_time = time.time()
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
                 trust_remote_code=True
             )
+            tokenizer_time = time.time() - start_time
+            print(f"[SigLIP2] Tokenizer loaded in {tokenizer_time:.2f}s")
 
             # Move to device
             self.text_model = self.text_model.to(device)
@@ -230,7 +245,8 @@ class SigLIP2ImageEncoder(nn.Module):
         model_name: str = "google/siglip2-so400m-patch16-naflex",
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
-        load_from_checkpoint: bool = False
+        load_from_checkpoint: bool = False,
+        shared_config: Optional[Any] = None
     ):
         super().__init__()
 
@@ -242,28 +258,41 @@ class SigLIP2ImageEncoder(nn.Module):
             # Create empty model structure (weights will be loaded via load_state_dict)
             print(f"[SigLIP2] Creating image encoder structure (loading from checkpoint)...")
 
-            # Load config only (no weights)
+            # Load config only (no weights) - reuse shared config if provided
             from transformers import AutoConfig
-            config = AutoConfig.from_pretrained(
-                model_name,
-                trust_remote_code=True
-            )
+            if shared_config is not None:
+                print(f"[SigLIP2] Reusing shared config (skipping download)...")
+                config = shared_config
+            else:
+                start_time = time.time()
+                config = AutoConfig.from_pretrained(
+                    model_name,
+                    trust_remote_code=True
+                )
+                config_time = time.time() - start_time
+                print(f"[SigLIP2] Config loaded in {config_time:.2f}s")
 
             # Create model with config but no weights
+            start_time = time.time()
             self.model = AutoModel.from_config(
                 config,
                 trust_remote_code=True,
                 torch_dtype=dtype
             )
+            model_time = time.time() - start_time
+            print(f"[SigLIP2] Model structure created in {model_time:.2f}s")
 
             # Get vision model component
             self.vision_model = self.model.vision_model
 
             # Load processor
+            start_time = time.time()
             self.processor = AutoProcessor.from_pretrained(
                 model_name,
                 trust_remote_code=True
             )
+            processor_time = time.time() - start_time
+            print(f"[SigLIP2] Processor loaded in {processor_time:.2f}s")
 
             # Move to device
             self.vision_model = self.vision_model.to(device)
@@ -381,12 +410,21 @@ class SigLIP2MultiModalEncoder(nn.Module):
         self,
         model_name: str = "google/siglip2-so400m-patch16-naflex",
         dtype: torch.dtype = torch.float16,
-        device: str = "cuda"
+        device: str = "cuda",
+        text_encoder: Optional['SigLIP2TextEncoder'] = None,
+        image_encoder: Optional['SigLIP2ImageEncoder'] = None
     ):
         super().__init__()
 
-        self.text_encoder = SigLIP2TextEncoder(model_name, dtype, device)
-        self.image_encoder = SigLIP2ImageEncoder(model_name, dtype, device)
+        # Use provided encoders if available (from checkpoint), otherwise create new ones
+        if text_encoder is not None and image_encoder is not None:
+            print(f"[SigLIP2] Using provided text/image encoders (from checkpoint)")
+            self.text_encoder = text_encoder
+            self.image_encoder = image_encoder
+        else:
+            print(f"[SigLIP2] Creating new text/image encoders from HuggingFace")
+            self.text_encoder = SigLIP2TextEncoder(model_name, dtype, device)
+            self.image_encoder = SigLIP2ImageEncoder(model_name, dtype, device)
 
         self.hidden_size = self.text_encoder.hidden_size
 

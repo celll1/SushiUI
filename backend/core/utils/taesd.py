@@ -13,16 +13,32 @@ class TAESDManager:
         self.taesd = None
         self.taesd_xl = None
         self.taef1 = None  # For Z-Image (FLUX-based)
+        self.taef1_deus = None  # For DEUS architecture (may use different model in future)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False):
+    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False):
         """Load appropriate TAESD model
 
         Args:
             is_sdxl: True for SDXL models
             is_zimage: True for Z-Image models (uses TAEF1)
+            is_deus: True for DEUS architecture models (currently uses TAEF1)
         """
-        if is_zimage:
+        if is_deus:
+            # DEUS uses FLUX VAE, so TAEF1 is appropriate for now
+            # In future, we may want a separate tiny model for DEUS
+            if self.taef1_deus is None:
+                print("Loading TAEF1 for DEUS preview...")
+                try:
+                    self.taef1_deus = AutoencoderTiny.from_pretrained(
+                        "madebyollin/taef1",
+                        torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
+                    ).to(self.device)
+                    print("TAEF1 (DEUS) loaded successfully")
+                except Exception as e:
+                    print(f"Failed to load TAEF1 for DEUS: {e}")
+            return self.taef1_deus
+        elif is_zimage:
             if self.taef1 is None:
                 print("Loading TAEF1 for Z-Image preview...")
                 try:
@@ -59,16 +75,17 @@ class TAESDManager:
                     print(f"Failed to load TAESD: {e}")
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
             latent: Latent tensor to decode
             is_sdxl: True for SDXL models
             is_zimage: True for Z-Image models
+            is_deus: True for DEUS architecture models
         """
         try:
-            decoder = self.load_taesd(is_sdxl, is_zimage)
+            decoder = self.load_taesd(is_sdxl, is_zimage, is_deus)
             if decoder is None:
                 return None
 
@@ -76,8 +93,8 @@ class TAESDManager:
             with torch.no_grad():
                 # Move latent to correct device and dtype
                 # TAEF1 uses BF16, TAESD/TAESD-XL use FP16 or FP32
-                if is_zimage:
-                    # TAEF1 expects BF16
+                if is_zimage or is_deus:
+                    # TAEF1 expects BF16 (both Z-Image and DEUS use FLUX VAE)
                     latent = latent.to(device=self.device, dtype=torch.bfloat16)
                 else:
                     # TAESD/TAESD-XL expect FP16 on GPU, FP32 on CPU
@@ -85,8 +102,8 @@ class TAESDManager:
                     latent = latent.to(device=self.device, dtype=target_dtype)
 
                 # TAESD expects latents to be scaled
-                if is_zimage:
-                    # Z-Image (FLUX-based) uses scaling factor 0.3611
+                if is_zimage or is_deus:
+                    # Z-Image and DEUS (FLUX-based) use scaling factor 0.3611
                     # Same as FLUX.1: https://huggingface.co/black-forest-labs/FLUX.1-dev
                     scaled_latent = latent / 0.3611
                 elif is_sdxl:
@@ -101,8 +118,8 @@ class TAESDManager:
 
                 # Convert to PIL Image
                 image = (image / 2 + 0.5).clamp(0, 1)
-                # NumPy doesn't support BFloat16, convert to FP32 first for Z-Image
-                if is_zimage:
+                # NumPy doesn't support BFloat16, convert to FP32 first for Z-Image/DEUS
+                if is_zimage or is_deus:
                     image = image.cpu().to(torch.float32).permute(0, 2, 3, 1).numpy()
                 else:
                     image = image.cpu().permute(0, 2, 3, 1).numpy()

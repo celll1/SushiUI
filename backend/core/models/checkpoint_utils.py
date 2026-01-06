@@ -13,6 +13,7 @@ import torch
 from safetensors.torch import save_file, load_file
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
+import time
 
 from .siglip2_wrapper import SigLIP2TextEncoder, SigLIP2ImageEncoder
 from .unet_deus import DeusUNet, UNetConfig
@@ -187,14 +188,34 @@ def load_unified_checkpoint(
     else:
         print(f"[Checkpoint] WARNING: No U-Net weights found in checkpoint!")
 
+    # Load shared config once (text encoder and image encoder use the same model)
+    shared_config = None
+    if (load_text_encoder and len(text_encoder_state) > 0) or (load_image_encoder and len(image_encoder_state) > 0):
+        from transformers import AutoConfig
+        model_name = "google/siglip2-so400m-patch16-naflex"
+        print(f"[Checkpoint] Loading shared config (for text/image encoders)...")
+        start_time = time.time()
+        shared_config = AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code=True
+        )
+        config_time = time.time() - start_time
+        print(f"[Checkpoint] Shared config loaded in {config_time:.2f}s")
+
     # Create text encoder and load weights
     text_encoder = None
     if load_text_encoder and len(text_encoder_state) > 0:
         print(f"[Checkpoint] Creating text encoder (from checkpoint)...")
-        text_encoder = SigLIP2TextEncoder(dtype=dtype, device=device, load_from_checkpoint=True)
+        start_time = time.time()
+        text_encoder = SigLIP2TextEncoder(dtype=dtype, device=device, load_from_checkpoint=True, shared_config=shared_config)
+        encoder_create_time = time.time() - start_time
+        print(f"[Checkpoint] Text encoder structure created in {encoder_create_time:.2f}s")
+        
         print(f"[Checkpoint] Loading text encoder weights...")
+        start_time = time.time()
         text_encoder.text_model.load_state_dict(text_encoder_state)
-        print(f"[Checkpoint] Text encoder weights loaded from checkpoint!")
+        weights_load_time = time.time() - start_time
+        print(f"[Checkpoint] Text encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
     elif load_text_encoder:
         print(f"[Checkpoint] WARNING: No text encoder weights found in checkpoint!")
 
@@ -202,10 +223,16 @@ def load_unified_checkpoint(
     image_encoder = None
     if load_image_encoder and len(image_encoder_state) > 0:
         print(f"[Checkpoint] Creating image encoder (from checkpoint)...")
-        image_encoder = SigLIP2ImageEncoder(dtype=dtype, device=device, load_from_checkpoint=True)
+        start_time = time.time()
+        image_encoder = SigLIP2ImageEncoder(dtype=dtype, device=device, load_from_checkpoint=True, shared_config=shared_config)
+        encoder_create_time = time.time() - start_time
+        print(f"[Checkpoint] Image encoder structure created in {encoder_create_time:.2f}s")
+        
         print(f"[Checkpoint] Loading image encoder weights...")
+        start_time = time.time()
         image_encoder.vision_model.load_state_dict(image_encoder_state)
-        print(f"[Checkpoint] Image encoder weights loaded from checkpoint!")
+        weights_load_time = time.time() - start_time
+        print(f"[Checkpoint] Image encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
     elif load_image_encoder:
         print(f"[Checkpoint] WARNING: No image encoder weights found in checkpoint!")
 

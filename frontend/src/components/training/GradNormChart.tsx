@@ -43,9 +43,6 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const [error, setError] = useState<string | null>(null);
   const [lastStep, setLastStep] = useState<number>(-1);
 
-  // Use ref to track lastStep without causing useCallback dependency issues
-  const lastStepRef = useRef<number>(-1);
-
   // UI controls
   const [smoothingFactor, setSmoothingFactor] = useState(0.9);
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
@@ -89,79 +86,26 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     return calculateSmoothing(gradNormUNetData, smoothingFactor);
   }, [gradNormUNetData, smoothingFactor]);
 
-  const fetchMetrics = useCallback(async (isIncremental: boolean = false) => {
+  const fetchMetrics = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Use lastStep ref to avoid dependency issues
-      const sinceStep = isIncremental && lastStepRef.current >= 0 ? lastStepRef.current : undefined;
-      const data = await getTrainingMetrics(runId, sinceStep);
+      // Fetch all metrics with uniform sampling (backend handles sampling)
+      const data = await getTrainingMetrics(runId);
 
-      console.log(`[GradNormChart] Fetched metrics: ${data.grad_norm.length} grad_norm points, incremental=${isIncremental}, sinceStep=${sinceStep}`);
+      console.log(`[GradNormChart] Fetched metrics: ${data.grad_norm.length} grad_norm points (uniform sampling)`);
 
-      // Merge new data with existing data and limit total points to prevent memory accumulation
-      const MAX_POINTS = 1000; // Limit frontend memory usage for long-duration training
+      // Replace data entirely (no merging needed - backend does uniform sampling)
+      setGradNormData(data.grad_norm);
+      setGradNormTEData(data.grad_norm_text_encoder || []);
+      setGradNormUNetData(data.grad_norm_unet || []);
 
-      setGradNormData((prevData) => {
-        let newData = sinceStep !== undefined ? [...prevData, ...data.grad_norm] : data.grad_norm;
-
-        // Update lastStep
-        if (newData.length > 0) {
-          const maxStep = Math.max(...newData.map((d) => d.step));
-          lastStepRef.current = maxStep;
-          setLastStep(maxStep);
-        }
-
-        // Decimate if too many points (keep recent data dense, old data sparse)
-        if (newData.length > MAX_POINTS) {
-          const keepRecent = Math.floor(MAX_POINTS * 0.3); // Keep last 30% at full resolution
-          const decimateOld = newData.length - keepRecent;
-          const decimationFactor = Math.ceil(decimateOld / (MAX_POINTS - keepRecent));
-
-          const decimatedOld = newData.slice(0, decimateOld).filter((_, i) => i % decimationFactor === 0);
-          const recentData = newData.slice(decimateOld);
-          newData = [...decimatedOld, ...recentData];
-        }
-
-        return newData;
-      });
-
-      // Update text encoder grad norm data
-      setGradNormTEData((prevData) => {
-        let newData = sinceStep !== undefined ? [...prevData, ...(data.grad_norm_text_encoder || [])] : (data.grad_norm_text_encoder || []);
-
-        // Decimate if too many points
-        if (newData.length > MAX_POINTS) {
-          const keepRecent = Math.floor(MAX_POINTS * 0.3);
-          const decimateOld = newData.length - keepRecent;
-          const decimationFactor = Math.ceil(decimateOld / (MAX_POINTS - keepRecent));
-
-          const decimatedOld = newData.slice(0, decimateOld).filter((_, i) => i % decimationFactor === 0);
-          const recentData = newData.slice(decimateOld);
-          newData = [...decimatedOld, ...recentData];
-        }
-
-        return newData;
-      });
-
-      // Update UNet grad norm data
-      setGradNormUNetData((prevData) => {
-        let newData = sinceStep !== undefined ? [...prevData, ...(data.grad_norm_unet || [])] : (data.grad_norm_unet || []);
-
-        // Decimate if too many points
-        if (newData.length > MAX_POINTS) {
-          const keepRecent = Math.floor(MAX_POINTS * 0.3);
-          const decimateOld = newData.length - keepRecent;
-          const decimationFactor = Math.ceil(decimateOld / (MAX_POINTS - keepRecent));
-
-          const decimatedOld = newData.slice(0, decimateOld).filter((_, i) => i % decimationFactor === 0);
-          const recentData = newData.slice(decimateOld);
-          newData = [...decimatedOld, ...recentData];
-        }
-
-        return newData;
-      });
+      // Update lastStep for display
+      if (data.grad_norm.length > 0) {
+        const maxStep = Math.max(...data.grad_norm.map((d) => d.step));
+        setLastStep(maxStep);
+      }
     } catch (err: any) {
       console.error("[GradNormChart] Error fetching metrics:", err);
       setError(err.message || "Failed to load metrics");
@@ -173,7 +117,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   // Initial fetch
   useEffect(() => {
     console.log(`[GradNormChart] Initial fetch for runId=${runId}`);
-    fetchMetrics(false);
+    fetchMetrics();
   }, [runId, fetchMetrics]);
 
   // Auto-refresh based on polling interval
@@ -182,7 +126,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
       console.log(`[GradNormChart] Starting auto-refresh (every ${pollingInterval}s)`);
       const interval = setInterval(() => {
         console.log(`[GradNormChart] Auto-refresh triggered (interval=${pollingInterval}s)`);
-        fetchMetrics(true);
+        fetchMetrics();
       }, pollingInterval * 1000);
       return () => {
         console.log(`[GradNormChart] Stopping auto-refresh`);
@@ -522,7 +466,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
           <button
             onClick={() => {
               console.log("[GradNormChart] Manual refresh button clicked");
-              fetchMetrics(true);
+              fetchMetrics();
             }}
             disabled={loading}
             className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

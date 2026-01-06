@@ -76,6 +76,7 @@ class DeusPipeline(nn.Module):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: int = 1,
         seed: Optional[int] = None,
+        clip_skip: int = 0,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> List[Image.Image]:
         """
@@ -91,6 +92,7 @@ class DeusPipeline(nn.Module):
             negative_prompt: Negative prompt(s)
             num_images_per_prompt: Number of images to generate per prompt
             seed: Random seed
+            clip_skip: Number of layers to skip from the end (0=last layer, 1=penultimate)
             progress_callback: Callback for progress updates
 
         Returns:
@@ -108,11 +110,12 @@ class DeusPipeline(nn.Module):
         batch_size = len(prompt) * num_images_per_prompt
 
         # Encode prompt (text + optional images)
-        print(f"[Pipeline] Encoding prompt...")
+        print(f"[Pipeline] Encoding prompt (clip_skip={clip_skip})...")
         encoder_hidden_states = self.encoder.encode(
             prompts=prompt,
             images=images,
-            use_null_image=True  # Use null image for T2I mode
+            use_null_image=True,  # Use null image for T2I mode
+            clip_skip=clip_skip
         )
 
         # Repeat for num_images_per_prompt
@@ -129,7 +132,8 @@ class DeusPipeline(nn.Module):
             negative_encoder_hidden_states = self.encoder.encode(
                 prompts=negative_prompt,
                 images=None,  # No images for negative prompt
-                use_null_image=True
+                use_null_image=True,
+                clip_skip=clip_skip
             )
 
             if num_images_per_prompt > 1:

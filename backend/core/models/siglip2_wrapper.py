@@ -147,21 +147,42 @@ class SigLIP2TextEncoder(nn.Module):
         # Encode
         with torch.no_grad():
             if clip_skip > 0:
-                # Request all hidden states
-                outputs = self.text_model(**inputs, output_hidden_states=True)
-                # Select layer: -1 is last, -2 is penultimate, etc.
-                # clip_skip=1 means use penultimate layer (hidden_states[-2])
-                layer_index = -(clip_skip + 1)
-                hidden_state = outputs.hidden_states[layer_index]
+                # Manual layer iteration (output_hidden_states not supported in SigLIP2)
+                # Get embeddings
+                hidden_state = self.text_model.embeddings(inputs['input_ids'])
+
+                # Prepare attention mask
+                attention_mask = inputs.get('attention_mask')
+                if attention_mask is not None:
+                    from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask
+                    attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_state.dtype)
+
+                # Pass through layers
+                num_layers = len(self.text_model.encoder.layers)  # Total: 27 layers (0-26)
+                # clip_skip=0: use all 27 layers (0-26)
+                # clip_skip=1: use 26 layers (0-25, penultimate)
+                layers_to_use = num_layers - clip_skip
+
+                for i, layer in enumerate(self.text_model.encoder.layers):
+                    if i >= layers_to_use:
+                        break
+                    hidden_state = layer(hidden_state, attention_mask)
+
+                # Apply final layer norm
+                hidden_state = self.text_model.final_layer_norm(hidden_state)
             else:
                 # Use last layer (default)
                 outputs = self.text_model(**inputs)
                 hidden_state = outputs.last_hidden_state
 
         if return_pooled:
-            # Return pooled output (CLS token, first token)
-            # Note: pooler_output is always from last layer
-            return outputs.pooler_output  # [batch_size, hidden_size]
+            # Return pooled output (last token)
+            # SigLIP2 uses the last token's hidden state
+            pooled_output = hidden_state[:, -1, :]  # [batch_size, hidden_size]
+            # Apply projection head (only when using full last layer, not for clip_skip)
+            if clip_skip == 0:
+                pooled_output = self.text_model.head(pooled_output)
+            return pooled_output
         else:
             # Return sequence embeddings
             return hidden_state  # [batch_size, seq_len, hidden_size]

@@ -53,11 +53,12 @@ class DeusPipeline(nn.Module):
         self.dtype = dtype
         self.device_name = device
 
-        # Move to device
-        self.unet = self.unet.to(device)
-        self.vae.to(device)
+        # Keep components on CPU by default (pipeline.py will manage device placement)
+        self.unet = self.unet.to("cpu")
+        self.vae.to("cpu")
+        # encoder already on CPU (handled by SigLIP2MultiModalEncoder)
 
-        print(f"[Pipeline] DEUS pipeline initialized:")
+        print(f"[Pipeline] DEUS pipeline initialized (components on CPU):")
         print(f"  Device: {device}")
         print(f"  Dtype: {dtype}")
         print(f"  U-Net variant: {unet.config.variant}")
@@ -194,6 +195,14 @@ class DeusPipeline(nn.Module):
 
         # Denoising loop
         print(f"[Pipeline] Denoising ({num_inference_steps} steps)...")
+
+        # Debug: Initial VRAM
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            print(f"[VRAM] Before denoising: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
         for i, t in enumerate(tqdm(timesteps, desc="Denoising")):
             # Expand latents for CFG
             if guidance_scale > 1.0:
@@ -226,6 +235,13 @@ class DeusPipeline(nn.Module):
                 dt = timesteps[i]
 
             latents = latents - noise_pred * dt
+
+            # Debug: VRAM per step
+            if torch.cuda.is_available() and i % 5 == 0:
+                torch.cuda.synchronize()
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                reserved = torch.cuda.memory_reserved() / 1024**3
+                print(f"[VRAM] Step {i}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
             # Progress callback
             if progress_callback is not None:

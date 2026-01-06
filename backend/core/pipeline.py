@@ -647,11 +647,11 @@ class DiffusionPipelineManager:
             return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
 
     def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
-        """Generate image from text using DEUS architecture
+        """Generate image from text using DEUS architecture with VRAM optimization
 
         Args:
             params: Generation parameters
-            progress_callback: Progress callback (step, total_steps)
+            progress_callback: Progress callback (step, total_steps, latents)
             step_callback: Step callback (not used for DEUS)
 
         Returns:
@@ -660,7 +660,7 @@ class DiffusionPipelineManager:
         if not self.deus_pipeline:
             raise RuntimeError("DEUS pipeline not loaded. Please load a DEUS model first.")
 
-        print("[DEUS] Starting txt2img generation")
+        print("[DEUS] Starting txt2img generation with VRAM optimization")
 
         # Extract parameters
         prompt = params.get("prompt", "")
@@ -669,49 +669,148 @@ class DiffusionPipelineManager:
         width = params.get("width", 1024)
         num_inference_steps = params.get("steps", 28)
         guidance_scale = params.get("cfg_scale", 7.0)
+        clip_skip = 1  # SigLIP-2 CLIP skip (default: 1 = penultimate layer)
 
         # Seed handling
         seed = params.get("seed", -1)
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
 
+        # Quantization parameters
+        unet_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+
+        # Get DEUS components
+        encoder = self.deus_pipeline.encoder
+        unet = self.deus_pipeline.unet
+        vae = self.deus_pipeline.vae
+
         print(f"[DEUS] Generating {width}x{height} image")
         print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
-        print(f"[DEUS] Prompt: {prompt[:100]}...")
-
-        # Create progress callback wrapper
-        def deus_progress_callback(step: int, total_steps: int):
-            if progress_callback:
-                # Legacy callback format: (step, timestep, latents)
-                # DEUS doesn't expose timestep/latents, so pass None
-                progress_callback(step, total_steps, None)
+        print(f"[DEUS] Clip skip: {clip_skip}")
 
         try:
-            # Call DEUS pipeline
-            images = self.deus_pipeline(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                progress_callback=deus_progress_callback
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
             )
 
-            # DEUS pipeline returns list of PIL Images
-            if not images or len(images) == 0:
-                raise RuntimeError("DEUS pipeline returned no images")
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[DEUS] Stage 1: Text Encoding")
 
-            image = images[0]
+            # Move SigLIP-2 text encoder to GPU
+            text_encoder = encoder.text_encoder.text_model
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
-            print(f"[DEUS] Generation complete!")
-            return image, seed
+            log_device_status("Ready for DEUS text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Encode prompts
+            encoder_hidden_states = self._deus_encode_prompt(
+                encoder, prompt, negative_prompt, guidance_scale, clip_skip
+            )
+
+            # Offload text encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: Denoising Loop
+            # ============================================================
+            print("[DEUS] Stage 2: Denoising Loop")
+
+            # Move DEUS U-Net to GPU
+            unet = move_zimage_transformer_to_gpu(unet, unet_quantization)
+
+            log_device_status("Ready for DEUS denoising loop", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Run denoising loop
+            latents = self._deus_denoising_loop(
+                unet, encoder_hidden_states,
+                height, width, num_inference_steps, guidance_scale,
+                seed, progress_callback
+            )
+
+            # Offload U-Net to CPU
+            move_zimage_transformer_to_cpu(unet)
+
+            log_device_status("Denoising complete, U-Net offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 3: VAE Decode
+            # ============================================================
+            print("[DEUS] Stage 3: VAE Decode")
+
+            # Move FLUX VAE to GPU
+            move_zimage_vae_to_gpu(vae)
+
+            log_device_status("Ready for DEUS VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Decode latents
+            images = self._deus_decode_latents(vae, latents)
+
+            # Offload VAE to CPU
+            move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors
+            del encoder_hidden_states, latents
+            torch.cuda.empty_cache()
+
+            log_device_status("All components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            print("[DEUS] Generation complete!")
+            return images[0], seed
 
         except Exception as e:
             print(f"[DEUS] ERROR during generation: {e}")
             import traceback
             traceback.print_exc()
+
+            # Emergency cleanup: offload all components to CPU
+            try:
+                from core.vram_optimization import (
+                    move_zimage_text_encoder_to_cpu,
+                    move_zimage_transformer_to_cpu,
+                    move_zimage_vae_to_cpu
+                )
+                move_zimage_text_encoder_to_cpu(encoder.text_encoder.text_model)
+                move_zimage_transformer_to_cpu(unet)
+                move_zimage_vae_to_cpu(vae)
+            except:
+                pass
+
             raise
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
@@ -1979,6 +2078,166 @@ class DiffusionPipelineManager:
         print(f"[Z-Image] VAE decode complete: {len(images)} images generated")
 
         return images
+
+    # ============================================================
+    # DEUS Helper Methods
+    # ============================================================
+
+    def _deus_encode_prompt(self, encoder, prompt, negative_prompt, guidance_scale, clip_skip):
+        """
+        Encode prompt using DEUS SigLIP-2 encoder
+
+        Args:
+            encoder: SigLIP2MultiModalEncoder instance
+            prompt: Text prompt (string)
+            negative_prompt: Negative prompt (string or empty)
+            guidance_scale: CFG scale
+            clip_skip: Number of layers to skip (1=penultimate)
+
+        Returns:
+            encoder_hidden_states: Combined embeddings for CFG [2, seq_len, 1152] or [1, seq_len, 1152]
+        """
+        # CFG enabled when guidance_scale != 1.0
+        if abs(guidance_scale - 1.0) > 1e-5:
+            if not negative_prompt:
+                negative_prompt = ""
+
+            # Encode both prompts together (ensures same sequence length)
+            all_prompts = [negative_prompt, prompt]
+            all_text_embeddings = encoder.text_encoder.encode(all_prompts, clip_skip=clip_skip)
+
+            # Split into negative and positive
+            negative_text_embeddings = all_text_embeddings[0:1]
+            positive_text_embeddings = all_text_embeddings[1:2]
+
+            # Add null image embedding (T2I doesn't use image encoder)
+            null_image_embedding = encoder.null_image_embedding  # [1, 1, 1152]
+            negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
+            encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
+
+            # Concatenate for CFG
+            encoder_hidden_states = torch.cat([negative_encoder_hidden_states, encoder_hidden_states])
+        else:
+            # No CFG, just encode positive prompt
+            encoder_hidden_states = encoder.encode(
+                prompts=[prompt],
+                images=None,
+                use_null_image=True,
+                clip_skip=clip_skip
+            )
+
+        return encoder_hidden_states
+
+    def _deus_denoising_loop(self, unet, encoder_hidden_states, height, width, num_inference_steps, guidance_scale, seed, progress_callback):
+        """
+        Run DEUS denoising loop
+
+        Args:
+            unet: DEUS U-Net (on GPU)
+            encoder_hidden_states: Text+image embeddings (on GPU)
+            height, width: Output dimensions
+            num_inference_steps: Number of denoising steps
+            guidance_scale: CFG scale
+            seed: Random seed
+            progress_callback: Progress callback (step, total_steps, latents)
+
+        Returns:
+            latents: Denoised latents [1, 16, H//8, W//8]
+        """
+        # Prepare latents
+        latent_height = height // 8
+        latent_width = width // 8
+        latent_channels = 16  # FLUX VAE uses 16 channels
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+        latents = torch.randn(
+            1, latent_channels, latent_height, latent_width,
+            dtype=torch.float16, device="cuda"
+        )
+
+        # Simple linear schedule
+        timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1)[:-1]
+
+        print(f"[DEUS] Denoising: {num_inference_steps} steps")
+
+        # Denoising loop
+        for i, t in enumerate(timesteps):
+            # Expand latents for CFG
+            if abs(guidance_scale - 1.0) > 1e-5:
+                latent_model_input = torch.cat([latents] * 2)
+            else:
+                latent_model_input = latents
+
+            # Prepare timestep
+            t_tensor = torch.tensor([t], dtype=torch.float16, device="cuda")
+
+            # Predict noise
+            with torch.no_grad():
+                noise_pred = unet(
+                    sample=latent_model_input,
+                    timestep=t_tensor,
+                    encoder_hidden_states=encoder_hidden_states
+                )
+
+            # Classifier-free guidance
+            if abs(guidance_scale - 1.0) > 1e-5:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # Euler step
+            if i < len(timesteps) - 1:
+                dt = timesteps[i] - timesteps[i + 1]
+            else:
+                dt = timesteps[i]
+
+            latents = latents - noise_pred * dt
+
+            # Progress callback
+            if progress_callback:
+                progress_callback(i + 1, num_inference_steps, None)
+
+        print(f"[DEUS] Denoising complete")
+        return latents
+
+    def _deus_decode_latents(self, vae, latents):
+        """
+        Decode latents using FLUX VAE
+
+        Args:
+            vae: FluxVAEWrapper (on GPU)
+            latents: Latents [1, 16, H//8, W//8]
+
+        Returns:
+            images: List of PIL images
+        """
+        print(f"[DEUS] Decoding latents with FLUX VAE")
+
+        # Decode latents
+        images = vae.decode(latents)
+
+        # Convert to PIL
+        from PIL import Image
+        import numpy as np
+
+        # Denormalize: [-1, 1] -> [0, 1]
+        images = (images + 1.0) / 2.0
+        images = torch.clamp(images, 0, 1)
+
+        # To numpy: [batch, 3, H, W] -> [batch, H, W, 3]
+        images = images.cpu().permute(0, 2, 3, 1).float().numpy()
+
+        # To uint8
+        images = (images * 255).round().astype(np.uint8)
+
+        # Convert to PIL
+        pil_images = [Image.fromarray(image) for image in images]
+
+        print(f"[DEUS] VAE decode complete: {len(pil_images)} images generated")
+
+        return pil_images
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""

@@ -2155,7 +2155,7 @@ class DiffusionPipelineManager:
 
         latents = torch.randn(
             1, latent_channels, latent_height, latent_width,
-            dtype=torch.float16, device="cuda"
+            dtype=unet.dtype, device="cuda"
         )
 
         # Simple linear schedule
@@ -2165,6 +2165,12 @@ class DiffusionPipelineManager:
 
         # Denoising loop
         for i, t in enumerate(timesteps):
+            # VRAM debug logging (first 3 steps and every 5 steps)
+            if i < 3 or i % 5 == 0:
+                torch.cuda.synchronize()
+                vram_gb = torch.cuda.memory_allocated() / 1024**3
+                print(f"[DEUS] Step {i}/{num_inference_steps}: VRAM {vram_gb:.2f}GB")
+
             # Expand latents for CFG
             if abs(guidance_scale - 1.0) > 1e-5:
                 latent_model_input = torch.cat([latents] * 2)
@@ -2172,7 +2178,7 @@ class DiffusionPipelineManager:
                 latent_model_input = latents
 
             # Prepare timestep
-            t_tensor = torch.tensor([t], dtype=torch.float16, device="cuda")
+            t_tensor = torch.tensor([t], dtype=unet.dtype, device="cuda")
 
             # Predict noise
             with torch.no_grad():
@@ -2187,13 +2193,13 @@ class DiffusionPipelineManager:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            # Euler step
+            # Euler step (in-place update to avoid creating new tensors)
             if i < len(timesteps) - 1:
                 dt = timesteps[i] - timesteps[i + 1]
             else:
                 dt = timesteps[i]
 
-            latents = latents - noise_pred * dt
+            latents.sub_(noise_pred * dt)  # In-place operation
 
             # Progress callback
             if progress_callback:

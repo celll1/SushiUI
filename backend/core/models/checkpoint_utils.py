@@ -215,7 +215,12 @@ def load_unified_checkpoint(
         print(f"[Checkpoint] Creating VAE (from checkpoint)...")
         vae = FluxVAEWrapper(dtype=dtype, device=device, load_from_checkpoint=True)
         print(f"[Checkpoint] Loading VAE weights...")
-        vae.vae.load_state_dict(vae_state)
+        # Use strict=False to allow missing keys (quant_conv, post_quant_conv are optional)
+        missing_keys, unexpected_keys = vae.vae.load_state_dict(vae_state, strict=False)
+        if missing_keys:
+            print(f"[Checkpoint] VAE missing keys (optional): {missing_keys}")
+        if unexpected_keys:
+            print(f"[Checkpoint] VAE unexpected keys: {unexpected_keys}")
         print(f"[Checkpoint] VAE weights loaded from checkpoint!")
     elif load_vae:
         print(f"[Checkpoint] WARNING: No VAE weights found in checkpoint!")

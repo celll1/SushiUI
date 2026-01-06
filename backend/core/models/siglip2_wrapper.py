@@ -112,7 +112,8 @@ class SigLIP2TextEncoder(nn.Module):
         self,
         prompts: Union[str, List[str]],
         max_length: Optional[int] = None,
-        return_pooled: bool = False
+        return_pooled: bool = False,
+        clip_skip: int = 0
     ) -> torch.Tensor:
         """
         Encode text prompts.
@@ -121,6 +122,7 @@ class SigLIP2TextEncoder(nn.Module):
             prompts: Single prompt or list of prompts
             max_length: Maximum token length (None = no limit)
             return_pooled: Return pooled output (CLS token) instead of sequence
+            clip_skip: Number of layers to skip from the end (0=last layer, 1=penultimate, etc.)
 
         Returns:
             Text embeddings [batch_size, seq_len, hidden_size] or [batch_size, hidden_size]
@@ -144,14 +146,25 @@ class SigLIP2TextEncoder(nn.Module):
 
         # Encode
         with torch.no_grad():
-            outputs = self.text_model(**inputs)
+            if clip_skip > 0:
+                # Request all hidden states
+                outputs = self.text_model(**inputs, output_hidden_states=True)
+                # Select layer: -1 is last, -2 is penultimate, etc.
+                # clip_skip=1 means use penultimate layer (hidden_states[-2])
+                layer_index = -(clip_skip + 1)
+                hidden_state = outputs.hidden_states[layer_index]
+            else:
+                # Use last layer (default)
+                outputs = self.text_model(**inputs)
+                hidden_state = outputs.last_hidden_state
 
         if return_pooled:
             # Return pooled output (CLS token, first token)
+            # Note: pooler_output is always from last layer
             return outputs.pooler_output  # [batch_size, hidden_size]
         else:
             # Return sequence embeddings
-            return outputs.last_hidden_state  # [batch_size, seq_len, hidden_size]
+            return hidden_state  # [batch_size, seq_len, hidden_size]
 
     def forward(
         self,
@@ -369,7 +382,8 @@ class SigLIP2MultiModalEncoder(nn.Module):
         self,
         prompts: Union[str, List[str]],
         images: Optional[Union[Image.Image, List[Image.Image]]] = None,
-        use_null_image: bool = True
+        use_null_image: bool = True,
+        clip_skip: int = 0
     ) -> torch.Tensor:
         """
         Encode text and optional images, concatenating along sequence dimension.
@@ -378,13 +392,14 @@ class SigLIP2MultiModalEncoder(nn.Module):
             prompts: Text prompts
             images: Optional images (None for T2I, single for I2I/TI2I, list for multi)
             use_null_image: Add null image embedding when no images provided
+            clip_skip: Number of layers to skip from the end for text encoder (0=last layer, 1=penultimate)
 
         Returns:
             Concatenated embeddings [batch_size, total_seq_len, hidden_size]
             where total_seq_len = text_seq_len + image_seq_len (or +1 for null)
         """
-        # Encode text
-        text_embeddings = self.text_encoder.encode(prompts)  # [B, text_seq, hidden]
+        # Encode text with clip_skip
+        text_embeddings = self.text_encoder.encode(prompts, clip_skip=clip_skip)  # [B, text_seq, hidden]
         batch_size = text_embeddings.shape[0]
 
         # Encode images (or use null)

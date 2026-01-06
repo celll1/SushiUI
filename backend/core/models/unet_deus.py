@@ -190,6 +190,9 @@ class RoPE2D(nn.Module):
         # Reshape to [1, C, H, W] and add to input
         emb_2d = emb_2d.permute(2, 0, 1).unsqueeze(0)  # [1, C, H, W]
 
+        # Convert to input dtype (RoPE computations are in float32)
+        emb_2d = emb_2d.to(dtype=x.dtype)
+
         return x + emb_2d
 
 

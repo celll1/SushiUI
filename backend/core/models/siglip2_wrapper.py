@@ -57,7 +57,7 @@ class SigLIP2TextEncoder(nn.Module):
         self.text_model = self.text_model.to(device)
 
         # Get config
-        self.config = self.model.text_config
+        self.config = self.text_model.config
         self.hidden_size = self.config.hidden_size  # 1152
 
         print(f"[SigLIP2] Text encoder loaded:")
@@ -183,7 +183,7 @@ class SigLIP2ImageEncoder(nn.Module):
         self.vision_model = self.vision_model.to(device)
 
         # Get config
-        self.config = self.model.vision_config
+        self.config = self.vision_model.config
         self.hidden_size = self.config.hidden_size  # 1152
 
         print(f"[SigLIP2] Image encoder loaded:")

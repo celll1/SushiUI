@@ -19,7 +19,7 @@ Supports:
 
 import torch
 import torch.nn as nn
-from typing import Optional, List, Union, Callable
+from typing import Optional, List, Union, Callable, Any
 from PIL import Image
 import numpy as np
 from tqdm import tqdm

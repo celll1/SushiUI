@@ -1,9 +1,9 @@
 """
-Checkpoint utilities for Original Architecture
+Checkpoint utilities for DEUS Architecture
 
 Handles saving and loading unified checkpoints containing:
 - SigLIP-2 text/image encoders
-- Original U-Net
+- DEUS U-Net (Dual-Embeddings U-Net Structure)
 - FLUX VAE
 
 Format similar to SDXL safetensors (all components in one file).
@@ -15,23 +15,23 @@ from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 
 from .siglip2_wrapper import SigLIP2TextEncoder, SigLIP2ImageEncoder
-from .unet_original import OriginalUNet, UNetConfig
+from .unet_deus import DeusUNet, UNetConfig
 from .flux_vae_wrapper import FluxVAEWrapper
 
 
 def save_unified_checkpoint(
-    unet: OriginalUNet,
+    unet: DeusUNet,
     text_encoder: Optional[SigLIP2TextEncoder] = None,
     image_encoder: Optional[SigLIP2ImageEncoder] = None,
     vae: Optional[FluxVAEWrapper] = None,
-    output_path: str = "models/original_model.safetensors",
+    output_path: str = "models/deus_model.safetensors",
     metadata: Optional[Dict[str, str]] = None
 ):
     """
     Save unified checkpoint containing all components.
 
     Args:
-        unet: Original U-Net model
+        unet: DEUS U-Net model
         text_encoder: SigLIP-2 text encoder (if None, not saved)
         image_encoder: SigLIP-2 image encoder (if None, not saved)
         vae: FLUX VAE (if None, not saved)
@@ -72,8 +72,8 @@ def save_unified_checkpoint(
 
     # Prepare metadata
     checkpoint_metadata = {
-        "model_type": "original",
-        "architecture": "Original Architecture (SigLIP-2 + U-Net + FLUX VAE)",
+        "model_type": "deus",
+        "architecture": "DEUS Architecture (Dual-Embeddings U-Net Structure: SigLIP-2 + U-Net + FLUX VAE)",
         "unet_variant": unet.config.variant,
         "latent_channels": str(unet.config.latent_channels),
         "context_dim": str(unet.config.context_dim),
@@ -178,7 +178,7 @@ def load_unified_checkpoint(
     # Create U-Net and load weights
     print(f"[Checkpoint] Creating U-Net ({unet_variant})...")
     config = UNetConfig.from_variant(unet_variant)
-    unet = OriginalUNet(config)
+    unet = DeusUNet(config)
     unet = unet.to(dtype).to(device)
 
     if len(unet_state) > 0:

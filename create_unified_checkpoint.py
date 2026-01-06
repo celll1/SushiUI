@@ -1,10 +1,10 @@
 """
-Create Unified Checkpoint for Original Architecture
+Create Unified Checkpoint for DEUS Architecture
 
 Creates a single safetensors file containing:
 - SigLIP-2 text encoder (from HuggingFace)
 - SigLIP-2 image encoder (from HuggingFace)
-- Original U-Net (randomly initialized)
+- DEUS U-Net (Dual-Embeddings U-Net Structure, randomly initialized)
 - FLUX VAE (from HuggingFace)
 
 Similar to SDXL format - all components in one file.
@@ -18,14 +18,14 @@ from pathlib import Path
 sys.path.insert(0, 'backend')
 
 from core.models.siglip2_wrapper import SigLIP2TextEncoder, SigLIP2ImageEncoder
-from core.models.unet_original import OriginalUNet, UNetConfig, count_parameters
+from core.models.unet_deus import DeusUNet, UNetConfig, count_parameters
 from core.models.flux_vae_wrapper import FluxVAEWrapper
 from core.models.checkpoint_utils import save_unified_checkpoint
 
 
 def create_unified_checkpoint(
     variant: str = "medium",
-    output_path: str = "models/original_model_medium.safetensors",
+    output_path: str = "models/deus_model_medium.safetensors",
     dtype: torch.dtype = torch.float16,
     device: str = "cuda",
     include_text_encoder: bool = True,
@@ -45,16 +45,16 @@ def create_unified_checkpoint(
         include_vae: Include FLUX VAE
     """
     print("=" * 80)
-    print(f"Creating Unified Checkpoint ({variant})")
+    print(f"Creating Unified DEUS Checkpoint ({variant})")
     print("=" * 80)
     print()
 
     components = {}
 
     # Create U-Net (randomly initialized)
-    print(f"[1/4] Creating U-Net ({variant} variant)...")
+    print(f"[1/4] Creating DEUS U-Net ({variant} variant)...")
     config = UNetConfig.from_variant(variant)
-    unet = OriginalUNet(config)
+    unet = DeusUNet(config)
     unet = unet.to(dtype)
 
     num_params = count_parameters(unet)
@@ -165,7 +165,7 @@ if __name__ == "__main__":
         "--output",
         type=str,
         default=None,
-        help="Output path (default: models/original_model_{variant}.safetensors)"
+        help="Output path (default: models/deus_model_{variant}.safetensors)"
     )
     parser.add_argument(
         "--no-text-encoder",
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
     # Determine output path
     if args.output is None:
-        output_path = f"models/original_model_{args.variant}.safetensors"
+        output_path = f"models/deus_model_{args.variant}.safetensors"
     else:
         output_path = args.output
 

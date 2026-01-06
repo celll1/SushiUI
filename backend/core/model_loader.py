@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
-ModelType = Literal["sd15", "sdxl", "zimage"]
+ModelType = Literal["sd15", "sdxl", "zimage", "original"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -212,13 +212,29 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, or Z-Image based on config or structure
+        """Detect if model is SD1.5, SDXL, Z-Image, or Original based on config or structure
 
         Supports:
+        - Original architecture (directory with unet/, encoder/, vae/)
         - Z-Image diffusers format (directory with transformer/, vae/, etc.)
         - Z-Image Comfy format (single safetensors with transformer weights only)
         - SD1.5/SDXL diffusers and safetensors
         """
+        # Original architecture detection (diffusers-like format)
+        if os.path.isdir(model_path):
+            # Original has unet/ directory with specific config markers
+            unet_config = os.path.join(model_path, "unet", "config.json")
+            if os.path.exists(unet_config):
+                try:
+                    with open(unet_config, 'r') as f:
+                        config = json.load(f)
+                        # Original has unique markers: skip_connection_interval, variant
+                        if "skip_connection_interval" in config and "variant" in config:
+                            print(f"[ModelLoader] Detected Original architecture: {model_path}")
+                            return "original"
+                except Exception as e:
+                    print(f"[ModelLoader] Warning: Could not read unet config: {e}")
+
         # Z-Image detection (diffusers format)
         if os.path.isdir(model_path):
             # Z-Image has transformer/ directory with unique config
@@ -954,6 +970,7 @@ class ModelLoader:
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
             - Dict of components for Z-Image
+            - OriginalPipeline for Original architecture
         """
         if source_type == "safetensors":
             return ModelLoader.load_from_safetensors(source, device, torch_dtype)
@@ -968,3 +985,51 @@ class ModelLoader:
             )
         else:
             raise ValueError(f"Unknown source type: {source_type}")
+
+    @staticmethod
+    def load_original_architecture(
+        model_path: Optional[str] = None,
+        unet_variant: str = "medium",
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.float16
+    ):
+        """Load or create Original architecture pipeline
+
+        Args:
+            model_path: Path to unified safetensors checkpoint (if None, create new pipeline)
+            unet_variant: "small", "medium", or "large" (for new pipeline or checkpoint structure)
+            device: Device to load on
+            torch_dtype: Data type
+
+        Returns:
+            OriginalPipeline instance
+        """
+        from core.pipelines.pipeline_original import create_original_pipeline, load_original_pipeline_from_checkpoint
+
+        print(f"[ModelLoader] Loading Original architecture...")
+
+        if model_path is None:
+            # Create new pipeline with random weights
+            print(f"[ModelLoader] Creating new pipeline (variant: {unet_variant})")
+            pipeline = create_original_pipeline(
+                unet_variant=unet_variant,
+                dtype=torch_dtype,
+                device=device
+            )
+        else:
+            # Load from unified safetensors checkpoint
+            if not model_path.endswith('.safetensors'):
+                raise ValueError(
+                    f"Original architecture requires .safetensors checkpoint. "
+                    f"Got: {model_path}"
+                )
+
+            print(f"[ModelLoader] Loading from checkpoint: {model_path}")
+            pipeline = load_original_pipeline_from_checkpoint(
+                checkpoint_path=model_path,
+                unet_variant=unet_variant,
+                dtype=torch_dtype,
+                device=device
+            )
+
+        return pipeline

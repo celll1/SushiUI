@@ -669,6 +669,8 @@ class DeusUNet(nn.Module):
             timestep = timestep.unsqueeze(0)
 
         t_emb = self.get_timestep_embedding(timestep, self.config.model_channels)
+        # Convert to sample dtype (get_timestep_embedding always returns float32)
+        t_emb = t_emb.to(dtype=sample.dtype)
         t_emb = self.time_embed(t_emb)
 
         # Input projection

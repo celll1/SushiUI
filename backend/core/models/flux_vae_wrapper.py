@@ -32,7 +32,8 @@ class FluxVAEWrapper(nn.Module):
         model_name: str = "black-forest-labs/FLUX.1-dev",
         subfolder: str = "vae",
         dtype: torch.dtype = torch.float16,
-        device: str = "cuda"
+        device: str = "cuda",
+        load_from_checkpoint: bool = False
     ):
         super().__init__()
 
@@ -40,26 +41,70 @@ class FluxVAEWrapper(nn.Module):
         self.dtype = dtype
         self.device_name = device
 
-        print(f"[FLUX VAE] Loading VAE from {model_name}/{subfolder}...")
+        if load_from_checkpoint:
+            # Create empty VAE structure (weights will be loaded via load_state_dict)
+            print(f"[FLUX VAE] Creating VAE structure (loading from checkpoint)...")
 
-        # Load FLUX VAE
-        self.vae = AutoencoderKL.from_pretrained(
-            model_name,
-            subfolder=subfolder,
-            torch_dtype=dtype
-        )
+            # Load config only (no weights)
+            from diffusers.models import AutoencoderKL
+            from transformers import PretrainedConfig
+            import json
+            import tempfile
+            import os
 
-        # Move to device
-        self.vae = self.vae.to(device)
+            # FLUX VAE config (hardcoded, as we know the structure)
+            # This avoids downloading config from HF
+            config_dict = {
+                "_class_name": "AutoencoderKL",
+                "_diffusers_version": "0.21.0",
+                "act_fn": "silu",
+                "block_out_channels": [128, 256, 512, 512],
+                "down_block_types": ["DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D"],
+                "in_channels": 3,
+                "latent_channels": 16,
+                "layers_per_block": 2,
+                "norm_num_groups": 32,
+                "out_channels": 3,
+                "sample_size": 256,
+                "scaling_factor": 0.3611,
+                "up_block_types": ["UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D"]
+            }
 
-        # Get config
-        self.latent_channels = self.vae.config.latent_channels  # 16
-        self.scaling_factor = self.vae.config.scaling_factor  # ~0.3611
+            # Create VAE from config
+            from diffusers import ConfigMixin
+            self.vae = AutoencoderKL(**config_dict)
+            self.vae = self.vae.to(dtype).to(device)
 
-        print(f"[FLUX VAE] VAE loaded:")
-        print(f"  Latent channels: {self.latent_channels}")
-        print(f"  Scaling factor: {self.scaling_factor:.4f}")
-        print(f"  Block out channels: {self.vae.config.block_out_channels}")
+            # Get config
+            self.latent_channels = self.vae.config.latent_channels  # 16
+            self.scaling_factor = self.vae.config.scaling_factor  # ~0.3611
+
+            print(f"[FLUX VAE] VAE structure created (weights pending):")
+            print(f"  Latent channels: {self.latent_channels}")
+            print(f"  Scaling factor: {self.scaling_factor:.4f}")
+            print(f"  Block out channels: {self.vae.config.block_out_channels}")
+        else:
+            # Load from HuggingFace (with pretrained weights)
+            print(f"[FLUX VAE] Loading VAE from {model_name}/{subfolder}...")
+
+            # Load FLUX VAE
+            self.vae = AutoencoderKL.from_pretrained(
+                model_name,
+                subfolder=subfolder,
+                torch_dtype=dtype
+            )
+
+            # Move to device
+            self.vae = self.vae.to(device)
+
+            # Get config
+            self.latent_channels = self.vae.config.latent_channels  # 16
+            self.scaling_factor = self.vae.config.scaling_factor  # ~0.3611
+
+            print(f"[FLUX VAE] VAE loaded:")
+            print(f"  Latent channels: {self.latent_channels}")
+            print(f"  Scaling factor: {self.scaling_factor:.4f}")
+            print(f"  Block out channels: {self.vae.config.block_out_channels}")
 
     def encode(
         self,

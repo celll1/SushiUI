@@ -27,7 +27,8 @@ class SigLIP2TextEncoder(nn.Module):
         self,
         model_name: str = "google/siglip2-so400m-patch16-naflex",
         dtype: torch.dtype = torch.float16,
-        device: str = "cuda"
+        device: str = "cuda",
+        load_from_checkpoint: bool = False
     ):
         super().__init__()
 
@@ -35,36 +36,77 @@ class SigLIP2TextEncoder(nn.Module):
         self.dtype = dtype
         self.device_name = device
 
-        print(f"[SigLIP2] Loading text encoder from {model_name}...")
+        if load_from_checkpoint:
+            # Create empty model structure (weights will be loaded via load_state_dict)
+            print(f"[SigLIP2] Creating text encoder structure (loading from checkpoint)...")
 
-        # Load SigLIP-2 model
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            torch_dtype=dtype
-        )
+            # Load config only (no weights)
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
 
-        # Get text model component
-        self.text_model = self.model.text_model
+            # Create model with config but no weights
+            self.model = AutoModel.from_config(
+                config,
+                trust_remote_code=True,
+                torch_dtype=dtype
+            )
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True
-        )
+            # Get text model component
+            self.text_model = self.model.text_model
 
-        # Move to device
-        self.text_model = self.text_model.to(device)
+            # Load tokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
 
-        # Get config
-        self.config = self.text_model.config
-        self.hidden_size = self.config.hidden_size  # 1152
+            # Move to device
+            self.text_model = self.text_model.to(device)
 
-        print(f"[SigLIP2] Text encoder loaded:")
-        print(f"  Hidden size: {self.hidden_size}")
-        print(f"  Num layers: {self.config.num_hidden_layers}")
-        print(f"  Vocab size: {self.config.vocab_size}")
-        print(f"  Max position embeddings: {self.config.max_position_embeddings}")
+            # Get config
+            self.config = self.text_model.config
+            self.hidden_size = self.config.hidden_size  # 1152
+
+            print(f"[SigLIP2] Text encoder structure created (weights pending):")
+            print(f"  Hidden size: {self.hidden_size}")
+            print(f"  Num layers: {self.config.num_hidden_layers}")
+            print(f"  Vocab size: {self.config.vocab_size}")
+            print(f"  Max position embeddings: {self.config.max_position_embeddings}")
+        else:
+            # Load from HuggingFace (with pretrained weights)
+            print(f"[SigLIP2] Loading text encoder from {model_name}...")
+
+            # Load SigLIP-2 model
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=dtype
+            )
+
+            # Get text model component
+            self.text_model = self.model.text_model
+
+            # Load tokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
+
+            # Move to device
+            self.text_model = self.text_model.to(device)
+
+            # Get config
+            self.config = self.text_model.config
+            self.hidden_size = self.config.hidden_size  # 1152
+
+            print(f"[SigLIP2] Text encoder loaded:")
+            print(f"  Hidden size: {self.hidden_size}")
+            print(f"  Num layers: {self.config.num_hidden_layers}")
+            print(f"  Vocab size: {self.config.vocab_size}")
+            print(f"  Max position embeddings: {self.config.max_position_embeddings}")
 
     def encode(
         self,
@@ -153,7 +195,8 @@ class SigLIP2ImageEncoder(nn.Module):
         self,
         model_name: str = "google/siglip2-so400m-patch16-naflex",
         dtype: torch.dtype = torch.float16,
-        device: str = "cuda"
+        device: str = "cuda",
+        load_from_checkpoint: bool = False
     ):
         super().__init__()
 
@@ -161,35 +204,75 @@ class SigLIP2ImageEncoder(nn.Module):
         self.dtype = dtype
         self.device_name = device
 
-        print(f"[SigLIP2] Loading image encoder from {model_name}...")
+        if load_from_checkpoint:
+            # Create empty model structure (weights will be loaded via load_state_dict)
+            print(f"[SigLIP2] Creating image encoder structure (loading from checkpoint)...")
 
-        # Load SigLIP-2 model
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            torch_dtype=dtype
-        )
+            # Load config only (no weights)
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
 
-        # Get vision model component
-        self.vision_model = self.model.vision_model
+            # Create model with config but no weights
+            self.model = AutoModel.from_config(
+                config,
+                trust_remote_code=True,
+                torch_dtype=dtype
+            )
 
-        # Load processor
-        self.processor = AutoProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=True
-        )
+            # Get vision model component
+            self.vision_model = self.model.vision_model
 
-        # Move to device
-        self.vision_model = self.vision_model.to(device)
+            # Load processor
+            self.processor = AutoProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
 
-        # Get config
-        self.config = self.vision_model.config
-        self.hidden_size = self.config.hidden_size  # 1152
+            # Move to device
+            self.vision_model = self.vision_model.to(device)
 
-        print(f"[SigLIP2] Image encoder loaded:")
-        print(f"  Hidden size: {self.hidden_size}")
-        print(f"  Num layers: {self.config.num_hidden_layers}")
-        print(f"  Patch size: {self.config.patch_size}")
+            # Get config
+            self.config = self.vision_model.config
+            self.hidden_size = self.config.hidden_size  # 1152
+
+            print(f"[SigLIP2] Image encoder structure created (weights pending):")
+            print(f"  Hidden size: {self.hidden_size}")
+            print(f"  Num layers: {self.config.num_hidden_layers}")
+            print(f"  Patch size: {self.config.patch_size}")
+        else:
+            # Load from HuggingFace (with pretrained weights)
+            print(f"[SigLIP2] Loading image encoder from {model_name}...")
+
+            # Load SigLIP-2 model
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=dtype
+            )
+
+            # Get vision model component
+            self.vision_model = self.model.vision_model
+
+            # Load processor
+            self.processor = AutoProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
+
+            # Move to device
+            self.vision_model = self.vision_model.to(device)
+
+            # Get config
+            self.config = self.vision_model.config
+            self.hidden_size = self.config.hidden_size  # 1152
+
+            print(f"[SigLIP2] Image encoder loaded:")
+            print(f"  Hidden size: {self.hidden_size}")
+            print(f"  Num layers: {self.config.num_hidden_layers}")
+            print(f"  Patch size: {self.config.patch_size}")
 
     def encode(
         self,

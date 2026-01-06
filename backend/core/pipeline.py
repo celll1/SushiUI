@@ -162,6 +162,46 @@ class DiffusionPipelineManager:
                 **kwargs
             )
 
+            # Check if DEUS
+            from core.pipelines.pipeline_deus import DeusPipeline
+            if isinstance(model_result, DeusPipeline):
+                # DEUS architecture
+                print("[Pipeline] DEUS architecture detected")
+                self.deus_pipeline = model_result
+                self.is_deus_model = True
+                self.is_zimage_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # DEUS uses its own pipeline, no need to create variants
+                # Store as txt2img_pipeline for compatibility
+                self.txt2img_pipeline = model_result
+                self.img2img_pipeline = model_result
+                self.inpaint_pipeline = model_result
+
+                # DEUS info
+                model_type = "deus"
+                is_v_prediction = False
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] DEUS model loaded successfully")
+                return
+
             # Check if Z-Image
             if isinstance(model_result, dict) and "transformer" in model_result:
                 # Z-Image component-based model
@@ -210,6 +250,7 @@ class DiffusionPipelineManager:
             # Standard SD1.5/SDXL pipeline
             base_pipeline = model_result
             self.is_zimage_model = False
+            self.is_deus_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)

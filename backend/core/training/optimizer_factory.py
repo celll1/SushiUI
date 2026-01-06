@@ -136,6 +136,7 @@ class OptimizerFactory:
             r = kwargs.get("r", 0.0)
             weight_lr_power = kwargs.get("weight_lr_power", 2.0)
             use_radam = kwargs.get("use_radam", False)
+            stochastic_rounding = kwargs.get("stochastic_rounding", False)
 
             optimizer = AdamW8bit_RingBuffer(
                 params,
@@ -150,6 +151,7 @@ class OptimizerFactory:
                 r=r,
                 weight_lr_power=weight_lr_power,
                 use_radam=use_radam,
+                stochastic_rounding=stochastic_rounding,
                 get_state_buffer=get_state_buffer,
             )
             options_str = []
@@ -181,6 +183,7 @@ class OptimizerFactory:
             r = kwargs.get("r", 0.0)
             weight_lr_power = kwargs.get("weight_lr_power", 2.0)
             use_radam = kwargs.get("use_radam", False)
+            stochastic_rounding = kwargs.get("stochastic_rounding", False)
 
             optimizer = Lion8bit_RingBuffer(
                 params,
@@ -194,6 +197,7 @@ class OptimizerFactory:
                 r=r,
                 weight_lr_power=weight_lr_power,
                 use_radam=use_radam,
+                stochastic_rounding=stochastic_rounding,
                 get_state_buffer=get_state_buffer,
             )
 

@@ -112,6 +112,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [optimizerScheduleFreeR, setOptimizerScheduleFreeR] = useState<string>("0.0");
   const [optimizerScheduleFreeWeightLrPower, setOptimizerScheduleFreeWeightLrPower] = useState<string>("2.0");
   const [optimizerUseRadam, setOptimizerUseRadam] = useState(false);
+  const [optimizerStochasticRounding, setOptimizerStochasticRounding] = useState(false);
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
@@ -281,6 +282,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r);
       if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power);
       if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
+      if (params.optimizer_stochastic_rounding !== undefined) setOptimizerStochasticRounding(params.optimizer_stochastic_rounding);
 
       // Save & Sample intervals
       if (params.save_every !== undefined) setSaveEvery(params.save_every);
@@ -793,6 +795,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
       optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
       optimizer_use_radam: optimizerUseRadam,
+      optimizer_stochastic_rounding: optimizerStochasticRounding,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
       lora_dtype: trainingMethod === "lora" ? loraDtype : undefined,
@@ -1661,6 +1664,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             Use RAdam (Rectified Adam)
                           </label>
                         </div>
+
+                        {/* Stochastic Rounding (BF16 only, AdamW8bit/Lion8bit only) */}
+                        {trainingDtype === "bf16" && (optimizer === "adamw8bit_ringbuffer" || optimizer === "lion8bit_ringbuffer") && (
+                          <div>
+                            <label className="flex items-center text-xs text-gray-300">
+                              <input
+                                type="checkbox"
+                                checked={optimizerStochasticRounding}
+                                onChange={(e) => setOptimizerStochasticRounding(e.target.checked)}
+                                className="mr-2"
+                              />
+                              Stochastic Rounding (BF16)
+                            </label>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Reduces quantization bias for BF16 training. Only affects AdamW8bit/Lion8bit with BF16.
+                            </p>
+                          </div>
+                        )}
 
                         {/* Schedule-Free r (hidden when RAdam is enabled) */}
                         {!optimizerUseRadam && (

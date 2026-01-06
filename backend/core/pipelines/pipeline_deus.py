@@ -76,7 +76,7 @@ class DeusPipeline(nn.Module):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: int = 1,
         seed: Optional[int] = None,
-        clip_skip: int = 0,
+        clip_skip: int = 1,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> List[Image.Image]:
         """
@@ -92,7 +92,7 @@ class DeusPipeline(nn.Module):
             negative_prompt: Negative prompt(s)
             num_images_per_prompt: Number of images to generate per prompt
             seed: Random seed
-            clip_skip: Number of layers to skip from the end (0=last layer, 1=penultimate)
+            clip_skip: Number of layers to skip from the end (default: 1=penultimate/layer 26)
             progress_callback: Callback for progress updates
 
         Returns:

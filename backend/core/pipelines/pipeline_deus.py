@@ -111,39 +111,64 @@ class DeusPipeline(nn.Module):
 
         # Encode prompt (text + optional images)
         print(f"[Pipeline] Encoding prompt (clip_skip={clip_skip})...")
-        encoder_hidden_states = self.encoder.encode(
-            prompts=prompt,
-            images=images,
-            use_null_image=True,  # Use null image for T2I mode
-            clip_skip=clip_skip
-        )
 
-        # Repeat for num_images_per_prompt
-        if num_images_per_prompt > 1:
-            encoder_hidden_states = encoder_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
-
-        # Encode negative prompt (for CFG)
+        # For CFG, encode both prompts together to ensure same sequence length
         if guidance_scale > 1.0:
             if negative_prompt is None:
                 negative_prompt = [""] * len(prompt)
             elif isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
 
-            negative_encoder_hidden_states = self.encoder.encode(
-                prompts=negative_prompt,
-                images=None,  # No images for negative prompt
-                use_null_image=True,
-                clip_skip=clip_skip
-            )
+            # Concatenate prompts for batch encoding (ensures same seq_len with padding)
+            all_prompts = negative_prompt + prompt
 
+            # Encode all prompts together (text encoder will pad to same length)
+            all_text_embeddings = self.encoder.text_encoder.encode(all_prompts, clip_skip=clip_skip)
+
+            # Split into negative and positive
+            batch_size_single = len(prompt)
+            negative_text_embeddings = all_text_embeddings[:batch_size_single]
+            positive_text_embeddings = all_text_embeddings[batch_size_single:]
+
+            # Add image embeddings (only to positive prompt)
+            if images is None:
+                # Use null image for both
+                null_image_embedding = self.encoder.null_image_embedding.expand(batch_size_single, -1, -1)
+                negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
+                encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
+            else:
+                # Encode images for positive prompt
+                if not isinstance(images, list):
+                    images = [images]
+                image_embeddings = self.encoder.image_encoder.encode(images)
+
+                # Add null to negative, images to positive
+                null_image_embedding = self.encoder.null_image_embedding.expand(batch_size_single, -1, -1)
+                negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
+                encoder_hidden_states = torch.cat([positive_text_embeddings, image_embeddings], dim=1)
+
+            # Repeat for num_images_per_prompt
             if num_images_per_prompt > 1:
                 negative_encoder_hidden_states = negative_encoder_hidden_states.repeat_interleave(
                     num_images_per_prompt, dim=0
                 )
+                encoder_hidden_states = encoder_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
 
             # Concatenate for CFG
             encoder_hidden_states = torch.cat([negative_encoder_hidden_states, encoder_hidden_states])
         else:
+            # No CFG, just encode positive prompt
+            encoder_hidden_states = self.encoder.encode(
+                prompts=prompt,
+                images=images,
+                use_null_image=True,
+                clip_skip=clip_skip
+            )
+
+            # Repeat for num_images_per_prompt
+            if num_images_per_prompt > 1:
+                encoder_hidden_states = encoder_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
+
             negative_encoder_hidden_states = None
 
         # Prepare latents

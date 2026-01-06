@@ -1479,14 +1479,10 @@ export interface TrainingMetrics {
 
 export const getTrainingMetrics = async (
   runId: number,
-  sinceStep?: number,
   maxPoints: number = 1000
 ): Promise<TrainingMetrics> => {
   const params: any = { max_points: maxPoints };
-  if (sinceStep !== undefined) {
-    params.since_step = sinceStep;
-  }
-  // Use new DB endpoint (faster than TensorBoard event file parsing)
+  // Use new DB endpoint with uniform sampling (backend handles sampling)
   const response = await api.get(`/training/runs/${runId}/metrics_db`, { params });
   return response.data;
 };

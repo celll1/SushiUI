@@ -5333,25 +5333,23 @@ async def get_training_metrics(
 @router.get("/training/runs/{run_id}/metrics_db")
 async def get_training_metrics_db(
     run_id: int,
-    since_step: Optional[int] = None,
     max_points: int = 1000,
     db: Session = Depends(get_training_db)
 ):
     """
-    Get training metrics from database (faster than TensorBoard).
+    Get training metrics from database with uniform step sampling.
 
-    This endpoint reads metrics from SQLAlchemy DB instead of TensorBoard event files,
-    providing much faster queries for large training runs.
+    This endpoint reads metrics from SQLAlchemy DB and returns uniformly sampled
+    data points to ensure consistent chart density across updates.
 
     Features:
-    - Incremental fetching: Use since_step to get only new data points
-    - Automatic decimation: Returns at most max_points data points
+    - Uniform sampling: Returns evenly distributed steps from 0 to max_step
+    - Consistent density: Same points returned on every fetch (no jumping)
     - Indexed queries: Fast filtering by (run_id, step)
     - UPSERT-safe: Metrics with same (run_id, step) are overwritten (training restart support)
 
     Args:
         run_id: Training run ID
-        since_step: Only return data after this step (for incremental updates)
         max_points: Maximum number of data points to return (default: 1000)
 
     Returns:
@@ -5372,25 +5370,47 @@ async def get_training_metrics_db(
         raise HTTPException(status_code=404, detail="Training run not found")
 
     try:
-        # Build query with filters
-        query = db.query(TrainingMetrics).filter(TrainingMetrics.run_id == run_id)
+        # Get min and max steps for this run
+        result = db.query(
+            func.min(TrainingMetrics.step),
+            func.max(TrainingMetrics.step)
+        ).filter(TrainingMetrics.run_id == run_id).first()
 
-        if since_step is not None:
-            query = query.filter(TrainingMetrics.step > since_step)
+        min_step, max_step = result
+        if min_step is None or max_step is None:
+            # No metrics yet
+            return {
+                "loss": [],
+                "recon_loss": [],
+                "learning_rate": [],
+                "grad_norm": [],
+                "grad_norm_text_encoder": [],
+                "grad_norm_unet": []
+            }
 
-        # Order by step ascending
-        query = query.order_by(TrainingMetrics.step.asc())
-
-        # Decimate if necessary (simple nth-point sampling)
-        total_count = query.count()
-        if total_count > max_points:
-            # Calculate step size for decimation
-            step_size = total_count // max_points
-            # Fetch all, then decimate (SQLite doesn't have ROW_NUMBER)
-            all_metrics = query.all()
-            metrics = [all_metrics[i] for i in range(0, len(all_metrics), step_size)][:max_points]
+        # Calculate uniform sample steps
+        total_steps = max_step - min_step + 1
+        if total_steps <= max_points:
+            # Fetch all steps
+            sample_steps = list(range(min_step, max_step + 1))
         else:
-            metrics = query.all()
+            # Uniform sampling: divide range into max_points intervals
+            step_interval = total_steps / max_points
+            sample_steps = [
+                int(min_step + i * step_interval)
+                for i in range(max_points)
+            ]
+            # Always include the last step
+            if max_step not in sample_steps:
+                sample_steps.append(max_step)
+
+        # Fetch metrics for sampled steps
+        query = db.query(TrainingMetrics).filter(
+            TrainingMetrics.run_id == run_id,
+            TrainingMetrics.step.in_(sample_steps)
+        ).order_by(TrainingMetrics.step.asc())
+
+        metrics = query.all()
 
         # Convert to response format
         loss_data = []

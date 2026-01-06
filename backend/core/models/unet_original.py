@@ -66,28 +66,38 @@ class UNetConfig:
 
     @classmethod
     def from_variant(cls, variant: str = "medium"):
-        """Create config from variant name."""
+        """Create config from variant name.
+
+        Based on SDXL U-Net architecture:
+        - SDXL Base: 2.6B params (block_out_channels: 320, 640, 1280)
+        - Our variants scale this for target sizes
+        """
         configs = {
             "small": {
-                "model_channels": 256,
-                "channel_mult": (1, 2, 4),
+                # Target: ~1.5B params
+                "model_channels": 320,
+                "channel_mult": (1, 2, 4, 4),  # 320, 640, 1280, 1280
                 "num_res_blocks": 2,
                 "num_attention_heads": 16,
-                "transformer_depth": 1,
+                "transformer_depth": 6,
             },
             "medium": {
-                "model_channels": 320,
-                "channel_mult": (1, 2, 4),
+                # Target: ~2.8B params (SDXL-like)
+                # Matches SDXL Base structure
+                "model_channels": 384,
+                "channel_mult": (1, 2, 4, 4),  # 384, 768, 1536, 1536
                 "num_res_blocks": 2,
-                "num_attention_heads": 20,
-                "transformer_depth": 2,
+                "num_attention_heads": 24,  # 384 / 24 = 16 (head_dim)
+                "transformer_depth": 10,  # SDXL has 10 transformer layers
             },
             "large": {
-                "model_channels": 384,
-                "channel_mult": (1, 2, 4, 4),
+                # Target: ~4.0B params
+                # Wider than SDXL
+                "model_channels": 448,
+                "channel_mult": (1, 2, 4, 4),  # 448, 896, 1792, 1792
                 "num_res_blocks": 3,
-                "num_attention_heads": 24,
-                "transformer_depth": 2,
+                "num_attention_heads": 28,  # 448 / 28 = 16 (head_dim)
+                "transformer_depth": 10,
             },
         }
 

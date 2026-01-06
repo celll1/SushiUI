@@ -676,7 +676,7 @@ def move_zimage_vae_to_gpu(vae):
     """
     print("[VRAM] Moving Z-Image VAE to GPU for decode...")
     if vae is not None:
-        vae.to('cuda:0', non_blocking=False)
+        vae.to('cuda:0')
 
 
 def move_zimage_vae_to_cpu(vae):
@@ -687,7 +687,7 @@ def move_zimage_vae_to_cpu(vae):
     """
     print("[VRAM] Moving Z-Image VAE to CPU to free VRAM...")
     if vae is not None:
-        vae.to('cpu', non_blocking=False)
+        vae.to('cpu')
 
 
 def _quantize_transformer(transformer, quantization: str):

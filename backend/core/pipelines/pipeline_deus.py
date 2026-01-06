@@ -379,16 +379,21 @@ def load_deus_pipeline_from_checkpoint(
     vae = components["vae"]
 
     # Create multi-modal encoder wrapper
+    from ..models.siglip2_wrapper import SigLIP2MultiModalEncoder
+
     # If checkpoint doesn't have encoders, create new ones
     if text_encoder is None or image_encoder is None:
         print(f"[Pipeline] Creating new encoders (not in checkpoint)...")
         encoder = SigLIP2MultiModalEncoder(dtype=dtype, device=device)
     else:
-        # Wrap existing encoders
-        from ..models.siglip2_wrapper import SigLIP2MultiModalEncoder
-        encoder = SigLIP2MultiModalEncoder(dtype=dtype, device=device)
-        encoder.text_encoder = text_encoder
-        encoder.image_encoder = image_encoder
+        # Use existing encoders from checkpoint
+        print(f"[Pipeline] Using encoders from checkpoint...")
+        encoder = SigLIP2MultiModalEncoder(
+            dtype=dtype,
+            device=device,
+            text_encoder=text_encoder,
+            image_encoder=image_encoder
+        )
 
     # Create VAE if not in checkpoint
     if vae is None:

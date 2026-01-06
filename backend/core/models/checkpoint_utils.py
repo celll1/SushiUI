@@ -190,30 +190,33 @@ def load_unified_checkpoint(
     # Create text encoder and load weights
     text_encoder = None
     if load_text_encoder and len(text_encoder_state) > 0:
-        print(f"[Checkpoint] Creating text encoder...")
-        text_encoder = SigLIP2TextEncoder(dtype=dtype, device=device)
+        print(f"[Checkpoint] Creating text encoder (from checkpoint)...")
+        text_encoder = SigLIP2TextEncoder(dtype=dtype, device=device, load_from_checkpoint=True)
         print(f"[Checkpoint] Loading text encoder weights...")
         text_encoder.text_model.load_state_dict(text_encoder_state)
+        print(f"[Checkpoint] Text encoder weights loaded from checkpoint!")
     elif load_text_encoder:
         print(f"[Checkpoint] WARNING: No text encoder weights found in checkpoint!")
 
     # Create image encoder and load weights
     image_encoder = None
     if load_image_encoder and len(image_encoder_state) > 0:
-        print(f"[Checkpoint] Creating image encoder...")
-        image_encoder = SigLIP2ImageEncoder(dtype=dtype, device=device)
+        print(f"[Checkpoint] Creating image encoder (from checkpoint)...")
+        image_encoder = SigLIP2ImageEncoder(dtype=dtype, device=device, load_from_checkpoint=True)
         print(f"[Checkpoint] Loading image encoder weights...")
         image_encoder.vision_model.load_state_dict(image_encoder_state)
+        print(f"[Checkpoint] Image encoder weights loaded from checkpoint!")
     elif load_image_encoder:
         print(f"[Checkpoint] WARNING: No image encoder weights found in checkpoint!")
 
     # Create VAE and load weights
     vae = None
     if load_vae and len(vae_state) > 0:
-        print(f"[Checkpoint] Creating VAE...")
-        vae = FluxVAEWrapper(dtype=dtype, device=device)
+        print(f"[Checkpoint] Creating VAE (from checkpoint)...")
+        vae = FluxVAEWrapper(dtype=dtype, device=device, load_from_checkpoint=True)
         print(f"[Checkpoint] Loading VAE weights...")
         vae.vae.load_state_dict(vae_state)
+        print(f"[Checkpoint] VAE weights loaded from checkpoint!")
     elif load_vae:
         print(f"[Checkpoint] WARNING: No VAE weights found in checkpoint!")
 

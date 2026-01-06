@@ -1,12 +1,13 @@
 """
-Original Architecture Inference Pipeline
+DEUS Architecture Inference Pipeline
 
-Complete pipeline for text-to-image generation with the original architecture.
+Complete pipeline for text-to-image generation with the DEUS architecture.
+(Dual-Embeddings U-Net Structure)
 
 Components:
 - Text Encoder: SigLIP-2
 - Image Encoder: SigLIP-2 (optional)
-- U-Net: Original architecture with RoPE and sparse skip connections
+- U-Net: DEUS architecture with RoPE and sparse skip connections
 - VAE: FLUX VAE (16-channel latents)
 - Scheduler: Standard diffusion schedulers (Euler, DPM++, etc.)
 
@@ -25,17 +26,18 @@ from tqdm import tqdm
 
 from ..models.siglip2_wrapper import SigLIP2MultiModalEncoder
 from ..models.flux_vae_wrapper import FluxVAEWrapper
-from ..models.unet_original import OriginalUNet, UNetConfig
+from ..models.unet_deus import DeusUNet, UNetConfig
 
 
-class OriginalPipeline(nn.Module):
+class DeusPipeline(nn.Module):
     """
-    Complete inference pipeline for original architecture.
+    Complete inference pipeline for DEUS architecture.
+    (Dual-Embeddings U-Net Structure)
     """
 
     def __init__(
         self,
-        unet: OriginalUNet,
+        unet: DeusUNet,
         vae: FluxVAEWrapper,
         encoder: SigLIP2MultiModalEncoder,
         scheduler: Optional[Any] = None,
@@ -55,7 +57,7 @@ class OriginalPipeline(nn.Module):
         self.unet = self.unet.to(device)
         self.vae.to(device)
 
-        print(f"[Pipeline] Original pipeline initialized:")
+        print(f"[Pipeline] DEUS pipeline initialized:")
         print(f"  Device: {device}")
         print(f"  Dtype: {dtype}")
         print(f"  U-Net variant: {unet.config.variant}")
@@ -238,13 +240,13 @@ class OriginalPipeline(nn.Module):
         return pil_images
 
 
-def create_original_pipeline(
+def create_deus_pipeline(
     unet_variant: str = "medium",
     dtype: torch.dtype = torch.float16,
     device: str = "cuda"
-) -> OriginalPipeline:
+) -> DeusPipeline:
     """
-    Create a new original pipeline with randomly initialized weights.
+    Create a new DEUS pipeline with randomly initialized weights.
 
     This is for testing the architecture. The U-Net is randomly initialized,
     so it will not produce meaningful images yet.
@@ -255,9 +257,9 @@ def create_original_pipeline(
         device: Device to load on
 
     Returns:
-        OriginalPipeline instance
+        DeusPipeline instance
     """
-    print(f"[Pipeline] Creating original pipeline ({unet_variant})...")
+    print(f"[Pipeline] Creating DEUS pipeline ({unet_variant})...")
 
     # Create encoder
     encoder = SigLIP2MultiModalEncoder(
@@ -273,11 +275,11 @@ def create_original_pipeline(
 
     # Create U-Net
     config = UNetConfig.from_variant(unet_variant)
-    unet = OriginalUNet(config)
+    unet = DeusUNet(config)
     unet = unet.to(dtype).to(device)
 
     # Create pipeline
-    pipeline = OriginalPipeline(
+    pipeline = DeusPipeline(
         unet=unet,
         vae=vae,
         encoder=encoder,
@@ -292,14 +294,14 @@ def create_original_pipeline(
     return pipeline
 
 
-def load_original_pipeline_from_checkpoint(
+def load_deus_pipeline_from_checkpoint(
     checkpoint_path: str,
     unet_variant: str = "medium",
     dtype: torch.dtype = torch.float16,
     device: str = "cuda"
-) -> OriginalPipeline:
+) -> DeusPipeline:
     """
-    Load original pipeline from unified checkpoint.
+    Load DEUS pipeline from unified checkpoint.
 
     Args:
         checkpoint_path: Path to unified safetensors checkpoint
@@ -308,11 +310,11 @@ def load_original_pipeline_from_checkpoint(
         device: Device to load on
 
     Returns:
-        OriginalPipeline instance
+        DeusPipeline instance
     """
     from ..models.checkpoint_utils import load_unified_checkpoint
 
-    print(f"[Pipeline] Loading original pipeline from checkpoint...")
+    print(f"[Pipeline] Loading DEUS pipeline from checkpoint...")
 
     # Load checkpoint
     components = load_unified_checkpoint(
@@ -349,7 +351,7 @@ def load_original_pipeline_from_checkpoint(
         vae = FluxVAEWrapper(dtype=dtype, device=device)
 
     # Create pipeline
-    pipeline = OriginalPipeline(
+    pipeline = DeusPipeline(
         unet=unet,
         vae=vae,
         encoder=encoder,
@@ -365,7 +367,7 @@ def load_original_pipeline_from_checkpoint(
 
 if __name__ == "__main__":
     # Test pipeline creation
-    pipeline = create_original_pipeline(unet_variant="small")
+    pipeline = create_deus_pipeline(unet_variant="small")
 
     # Test inference
     images = pipeline(

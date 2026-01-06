@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
-ModelType = Literal["sd15", "sdxl", "zimage", "original"]
+ModelType = Literal["sd15", "sdxl", "zimage", "deus"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -212,26 +212,26 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, Z-Image, or Original based on config or structure
+        """Detect if model is SD1.5, SDXL, Z-Image, or DEUS based on config or structure
 
         Supports:
-        - Original architecture (directory with unet/, encoder/, vae/)
+        - DEUS architecture (directory with unet/, encoder/, vae/)
         - Z-Image diffusers format (directory with transformer/, vae/, etc.)
         - Z-Image Comfy format (single safetensors with transformer weights only)
         - SD1.5/SDXL diffusers and safetensors
         """
-        # Original architecture detection (diffusers-like format)
+        # DEUS architecture detection (diffusers-like format)
         if os.path.isdir(model_path):
-            # Original has unet/ directory with specific config markers
+            # DEUS has unet/ directory with specific config markers
             unet_config = os.path.join(model_path, "unet", "config.json")
             if os.path.exists(unet_config):
                 try:
                     with open(unet_config, 'r') as f:
                         config = json.load(f)
-                        # Original has unique markers: skip_connection_interval, variant
+                        # DEUS has unique markers: skip_connection_interval, variant
                         if "skip_connection_interval" in config and "variant" in config:
-                            print(f"[ModelLoader] Detected Original architecture: {model_path}")
-                            return "original"
+                            print(f"[ModelLoader] Detected DEUS architecture: {model_path}")
+                            return "deus"
                 except Exception as e:
                     print(f"[ModelLoader] Warning: Could not read unet config: {e}")
 
@@ -265,8 +265,19 @@ class ModelLoader:
                 from safetensors import safe_open
                 with safe_open(model_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
+                    metadata = f.metadata() or {}
 
-                    # SD/SDXL detection (priority check)
+                    # Priority 1: Check metadata for explicit model_type
+                    if "model_type" in metadata:
+                        model_type = metadata["model_type"]
+                        if model_type == "original" or model_type == "deus":
+                            print(f"[ModelLoader] Detected DEUS architecture from metadata: {model_path}")
+                            return "deus"
+                        elif model_type == "zimage":
+                            print(f"[ModelLoader] Detected Z-Image from metadata: {model_path}")
+                            return "zimage"
+
+                    # Priority 2: SD/SDXL detection
                     # SD/SDXL models have U-Net keys starting with "model.diffusion_model."
                     has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
 
@@ -970,7 +981,7 @@ class ModelLoader:
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
             - Dict of components for Z-Image
-            - OriginalPipeline for Original architecture
+            - DeusPipeline for DEUS architecture
         """
         if source_type == "safetensors":
             return ModelLoader.load_from_safetensors(source, device, torch_dtype)
@@ -987,13 +998,14 @@ class ModelLoader:
             raise ValueError(f"Unknown source type: {source_type}")
 
     @staticmethod
-    def load_original_architecture(
+    def load_deus_architecture(
         model_path: Optional[str] = None,
         unet_variant: str = "medium",
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.float16
     ):
-        """Load or create Original architecture pipeline
+        """Load or create DEUS architecture pipeline
+        (Dual-Embeddings U-Net Structure)
 
         Args:
             model_path: Path to unified safetensors checkpoint (if None, create new pipeline)
@@ -1002,16 +1014,16 @@ class ModelLoader:
             torch_dtype: Data type
 
         Returns:
-            OriginalPipeline instance
+            DeusPipeline instance
         """
-        from core.pipelines.pipeline_original import create_original_pipeline, load_original_pipeline_from_checkpoint
+        from core.pipelines.pipeline_deus import create_deus_pipeline, load_deus_pipeline_from_checkpoint
 
-        print(f"[ModelLoader] Loading Original architecture...")
+        print(f"[ModelLoader] Loading DEUS architecture...")
 
         if model_path is None:
             # Create new pipeline with random weights
             print(f"[ModelLoader] Creating new pipeline (variant: {unet_variant})")
-            pipeline = create_original_pipeline(
+            pipeline = create_deus_pipeline(
                 unet_variant=unet_variant,
                 dtype=torch_dtype,
                 device=device
@@ -1020,12 +1032,12 @@ class ModelLoader:
             # Load from unified safetensors checkpoint
             if not model_path.endswith('.safetensors'):
                 raise ValueError(
-                    f"Original architecture requires .safetensors checkpoint. "
+                    f"DEUS architecture requires .safetensors checkpoint. "
                     f"Got: {model_path}"
                 )
 
             print(f"[ModelLoader] Loading from checkpoint: {model_path}")
-            pipeline = load_original_pipeline_from_checkpoint(
+            pipeline = load_deus_pipeline_from_checkpoint(
                 checkpoint_path=model_path,
                 unet_variant=unet_variant,
                 dtype=torch_dtype,

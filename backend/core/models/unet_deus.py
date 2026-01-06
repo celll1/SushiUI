@@ -1,5 +1,5 @@
 """
-Original U-Net Architecture
+DEUS U-Net Architecture (Dual-Embeddings U-Net Structure)
 
 Based on SDXL U-Net with modifications:
 - RoPE 2D positional encoding (from Z-Image)
@@ -509,9 +509,10 @@ class UpBlock(nn.Module):
         return x
 
 
-class OriginalUNet(nn.Module):
+class DeusUNet(nn.Module):
     """
-    Original U-Net architecture with multi-modal conditioning.
+    DEUS U-Net architecture with multi-modal conditioning.
+    (Dual-Embeddings U-Net Structure)
 
     Features:
     - 16-channel latent input/output (FLUX VAE)
@@ -610,7 +611,7 @@ class OriginalUNet(nn.Module):
             nn.Conv2d(config.model_channels, config.out_channels, kernel_size=3, padding=1)
         )
 
-        print(f"[UNet] Original U-Net initialized:")
+        print(f"[UNet] DEUS U-Net initialized:")
         print(f"  Variant: {config.variant}")
         print(f"  Model channels: {config.model_channels}")
         print(f"  Channel mult: {config.channel_mult}")
@@ -701,5 +702,5 @@ if __name__ == "__main__":
     # Test model creation
     for variant in ["small", "medium", "large"]:
         config = UNetConfig.from_variant(variant)
-        model = OriginalUNet(config)
+        model = DeusUNet(config)
         print(f"\n{variant.upper()} model: {count_parameters(model) / 1e9:.2f}B parameters")

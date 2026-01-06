@@ -2153,9 +2153,12 @@ class DiffusionPipelineManager:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+        # Get U-Net dtype from first parameter
+        unet_dtype = next(unet.parameters()).dtype
+
         latents = torch.randn(
             1, latent_channels, latent_height, latent_width,
-            dtype=unet.dtype, device="cuda"
+            dtype=unet_dtype, device="cuda"
         )
 
         # Simple linear schedule
@@ -2178,7 +2181,7 @@ class DiffusionPipelineManager:
                 latent_model_input = latents
 
             # Prepare timestep
-            t_tensor = torch.tensor([t], dtype=unet.dtype, device="cuda")
+            t_tensor = torch.tensor([t], dtype=unet_dtype, device="cuda")
 
             # Predict noise
             with torch.no_grad():

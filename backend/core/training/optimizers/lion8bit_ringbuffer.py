@@ -60,6 +60,7 @@ class Lion8bit_RingBuffer(Optimizer):
         r: float = 0.0,
         weight_lr_power: float = 2.0,
         use_radam: bool = False,
+        stochastic_rounding: bool = False,
         get_state_buffer: Optional[Callable] = None,
     ):
         # Lazy load CUDA extension
@@ -87,6 +88,7 @@ class Lion8bit_RingBuffer(Optimizer):
             r=r,
             weight_lr_power=weight_lr_power,
             use_radam=use_radam,
+            stochastic_rounding=stochastic_rounding,
         )
         super().__init__(params, defaults)
 
@@ -98,10 +100,15 @@ class Lion8bit_RingBuffer(Optimizer):
         self.r = r
         self.weight_lr_power = weight_lr_power
         self.use_radam = use_radam
+        self.stochastic_rounding = stochastic_rounding
 
-        # Schedule-Free tracking (max scheduled LR for normalization)
-        if self.schedule_free:
-            self.lr_max = lr
+        # Schedule-Free/RAdam tracking
+        if self.schedule_free or self.use_radam:
+            self.k = 0  # Step counter
+            self.weight_sum = 0.0  # FP32 accumulator for weighted average
+            self.lr_max = 0.0  # Maximum learning rate seen
+            if self.schedule_free:
+                self.train_mode = False  # Training mode flag
 
         # Keys that must preserve dtype (UINT8 state, FP32 absmax)
         # Based on bitsandbytes.optim.optimizer.Optimizer8bit.non_castable_tensor_keys
@@ -214,7 +221,7 @@ class Lion8bit_RingBuffer(Optimizer):
             print(f"[Lion8bit_RingBuffer] Allocated FP32 state for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
 
-    def load_state_dict(self, state_dict):
+    def _load_state_dict_uint8(self, state_dict):
         """
         Load optimizer state while preserving UINT8 dtypes.
 
@@ -299,10 +306,57 @@ class Lion8bit_RingBuffer(Optimizer):
         # Update parameter groups
         def update_group(group, new_group):
             new_group["params"] = group["params"]
+            # Add missing keys from current defaults (for backward compatibility)
+            for key in group.keys():
+                if key not in new_group:
+                    new_group[key] = group[key]
             return new_group
 
         param_groups = [update_group(g, ng) for g, ng in zip(groups, saved_groups)]
         self.__setstate__({"state": state, "param_groups": param_groups})
+
+    def state_dict(self):
+        """
+        Override state_dict to include Schedule-Free/RAdam specific state.
+
+        PyTorch's default Optimizer.state_dict() only saves state and param_groups,
+        but Schedule-Free and RAdam need additional counters (k, weight_sum, lr_max).
+        """
+        state_dict = super().state_dict()
+
+        # Add Schedule-Free/RAdam specific state
+        if self.schedule_free or self.use_radam:
+            state_dict['k'] = self.k
+            state_dict['weight_sum'] = self.weight_sum
+            state_dict['lr_max'] = self.lr_max
+            if self.schedule_free:
+                state_dict['train_mode'] = self.train_mode
+
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        """
+        Override load_state_dict to restore Schedule-Free/RAdam specific state.
+
+        This calls our custom UINT8-preserving load_state_dict
+        and then restores our additional counters.
+        """
+        # First, call our custom load_state_dict for UINT8 preservation
+        self._load_state_dict_uint8(state_dict)
+
+        # Restore Schedule-Free/RAdam specific state
+        if 'k' in state_dict:
+            self.k = state_dict['k']
+            print(f"[Lion8bit_RingBuffer] Restored step counter k={self.k}")
+        if 'weight_sum' in state_dict:
+            self.weight_sum = state_dict['weight_sum']
+            print(f"[Lion8bit_RingBuffer] Restored weight_sum={self.weight_sum}")
+        if 'lr_max' in state_dict:
+            self.lr_max = state_dict['lr_max']
+            print(f"[Lion8bit_RingBuffer] Restored lr_max={self.lr_max}")
+        if 'train_mode' in state_dict:
+            self.train_mode = state_dict['train_mode']
+            print(f"[Lion8bit_RingBuffer] Restored train_mode={self.train_mode}")
 
     @torch.no_grad()
     def step(self, closure=None):

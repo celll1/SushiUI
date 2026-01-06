@@ -340,7 +340,7 @@ class AdamW8bit_RingBuffer(Optimizer):
             print(f"[AdamW8bit_RingBuffer] Allocated FP32 states for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
 
-    def load_state_dict(self, state_dict):
+    def _load_state_dict_uint8(self, state_dict):
         """
         Load optimizer state while preserving UINT8 dtypes.
 
@@ -433,6 +433,49 @@ class AdamW8bit_RingBuffer(Optimizer):
 
         param_groups = [update_group(g, ng) for g, ng in zip(groups, saved_groups)]
         self.__setstate__({"state": state, "param_groups": param_groups})
+
+    def state_dict(self):
+        """
+        Override state_dict to include Schedule-Free/RAdam specific state.
+
+        PyTorch's default Optimizer.state_dict() only saves state and param_groups,
+        but Schedule-Free and RAdam need additional counters (k, weight_sum, lr_max).
+        """
+        state_dict = super().state_dict()
+
+        # Add Schedule-Free/RAdam specific state
+        if self.schedule_free or self.use_radam:
+            state_dict['k'] = self.k
+            state_dict['weight_sum'] = self.weight_sum
+            state_dict['lr_max'] = self.lr_max
+            if self.schedule_free:
+                state_dict['train_mode'] = self.train_mode
+
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        """
+        Override load_state_dict to restore Schedule-Free/RAdam specific state.
+
+        This calls our custom UINT8-preserving load_state_dict
+        and then restores our additional counters.
+        """
+        # First, call our custom load_state_dict for UINT8 preservation
+        self._load_state_dict_uint8(state_dict)
+
+        # Restore Schedule-Free/RAdam specific state
+        if 'k' in state_dict:
+            self.k = state_dict['k']
+            print(f"[AdamW8bit_RingBuffer] Restored step counter k={self.k}")
+        if 'weight_sum' in state_dict:
+            self.weight_sum = state_dict['weight_sum']
+            print(f"[AdamW8bit_RingBuffer] Restored weight_sum={self.weight_sum}")
+        if 'lr_max' in state_dict:
+            self.lr_max = state_dict['lr_max']
+            print(f"[AdamW8bit_RingBuffer] Restored lr_max={self.lr_max}")
+        if 'train_mode' in state_dict:
+            self.train_mode = state_dict['train_mode']
+            print(f"[AdamW8bit_RingBuffer] Restored train_mode={self.train_mode}")
 
     @torch.no_grad()
     def step(self, closure=None):

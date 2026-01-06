@@ -249,7 +249,10 @@ class ImprovedConvBlock(nn.Module):
 
 class CrossAttentionBlock(nn.Module):
     """
-    Cross-Attention block for multi-modal conditioning.
+    Memory-efficient Cross-Attention block using Flash Attention.
+
+    Uses scaled_dot_product_attention instead of nn.MultiheadAttention
+    to avoid storing massive attention weight matrices (25.8GB per layer).
 
     Attends to SigLIP-2 text/image embeddings.
     """
@@ -266,28 +269,27 @@ class CrossAttentionBlock(nn.Module):
         self.channels = channels
         self.context_dim = context_dim
         self.num_heads = num_heads
+        self.head_dim = channels // num_heads
 
-        # Layer norm
+        assert channels % num_heads == 0, \
+            f"channels ({channels}) must be divisible by num_heads ({num_heads})"
+
+        # Layer norms
         self.norm1 = nn.LayerNorm(channels)
         self.norm2 = nn.LayerNorm(channels)
+        self.norm3 = nn.LayerNorm(channels)
 
-        # Self-attention
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=channels,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True
-        )
+        # Self-attention projections
+        self.to_q = nn.Linear(channels, channels, bias=False)
+        self.to_k = nn.Linear(channels, channels, bias=False)
+        self.to_v = nn.Linear(channels, channels, bias=False)
+        self.to_out = nn.Linear(channels, channels)
 
-        # Cross-attention (to conditioning)
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=channels,
-            num_heads=num_heads,
-            kdim=context_dim,
-            vdim=context_dim,
-            dropout=dropout,
-            batch_first=True
-        )
+        # Cross-attention projections
+        self.to_q_cross = nn.Linear(channels, channels, bias=False)
+        self.to_k_cross = nn.Linear(context_dim, channels, bias=False)
+        self.to_v_cross = nn.Linear(context_dim, channels, bias=False)
+        self.to_out_cross = nn.Linear(channels, channels)
 
         # FFN
         self.ffn = nn.Sequential(
@@ -298,7 +300,7 @@ class CrossAttentionBlock(nn.Module):
             nn.Dropout(dropout)
         )
 
-        self.norm3 = nn.LayerNorm(channels)
+        self.dropout = dropout
 
     def forward(
         self,
@@ -316,17 +318,40 @@ class CrossAttentionBlock(nn.Module):
         B, C, H, W = x.shape
 
         # Flatten spatial dimensions: [B, C, H, W] -> [B, H*W, C]
-        x_flat = x.view(B, C, H * W).permute(0, 2, 1)
+        x_flat = x.view(B, C, H * W).permute(0, 2, 1).contiguous()
 
-        # Self-attention
+        # Self-attention with Flash Attention
         x_norm = self.norm1(x_flat)
-        x_attn, _ = self.self_attn(x_norm, x_norm, x_norm)
-        x_flat = x_flat + x_attn
+        q = self.to_q(x_norm).view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.to_k(x_norm).view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.to_v(x_norm).view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Cross-attention
+        # Flash Attention v2 (no attention weights stored)
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.0
+        )
+
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, H * W, C)
+        attn_output = self.to_out(attn_output)
+        x_flat = x_flat + attn_output
+
+        # Cross-attention with Flash Attention
         x_norm = self.norm2(x_flat)
-        x_cross, _ = self.cross_attn(x_norm, context, context)
-        x_flat = x_flat + x_cross
+        seq_len_ctx = context.size(1)
+
+        q_cross = self.to_q_cross(x_norm).view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
+        k_cross = self.to_k_cross(context).view(B, seq_len_ctx, self.num_heads, self.head_dim).transpose(1, 2)
+        v_cross = self.to_v_cross(context).view(B, seq_len_ctx, self.num_heads, self.head_dim).transpose(1, 2)
+
+        cross_output = torch.nn.functional.scaled_dot_product_attention(
+            q_cross, k_cross, v_cross,
+            dropout_p=self.dropout if self.training else 0.0
+        )
+
+        cross_output = cross_output.transpose(1, 2).contiguous().view(B, H * W, C)
+        cross_output = self.to_out_cross(cross_output)
+        x_flat = x_flat + cross_output
 
         # FFN
         x_norm = self.norm3(x_flat)
@@ -334,7 +359,7 @@ class CrossAttentionBlock(nn.Module):
         x_flat = x_flat + x_ffn
 
         # Reshape back: [B, H*W, C] -> [B, C, H, W]
-        x = x_flat.permute(0, 2, 1).view(B, C, H, W)
+        x = x_flat.permute(0, 2, 1).contiguous().view(B, C, H, W)
 
         return x
 

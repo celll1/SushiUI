@@ -683,15 +683,17 @@ class DeusUNet(nn.Module):
         x = self.rope_2d(x)
 
         # Down blocks (with sparse skip connections)
-        skip_connections = []
+        # Pre-allocate list to avoid dynamic growth
+        num_down_blocks = len(self.down_blocks)
+        skip_connections = [None] * num_down_blocks
+
         for i, down_block in enumerate(self.down_blocks):
             x, skip = down_block(x, t_emb, encoder_hidden_states)
 
             # Save skip only if interval matches
             if i % self.config.skip_connection_interval == 0:
-                skip_connections.append(skip)
-            else:
-                skip_connections.append(None)
+                skip_connections[i] = skip
+            # else: skip_connections[i] remains None
 
         # Mid block
         for layer in self.mid_block:
@@ -701,8 +703,8 @@ class DeusUNet(nn.Module):
                 x = layer(x, t_emb)
 
         # Up blocks (with sparse skip connections)
-        skip_connections = list(reversed(skip_connections))
-        for up_block, skip in zip(self.up_blocks, skip_connections):
+        # Use reversed() iterator to avoid creating new list
+        for up_block, skip in zip(self.up_blocks, reversed(skip_connections)):
             x = up_block(x, skip, t_emb, encoder_hidden_states)
 
         # Output projection

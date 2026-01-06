@@ -659,6 +659,15 @@ class ModelLoader:
         model_type = ModelLoader.detect_model_type(file_path)
         print(f"[ModelLoader] Detected model type: {model_type}")
 
+        # DEUS architecture
+        if model_type == "deus":
+            print(f"[ModelLoader] Loading as DEUS architecture")
+            return ModelLoader.load_deus_architecture(
+                model_path=file_path,
+                device=device,
+                torch_dtype=torch_dtype
+            )
+
         # Z-Image Comfy format
         if model_type == "zimage":
             print(f"[ModelLoader] Loading as Z-Image (Comfy safetensors format)")
@@ -1035,6 +1044,22 @@ class ModelLoader:
                     f"DEUS architecture requires .safetensors checkpoint. "
                     f"Got: {model_path}"
                 )
+
+            # Auto-detect variant from checkpoint metadata
+            try:
+                from safetensors import safe_open
+                with safe_open(model_path, framework='pt', device='cpu') as f:
+                    metadata = f.metadata() or {}
+                    # Check for variant in metadata (prefer "unet_variant", fallback to "variant")
+                    detected_variant = metadata.get("unet_variant") or metadata.get("variant")
+                    if detected_variant:
+                        print(f"[ModelLoader] Auto-detected variant from checkpoint: {detected_variant}")
+                        unet_variant = detected_variant
+                    else:
+                        print(f"[ModelLoader] No variant in metadata, using default: {unet_variant}")
+            except Exception as e:
+                print(f"[ModelLoader] Warning: Could not read checkpoint metadata: {e}")
+                print(f"[ModelLoader] Using default variant: {unet_variant}")
 
             print(f"[ModelLoader] Loading from checkpoint: {model_path}")
             pipeline = load_deus_pipeline_from_checkpoint(

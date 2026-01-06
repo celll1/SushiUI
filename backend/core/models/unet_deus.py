@@ -111,23 +111,40 @@ class UNetConfig:
 
 class RoPE2D(nn.Module):
     """
-    2D Rotary Position Embedding (from Z-Image).
+    Resolution-Adaptive 2D Rotary Position Embedding.
 
-    Applies rotary embeddings to spatial dimensions (H, W) of latents.
+    Applies resolution-adaptive rotary embeddings to spatial dimensions (H, W) of latents.
+    Position indices are normalized by resolution ratio to maintain consistent positional
+    information across different resolutions.
+
+    Key improvement: Allows generation at resolutions different from training while
+    maintaining consistent behavior and quality.
+
+    References:
+    - RoFormer: https://arxiv.org/abs/2104.09864
+    - Position Interpolation: https://arxiv.org/abs/2306.15595
     """
 
-    def __init__(self, dim: int, max_resolution: int = 256):
+    def __init__(
+        self,
+        dim: int,
+        train_resolution: int = 128,
+        max_resolution: int = 512,
+        base: float = 10000.0
+    ):
         super().__init__()
         self.dim = dim
-        self.max_resolution = max_resolution
+        self.train_resolution = train_resolution  # Training resolution in latent space (1024px / 8 = 128)
+        self.max_resolution = max_resolution      # Max expected resolution (4096px / 8 = 512)
+        self.base = base
 
-        # Precompute frequency bands
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        # Precompute frequency bands: θ_i = base^(-2i/d)
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Apply 2D RoPE to input tensor.
+        Apply resolution-adaptive 2D RoPE to input tensor.
 
         Args:
             x: Input [batch, channels, height, width]
@@ -137,9 +154,16 @@ class RoPE2D(nn.Module):
         """
         B, C, H, W = x.shape
 
-        # Generate position indices
-        pos_h = torch.arange(H, device=x.device, dtype=torch.float32)
-        pos_w = torch.arange(W, device=x.device, dtype=torch.float32)
+        # Resolution scaling factors (normalize by training resolution)
+        scale_h = H / self.train_resolution
+        scale_w = W / self.train_resolution
+
+        # Normalized position indices (relative to training resolution)
+        # At 2x training resolution: [0, 0.5, 1.0, 1.5, ..., 127.5]
+        # At 1x training resolution: [0, 1, 2, ..., 127]
+        # At 0.5x training resolution: [0, 2, 4, ..., 126]
+        pos_h = torch.arange(H, device=x.device, dtype=torch.float32) / scale_h
+        pos_w = torch.arange(W, device=x.device, dtype=torch.float32) / scale_w
 
         # Compute sinusoidal embeddings
         # For height dimension
@@ -154,7 +178,7 @@ class RoPE2D(nn.Module):
         emb_h = emb_h.unsqueeze(1).expand(-1, W, -1)  # [H, W, dim]
         emb_w = emb_w.unsqueeze(0).expand(H, -1, -1)  # [H, W, dim]
 
-        # Combine (simple addition for now)
+        # Combine (addition maintains independence of H and W components)
         emb_2d = emb_h + emb_w  # [H, W, dim]
 
         # Match channel count (repeat or slice)
@@ -538,8 +562,13 @@ class DeusUNet(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim)
         )
 
-        # RoPE 2D
-        self.rope_2d = RoPE2D(dim=config.model_channels)
+        # RoPE 2D (Resolution-Adaptive)
+        self.rope_2d = RoPE2D(
+            dim=config.model_channels,
+            train_resolution=128,  # 1024px / 8 (VAE downscaling factor)
+            max_resolution=512,    # 4096px / 8 (maximum resolution support)
+            base=10000.0
+        )
 
         # Input projection
         self.conv_in = nn.Conv2d(config.in_channels, config.model_channels, kernel_size=3, padding=1)

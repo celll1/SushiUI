@@ -252,16 +252,25 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             trainer.unet.train()
 
         if trainer.train_text_encoder and trainer.text_encoder is not None:
-            # SigLIP2Wrapper: enable gradients for text_model
-            trainer.text_encoder.text_model.requires_grad_(True)
-            trainer.text_encoder.text_model.train()
+            # SigLIP2MultiModalEncoder wrapper: text_encoder is the wrapper, text_encoder.text_encoder is SigLIP2TextEncoder
+            if hasattr(trainer.text_encoder, 'text_encoder'):
+                trainer.text_encoder.text_encoder.requires_grad_(True)
+                trainer.text_encoder.text_encoder.train()
+            else:
+                # Fallback: if not wrapped, enable gradients directly
+                trainer.text_encoder.requires_grad_(True)
+                trainer.text_encoder.train()
 
         # Image Encoder (future T2I support, currently disabled)
         train_image_encoder = getattr(trainer, 'train_image_encoder', False)
         if train_image_encoder and trainer.text_encoder is not None:
-            # SigLIP2Wrapper: enable gradients for image_model
-            trainer.text_encoder.image_model.requires_grad_(True)
-            trainer.text_encoder.image_model.train()
+            # SigLIP2MultiModalEncoder wrapper: text_encoder.image_encoder is SigLIP2ImageEncoder
+            if hasattr(trainer.text_encoder, 'image_encoder'):
+                trainer.text_encoder.image_encoder.requires_grad_(True)
+                trainer.text_encoder.image_encoder.train()
+            else:
+                # Fallback
+                print(f"[DEUSFullParameterAdapter] WARNING: image_encoder not found in wrapper")
 
         # VAE is always frozen
         if trainer.vae is not None:
@@ -290,20 +299,30 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
                 print(f"[DEUSFullParameterAdapter] U-Net params: {len(unet_params)}")
 
         if trainer.train_text_encoder and trainer.text_encoder is not None:
-            # SigLIP2Wrapper: collect text_model parameters
-            te_params = [p for p in trainer.text_encoder.text_model.parameters() if p.requires_grad]
-            if te_params:
-                params.append({"params": te_params, "lr": trainer.text_encoder_lr})
-                print(f"[DEUSFullParameterAdapter] Text Encoder params: {len(te_params)}")
+            # SigLIP2MultiModalEncoder wrapper: text_encoder.text_encoder is SigLIP2TextEncoder
+            if hasattr(trainer.text_encoder, 'text_encoder'):
+                te_params = [p for p in trainer.text_encoder.text_encoder.parameters() if p.requires_grad]
+                if te_params:
+                    params.append({"params": te_params, "lr": trainer.text_encoder_lr})
+                    print(f"[DEUSFullParameterAdapter] Text Encoder params: {len(te_params)}")
+            else:
+                # Fallback: collect from text_encoder directly
+                te_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
+                if te_params:
+                    params.append({"params": te_params, "lr": trainer.text_encoder_lr})
+                    print(f"[DEUSFullParameterAdapter] Text Encoder params: {len(te_params)}")
 
         # Image Encoder (future T2I support)
         train_image_encoder = getattr(trainer, 'train_image_encoder', False)
         if train_image_encoder and trainer.text_encoder is not None:
-            # SigLIP2Wrapper: collect image_model parameters
-            ie_params = [p for p in trainer.text_encoder.image_model.parameters() if p.requires_grad]
-            if ie_params:
-                params.append({"params": ie_params, "lr": trainer.image_encoder_lr})
-                print(f"[DEUSFullParameterAdapter] Image Encoder params: {len(ie_params)}")
+            # SigLIP2MultiModalEncoder wrapper: text_encoder.image_encoder is SigLIP2ImageEncoder
+            if hasattr(trainer.text_encoder, 'image_encoder'):
+                ie_params = [p for p in trainer.text_encoder.image_encoder.parameters() if p.requires_grad]
+                if ie_params:
+                    params.append({"params": ie_params, "lr": trainer.image_encoder_lr})
+                    print(f"[DEUSFullParameterAdapter] Image Encoder params: {len(ie_params)}")
+            else:
+                print(f"[DEUSFullParameterAdapter] WARNING: image_encoder not found in wrapper")
 
         return params
 

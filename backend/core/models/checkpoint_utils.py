@@ -198,11 +198,64 @@ def load_unified_checkpoint(
     if load_unet and len(unet_state) > 0:
         print(f"[Checkpoint] Loading U-Net weights...")
         try:
-            unet.load_state_dict(unet_state, strict=True)
+            # Check for shape mismatches before loading
+            model_state = unet.state_dict()
+            shape_mismatches = []
+            missing_keys = []
+            unexpected_keys = []
+            
+            for key in unet_state.keys():
+                if key not in model_state:
+                    unexpected_keys.append(key)
+                elif unet_state[key].shape != model_state[key].shape:
+                    shape_mismatches.append({
+                        'key': key,
+                        'checkpoint_shape': list(unet_state[key].shape),
+                        'model_shape': list(model_state[key].shape)
+                    })
+            
+            for key in model_state.keys():
+                if key not in unet_state:
+                    missing_keys.append(key)
+            
+            if shape_mismatches:
+                print(f"[Checkpoint] ERROR: Found {len(shape_mismatches)} shape mismatches:")
+                for mismatch in shape_mismatches[:20]:  # Show first 20
+                    print(f"  {mismatch['key']}: checkpoint={mismatch['checkpoint_shape']}, model={mismatch['model_shape']}")
+                if len(shape_mismatches) > 20:
+                    print(f"  ... and {len(shape_mismatches) - 20} more")
+                print(f"[Checkpoint] Cannot load U-Net weights due to shape mismatches!")
+                print(f"[Checkpoint] U-Net will remain randomly initialized")
+                raise RuntimeError(f"Shape mismatches detected: {len(shape_mismatches)} keys")
+            
+            if unexpected_keys:
+                print(f"[Checkpoint] WARNING: Found {len(unexpected_keys)} unexpected keys in checkpoint (will be ignored)")
+                if len(unexpected_keys) <= 10:
+                    for key in unexpected_keys:
+                        print(f"  {key}")
+                else:
+                    for key in unexpected_keys[:10]:
+                        print(f"  {key}")
+                    print(f"  ... and {len(unexpected_keys) - 10} more")
+            
+            if missing_keys:
+                print(f"[Checkpoint] WARNING: Found {len(missing_keys)} missing keys (will remain randomly initialized)")
+                if len(missing_keys) <= 10:
+                    for key in missing_keys:
+                        print(f"  {key}")
+                else:
+                    for key in missing_keys[:10]:
+                        print(f"  {key}")
+                    print(f"  ... and {len(missing_keys) - 10} more")
+            
+            # Load with strict=False to allow missing keys, but shape mismatches will raise error
+            unet.load_state_dict(unet_state, strict=False)
             print(f"[Checkpoint] U-Net weights loaded successfully!")
         except RuntimeError as e:
-            print(f"[Checkpoint] WARNING: Failed to load U-Net weights (size mismatch): {e}")
+            print(f"[Checkpoint] ERROR: Failed to load U-Net weights: {e}")
             print(f"[Checkpoint] U-Net will remain randomly initialized")
+            import traceback
+            traceback.print_exc()
     elif load_unet and len(unet_state) == 0:
         print(f"[Checkpoint] WARNING: No U-Net weights found in checkpoint!")
     elif not load_unet:

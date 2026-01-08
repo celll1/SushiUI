@@ -46,6 +46,7 @@ class FullParameterTrainer(BaseTrainer):
         self,
         train_unet: bool = True,
         train_text_encoder: bool = False,
+        train_image_encoder: bool = False,  # DEUS Image Encoder (future T2I support)
         **kwargs
     ):
         """
@@ -54,11 +55,13 @@ class FullParameterTrainer(BaseTrainer):
         Args:
             train_unet: Whether to train U-Net/Transformer
             train_text_encoder: Whether to train Text Encoder(s)
+            train_image_encoder: Whether to train Image Encoder (DEUS only, future T2I)
             **kwargs: Additional arguments passed to BaseTrainer
         """
         # Full fine-tune settings (set before super().__init__)
         self.train_unet = train_unet
         self.train_text_encoder = train_text_encoder
+        self.train_image_encoder = train_image_encoder
 
         # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
@@ -73,7 +76,7 @@ class FullParameterTrainer(BaseTrainer):
         self._prepare_models()
 
         print(f"{self.log_prefix} Initialized")
-        print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}")
+        print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")
 
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""

@@ -442,6 +442,7 @@ class BaseTrainer(ABC):
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        image_encoder_lr: Optional[float] = None,  # DEUS Image Encoder (future T2I support)
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
@@ -493,6 +494,7 @@ class BaseTrainer(ABC):
         self.text_encoder_lr = text_encoder_lr if text_encoder_lr is not None else learning_rate
         self.text_encoder_1_lr = text_encoder_1_lr if text_encoder_1_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
         self.text_encoder_2_lr = text_encoder_2_lr if text_encoder_2_lr is not None else text_encoder_lr if text_encoder_lr is not None else learning_rate
+        self.image_encoder_lr = image_encoder_lr if image_encoder_lr is not None else learning_rate
 
         # Block Swap settings (training VRAM optimization)
         self.blocks_to_swap = blocks_to_swap

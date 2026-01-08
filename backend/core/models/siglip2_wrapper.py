@@ -57,12 +57,15 @@ class SigLIP2TextEncoder(nn.Module):
                 print(f"[SigLIP2] Config loaded in {config_time:.2f}s")
 
             # Create model with config but no weights
+            # Optimized: Create on CPU first without dtype (faster), dtype will be set after weight loading
             start_time = time.time()
             self.model = AutoModel.from_config(
                 config,
-                trust_remote_code=True,
-                torch_dtype=dtype
+                trust_remote_code=True
+                # Don't set torch_dtype here - it's slow for large models on CPU
+                # We'll convert to dtype after weight loading
             )
+            # Keep on CPU for now (will move to device after weight loading)
             model_time = time.time() - start_time
             print(f"[SigLIP2] Model structure created in {model_time:.2f}s")
 
@@ -78,8 +81,8 @@ class SigLIP2TextEncoder(nn.Module):
             tokenizer_time = time.time() - start_time
             print(f"[SigLIP2] Tokenizer loaded in {tokenizer_time:.2f}s")
 
-            # Move to device
-            self.text_model = self.text_model.to(device)
+            # Note: Device move will happen after weight loading (in checkpoint_utils.py)
+            # This avoids moving uninitialized weights to GPU, which is slow
 
             # Get config
             self.config = self.text_model.config
@@ -273,12 +276,15 @@ class SigLIP2ImageEncoder(nn.Module):
                 print(f"[SigLIP2] Config loaded in {config_time:.2f}s")
 
             # Create model with config but no weights
+            # Optimized: Create on CPU first without dtype (faster), dtype will be set after weight loading
             start_time = time.time()
             self.model = AutoModel.from_config(
                 config,
-                trust_remote_code=True,
-                torch_dtype=dtype
+                trust_remote_code=True
+                # Don't set torch_dtype here - it's slow for large models on CPU
+                # We'll convert to dtype after weight loading
             )
+            # Keep on CPU for now (will move to device after weight loading)
             model_time = time.time() - start_time
             print(f"[SigLIP2] Model structure created in {model_time:.2f}s")
 
@@ -294,8 +300,8 @@ class SigLIP2ImageEncoder(nn.Module):
             processor_time = time.time() - start_time
             print(f"[SigLIP2] Processor loaded in {processor_time:.2f}s")
 
-            # Move to device
-            self.vision_model = self.vision_model.to(device)
+            # Note: Device move will happen after weight loading (in checkpoint_utils.py)
+            # This avoids moving uninitialized weights to GPU, which is slow
 
             # Get config
             self.config = self.vision_model.config

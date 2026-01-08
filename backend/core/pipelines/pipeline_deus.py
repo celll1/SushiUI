@@ -8,7 +8,7 @@ Components:
 - Text Encoder: SigLIP-2
 - Image Encoder: SigLIP-2 (optional)
 - U-Net: DEUS architecture with RoPE and sparse skip connections
-- VAE: FLUX VAE (16-channel latents)
+- VAE: SDXL VAE (4-channel latents)
 - Scheduler: Standard diffusion schedulers (Euler, DPM++, etc.)
 
 Supports:
@@ -25,7 +25,7 @@ import numpy as np
 from tqdm import tqdm
 
 from ..models.siglip2_wrapper import SigLIP2MultiModalEncoder
-from ..models.flux_vae_wrapper import FluxVAEWrapper
+from ..models.sdxl_vae_wrapper import SDXLVAEWrapper
 from ..models.unet_deus import DeusUNet, UNetConfig
 
 
@@ -38,7 +38,7 @@ class DeusPipeline(nn.Module):
     def __init__(
         self,
         unet: DeusUNet,
-        vae: FluxVAEWrapper,
+        vae: SDXLVAEWrapper,
         encoder: SigLIP2MultiModalEncoder,
         scheduler: Optional[Any] = None,
         dtype: torch.dtype = torch.float16,
@@ -313,7 +313,7 @@ def create_deus_pipeline(
     )
 
     # Create VAE
-    vae = FluxVAEWrapper(
+    vae = SDXLVAEWrapper(
         dtype=dtype,
         device=device
     )
@@ -398,7 +398,7 @@ def load_deus_pipeline_from_checkpoint(
     # Create VAE if not in checkpoint
     if vae is None:
         print(f"[Pipeline] Creating new VAE (not in checkpoint)...")
-        vae = FluxVAEWrapper(dtype=dtype, device=device)
+        vae = SDXLVAEWrapper(dtype=dtype, device=device)
 
     # Create pipeline
     pipeline = DeusPipeline(

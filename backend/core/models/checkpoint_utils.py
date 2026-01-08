@@ -4,7 +4,7 @@ Checkpoint utilities for DEUS Architecture
 Handles saving and loading unified checkpoints containing:
 - SigLIP-2 text/image encoders
 - DEUS U-Net (Dual-Embeddings U-Net Structure)
-- FLUX VAE
+- SDXL VAE
 
 Format similar to SDXL safetensors (all components in one file).
 """
@@ -17,14 +17,14 @@ import time
 
 from .siglip2_wrapper import SigLIP2TextEncoder, SigLIP2ImageEncoder
 from .unet_deus import DeusUNet, UNetConfig
-from .flux_vae_wrapper import FluxVAEWrapper
+from .sdxl_vae_wrapper import SDXLVAEWrapper
 
 
 def save_unified_checkpoint(
     unet: DeusUNet,
     text_encoder: Optional[SigLIP2TextEncoder] = None,
     image_encoder: Optional[SigLIP2ImageEncoder] = None,
-    vae: Optional[FluxVAEWrapper] = None,
+    vae: Optional[SDXLVAEWrapper] = None,
     output_path: str = "models/deus_model.safetensors",
     metadata: Optional[Dict[str, str]] = None
 ):
@@ -35,7 +35,7 @@ def save_unified_checkpoint(
         unet: DEUS U-Net model
         text_encoder: SigLIP-2 text encoder (if None, not saved)
         image_encoder: SigLIP-2 image encoder (if None, not saved)
-        vae: FLUX VAE (if None, not saved)
+        vae: SDXL VAE (if None, not saved)
         output_path: Path to save checkpoint
         metadata: Additional metadata
     """
@@ -74,13 +74,24 @@ def save_unified_checkpoint(
     # Prepare metadata
     checkpoint_metadata = {
         "model_type": "deus",
-        "architecture": "DEUS Architecture (Dual-Embeddings U-Net Structure: SigLIP-2 + U-Net + FLUX VAE)",
+        "architecture": "DEUS Architecture (Dual-Embeddings U-Net Structure: SigLIP-2 + U-Net + SDXL VAE)",
         "unet_variant": unet.config.variant,
         "latent_channels": str(unet.config.latent_channels),
         "context_dim": str(unet.config.context_dim),
         "model_channels": str(unet.config.model_channels),
         "channel_mult": str(unet.config.channel_mult),
+        "attention_head_dim": str(unet.config.attention_head_dim),
+        "num_attention_heads": str(unet.config.num_attention_heads),
+        "transformer_layers_per_block": str(unet.config.transformer_layers_per_block),
+        "transformer_layers_per_mid_block": str(unet.config.transformer_layers_per_mid_block),
         "skip_connection_interval": str(unet.config.skip_connection_interval),
+        "model_channels": str(unet.config.model_channels),
+        "channel_mult": str(unet.config.channel_mult),
+        "skip_connection_interval": str(unet.config.skip_connection_interval),
+        "attention_head_dim": str(unet.config.attention_head_dim),
+        "num_attention_heads": str(unet.config.num_attention_heads),
+        "transformer_layers_per_block": str(unet.config.transformer_layers_per_block),
+        "transformer_layers_per_mid_block": str(unet.config.transformer_layers_per_mid_block),
         "has_text_encoder": str(text_encoder is not None),
         "has_image_encoder": str(image_encoder is not None),
         "has_vae": str(vae is not None),
@@ -114,7 +125,8 @@ def load_unified_checkpoint(
     dtype: torch.dtype = torch.float16,
     load_text_encoder: bool = True,
     load_image_encoder: bool = True,
-    load_vae: bool = True
+    load_vae: bool = True,
+    load_unet: bool = True
 ) -> Dict[str, Any]:
     """
     Load unified checkpoint.
@@ -127,6 +139,7 @@ def load_unified_checkpoint(
         load_text_encoder: Load text encoder from checkpoint
         load_image_encoder: Load image encoder from checkpoint
         load_vae: Load VAE from checkpoint
+        load_unet: Load U-Net weights from checkpoint (if False, U-Net will be randomly initialized)
 
     Returns:
         Dict with keys: 'unet', 'text_encoder', 'image_encoder', 'vae', 'metadata'
@@ -182,11 +195,19 @@ def load_unified_checkpoint(
     unet = DeusUNet(config)
     unet = unet.to(dtype).to(device)
 
-    if len(unet_state) > 0:
+    if load_unet and len(unet_state) > 0:
         print(f"[Checkpoint] Loading U-Net weights...")
-        unet.load_state_dict(unet_state)
-    else:
+        try:
+            unet.load_state_dict(unet_state, strict=True)
+            print(f"[Checkpoint] U-Net weights loaded successfully!")
+        except RuntimeError as e:
+            print(f"[Checkpoint] WARNING: Failed to load U-Net weights (size mismatch): {e}")
+            print(f"[Checkpoint] U-Net will remain randomly initialized")
+    elif load_unet and len(unet_state) == 0:
         print(f"[Checkpoint] WARNING: No U-Net weights found in checkpoint!")
+    elif not load_unet:
+        print(f"[Checkpoint] Skipping U-Net weight loading (load_unet=False)")
+        print(f"[Checkpoint] U-Net will remain randomly initialized")
 
     # Load shared config once (text encoder and image encoder use the same model)
     shared_config = None
@@ -213,9 +234,26 @@ def load_unified_checkpoint(
         
         print(f"[Checkpoint] Loading text encoder weights...")
         start_time = time.time()
-        text_encoder.text_model.load_state_dict(text_encoder_state)
+        
+        # Optimized: Load weights directly (faster than load_state_dict for large models)
+        # Convert weights to dtype and device before loading
+        with torch.no_grad():
+            for name, param in text_encoder.text_model.named_parameters():
+                if name in text_encoder_state:
+                    param.data = text_encoder_state[name].to(dtype=dtype, device=device)
+                else:
+                    print(f"[Checkpoint] WARNING: Missing weight for {name}")
+            
+            # Also handle buffers (e.g., LayerNorm running_mean/running_var)
+            for name, buffer in text_encoder.text_model.named_buffers():
+                if name in text_encoder_state:
+                    buffer.data = text_encoder_state[name].to(dtype=dtype, device=device)
+        
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Text encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
+        
+        # Model is already on device (weights were loaded directly to device)
+        print(f"[Checkpoint] Text encoder ready on {device}")
     elif load_text_encoder:
         print(f"[Checkpoint] WARNING: No text encoder weights found in checkpoint!")
 
@@ -230,9 +268,26 @@ def load_unified_checkpoint(
         
         print(f"[Checkpoint] Loading image encoder weights...")
         start_time = time.time()
-        image_encoder.vision_model.load_state_dict(image_encoder_state)
+        
+        # Optimized: Load weights directly (faster than load_state_dict for large models)
+        # Convert weights to dtype and device before loading
+        with torch.no_grad():
+            for name, param in image_encoder.vision_model.named_parameters():
+                if name in image_encoder_state:
+                    param.data = image_encoder_state[name].to(dtype=dtype, device=device)
+                else:
+                    print(f"[Checkpoint] WARNING: Missing weight for {name}")
+            
+            # Also handle buffers (e.g., LayerNorm running_mean/running_var)
+            for name, buffer in image_encoder.vision_model.named_buffers():
+                if name in image_encoder_state:
+                    buffer.data = image_encoder_state[name].to(dtype=dtype, device=device)
+        
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Image encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
+        
+        # Model is already on device (weights were loaded directly to device)
+        print(f"[Checkpoint] Image encoder ready on {device}")
     elif load_image_encoder:
         print(f"[Checkpoint] WARNING: No image encoder weights found in checkpoint!")
 
@@ -240,7 +295,7 @@ def load_unified_checkpoint(
     vae = None
     if load_vae and len(vae_state) > 0:
         print(f"[Checkpoint] Creating VAE (from checkpoint)...")
-        vae = FluxVAEWrapper(dtype=dtype, device=device, load_from_checkpoint=True)
+        vae = SDXLVAEWrapper(dtype=dtype, device=device, load_from_checkpoint=True)
         print(f"[Checkpoint] Loading VAE weights...")
         # Use strict=False to allow missing keys (quant_conv, post_quant_conv are optional)
         missing_keys, unexpected_keys = vae.vae.load_state_dict(vae_state, strict=False)

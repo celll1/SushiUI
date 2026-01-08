@@ -301,7 +301,11 @@ def custom_sampling_loop(
 
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
-    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
+
+    # Check if DEUS by checking pipeline class name
+    is_deus = type(pipeline).__name__ == 'DeusPipeline'
+
+    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
 
     # Use ancestral_generator for stochastic samplers (always provided by pipeline)
     step_generator = ancestral_generator
@@ -481,48 +485,62 @@ def custom_sampling_loop(
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
 
-        # Prepare latent input: single batch if no CFG needed, double batch otherwise
-        if do_classifier_free_guidance:
+        # Determine CFG mode: DEUS uses 2-pass CFG (allows different seq_len), others use batch approach
+        use_two_pass_cfg = is_deus and do_classifier_free_guidance and not nag_active
+
+        # Prepare latent input based on CFG mode
+        if nag_active:
+            # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
             # NAG processors will apply guidance in attention space on positive batch
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-            # Prepare prompt embeddings based on CFG and NAG configuration
+            # Prepare prompt embeddings for NAG
             # Official NAG implementation concatenates: [cfg_negative, cfg_positive] + [nag_negative]
-            if nag_active:
-                # NAG mode (following official implementation):
-                # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
-                # Pad NAG negative embeddings to match the longest sequence length
-                max_seq_len = max(
-                    current_negative_prompt_embeds.shape[1],
-                    current_prompt_embeds.shape[1],
-                    nag_negative_prompt_embeds.shape[1]
-                )
+            # NAG mode (following official implementation):
+            # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+            # Pad NAG negative embeddings to match the longest sequence length
+            max_seq_len = max(
+                current_negative_prompt_embeds.shape[1],
+                current_prompt_embeds.shape[1],
+                nag_negative_prompt_embeds.shape[1]
+            )
 
-                # Pad each embedding to max_seq_len with zeros
-                def pad_embeds(embeds, target_len):
-                    if embeds.shape[1] < target_len:
-                        pad_len = target_len - embeds.shape[1]
-                        padding = torch.zeros(
-                            embeds.shape[0], pad_len, embeds.shape[2],
-                            dtype=embeds.dtype, device=embeds.device
-                        )
-                        return torch.cat([embeds, padding], dim=1)
-                    return embeds
+            # Pad each embedding to max_seq_len with zeros
+            def pad_embeds(embeds, target_len):
+                if embeds.shape[1] < target_len:
+                    pad_len = target_len - embeds.shape[1]
+                    padding = torch.zeros(
+                        embeds.shape[0], pad_len, embeds.shape[2],
+                        dtype=embeds.dtype, device=embeds.device
+                    )
+                    return torch.cat([embeds, padding], dim=1)
+                return embeds
 
-                current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
-                current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
-                nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
+            current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
+            current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
+            nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
 
-                prompt_embeds_input = torch.cat([
-                    current_negative_prompt_embeds_padded,
-                    current_prompt_embeds_padded,
-                    nag_negative_prompt_embeds_padded
-                ], dim=0)
-            else:
-                # Standard CFG: [negative, positive] (batch=2)
-                prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+            prompt_embeds_input = torch.cat([
+                current_negative_prompt_embeds_padded,
+                current_prompt_embeds_padded,
+                nag_negative_prompt_embeds_padded
+            ], dim=0)
+        elif use_two_pass_cfg:
+            # DEUS 2-pass CFG: Use single-batch latent input
+            # No batch concatenation - negative and positive will be passed separately
+            latent_model_input = latents
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+            # Store prompt embeddings for later (will be used in separate U-Net passes)
+            # No concatenation here - each pass will use its own embeddings
+            prompt_embeds_input = current_prompt_embeds  # Positive embeddings (used for positive pass)
+        elif do_classifier_free_guidance:
+            # Standard CFG (SDXL/SD1.5): Use batch approach [negative, positive] (batch=2)
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+            prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
         else:
             # CFG = 1.0: only use conditional (positive) pass
             latent_model_input = latents
@@ -531,6 +549,7 @@ def custom_sampling_loop(
 
         # Prepare added conditions for SDXL
         added_cond_kwargs = {}
+        added_cond_kwargs_negative = {}  # For DEUS 2-pass CFG
         if is_sdxl:
             # SDXL requires time_ids
             original_size = (height, width)

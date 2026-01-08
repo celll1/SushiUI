@@ -1662,7 +1662,12 @@ class BaseTrainer(ABC):
         Returns:
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
+            For DEUS: text_embeddings tensor (SigLIP-2, variable-length support)
         """
+        # DEUS: SigLIP-2 supports variable-length inputs without chunking
+        if self.is_deus:
+            return self._encode_prompt_deus(prompt, requires_grad)
+
         # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
         tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
         tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
@@ -1767,6 +1772,55 @@ class BaseTrainer(ABC):
                     )[0]
 
                 return text_embeddings
+
+    def _encode_prompt_deus(self, prompt: str, requires_grad: bool = False):
+        """
+        Encode prompt for DEUS using SigLIP-2 (variable-length support, no chunking).
+
+        Args:
+            prompt: Text prompt to encode
+            requires_grad: Whether to enable gradient computation for text encoder
+
+        Returns:
+            text_embeddings tensor (no pooled output for SigLIP-2)
+        """
+        # Get max_position_embeddings from text encoder config
+        if hasattr(self.text_encoder, 'config') and hasattr(self.text_encoder.config, 'max_position_embeddings'):
+            max_length = self.text_encoder.config.max_position_embeddings
+        else:
+            max_length = 4096  # SigLIP-2 default
+
+        # SigLIP-2 tokenizer: use max_position_embeddings as max_length
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+        # Check if text encoder has FP8 weights (requires autocast)
+        has_fp8_weights = self._has_fp8_text_encoder()
+
+        with context_manager:
+            # For FP8 quantized text encoder, use autocast for mixed precision
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                    # SigLIP-2: returns last_hidden_state directly
+                    text_embeddings = self.text_encoder(
+                        text_inputs.input_ids.to(self.device),
+                        attention_mask=text_inputs.attention_mask.to(self.device) if hasattr(text_inputs, 'attention_mask') else None,
+                    )
+            else:
+                # SigLIP-2: returns last_hidden_state directly
+                text_embeddings = self.text_encoder(
+                    text_inputs.input_ids.to(self.device),
+                    attention_mask=text_inputs.attention_mask.to(self.device) if hasattr(text_inputs, 'attention_mask') else None,
+                )
+
+        return text_embeddings
 
     def _encode_prompt_chunked(self, prompt: str, requires_grad: bool = False):
         """

@@ -179,7 +179,10 @@ class SigLIP2TextEncoder(nn.Module):
             tokenizer_kwargs["truncation"] = True
 
         inputs = self.tokenizer(prompts, **tokenizer_kwargs)
-        inputs = {k: v.to(self.device_name) for k, v in inputs.items()}
+
+        # Get actual device from text_model (may differ from self.device_name if moved)
+        actual_device = next(self.text_model.parameters()).device
+        inputs = {k: v.to(actual_device) for k, v in inputs.items()}
 
         # Encode
         with torch.no_grad():
@@ -394,7 +397,10 @@ class SigLIP2ImageEncoder(nn.Module):
 
         # Process images
         inputs = self.processor(images=images, return_tensors="pt")
-        inputs = {k: v.to(self.device_name) for k, v in inputs.items()}
+
+        # Get actual device from vision_model (may differ from self.device_name if moved)
+        actual_device = next(self.vision_model.parameters()).device
+        inputs = {k: v.to(actual_device) for k, v in inputs.items()}
 
         # Encode
         with torch.no_grad():

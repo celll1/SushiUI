@@ -669,7 +669,7 @@ class DiffusionPipelineManager:
         width = params.get("width", 1024)
         num_inference_steps = params.get("steps", 28)
         guidance_scale = params.get("cfg_scale", 7.0)
-        clip_skip = 1  # SigLIP-2 CLIP skip (default: 1 = penultimate layer)
+        clip_skip = 0  # SigLIP-2: Use last layer (layer 27) for DEUS (same as training)
 
         # Seed handling
         seed = params.get("seed", -1)

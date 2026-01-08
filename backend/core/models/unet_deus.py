@@ -1328,10 +1328,10 @@ class DeusUNet(nn.Module):
             print(f"[DEUS] [U-Net Internal] RoPE 2D: {rope_time:.2f}ms")
 
         # Down blocks (with sparse skip connections)
-        # Pre-allocate list to avoid dynamic growth
-        num_down_blocks = len(self.down_blocks)
-        skip_connections = [None] * num_down_blocks
-        
+        # Use TUPLE (immutable) instead of list to avoid memory leak
+        # This matches diffusers SDXL implementation and allows PyTorch to optimize memory
+        down_block_res_samples = ()
+
         if is_step1:
             down_blocks_start = time.time()
             torch.cuda.synchronize()
@@ -1350,11 +1350,10 @@ class DeusUNet(nn.Module):
 
             x, skip = down_block(x, t_emb, encoder_hidden_states)
 
-            # Save skip only if interval matches
-            if i % self.config.skip_connection_interval == 0:
-                skip_connections[i] = skip
-            # else: skip_connections[i] remains None
-            
+            # ALWAYS append skip to tuple (even if sparse skip connection)
+            # Tuple concatenation allows immediate garbage collection vs list indexing
+            down_block_res_samples += (skip,)
+
             if is_step1:
                 torch.cuda.synchronize()
                 db_time = (time.time() - db_start) * 1000
@@ -1410,13 +1409,13 @@ class DeusUNet(nn.Module):
             print(f"[DEUS] [U-Net Internal] Mid block: {mid_time:.2f}ms")
 
         # Up blocks (with sparse skip connections)
-        # Use reversed() iterator to avoid creating new list
+        # Use reversed tuple - matches diffusers pattern for memory-efficient skip connection handling
         if is_step1:
             up_blocks_start = time.time()
             torch.cuda.synchronize()
             up_block_times = []
-        
-        for i, (up_block, skip) in enumerate(zip(self.up_blocks, reversed(skip_connections))):
+
+        for i, (up_block, skip) in enumerate(zip(self.up_blocks, reversed(down_block_res_samples))):
             if is_step1:
                 ub_start = time.time()
                 torch.cuda.synchronize()
@@ -1428,7 +1427,7 @@ class DeusUNet(nn.Module):
                 up_block._gradient_checkpointing = True
 
             x = up_block(x, skip, t_emb, encoder_hidden_states)
-            
+
             if is_step1:
                 torch.cuda.synchronize()
                 ub_time = (time.time() - ub_start) * 1000
@@ -1437,7 +1436,11 @@ class DeusUNet(nn.Module):
                 # Clear flag
                 if hasattr(up_block, '_parent_is_step1'):
                     delattr(up_block, '_parent_is_step1')
-        
+
+        # Explicitly free skip connection tuple to ensure garbage collection
+        # Critical for preventing memory leak during gradient checkpointing
+        del down_block_res_samples
+
         if is_step1:
             torch.cuda.synchronize()
             up_blocks_time = (time.time() - up_blocks_start) * 1000

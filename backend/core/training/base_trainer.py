@@ -2813,8 +2813,19 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_deus] After loss calculation")
 
+        # Get loss value before cleanup
+        loss_value = loss.item()
+
+        # Free intermediate tensors explicitly to prevent VRAM accumulation
+        # CRITICAL: These tensors accumulate across training steps if not deleted
+        del noise, noisy_latents, model_pred, target
+        if 'snr' in locals():
+            del snr
+        if 'mse_loss_weights' in locals():
+            del mse_loss_weights
+
         # Return loss tensor (with grad) and scalar value (for logging)
-        return loss, loss.item()
+        return loss, loss_value
 
     def train_step_zimage(
         self,

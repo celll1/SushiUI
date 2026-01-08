@@ -2039,7 +2039,8 @@ class BaseTrainer(ABC):
         self,
         prompt: str,
         use_image: bool = True,
-        null_image: bool = False
+        null_image: bool = False,
+        requires_grad: bool = False
     ) -> torch.Tensor:
         """
         Encode prompt using SigLIP-2 text encoder (DEUS).
@@ -2048,6 +2049,7 @@ class BaseTrainer(ABC):
             prompt: Text prompt
             use_image: Whether to use image-conditional encoding (True for training)
             null_image: Whether to use null image (True for negative prompts)
+            requires_grad: Whether to enable gradients (True when training text encoder)
 
         Returns:
             prompt_embeds: [seq_len, 1152] tensor (variable sequence length)
@@ -2060,7 +2062,8 @@ class BaseTrainer(ABC):
         # use_image=False, null_image=True → images=None, use_null_image=True (text + null image for negative)
         use_null_image = use_image or null_image
 
-        with torch.no_grad():
+        # Enable gradients when training text encoder
+        if requires_grad:
             # For FP8 quantized text encoder, use autocast for mixed precision
             if has_fp8_weights:
                 with torch.autocast(device_type='cuda', dtype=self.training_dtype):
@@ -2077,10 +2080,32 @@ class BaseTrainer(ABC):
                     use_null_image=use_null_image,
                     clip_skip=0  # Use last layer (default)
                 )
+            # Keep gradients attached (no detach)
+            result_embeds = prompt_embeds
+        else:
+            # Disable gradients for inference or when not training text encoder
+            with torch.no_grad():
+                # For FP8 quantized text encoder, use autocast for mixed precision
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                        prompt_embeds = self.text_encoder.encode(
+                            prompts=prompt,
+                            images=None,  # No real images for training (use null)
+                            use_null_image=use_null_image,
+                            clip_skip=0  # Use last layer (default)
+                        )
+                else:
+                    prompt_embeds = self.text_encoder.encode(
+                        prompts=prompt,
+                        images=None,  # No real images for training (use null)
+                        use_null_image=use_null_image,
+                        clip_skip=0  # Use last layer (default)
+                    )
+            # Detach gradients
+            result_embeds = prompt_embeds.detach()
 
         # SigLIP2MultiModalEncoder.encode() returns [1, seq_len, 1152]
         # Keep batch dimension for consistency with SDXL (both return [batch, seq_len, dim])
-        result_embeds = prompt_embeds.detach()  # [1, seq_len, 1152]
 
         # Free intermediate tensors to prevent VRAM accumulation
         del prompt_embeds
@@ -2102,7 +2127,8 @@ class BaseTrainer(ABC):
             return self.encode_prompt_zimage(caption)
         elif self.is_deus:
             # DEUS: Use image-conditional encoding for training
-            prompt_embeds = self.encode_prompt_deus(caption, use_image=True, null_image=False)
+            # Pass requires_grad to enable text encoder training
+            prompt_embeds = self.encode_prompt_deus(caption, use_image=True, null_image=False, requires_grad=requires_grad)
             return (prompt_embeds, None)
         elif self.is_sdxl:
             text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=requires_grad)

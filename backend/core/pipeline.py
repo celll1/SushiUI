@@ -786,7 +786,8 @@ class DiffusionPipelineManager:
             ancestral_generator = torch.Generator(device="cuda").manual_seed(seed)
 
             # Call custom_sampling_loop (supports DEUS 2-pass CFG)
-            latents = custom_sampling_loop(
+            # Returns PIL Image (same as SDXL/SD1.5)
+            image = custom_sampling_loop(
                 pipeline=self.deus_pipeline,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
@@ -821,50 +822,11 @@ class DiffusionPipelineManager:
                 attention_type=params.get("attention_type", "normal"),
             )
 
-            # Offload U-Net to CPU
-            move_deus_unet_to_cpu(unet)
-
-            log_device_status("Denoising complete, U-Net offloaded to CPU", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": unet,
-                "vae": vae
-            })
-
-            # ============================================================
-            # Stage 3: VAE Decode
-            # ============================================================
-            print("[DEUS] Stage 3: VAE Decode")
-
-            # Move SDXL VAE to GPU
-            move_zimage_vae_to_gpu(vae)
-
-            log_device_status("Ready for DEUS VAE decode", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": unet,
-                "vae": vae
-            })
-
-            # Decode latents
-            images = self._deus_decode_latents(vae, latents)
-
-            # Offload VAE to CPU
-            move_zimage_vae_to_cpu(vae)
-
-            # Clear intermediate tensors
-            del encoder_hidden_states, latents
-            torch.cuda.empty_cache()
-
-            log_device_status("All components offloaded to CPU", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": unet,
-                "vae": vae
-            })
-
             print("[DEUS] Generation complete!")
             # Return same format as other methods: (image, seed, ancestral_seed)
             # DEUS doesn't use ancestral seed, so return -1
             actual_ancestral_seed = params.get("ancestral_seed", -1)
-            return images[0], seed, actual_ancestral_seed
+            return image, seed, actual_ancestral_seed
 
         except Exception as e:
             print(f"[DEUS] ERROR during generation: {e}")

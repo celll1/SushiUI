@@ -317,6 +317,47 @@ def load_unified_checkpoint(
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Text encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
 
+        # Expand position_embedding if needed
+        if max_position_embeddings is not None:
+            embeddings_layer = text_encoder.text_model.embeddings
+            if hasattr(embeddings_layer, 'position_embedding'):
+                current_size = embeddings_layer.position_embedding.weight.shape[0]
+                target_size = max_position_embeddings
+
+                if current_size < target_size:
+                    print(f"[Checkpoint] Expanding text encoder position_embedding: {current_size} -> {target_size}")
+
+                    # Get current position embedding
+                    old_weight = embeddings_layer.position_embedding.weight.data
+                    hidden_size = old_weight.shape[1]
+
+                    # Create new position embedding with interpolation
+                    # Linear interpolation for smooth position encoding
+                    import torch.nn.functional as F
+
+                    # Reshape for interpolation: [current_size, hidden_size] -> [1, hidden_size, current_size]
+                    old_weight_transposed = old_weight.t().unsqueeze(0)  # [1, hidden_size, current_size]
+
+                    # Interpolate to target size
+                    new_weight_transposed = F.interpolate(
+                        old_weight_transposed,
+                        size=target_size,
+                        mode='linear',
+                        align_corners=True
+                    )  # [1, hidden_size, target_size]
+
+                    # Reshape back: [1, hidden_size, target_size] -> [target_size, hidden_size]
+                    new_weight = new_weight_transposed.squeeze(0).t()
+
+                    # Create new embedding layer with expanded size
+                    new_position_embedding = torch.nn.Embedding(target_size, hidden_size)
+                    new_position_embedding.weight.data = new_weight.to(dtype=dtype, device=device)
+
+                    # Replace old embedding
+                    embeddings_layer.position_embedding = new_position_embedding
+
+                    print(f"[Checkpoint] Position embedding expanded successfully (interpolation)")
+
         # Move model to device (the structure itself, not just weights)
         text_encoder.text_model = text_encoder.text_model.to(device=device, dtype=dtype)
 

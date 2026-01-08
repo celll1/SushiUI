@@ -405,9 +405,9 @@ class TransformerBlock(nn.Module):
         # 3. FeedForward
         self.norm3 = nn.LayerNorm(dim, eps=1e-5)
         self.ff = nn.Sequential(
-            GEGLU(dim, dim * 4, bias=True),
+            GEGLU(dim, dim * 4, bias=True),  # Output: dim * 4
             nn.Dropout(dropout),
-            nn.Linear(dim * 2, dim, bias=True),
+            nn.Linear(dim * 4, dim, bias=True),  # Fixed: dim * 4 → dim (was dim * 2 → dim)
             nn.Dropout(dropout)
         )
 

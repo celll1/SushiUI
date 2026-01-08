@@ -30,7 +30,8 @@ class SigLIP2TextEncoder(nn.Module):
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
         load_from_checkpoint: bool = False,
-        shared_config: Optional[Any] = None
+        shared_config: Optional[Any] = None,
+        max_position_embeddings: Optional[int] = None
     ):
         super().__init__()
 
@@ -73,11 +74,15 @@ class SigLIP2TextEncoder(nn.Module):
             self.text_model = self.model.text_model
 
             # Fix max_position_embeddings for variable-length support (SigLIP-2 NaViT/NAFlex)
-            # Set to a large value to support long prompts
+            # Use value from checkpoint metadata if available, otherwise default to 4096
             if hasattr(self.text_model.config, 'max_position_embeddings'):
                 original_max_pos = self.text_model.config.max_position_embeddings
-                self.text_model.config.max_position_embeddings = 4096  # Large enough for any prompt
-                print(f"[SigLIP2] Updated max_position_embeddings: {original_max_pos} -> {self.text_model.config.max_position_embeddings}")
+                if max_position_embeddings is not None:
+                    self.text_model.config.max_position_embeddings = max_position_embeddings
+                    print(f"[SigLIP2] Updated max_position_embeddings (from metadata): {original_max_pos} -> {max_position_embeddings}")
+                else:
+                    self.text_model.config.max_position_embeddings = 4096  # Default fallback
+                    print(f"[SigLIP2] Updated max_position_embeddings (default): {original_max_pos} -> 4096")
 
             # Load tokenizer
             start_time = time.time()
@@ -263,7 +268,8 @@ class SigLIP2ImageEncoder(nn.Module):
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
         load_from_checkpoint: bool = False,
-        shared_config: Optional[Any] = None
+        shared_config: Optional[Any] = None,
+        max_position_embeddings: Optional[int] = None
     ):
         super().__init__()
 
@@ -304,6 +310,17 @@ class SigLIP2ImageEncoder(nn.Module):
 
             # Get vision model component
             self.vision_model = self.model.vision_model
+
+            # Fix max_position_embeddings for variable-resolution support
+            # Use value from checkpoint metadata if available, otherwise default to 4096
+            if hasattr(self.vision_model.config, 'max_position_embeddings'):
+                original_max_pos = self.vision_model.config.max_position_embeddings
+                if max_position_embeddings is not None:
+                    self.vision_model.config.max_position_embeddings = max_position_embeddings
+                    print(f"[SigLIP2] Updated max_position_embeddings (from metadata): {original_max_pos} -> {max_position_embeddings}")
+                else:
+                    self.vision_model.config.max_position_embeddings = 4096  # Default fallback
+                    print(f"[SigLIP2] Updated max_position_embeddings (default): {original_max_pos} -> 4096")
 
             # Load processor
             start_time = time.time()

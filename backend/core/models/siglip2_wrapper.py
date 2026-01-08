@@ -72,6 +72,13 @@ class SigLIP2TextEncoder(nn.Module):
             # Get text model component
             self.text_model = self.model.text_model
 
+            # Fix max_position_embeddings for variable-length support (SigLIP-2 NaViT/NAFlex)
+            # Set to a large value to support long prompts
+            if hasattr(self.text_model.config, 'max_position_embeddings'):
+                original_max_pos = self.text_model.config.max_position_embeddings
+                self.text_model.config.max_position_embeddings = 4096  # Large enough for any prompt
+                print(f"[SigLIP2] Updated max_position_embeddings: {original_max_pos} -> {self.text_model.config.max_position_embeddings}")
+
             # Load tokenizer
             start_time = time.time()
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -106,6 +113,13 @@ class SigLIP2TextEncoder(nn.Module):
 
             # Get text model component
             self.text_model = self.model.text_model
+
+            # Fix max_position_embeddings for variable-length support (SigLIP-2 NaViT/NAFlex)
+            # Set to a large value to support long prompts
+            if hasattr(self.text_model.config, 'max_position_embeddings'):
+                original_max_pos = self.text_model.config.max_position_embeddings
+                self.text_model.config.max_position_embeddings = 4096  # Large enough for any prompt
+                print(f"[SigLIP2] Updated max_position_embeddings: {original_max_pos} -> {self.text_model.config.max_position_embeddings}")
 
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(

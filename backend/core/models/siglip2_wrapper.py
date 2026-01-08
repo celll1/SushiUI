@@ -57,6 +57,13 @@ class SigLIP2TextEncoder(nn.Module):
                 config_time = time.time() - start_time
                 print(f"[SigLIP2] Config loaded in {config_time:.2f}s")
 
+            # Update max_position_embeddings BEFORE creating model
+            # This ensures the Embedding layer is created with the correct size
+            if max_position_embeddings is not None and hasattr(config, 'text_config'):
+                original_max_pos = config.text_config.max_position_embeddings
+                config.text_config.max_position_embeddings = max_position_embeddings
+                print(f"[SigLIP2] Config: max_position_embeddings {original_max_pos} -> {max_position_embeddings} (BEFORE model creation)")
+
             # Create model with config but no weights
             # Optimized: Create on CPU first without dtype (faster), dtype will be set after weight loading
             start_time = time.time()
@@ -73,16 +80,14 @@ class SigLIP2TextEncoder(nn.Module):
             # Get text model component
             self.text_model = self.model.text_model
 
-            # Fix max_position_embeddings for variable-length support (SigLIP-2 NaViT/NAFlex)
-            # Use value from checkpoint metadata if available, otherwise default to 4096
-            if hasattr(self.text_model.config, 'max_position_embeddings'):
-                original_max_pos = self.text_model.config.max_position_embeddings
-                if max_position_embeddings is not None:
-                    self.text_model.config.max_position_embeddings = max_position_embeddings
-                    print(f"[SigLIP2] Updated max_position_embeddings (from metadata): {original_max_pos} -> {max_position_embeddings}")
-                else:
-                    self.text_model.config.max_position_embeddings = 4096  # Default fallback
-                    print(f"[SigLIP2] Updated max_position_embeddings (default): {original_max_pos} -> 4096")
+            # Verify position_embedding size (should already be correct from config update above)
+            if hasattr(self.text_model.embeddings, 'position_embedding'):
+                current_pos_emb_size = self.text_model.embeddings.position_embedding.weight.shape[0]
+                expected_size = self.text_model.config.max_position_embeddings
+                if current_pos_emb_size != expected_size:
+                    print(f"[SigLIP2] WARNING: position_embedding size mismatch after creation!")
+                    print(f"  Expected: {expected_size}, Got: {current_pos_emb_size}")
+                    # This should not happen if config was updated before model creation
 
             # Load tokenizer
             start_time = time.time()

@@ -2113,10 +2113,28 @@ class BaseTrainer(ABC):
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
         if self.text_encoder is not None:
-            self.text_encoder.to(self.device)
-            # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
-            if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
-                self.text_encoder.text_model.embeddings.to(self.device)
+            # DEUS: SigLIP2MultiModalEncoder wrapper
+            if self.is_deus:
+                # Move text encoder (SigLIP2TextEncoder)
+                if hasattr(self.text_encoder, 'text_encoder'):
+                    self.text_encoder.text_encoder.to(self.device)
+                    # Ensure text_model.embeddings stays on GPU (critical for gradient checkpointing)
+                    if hasattr(self.text_encoder.text_encoder, 'text_model'):
+                        self.text_encoder.text_encoder.text_model.to(self.device)
+                # Move image encoder (SigLIP2ImageEncoder) - optional for T2I training
+                if hasattr(self.text_encoder, 'image_encoder'):
+                    self.text_encoder.image_encoder.to(self.device)
+                    if hasattr(self.text_encoder.image_encoder, 'vision_model'):
+                        self.text_encoder.image_encoder.vision_model.to(self.device)
+                # Move null_image_embedding parameter
+                if hasattr(self.text_encoder, 'null_image_embedding'):
+                    self.text_encoder.null_image_embedding.data = self.text_encoder.null_image_embedding.data.to(self.device)
+            else:
+                # SD/SDXL: CLIPTextModel
+                self.text_encoder.to(self.device)
+                # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
+                if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+                    self.text_encoder.text_model.embeddings.to(self.device)
         if self.is_sdxl and self.text_encoder_2 is not None:
             self.text_encoder_2.to(self.device)
             # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
@@ -2126,7 +2144,20 @@ class BaseTrainer(ABC):
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""
         if self.text_encoder is not None:
-            self.text_encoder.to("cpu")
+            # DEUS: SigLIP2MultiModalEncoder wrapper
+            if self.is_deus:
+                # Move text encoder (SigLIP2TextEncoder)
+                if hasattr(self.text_encoder, 'text_encoder'):
+                    self.text_encoder.text_encoder.to("cpu")
+                # Move image encoder (SigLIP2ImageEncoder)
+                if hasattr(self.text_encoder, 'image_encoder'):
+                    self.text_encoder.image_encoder.to("cpu")
+                # Move null_image_embedding parameter
+                if hasattr(self.text_encoder, 'null_image_embedding'):
+                    self.text_encoder.null_image_embedding.data = self.text_encoder.null_image_embedding.data.to("cpu")
+            else:
+                # SD/SDXL: CLIPTextModel
+                self.text_encoder.to("cpu")
         if self.is_sdxl and self.text_encoder_2 is not None:
             self.text_encoder_2.to("cpu")
         torch.cuda.empty_cache()

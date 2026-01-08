@@ -276,12 +276,24 @@ def load_unified_checkpoint(
         config_time = time.time() - start_time
         print(f"[Checkpoint] Shared config loaded in {config_time:.2f}s")
 
+    # Get max_position_embeddings from metadata (if available)
+    max_position_embeddings = None
+    if 'max_position_embeddings' in metadata:
+        max_position_embeddings = int(metadata['max_position_embeddings'])
+        print(f"[Checkpoint] max_position_embeddings from metadata: {max_position_embeddings}")
+
     # Create text encoder and load weights
     text_encoder = None
     if load_text_encoder and len(text_encoder_state) > 0:
         print(f"[Checkpoint] Creating text encoder (from checkpoint)...")
         start_time = time.time()
-        text_encoder = SigLIP2TextEncoder(dtype=dtype, device=device, load_from_checkpoint=True, shared_config=shared_config)
+        text_encoder = SigLIP2TextEncoder(
+            dtype=dtype,
+            device=device,
+            load_from_checkpoint=True,
+            shared_config=shared_config,
+            max_position_embeddings=max_position_embeddings
+        )
         encoder_create_time = time.time() - start_time
         print(f"[Checkpoint] Text encoder structure created in {encoder_create_time:.2f}s")
         
@@ -315,7 +327,13 @@ def load_unified_checkpoint(
     if load_image_encoder and len(image_encoder_state) > 0:
         print(f"[Checkpoint] Creating image encoder (from checkpoint)...")
         start_time = time.time()
-        image_encoder = SigLIP2ImageEncoder(dtype=dtype, device=device, load_from_checkpoint=True, shared_config=shared_config)
+        image_encoder = SigLIP2ImageEncoder(
+            dtype=dtype,
+            device=device,
+            load_from_checkpoint=True,
+            shared_config=shared_config,
+            max_position_embeddings=max_position_embeddings
+        )
         encoder_create_time = time.time() - start_time
         print(f"[Checkpoint] Image encoder structure created in {encoder_create_time:.2f}s")
         

@@ -2126,12 +2126,13 @@ class BaseTrainer(ABC):
                     # Ensure text_model.embeddings stays on GPU (critical for gradient checkpointing)
                     if hasattr(self.text_encoder.text_encoder, 'text_model'):
                         self.text_encoder.text_encoder.text_model.to(self.device)
-                # Move image encoder (SigLIP2ImageEncoder) - optional for T2I training
-                if hasattr(self.text_encoder, 'image_encoder'):
+                # Move image encoder (SigLIP2ImageEncoder) - only if training it
+                train_image_encoder = getattr(self, 'train_image_encoder', False)
+                if train_image_encoder and hasattr(self.text_encoder, 'image_encoder'):
                     self.text_encoder.image_encoder.to(self.device)
                     if hasattr(self.text_encoder.image_encoder, 'vision_model'):
                         self.text_encoder.image_encoder.vision_model.to(self.device)
-                # Move null_image_embedding parameter
+                # Move null_image_embedding parameter (small, 1x1x1152)
                 if hasattr(self.text_encoder, 'null_image_embedding'):
                     self.text_encoder.null_image_embedding.data = self.text_encoder.null_image_embedding.data.to(self.device)
             else:
@@ -2154,8 +2155,9 @@ class BaseTrainer(ABC):
                 # Move text encoder (SigLIP2TextEncoder)
                 if hasattr(self.text_encoder, 'text_encoder'):
                     self.text_encoder.text_encoder.to("cpu")
-                # Move image encoder (SigLIP2ImageEncoder)
-                if hasattr(self.text_encoder, 'image_encoder'):
+                # Move image encoder (SigLIP2ImageEncoder) - only if it was moved to GPU
+                train_image_encoder = getattr(self, 'train_image_encoder', False)
+                if train_image_encoder and hasattr(self.text_encoder, 'image_encoder'):
                     self.text_encoder.image_encoder.to("cpu")
                 # Move null_image_embedding parameter
                 if hasattr(self.text_encoder, 'null_image_embedding'):

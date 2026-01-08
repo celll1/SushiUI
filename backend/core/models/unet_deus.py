@@ -48,8 +48,8 @@ class UNetConfig:
     # For SDXL compatibility: head_dim=64 fixed, heads vary by block
     attention_head_dim: int = 64  # SDXL uses fixed head_dim=64
     num_attention_heads: Tuple[int, ...] = (5, 10, 20)  # Per block: Down0, Down1, Down2 / Up2, Up1, Up0
-    transformer_layers_per_block: Tuple[int, ...] = (0, 2, 2)  # SDXL: Down0=0, Down1=2, Down2=2
-    transformer_layers_per_up_block: Tuple[int, ...] = (0, 0, 0)  # SDXL: Up0=0, Up1=0, Up2=0
+    transformer_layers_per_block: Tuple[int, ...] = (0, 2, 10)  # SDXL: Down0=0, Down1=2, Down2=10
+    transformer_layers_per_up_block: Tuple[int, ...] = (10, 2, 0)  # SDXL: Up0=10, Up1=2, Up2=0 (reversed)
     transformer_layers_per_mid_block: int = 10  # SDXL: Mid block has 10 layers
     context_dim: int = 1152  # SigLIP-2 hidden size
 
@@ -97,8 +97,8 @@ class UNetConfig:
                 "num_res_blocks_per_up_block": 3,  # Up blocks: 3 resnets each (SDXL)
                 "attention_head_dim": 64,  # SDXL fixed head_dim
                 "num_attention_heads": (5, 10, 20),  # SDXL: Down0=5, Down1=10, Down2=20
-                "transformer_layers_per_block": (0, 2, 2),  # SDXL: Down0=0, Down1=2, Down2=2
-                "transformer_layers_per_up_block": (0, 0, 0),  # SDXL: Up0=0, Up1=0, Up2=0
+                "transformer_layers_per_block": (0, 2, 10),  # SDXL: Down0=0, Down1=2, Down2=10
+                "transformer_layers_per_up_block": (10, 2, 0),  # SDXL: Up0=10, Up1=2, Up2=0
                 "transformer_layers_per_mid_block": 10,  # SDXL: Mid block has 10 layers
             },
             "large": {
@@ -350,6 +350,210 @@ class ImprovedConvBlock(nn.Module):
         return x
 
 
+class TransformerBlock(nn.Module):
+    """
+    SDXL-style Transformer Block.
+
+    Consists of:
+    1. Self-attention (norm1 -> attn1)
+    2. Cross-attention (norm2 -> attn2)
+    3. FeedForward (norm3 -> ff)
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        dropout: float = 0.0,
+        cross_attention_dim: int = 1152,  # SigLIP-2 dimension
+        activation_fn: str = "gelu",
+        attention_bias: bool = False,
+        upcast_attention: bool = False,
+    ):
+        super().__init__()
+
+        self.dim = dim
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_dim = attention_head_dim
+        inner_dim = num_attention_heads * attention_head_dim
+
+        # 1. Self-attention
+        self.norm1 = nn.LayerNorm(dim, eps=1e-5)
+        self.attn1 = nn.ModuleDict({
+            'to_q': nn.Linear(dim, inner_dim, bias=attention_bias),
+            'to_k': nn.Linear(dim, inner_dim, bias=attention_bias),
+            'to_v': nn.Linear(dim, inner_dim, bias=attention_bias),
+            'to_out': nn.Sequential(
+                nn.Linear(inner_dim, dim, bias=True),
+                nn.Dropout(dropout)
+            )
+        })
+
+        # 2. Cross-attention
+        self.norm2 = nn.LayerNorm(dim, eps=1e-5)
+        self.attn2 = nn.ModuleDict({
+            'to_q': nn.Linear(dim, inner_dim, bias=attention_bias),
+            'to_k': nn.Linear(cross_attention_dim, inner_dim, bias=attention_bias),
+            'to_v': nn.Linear(cross_attention_dim, inner_dim, bias=attention_bias),
+            'to_out': nn.Sequential(
+                nn.Linear(inner_dim, dim, bias=True),
+                nn.Dropout(dropout)
+            )
+        })
+
+        # 3. FeedForward
+        self.norm3 = nn.LayerNorm(dim, eps=1e-5)
+        self.ff = nn.Sequential(
+            GEGLU(dim, dim * 4, bias=True),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 2, dim, bias=True),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor = None) -> torch.Tensor:
+        # hidden_states: [B, seq_len, dim]
+        # encoder_hidden_states: [B, seq_len_ctx, cross_attention_dim]
+
+        batch_size = hidden_states.shape[0]
+
+        # 1. Self-attention
+        norm_hidden_states = self.norm1(hidden_states)
+
+        q = self.attn1['to_q'](norm_hidden_states)
+        k = self.attn1['to_k'](norm_hidden_states)
+        v = self.attn1['to_v'](norm_hidden_states)
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+        k = k.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+        v = v.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+
+        # Flash Attention
+        attn_output = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(batch_size, -1, self.num_attention_heads * self.attention_head_dim)
+        attn_output = self.attn1['to_out'](attn_output)
+
+        hidden_states = hidden_states + attn_output
+
+        # 2. Cross-attention
+        if encoder_hidden_states is not None:
+            norm_hidden_states = self.norm2(hidden_states)
+
+            q = self.attn2['to_q'](norm_hidden_states)
+            k = self.attn2['to_k'](encoder_hidden_states)
+            v = self.attn2['to_v'](encoder_hidden_states)
+
+            q = q.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+            k = k.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+            v = v.view(batch_size, -1, self.num_attention_heads, self.attention_head_dim).transpose(1, 2)
+
+            attn_output = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+            attn_output = attn_output.transpose(1, 2).contiguous()
+            attn_output = attn_output.view(batch_size, -1, self.num_attention_heads * self.attention_head_dim)
+            attn_output = self.attn2['to_out'](attn_output)
+
+            hidden_states = hidden_states + attn_output
+
+        # 3. FeedForward
+        norm_hidden_states = self.norm3(hidden_states)
+        ff_output = self.ff(norm_hidden_states)
+        hidden_states = hidden_states + ff_output
+
+        return hidden_states
+
+
+class Transformer2DModel(nn.Module):
+    """
+    SDXL-style Transformer2DModel that contains multiple TransformerBlocks.
+
+    This replaces the simple CrossAttentionBlock list with a proper
+    Transformer2DModel that matches SDXL's implementation.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        num_attention_heads: int,
+        attention_head_dim: int = 64,
+        num_layers: int = 1,
+        dropout: float = 0.0,
+        cross_attention_dim: int = 1152,
+        attention_bias: bool = False,
+        activation_fn: str = "geglu",
+        upcast_attention: bool = False,
+        norm_type: str = "layer_norm",
+        norm_elementwise_affine: bool = True,
+    ):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_dim = attention_head_dim
+        inner_dim = num_attention_heads * attention_head_dim
+
+        # Input projection
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6)
+        self.proj_in = nn.Linear(in_channels, inner_dim, bias=True)
+
+        # Transformer blocks
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(
+                inner_dim,
+                num_attention_heads,
+                attention_head_dim,
+                dropout=dropout,
+                cross_attention_dim=cross_attention_dim,
+                activation_fn=activation_fn,
+                attention_bias=attention_bias,
+                upcast_attention=upcast_attention,
+            )
+            for _ in range(num_layers)
+        ])
+
+        # Output projection
+        self.proj_out = nn.Linear(inner_dim, in_channels, bias=True)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: [B, C, H, W]
+            encoder_hidden_states: [B, seq_len, cross_attention_dim]
+
+        Returns:
+            [B, C, H, W]
+        """
+        batch, channels, height, width = hidden_states.shape
+        residual = hidden_states
+
+        # Norm and reshape to sequence
+        hidden_states = self.norm(hidden_states)
+        hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+
+        # Project to inner dimension
+        hidden_states = self.proj_in(hidden_states)
+
+        # Apply transformer blocks
+        for block in self.transformer_blocks:
+            hidden_states = block(hidden_states, encoder_hidden_states)
+
+        # Project back to original dimension
+        hidden_states = self.proj_out(hidden_states)
+
+        # Reshape back to image
+        hidden_states = hidden_states.reshape(batch, height, width, channels).permute(0, 3, 1, 2)
+
+        # Add residual connection
+        hidden_states = hidden_states + residual
+
+        return hidden_states
+
+
 class CrossAttentionBlock(nn.Module):
     """
     Memory-efficient Cross-Attention block using Flash Attention.
@@ -588,35 +792,24 @@ class DownBlock(nn.Module):
             for i in range(num_res_blocks)
         ])
 
-        # SDXL-style: Transformer2DModel wrapper (proj_in, norm, proj_out)
+        # SDXL-style: Transformer2DModel instead of individual attention blocks
         # Only add if transformer_depth > 0
         if transformer_depth > 0:
-            # SDXL: norm (GroupNorm) before proj_in
-            self.norm = nn.GroupNorm(32, out_channels, eps=1e-6)
-            # SDXL: proj_in (Linear projection)
-            self.proj_in = nn.Linear(out_channels, out_channels, bias=True)
-            # SDXL: proj_out (Linear projection)
-            self.proj_out = nn.Linear(out_channels, out_channels, bias=True)
-            
-            # Attention blocks (only if transformer_depth > 0)
-            # head_dim is passed explicitly for SDXL compatibility (fixed 64)
+            # Use the new Transformer2DModel which includes norm, proj_in, proj_out internally
             head_dim = 64  # SDXL fixed head_dim
-            self.attentions = nn.ModuleList([
-                CrossAttentionBlock(
-                    out_channels,
-                    context_dim,
-                    num_attention_heads,
-                    head_dim=head_dim,
-                    dropout=dropout
-                )
-                for _ in range(transformer_depth)
-            ])
+            self.transformer = Transformer2DModel(
+                in_channels=out_channels,
+                num_attention_heads=num_attention_heads,
+                attention_head_dim=head_dim,
+                num_layers=transformer_depth,  # Number of transformer blocks
+                dropout=dropout,
+                cross_attention_dim=context_dim,
+                attention_bias=False,
+                activation_fn="geglu",
+            )
         else:
             # SDXL style: Some blocks have no attention (e.g., DownBlock0)
-            self.norm = None
-            self.proj_in = None
-            self.proj_out = None
-            self.attentions = nn.ModuleList([])
+            self.transformer = None
 
         # Downsample
         if downsample:
@@ -656,43 +849,22 @@ class DownBlock(nn.Module):
                 resnet_time = (time.time() - resnet_start) * 1000
                 resnet_times.append(resnet_time)
 
-        # SDXL-style: Transformer2DModel wrapper (proj_in, norm, proj_out)
-        # Only process if attention exists
-        if len(self.attentions) > 0:
-            B, C, H, W = x.shape
-            spatial_size = H * W
-            residual = x  # Save for residual connection
-            
-            # SDXL: Apply norm (GroupNorm) before proj_in
-            x_norm = self.norm(x)  # [B, C, H, W]
-            
-            # Convert to [B, H*W, C] (like SDXL's Transformer2DModel)
-            x_flat = x_norm.view(B, C, spatial_size).transpose(1, 2)  # [B, H*W, C]
-            
-            # SDXL: Apply proj_in
-            x_flat = self.proj_in(x_flat)  # [B, H*W, C]
+        # SDXL-style: Apply Transformer2DModel if present
+        if self.transformer is not None:
+            if is_step1:
+                attn_start = time.time()
+                torch.cuda.synchronize()
 
-            # Attention blocks (process in [B, H*W, C] format - SDXL style)
-            for i, attn in enumerate(self.attentions):
-                if is_step1:
-                    attn_start = time.time()
-                    torch.cuda.synchronize()
-                
-                x_flat = attn(x_flat, context)
-                
-                if is_step1:
-                    torch.cuda.synchronize()
-                    attn_time = (time.time() - attn_start) * 1000
-                    attn_times.append(attn_time)
+            # Transformer2DModel handles everything internally:
+            # - norm, proj_in, transformer blocks, proj_out, residual
+            x = self.transformer(x, context)
 
-            # SDXL: Apply proj_out
-            x_flat = self.proj_out(x_flat)  # [B, H*W, C]
-
-            # Convert back to [B, C, H, W] (like SDXL's Transformer2DModel output)
-            x = x_flat.transpose(1, 2).reshape(B, C, H, W)
-            x = x + residual  # Residual connection (like SDXL)
+            if is_step1:
+                torch.cuda.synchronize()
+                attn_time = (time.time() - attn_start) * 1000
+                attn_times = [attn_time]  # Single time for entire transformer
         else:
-            # No attention blocks (SDXL style: DownBlock0, UpBlock0)
+            # No transformer blocks (SDXL style: DownBlock0 has no attention)
             if is_step1:
                 attn_times = [0.0]  # Empty list for logging
 
@@ -762,35 +934,24 @@ class UpBlock(nn.Module):
             for i in range(num_res_blocks)
         ])
 
-        # SDXL-style: Transformer2DModel wrapper (proj_in, norm, proj_out)
+        # SDXL-style: Transformer2DModel instead of individual attention blocks
         # Only add if transformer_depth > 0
         if transformer_depth > 0:
-            # SDXL: norm (GroupNorm) before proj_in
-            self.norm = nn.GroupNorm(32, out_channels, eps=1e-6)
-            # SDXL: proj_in (Linear projection)
-            self.proj_in = nn.Linear(out_channels, out_channels, bias=True)
-            # SDXL: proj_out (Linear projection)
-            self.proj_out = nn.Linear(out_channels, out_channels, bias=True)
-            
-            # Attention blocks (only if transformer_depth > 0)
-            # head_dim is passed explicitly for SDXL compatibility (fixed 64)
+            # Use the new Transformer2DModel which includes norm, proj_in, proj_out internally
             head_dim = 64  # SDXL fixed head_dim
-            self.attentions = nn.ModuleList([
-                CrossAttentionBlock(
-                    out_channels,
-                    context_dim,
-                    num_attention_heads,
-                    head_dim=head_dim,
-                    dropout=dropout
-                )
-                for _ in range(transformer_depth)
-            ])
+            self.transformer = Transformer2DModel(
+                in_channels=out_channels,
+                num_attention_heads=num_attention_heads,
+                attention_head_dim=head_dim,
+                num_layers=transformer_depth,  # Number of transformer blocks
+                dropout=dropout,
+                cross_attention_dim=context_dim,
+                attention_bias=False,
+                activation_fn="geglu",
+            )
         else:
-            # SDXL style: Some blocks have no attention (e.g., UpBlock0)
-            self.norm = None
-            self.proj_in = None
-            self.proj_out = None
-            self.attentions = nn.ModuleList([])
+            # SDXL style: Some blocks have no attention (e.g., UpBlock2)
+            self.transformer = None
 
     def forward(
         self,
@@ -854,43 +1015,22 @@ class UpBlock(nn.Module):
                 resnet_time = (time.time() - resnet_start) * 1000
                 resnet_times.append(resnet_time)
 
-        # SDXL-style: Transformer2DModel wrapper (proj_in, norm, proj_out)
-        # Only process if attention exists
-        if len(self.attentions) > 0:
-            B, C, H, W = x.shape
-            spatial_size = H * W
-            residual = x  # Save for residual connection
-            
-            # SDXL: Apply norm (GroupNorm) before proj_in
-            x_norm = self.norm(x)  # [B, C, H, W]
-            
-            # Convert to [B, H*W, C] (like SDXL's Transformer2DModel)
-            x_flat = x_norm.view(B, C, spatial_size).transpose(1, 2)  # [B, H*W, C]
-            
-            # SDXL: Apply proj_in
-            x_flat = self.proj_in(x_flat)  # [B, H*W, C]
+        # SDXL-style: Apply Transformer2DModel if present
+        if self.transformer is not None:
+            if is_step1:
+                attn_start = time.time()
+                torch.cuda.synchronize()
 
-            # Attention blocks (process in [B, H*W, C] format - SDXL style)
-            for i, attn in enumerate(self.attentions):
-                if is_step1:
-                    attn_start = time.time()
-                    torch.cuda.synchronize()
-                
-                x_flat = attn(x_flat, context)
-                
-                if is_step1:
-                    torch.cuda.synchronize()
-                    attn_time = (time.time() - attn_start) * 1000
-                    attn_times.append(attn_time)
+            # Transformer2DModel handles everything internally:
+            # - norm, proj_in, transformer blocks, proj_out, residual
+            x = self.transformer(x, context)
 
-            # SDXL: Apply proj_out
-            x_flat = self.proj_out(x_flat)  # [B, H*W, C]
-
-            # Convert back to [B, C, H, W] (like SDXL's Transformer2DModel output)
-            x = x_flat.transpose(1, 2).reshape(B, C, H, W)
-            x = x + residual  # Residual connection (like SDXL)
+            if is_step1:
+                torch.cuda.synchronize()
+                attn_time = (time.time() - attn_start) * 1000
+                attn_times = [attn_time]  # Single time for entire transformer
         else:
-            # No attention blocks (SDXL style: DownBlock0, UpBlock0)
+            # No transformer blocks (SDXL style: DownBlock0 has no attention)
             if is_step1:
                 attn_times = [0.0]  # Empty list for logging
         
@@ -980,28 +1120,22 @@ class DeusUNet(nn.Module):
         mid_num_heads = config.num_attention_heads[-1]  # 20 heads for 1280 channels
         mid_transformer_depth = config.transformer_layers_per_mid_block  # 10 layers
         
-        # SDXL-style: Transformer2DModel wrapper for Mid block
-        mid_norm = nn.GroupNorm(32, mid_ch, eps=1e-6)
-        mid_proj_in = nn.Linear(mid_ch, mid_ch, bias=True)
-        mid_proj_out = nn.Linear(mid_ch, mid_ch, bias=True)
-        
-        mid_attentions = nn.ModuleList([
-            CrossAttentionBlock(
-                mid_ch,
-                config.context_dim,
-                mid_num_heads,
-                head_dim=config.attention_head_dim,
-                dropout=config.dropout
-            )
-            for _ in range(mid_transformer_depth)
-        ])
-        
+        # SDXL-style: Transformer2DModel for Mid block
+        # Mid block has 10 transformer layers in SDXL
+        mid_transformer = Transformer2DModel(
+            in_channels=mid_ch,
+            num_attention_heads=mid_num_heads,
+            attention_head_dim=config.attention_head_dim,
+            num_layers=mid_transformer_depth,  # 10 transformer blocks
+            dropout=config.dropout,
+            cross_attention_dim=config.context_dim,
+            attention_bias=False,
+            activation_fn="geglu",
+        )
+
         self.mid_block = nn.ModuleList([
             ResnetBlock(mid_ch, mid_ch, time_embed_dim, config.dropout, context_dim=config.context_dim),  # DiC
-            mid_norm,  # SDXL: norm
-            mid_proj_in,  # SDXL: proj_in
-            mid_attentions,  # Attention blocks
-            mid_proj_out,  # SDXL: proj_out
+            mid_transformer,  # Full Transformer2DModel with 10 layers
             ResnetBlock(mid_ch, mid_ch, time_embed_dim, config.dropout, context_dim=config.context_dim)  # DiC
         ])
 
@@ -1186,38 +1320,14 @@ class DeusUNet(nn.Module):
         
         # First ResnetBlock (process in [B, C, H, W] format)
         x = self.mid_block[0](x, t_emb, encoder_hidden_states)  # DiC: pass context
-        
-        # SDXL-style: Transformer2DModel wrapper (norm, proj_in, proj_out)
-        B, C, H, W = x.shape
-        spatial_size = H * W
-        residual = x  # Save for residual connection
-        
-        # SDXL: Apply norm (GroupNorm) before proj_in
-        mid_norm = self.mid_block[1]
-        x_norm = mid_norm(x)  # [B, C, H, W]
-        
-        # Convert to [B, H*W, C] (like SDXL's Transformer2DModel)
-        x_flat = x_norm.view(B, C, spatial_size).transpose(1, 2)  # [B, H*W, C]
-        
-        # SDXL: Apply proj_in
-        mid_proj_in = self.mid_block[2]
-        x_flat = mid_proj_in(x_flat)  # [B, H*W, C]
-        
-        # CrossAttentionBlocks (process in [B, H*W, C] format - SDXL style with multiple layers)
-        mid_attentions = self.mid_block[3]  # This is now a ModuleList
-        for attn in mid_attentions:
-            x_flat = attn(x_flat, encoder_hidden_states)
-        
-        # SDXL: Apply proj_out
-        mid_proj_out = self.mid_block[4]
-        x_flat = mid_proj_out(x_flat)  # [B, H*W, C]
-        
-        # Convert back to [B, C, H, W]
-        x = x_flat.transpose(1, 2).reshape(B, C, H, W)
-        x = x + residual  # Residual connection
-        
+
+        # Transformer2DModel (handles conversion to/from [B, H*W, C] internally)
+        # The Transformer2DModel expects [B, C, H, W] and returns [B, C, H, W]
+        mid_transformer = self.mid_block[1]
+        x = mid_transformer(x, encoder_hidden_states)
+
         # Second ResnetBlock (process in [B, C, H, W] format)
-        x = self.mid_block[5](x, t_emb, encoder_hidden_states)  # DiC: pass context
+        x = self.mid_block[2](x, t_emb, encoder_hidden_states)  # DiC: pass context
         
         if is_step1:
             torch.cuda.synchronize()

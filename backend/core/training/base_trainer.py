@@ -2191,8 +2191,19 @@ class BaseTrainer(ABC):
                 # Clean up intermediate tensors
                 del h, mean, logvar
             else:
-                # SD/SDXL VAE
-                encoder_output = self.vae.encode(image_tensor)
+                # SD/SDXL/DEUS VAE - 統一された処理フロー
+                # DEUSはSDXLVAEWrapperを使用しているが、内部のAutoencoderKLにアクセスして同じ形式で処理
+                from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
+                
+                if isinstance(self.vae, SDXLVAEWrapper):
+                    # SDXLVAEWrapperの場合、内部のAutoencoderKLにアクセス
+                    vae_model = self.vae.vae
+                else:
+                    # 標準のAutoencoderKL
+                    vae_model = self.vae
+                
+                # 統一されたエンコード処理（SDXLとDEUSで同じ形式）
+                encoder_output = vae_model.encode(image_tensor)
                 latents = encoder_output.latent_dist.sample()
 
                 # DEBUG: Log raw latents before scaling
@@ -2200,9 +2211,9 @@ class BaseTrainer(ABC):
                     print(f"[encode_image DEBUG] Raw latents (before scaling):")
                     print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
                     print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
-                    print(f"  scaling_factor: {self.vae.config.scaling_factor}")
+                    print(f"  scaling_factor: {vae_model.config.scaling_factor}")
 
-                latents = latents * self.vae.config.scaling_factor
+                latents = latents * vae_model.config.scaling_factor
 
                 # DEBUG: Log scaled latents
                 if debug_preprocessing:

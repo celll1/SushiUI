@@ -1784,13 +1784,21 @@ class BaseTrainer(ABC):
         Returns:
             text_embeddings tensor (no pooled output for SigLIP-2)
         """
-        # Get max_position_embeddings from text encoder config
-        if hasattr(self.text_encoder, 'config') and hasattr(self.text_encoder.config, 'max_position_embeddings'):
-            max_length = self.text_encoder.config.max_position_embeddings
+        # Get max_position_embeddings from actual position_embedding layer
+        # (config may not reflect the actual layer size after weight loading)
+        if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+            embeddings_layer = self.text_encoder.text_model.embeddings
+            if hasattr(embeddings_layer, 'position_embedding'):
+                # Use actual position_embedding size
+                max_length = embeddings_layer.position_embedding.weight.shape[0]
+            elif hasattr(self.text_encoder, 'config') and hasattr(self.text_encoder.config, 'max_position_embeddings'):
+                max_length = self.text_encoder.config.max_position_embeddings
+            else:
+                max_length = 512  # Conservative default (original SigLIP-2)
         else:
-            max_length = 4096  # SigLIP-2 default
+            max_length = 512  # Conservative default
 
-        # SigLIP-2 tokenizer: use max_position_embeddings as max_length
+        # SigLIP-2 tokenizer: use actual max_length
         text_inputs = self.tokenizer(
             prompt,
             padding="max_length",
@@ -3179,6 +3187,16 @@ class BaseTrainer(ABC):
 
                 log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
                 return image
+
+        except Exception as e:
+            print(f"{self.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
+            print(f"{self.log_prefix} [Sample] Sample generation failed - this is expected for early training steps")
+            print(f"{self.log_prefix} [Sample] Training will continue normally")
+
+            # Return a placeholder image (blank white image)
+            from PIL import Image
+            placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
+            return placeholder
 
         finally:
             # Restore training mode

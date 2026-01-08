@@ -829,21 +829,31 @@ class DownBlock(nn.Module):
         """
         import time
         is_step1 = hasattr(self, '_parent_is_step1') and self._parent_is_step1
-        
+
         if is_step1:
             db_internal_start = time.time()
             torch.cuda.synchronize()
             resnet_times = []
             attn_times = []
-        
+
         # Resnet blocks (process in [B, C, H, W] format)
         for i, resnet in enumerate(self.resnets):
             if is_step1:
                 resnet_start = time.time()
                 torch.cuda.synchronize()
-            
-            x = resnet(x, time_emb, context)  # DiC: pass context for conditional gating
-            
+
+            # Apply gradient checkpointing to ResnetBlocks if enabled
+            if hasattr(self, '_gradient_checkpointing') and self._gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    resnet,
+                    x,
+                    time_emb,
+                    context,
+                    use_reentrant=False
+                )
+            else:
+                x = resnet(x, time_emb, context)  # DiC: pass context for conditional gating
+
             if is_step1:
                 torch.cuda.synchronize()
                 resnet_time = (time.time() - resnet_start) * 1000
@@ -1007,9 +1017,19 @@ class UpBlock(nn.Module):
             if is_step1:
                 resnet_start = time.time()
                 torch.cuda.synchronize()
-            
-            x = resnet(x, time_emb, context)  # DiC: pass context for conditional gating
-            
+
+            # Apply gradient checkpointing to ResnetBlocks if enabled
+            if hasattr(self, '_gradient_checkpointing') and self._gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    resnet,
+                    x,
+                    time_emb,
+                    context,
+                    use_reentrant=False
+                )
+            else:
+                x = resnet(x, time_emb, context)  # DiC: pass context for conditional gating
+
             if is_step1:
                 torch.cuda.synchronize()
                 resnet_time = (time.time() - resnet_start) * 1000
@@ -1183,6 +1203,9 @@ class DeusUNet(nn.Module):
             nn.Conv2d(config.model_channels, config.out_channels, kernel_size=3, padding=1)
         )
 
+        # Gradient checkpointing flag
+        self._gradient_checkpointing = False
+
         print(f"[UNet] DEUS U-Net initialized:")
         print(f"  Variant: {config.variant}")
         print(f"  Model channels: {config.model_channels}")
@@ -1193,6 +1216,34 @@ class DeusUNet(nn.Module):
         print(f"  Transformer layers per block: {config.transformer_layers_per_block}")
         print(f"  Transformer layers (mid block): {config.transformer_layers_per_mid_block}")
         print(f"  Latent channels: {config.in_channels} -> {config.out_channels}")
+
+    def enable_gradient_checkpointing(self):
+        """
+        Enable gradient checkpointing for memory-efficient training.
+
+        This reduces activation memory by recomputing activations during backward pass
+        instead of storing them during forward pass. Expected memory reduction: ~60-70%.
+
+        Applies checkpointing to:
+        - ResnetBlocks in down_blocks, mid_block, up_blocks
+        - Transformer2DModel blocks in down_blocks, mid_block, up_blocks
+        """
+        self._gradient_checkpointing = True
+
+        # Enable gradient checkpointing for all Transformer2DModel blocks
+        for down_block in self.down_blocks:
+            if hasattr(down_block, 'transformer') and down_block.transformer is not None:
+                down_block.transformer.enable_gradient_checkpointing()
+
+        # Mid block transformer
+        if hasattr(self.mid_block[1], 'enable_gradient_checkpointing'):
+            self.mid_block[1].enable_gradient_checkpointing()
+
+        for up_block in self.up_blocks:
+            if hasattr(up_block, 'transformer') and up_block.transformer is not None:
+                up_block.transformer.enable_gradient_checkpointing()
+
+        print(f"[UNet] DEUS U-Net: Gradient checkpointing enabled")
 
     def forward(
         self,
@@ -1291,7 +1342,11 @@ class DeusUNet(nn.Module):
                 torch.cuda.synchronize()
                 # Pass step1 flag to down_block
                 down_block._parent_is_step1 = True
-            
+
+            # Pass gradient checkpointing flag to down_block
+            if self._gradient_checkpointing:
+                down_block._gradient_checkpointing = True
+
             x, skip = down_block(x, t_emb, encoder_hidden_states)
 
             # Save skip only if interval matches
@@ -1319,15 +1374,34 @@ class DeusUNet(nn.Module):
             torch.cuda.synchronize()
         
         # First ResnetBlock (process in [B, C, H, W] format)
-        x = self.mid_block[0](x, t_emb, encoder_hidden_states)  # DiC: pass context
+        if self._gradient_checkpointing and self.training:
+            x = torch.utils.checkpoint.checkpoint(
+                self.mid_block[0],
+                x,
+                t_emb,
+                encoder_hidden_states,
+                use_reentrant=False
+            )
+        else:
+            x = self.mid_block[0](x, t_emb, encoder_hidden_states)  # DiC: pass context
 
         # Transformer2DModel (handles conversion to/from [B, H*W, C] internally)
         # The Transformer2DModel expects [B, C, H, W] and returns [B, C, H, W]
+        # Transformer2DModel has its own gradient checkpointing (enabled via enable_gradient_checkpointing)
         mid_transformer = self.mid_block[1]
         x = mid_transformer(x, encoder_hidden_states)
 
         # Second ResnetBlock (process in [B, C, H, W] format)
-        x = self.mid_block[2](x, t_emb, encoder_hidden_states)  # DiC: pass context
+        if self._gradient_checkpointing and self.training:
+            x = torch.utils.checkpoint.checkpoint(
+                self.mid_block[2],
+                x,
+                t_emb,
+                encoder_hidden_states,
+                use_reentrant=False
+            )
+        else:
+            x = self.mid_block[2](x, t_emb, encoder_hidden_states)  # DiC: pass context
         
         if is_step1:
             torch.cuda.synchronize()
@@ -1347,7 +1421,11 @@ class DeusUNet(nn.Module):
                 torch.cuda.synchronize()
                 # Pass step1 flag to up_block
                 up_block._parent_is_step1 = True
-            
+
+            # Pass gradient checkpointing flag to up_block
+            if self._gradient_checkpointing:
+                up_block._gradient_checkpointing = True
+
             x = up_block(x, skip, t_emb, encoder_hidden_states)
             
             if is_step1:

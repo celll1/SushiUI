@@ -5,10 +5,11 @@ This is a modular implementation using model-specific adapters:
 - SD15FullParameterAdapter: SD1.5 models
 - SDXLFullParameterAdapter: SDXL models
 - ZImageFullParameterAdapter: Z-Image models
+- DEUSFullParameterAdapter: DEUS models
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, and Z-Image
+- Supports SD1.5, SDXL, Z-Image, and DEUS
 - Clean separation of concerns
 - Easy to extend with new model types
 
@@ -18,6 +19,7 @@ References:
 - musubi-tuner (Apache-2 license) by kohya-ss (Z-Image support)
 
 Author: Claude (2026-01-04)
+Last Updated: Claude (2026-01-08) - Added DEUS support
 """
 
 from pathlib import Path
@@ -28,6 +30,7 @@ from .adapters import (
     SD15FullParameterAdapter,
     SDXLFullParameterAdapter,
     ZImageFullParameterAdapter,
+    DEUSFullParameterAdapter,
 )
 
 
@@ -77,6 +80,9 @@ class FullParameterTrainer(BaseTrainer):
         if self.is_zimage:
             self.adapter = ZImageFullParameterAdapter(self)
             print(f"{self.log_prefix} Using ZImageFullParameterAdapter")
+        elif self.is_deus:
+            self.adapter = DEUSFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using DEUSFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

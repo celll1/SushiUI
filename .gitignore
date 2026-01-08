@@ -145,3 +145,6 @@ Thumbs.db
 # Test outputs and analysis
 test_output/
 archive/
+CFG_2PASS_IMPLEMENTATION_PLAN.md
+DEUS_TRAINING_IMPLEMENTATION_PLAN.md
+update_cfg_two_pass.py

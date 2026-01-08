@@ -283,7 +283,11 @@ def custom_sampling_loop(
     """
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
@@ -979,7 +983,11 @@ def custom_img2img_sampling_loop(
     """
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
@@ -1671,7 +1679,11 @@ def custom_inpaint_sampling_loop(
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)

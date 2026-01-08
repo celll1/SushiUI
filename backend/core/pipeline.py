@@ -726,15 +726,17 @@ class DiffusionPipelineManager:
                 "vae": vae
             })
 
-            # Encode prompts
-            encoder_hidden_states = self._deus_encode_prompt(
+            # Encode prompts (returns separate positive and negative)
+            prompt_embeds, negative_prompt_embeds = self._deus_encode_prompt(
                 encoder, prompt, negative_prompt, guidance_scale, clip_skip
             )
-            
+
             # Log text embeddings shape for verification
-            print(f"[DEUS] Text embeddings shape: {encoder_hidden_states.shape}")
-            print(f"[DEUS] Text embeddings dtype: {encoder_hidden_states.dtype}")
-            print(f"[DEUS] Text embeddings device: {encoder_hidden_states.device}")
+            print(f"[DEUS] Positive embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Positive embeddings dtype: {prompt_embeds.dtype}")
+            print(f"[DEUS] Positive embeddings device: {prompt_embeds.device}")
+            if negative_prompt_embeds is not None:
+                print(f"[DEUS] Negative embeddings shape: {negative_prompt_embeds.shape}")
 
             # Offload text encoder to CPU
             move_zimage_text_encoder_to_cpu(text_encoder)
@@ -768,13 +770,44 @@ class DiffusionPipelineManager:
                 "vae": vae
             })
 
-            # Run denoising loop
-            # Note: step_callback is for LoRA step ranges, not preview
-            # The progress_callback already handles latent preview
-            latents = self._deus_denoising_loop(
-                unet, encoder_hidden_states,
-                height, width, num_inference_steps, guidance_scale,
-                seed, progress_callback, step_callback
+            # Prepare random generator
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+            ancestral_generator = torch.Generator(device="cuda").manual_seed(seed)
+
+            # Call custom_sampling_loop (supports DEUS 2-pass CFG)
+            latents = custom_sampling_loop(
+                pipeline=self.deus_pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                guidance_rescale=0.0,
+                width=width,
+                height=height,
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                latents=None,
+                prompt_embeds_callback=None,  # No prompt editing for DEUS
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=params.get("nag_enable", False),
+                nag_scale=params.get("nag_scale", 5.0),
+                nag_tau=params.get("nag_tau", 3.5),
+                nag_alpha=params.get("nag_alpha", 0.25),
+                nag_sigma_end=params.get("nag_sigma_end", 0.0),
+                nag_negative_prompt_embeds=None,  # NAG not supported for DEUS yet
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
             )
 
             # Offload U-Net to CPU
@@ -2124,7 +2157,9 @@ class DiffusionPipelineManager:
             clip_skip: Number of layers to skip (1=penultimate)
 
         Returns:
-            encoder_hidden_states: Combined embeddings for CFG [2, seq_len, 1152] or [1, seq_len, 1152]
+            tuple: (prompt_embeds, negative_prompt_embeds)
+                - prompt_embeds: Positive embeddings [1, seq_len, 1152]
+                - negative_prompt_embeds: Negative embeddings [1, seq_len, 1152] or None
         """
         # CFG enabled when guidance_scale != 1.0
         if abs(guidance_scale - 1.0) > 1e-5:
@@ -2146,8 +2181,8 @@ class DiffusionPipelineManager:
             encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
             print(f"[DEUS] After adding null image embedding - negative: {negative_encoder_hidden_states.shape}, positive: {encoder_hidden_states.shape}")
 
-            # Concatenate for CFG
-            encoder_hidden_states = torch.cat([negative_encoder_hidden_states, encoder_hidden_states])
+            # Return separately for 2-pass CFG
+            return encoder_hidden_states, negative_encoder_hidden_states
         else:
             # No CFG, just encode positive prompt
             encoder_hidden_states = encoder.encode(
@@ -2158,166 +2193,7 @@ class DiffusionPipelineManager:
             )
             print(f"[DEUS] Text embeddings shape (no CFG): {encoder_hidden_states.shape}")
 
-        return encoder_hidden_states
-
-    def _deus_denoising_loop(self, unet, encoder_hidden_states, height, width, num_inference_steps, guidance_scale, seed, progress_callback, step_callback=None):
-        """
-        Run DEUS denoising loop
-
-        Args:
-            unet: DEUS U-Net (on GPU)
-            encoder_hidden_states: Text+image embeddings (on GPU)
-            height, width: Output dimensions
-            num_inference_steps: Number of denoising steps
-            guidance_scale: CFG scale
-            seed: Random seed
-            progress_callback: Progress callback (step, total_steps, latents)
-            step_callback: Step callback for latent preview (step, latents)
-
-        Returns:
-            latents: Denoised latents [1, 4, H//8, W//8]
-        """
-        # Prepare latents
-        latent_height = height // 8
-        latent_width = width // 8
-        latent_channels = 4  # SDXL VAE uses 4 channels
-
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-
-        # Get U-Net dtype from first parameter
-        unet_dtype = next(unet.parameters()).dtype
-
-        latents = torch.randn(
-            1, latent_channels, latent_height, latent_width,
-            dtype=unet_dtype, device="cuda"
-        )
-
-        # Simple linear schedule
-        timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1)[:-1]
-
-        print(f"[DEUS] Denoising: {num_inference_steps} steps")
-
-        # Import time for detailed timing (Step1 only)
-        import time
-
-        # Denoising loop
-        for i, t in enumerate(timesteps):
-            # Detailed debug logging for Step1 only
-            is_step1 = (i == 0)
-            
-            if is_step1:
-                print(f"\n[DEUS] [Step1 Debug] ========== DETAILED TIMING ANALYSIS ==========")
-                step_start_time = time.time()
-                torch.cuda.synchronize()  # Ensure GPU operations are complete
-                sync_time = time.time()
-                print(f"[DEUS] [Step1 Debug] GPU sync: {(sync_time - step_start_time) * 1000:.2f}ms")
-                
-                vram_gb = torch.cuda.memory_allocated() / 1024**3
-                print(f"[DEUS] [Step1 Debug] Initial VRAM: {vram_gb:.2f}GB")
-                print(f"[DEUS] [Step1 Debug] Timestep (t): {t.item():.6f}")
-                print(f"[DEUS] [Step1 Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
-                print(f"[DEUS] [Step1 Debug] Encoder hidden states shape: {encoder_hidden_states.shape}, dtype: {encoder_hidden_states.dtype}")
-            
-            # Expand latents for CFG
-            cfg_start_time = time.time() if is_step1 else None
-            if abs(guidance_scale - 1.0) > 1e-5:
-                latent_model_input = torch.cat([latents] * 2)
-            else:
-                latent_model_input = latents
-            if is_step1:
-                torch.cuda.synchronize()
-                cfg_time = (time.time() - cfg_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] CFG latent expansion: {cfg_time:.2f}ms")
-                print(f"[DEUS] [Step1 Debug] Latent model input shape: {latent_model_input.shape}")
-
-            # Prepare timestep
-            timestep_start_time = time.time() if is_step1 else None
-            t_tensor = torch.tensor([t], dtype=unet_dtype, device="cuda")
-            if is_step1:
-                timestep_time = (time.time() - timestep_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] Timestep tensor creation: {timestep_time:.2f}ms")
-
-            # Predict noise (U-Net forward)
-            unet_start_time = time.time() if is_step1 else None
-            with torch.no_grad():
-                noise_pred = unet(
-                    sample=latent_model_input,
-                    timestep=t_tensor,
-                    encoder_hidden_states=encoder_hidden_states
-                )
-            if is_step1:
-                torch.cuda.synchronize()  # Wait for U-Net forward to complete
-                unet_time = (time.time() - unet_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] U-Net forward pass: {unet_time:.2f}ms ({unet_time/1000:.3f}s)")
-                print(f"[DEUS] [Step1 Debug] Noise prediction shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
-
-            # Classifier-free guidance
-            cfg_apply_start_time = time.time() if is_step1 else None
-            if abs(guidance_scale - 1.0) > 1e-5:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            if is_step1:
-                torch.cuda.synchronize()
-                cfg_apply_time = (time.time() - cfg_apply_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] CFG application: {cfg_apply_time:.2f}ms")
-                print(f"[DEUS] [Step1 Debug] Final noise prediction shape: {noise_pred.shape}")
-
-            # Euler step (in-place update to avoid creating new tensors)
-            euler_start_time = time.time() if is_step1 else None
-            if i < len(timesteps) - 1:
-                dt = timesteps[i] - timesteps[i + 1]
-            else:
-                dt = timesteps[i]
-            
-            latents.sub_(noise_pred * dt)  # In-place operation
-            if is_step1:
-                torch.cuda.synchronize()
-                euler_time = (time.time() - euler_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] Euler step (dt={dt.item():.6f}): {euler_time:.2f}ms")
-                print(f"[DEUS] [Step1 Debug] Updated latents shape: {latents.shape}")
-
-            # Progress callback with latent preview
-            callback_start_time = time.time() if is_step1 else None
-            if progress_callback:
-                # Pass latents for preview generation
-                progress_callback(i, num_inference_steps, latents)
-            if is_step1:
-                callback_time = (time.time() - callback_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] Progress callback: {callback_time:.2f}ms")
-
-            # Step callback for LoRA step ranges (not preview)
-            if step_callback:
-                step_callback(i, num_inference_steps)
-            
-            if is_step1:
-                torch.cuda.synchronize()
-                step_total_time = (time.time() - step_start_time) * 1000
-                print(f"[DEUS] [Step1 Debug] ========== STEP1 TOTAL TIME: {step_total_time:.2f}ms ({step_total_time/1000:.3f}s) ==========")
-                print(f"[DEUS] [Step1 Debug] Breakdown:")
-                if cfg_start_time:
-                    print(f"  - CFG expansion: {cfg_time:.2f}ms ({cfg_time/step_total_time*100:.1f}%)")
-                if timestep_start_time:
-                    print(f"  - Timestep prep: {timestep_time:.2f}ms ({timestep_time/step_total_time*100:.1f}%)")
-                if unet_start_time:
-                    print(f"  - U-Net forward: {unet_time:.2f}ms ({unet_time/step_total_time*100:.1f}%)")
-                if cfg_apply_start_time:
-                    print(f"  - CFG apply: {cfg_apply_time:.2f}ms ({cfg_apply_time/step_total_time*100:.1f}%)")
-                if euler_start_time:
-                    print(f"  - Euler step: {euler_time:.2f}ms ({euler_time/step_total_time*100:.1f}%)")
-                if callback_start_time:
-                    print(f"  - Callback: {callback_time:.2f}ms ({callback_time/step_total_time*100:.1f}%)")
-                print()
-            
-            # VRAM debug logging (first 3 steps and every 5 steps, but not Step1 as it's already logged)
-            if not is_step1 and (i < 3 or i % 5 == 0):
-                torch.cuda.synchronize()
-                vram_gb = torch.cuda.memory_allocated() / 1024**3
-                print(f"[DEUS] Step {i}/{num_inference_steps}: VRAM {vram_gb:.2f}GB")
-
-        print(f"[DEUS] Denoising complete")
-        return latents
+            return encoder_hidden_states, None
 
     def _deus_decode_latents(self, vae, latents):
         """

@@ -291,7 +291,8 @@ def custom_sampling_loop(
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -991,7 +992,8 @@ def custom_img2img_sampling_loop(
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -1687,7 +1689,8 @@ def custom_inpaint_sampling_loop(
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:

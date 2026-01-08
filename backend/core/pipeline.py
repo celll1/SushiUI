@@ -676,9 +676,19 @@ class DiffusionPipelineManager:
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
 
-        # Quantization parameters
+        # Quantization and optimization parameters
         unet_quantization = params.get("unet_quantization")
         text_encoder_quantization = params.get("text_encoder_quantization")
+        use_torch_compile = params.get("use_torch_compile", False)
+        
+        # Convert use_torch_compile to bool if it's a string (from Form data)
+        if isinstance(use_torch_compile, str):
+            use_torch_compile = use_torch_compile.lower() in ("true", "1", "yes", "on")
+        elif not isinstance(use_torch_compile, bool):
+            use_torch_compile = bool(use_torch_compile)
+        
+        # Debug: Log torch.compile parameter
+        print(f"[DEUS] torch.compile parameter: {use_torch_compile} (type: {type(use_torch_compile)})")
 
         # Get DEUS components
         encoder = self.deus_pipeline.encoder
@@ -695,8 +705,8 @@ class DiffusionPipelineManager:
                 log_device_status,
                 move_zimage_text_encoder_to_gpu,
                 move_zimage_text_encoder_to_cpu,
-                move_zimage_transformer_to_gpu,
-                move_zimage_transformer_to_cpu,
+                move_deus_unet_to_gpu,
+                move_deus_unet_to_cpu,
                 move_zimage_vae_to_gpu,
                 move_zimage_vae_to_cpu
             )
@@ -740,8 +750,17 @@ class DiffusionPipelineManager:
             # ============================================================
             print("[DEUS] Stage 2: Denoising Loop")
 
-            # Move DEUS U-Net to GPU
-            unet = move_zimage_transformer_to_gpu(unet, unet_quantization)
+            # Pre-load TAESD-XL for preview generation (to avoid loading during Step1 callback)
+            import time
+            taesd_preload_start = time.time()
+            from core.utils.taesd import taesd_manager
+            taesd_manager.load_taesd(is_deus=True)  # Pre-load TAESD-XL
+            taesd_preload_time = (time.time() - taesd_preload_start) * 1000
+            if taesd_preload_time > 10:
+                print(f"[DEUS] TAESD-XL pre-loaded: {taesd_preload_time:.2f}ms")
+
+            # Move DEUS U-Net to GPU (with optional torch.compile)
+            unet = move_deus_unet_to_gpu(unet, unet_quantization, use_torch_compile=use_torch_compile)
 
             log_device_status("Ready for DEUS denoising loop", None, zimage_components={
                 "text_encoder": text_encoder,
@@ -759,7 +778,7 @@ class DiffusionPipelineManager:
             )
 
             # Offload U-Net to CPU
-            move_zimage_transformer_to_cpu(unet)
+            move_deus_unet_to_cpu(unet)
 
             log_device_status("Denoising complete, U-Net offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
@@ -772,7 +791,7 @@ class DiffusionPipelineManager:
             # ============================================================
             print("[DEUS] Stage 3: VAE Decode")
 
-            # Move FLUX VAE to GPU
+            # Move SDXL VAE to GPU
             move_zimage_vae_to_gpu(vae)
 
             log_device_status("Ready for DEUS VAE decode", None, zimage_components={
@@ -812,11 +831,11 @@ class DiffusionPipelineManager:
             try:
                 from core.vram_optimization import (
                     move_zimage_text_encoder_to_cpu,
-                    move_zimage_transformer_to_cpu,
+                    move_deus_unet_to_cpu,
                     move_zimage_vae_to_cpu
                 )
                 move_zimage_text_encoder_to_cpu(encoder.text_encoder.text_model)
-                move_zimage_transformer_to_cpu(unet)
+                move_deus_unet_to_cpu(unet)
                 move_zimage_vae_to_cpu(vae)
             except:
                 pass
@@ -2156,12 +2175,12 @@ class DiffusionPipelineManager:
             step_callback: Step callback for latent preview (step, latents)
 
         Returns:
-            latents: Denoised latents [1, 16, H//8, W//8]
+            latents: Denoised latents [1, 4, H//8, W//8]
         """
         # Prepare latents
         latent_height = height // 8
         latent_width = width // 8
-        latent_channels = 16  # FLUX VAE uses 16 channels
+        latent_channels = 4  # SDXL VAE uses 4 channels
 
         torch.manual_seed(seed)
         if torch.cuda.is_available():
@@ -2180,68 +2199,138 @@ class DiffusionPipelineManager:
 
         print(f"[DEUS] Denoising: {num_inference_steps} steps")
 
+        # Import time for detailed timing (Step1 only)
+        import time
+
         # Denoising loop
         for i, t in enumerate(timesteps):
-            # VRAM debug logging (first 3 steps and every 5 steps)
-            if i < 3 or i % 5 == 0:
-                torch.cuda.synchronize()
+            # Detailed debug logging for Step1 only
+            is_step1 = (i == 0)
+            
+            if is_step1:
+                print(f"\n[DEUS] [Step1 Debug] ========== DETAILED TIMING ANALYSIS ==========")
+                step_start_time = time.time()
+                torch.cuda.synchronize()  # Ensure GPU operations are complete
+                sync_time = time.time()
+                print(f"[DEUS] [Step1 Debug] GPU sync: {(sync_time - step_start_time) * 1000:.2f}ms")
+                
                 vram_gb = torch.cuda.memory_allocated() / 1024**3
-                print(f"[DEUS] Step {i}/{num_inference_steps}: VRAM {vram_gb:.2f}GB")
-
+                print(f"[DEUS] [Step1 Debug] Initial VRAM: {vram_gb:.2f}GB")
+                print(f"[DEUS] [Step1 Debug] Timestep (t): {t.item():.6f}")
+                print(f"[DEUS] [Step1 Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
+                print(f"[DEUS] [Step1 Debug] Encoder hidden states shape: {encoder_hidden_states.shape}, dtype: {encoder_hidden_states.dtype}")
+            
             # Expand latents for CFG
+            cfg_start_time = time.time() if is_step1 else None
             if abs(guidance_scale - 1.0) > 1e-5:
                 latent_model_input = torch.cat([latents] * 2)
             else:
                 latent_model_input = latents
+            if is_step1:
+                torch.cuda.synchronize()
+                cfg_time = (time.time() - cfg_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] CFG latent expansion: {cfg_time:.2f}ms")
+                print(f"[DEUS] [Step1 Debug] Latent model input shape: {latent_model_input.shape}")
 
             # Prepare timestep
+            timestep_start_time = time.time() if is_step1 else None
             t_tensor = torch.tensor([t], dtype=unet_dtype, device="cuda")
+            if is_step1:
+                timestep_time = (time.time() - timestep_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] Timestep tensor creation: {timestep_time:.2f}ms")
 
-            # Predict noise
+            # Predict noise (U-Net forward)
+            unet_start_time = time.time() if is_step1 else None
             with torch.no_grad():
                 noise_pred = unet(
                     sample=latent_model_input,
                     timestep=t_tensor,
                     encoder_hidden_states=encoder_hidden_states
                 )
+            if is_step1:
+                torch.cuda.synchronize()  # Wait for U-Net forward to complete
+                unet_time = (time.time() - unet_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] U-Net forward pass: {unet_time:.2f}ms ({unet_time/1000:.3f}s)")
+                print(f"[DEUS] [Step1 Debug] Noise prediction shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
 
             # Classifier-free guidance
+            cfg_apply_start_time = time.time() if is_step1 else None
             if abs(guidance_scale - 1.0) > 1e-5:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            if is_step1:
+                torch.cuda.synchronize()
+                cfg_apply_time = (time.time() - cfg_apply_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] CFG application: {cfg_apply_time:.2f}ms")
+                print(f"[DEUS] [Step1 Debug] Final noise prediction shape: {noise_pred.shape}")
 
             # Euler step (in-place update to avoid creating new tensors)
+            euler_start_time = time.time() if is_step1 else None
             if i < len(timesteps) - 1:
                 dt = timesteps[i] - timesteps[i + 1]
             else:
                 dt = timesteps[i]
-
+            
             latents.sub_(noise_pred * dt)  # In-place operation
+            if is_step1:
+                torch.cuda.synchronize()
+                euler_time = (time.time() - euler_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] Euler step (dt={dt.item():.6f}): {euler_time:.2f}ms")
+                print(f"[DEUS] [Step1 Debug] Updated latents shape: {latents.shape}")
 
             # Progress callback with latent preview
+            callback_start_time = time.time() if is_step1 else None
             if progress_callback:
                 # Pass latents for preview generation
                 progress_callback(i, num_inference_steps, latents)
+            if is_step1:
+                callback_time = (time.time() - callback_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] Progress callback: {callback_time:.2f}ms")
 
             # Step callback for LoRA step ranges (not preview)
             if step_callback:
                 step_callback(i, num_inference_steps)
+            
+            if is_step1:
+                torch.cuda.synchronize()
+                step_total_time = (time.time() - step_start_time) * 1000
+                print(f"[DEUS] [Step1 Debug] ========== STEP1 TOTAL TIME: {step_total_time:.2f}ms ({step_total_time/1000:.3f}s) ==========")
+                print(f"[DEUS] [Step1 Debug] Breakdown:")
+                if cfg_start_time:
+                    print(f"  - CFG expansion: {cfg_time:.2f}ms ({cfg_time/step_total_time*100:.1f}%)")
+                if timestep_start_time:
+                    print(f"  - Timestep prep: {timestep_time:.2f}ms ({timestep_time/step_total_time*100:.1f}%)")
+                if unet_start_time:
+                    print(f"  - U-Net forward: {unet_time:.2f}ms ({unet_time/step_total_time*100:.1f}%)")
+                if cfg_apply_start_time:
+                    print(f"  - CFG apply: {cfg_apply_time:.2f}ms ({cfg_apply_time/step_total_time*100:.1f}%)")
+                if euler_start_time:
+                    print(f"  - Euler step: {euler_time:.2f}ms ({euler_time/step_total_time*100:.1f}%)")
+                if callback_start_time:
+                    print(f"  - Callback: {callback_time:.2f}ms ({callback_time/step_total_time*100:.1f}%)")
+                print()
+            
+            # VRAM debug logging (first 3 steps and every 5 steps, but not Step1 as it's already logged)
+            if not is_step1 and (i < 3 or i % 5 == 0):
+                torch.cuda.synchronize()
+                vram_gb = torch.cuda.memory_allocated() / 1024**3
+                print(f"[DEUS] Step {i}/{num_inference_steps}: VRAM {vram_gb:.2f}GB")
 
         print(f"[DEUS] Denoising complete")
         return latents
 
     def _deus_decode_latents(self, vae, latents):
         """
-        Decode latents using FLUX VAE
+        Decode latents using SDXL VAE
 
         Args:
-            vae: FluxVAEWrapper (on GPU)
-            latents: Latents [1, 16, H//8, W//8]
+            vae: SDXLVAEWrapper (on GPU)
+            latents: Latents [1, 4, H//8, W//8]
 
         Returns:
             images: List of PIL images
         """
-        print(f"[DEUS] Decoding latents with FLUX VAE")
+        print(f"[DEUS] Decoding latents with SDXL VAE")
 
         # Decode latents
         images = vae.decode(latents)

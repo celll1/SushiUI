@@ -5,10 +5,11 @@ This is a modular implementation using model-specific adapters:
 - SD15LoRAAdapter: SD1.5 models
 - SDXLLoRAAdapter: SDXL models
 - ZImageLoRAAdapter: Z-Image models
+- DEUSLoRAAdapter: DEUS models
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, and Z-Image
+- Supports SD1.5, SDXL, Z-Image, and DEUS
 - Clean separation of concerns
 - Easy to extend with new model types
 
@@ -18,6 +19,7 @@ References:
 - musubi-tuner (Apache-2 license) by kohya-ss (Z-Image support)
 
 Author: Claude (2026-01-04)
+Last Updated: Claude (2026-01-08) - Added DEUS support
 """
 
 from pathlib import Path
@@ -29,6 +31,7 @@ from .adapters import (
     SD15LoRAAdapter,
     SDXLLoRAAdapter,
     ZImageLoRAAdapter,
+    DEUSLoRAAdapter,
 )
 
 
@@ -94,6 +97,9 @@ class LoRATrainer(BaseTrainer):
         if self.is_zimage:
             self.adapter = ZImageLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using ZImageLoRAAdapter")
+        elif self.is_deus:
+            self.adapter = DEUSLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
+            print(f"{self.log_prefix} Using DEUSLoRAAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")

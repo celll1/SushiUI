@@ -611,10 +611,13 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
+        self.is_deus = (model_type == "deus")
         self.is_sdxl = False
 
         if self.is_zimage:
             self._load_zimage_components()
+        elif self.is_deus:
+            self._load_deus_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -722,6 +725,81 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Z-Image model loaded successfully")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
+
+    def _load_deus_components(self):
+        """Load DEUS model components."""
+        print(f"{self.log_prefix} Detected DEUS model")
+        print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
+
+        from core.model_loader import ModelLoader
+        components = ModelLoader.load_deus_from_checkpoint(
+            checkpoint_path=self.model_path,
+            device="cpu",
+            torch_dtype=self.weight_dtype
+        )
+
+        # Store components
+        self.unet = components["unet"]
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]  # SigLIP2Wrapper
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # DEUS specific: no text_encoder_2, no transformer
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.transformer = None
+        self.transformer_original = None
+
+        # Save original scheduler for inference (sample generation)
+        self.original_scheduler = self.scheduler
+
+        # Use DDPMScheduler for training (same as SD/SDXL)
+        self.noise_scheduler = DDPMScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+            clip_sample=False,
+            prediction_type="epsilon"
+        )
+
+        # Convert VAE to vae_dtype
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Setup Flash Attention if enabled
+        if self.use_flash_attention:
+            self._setup_flash_attention_deus()
+
+        # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
+        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            self.unet.enable_gradient_checkpointing()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
+        else:
+            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
+
+        # Enable gradient checkpointing for Text Encoder (SigLIP-2)
+        # SigLIP-2 text model supports gradient checkpointing
+        if hasattr(self.text_encoder.text_model, 'gradient_checkpointing_enable'):
+            self.text_encoder.text_model.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
+        elif hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (fallback)")
+
+        # Freeze all base weights (full parameter training will unfreeze specific layers later)
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.unet.requires_grad_(False)
+
+        # Move U-Net to GPU (no Block Swap support for DEUS yet)
+        print(f"{self.log_prefix} Moving U-Net to {self.device}...")
+        self.unet.to(self.device)
+
+        print(f"{self.log_prefix} DEUS model loaded successfully")
+        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
+        print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
+        print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
 
     def _load_sd_sdxl_components(self):
         """Load SD/SDXL model components."""
@@ -882,6 +960,16 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
             ZImageAttention._attention_backend = "flash"
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
+
+    def _setup_flash_attention_deus(self):
+        """Setup Flash Attention for DEUS models."""
+        try:
+            from diffusers.models.attention_processor import AttnProcessor2_0
+            print(f"{self.log_prefix} Setting Flash Attention for DEUS U-Net...")
+            self.unet.set_attn_processor(AttnProcessor2_0())
+            print(f"{self.log_prefix} [OK] Flash Attention enabled for DEUS U-Net")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
 
     def _setup_flash_attention_sd_sdxl(self):
         """Setup Flash Attention for SD/SDXL models."""
@@ -1820,6 +1908,50 @@ class BaseTrainer(ABC):
 
         return result_embeds, result_mask
 
+    def encode_prompt_deus(
+        self,
+        prompt: str,
+        use_image: bool = True,
+        null_image: bool = False
+    ) -> torch.Tensor:
+        """
+        Encode prompt using SigLIP-2 text encoder (DEUS).
+
+        Args:
+            prompt: Text prompt
+            use_image: Whether to use image-conditional encoding (True for training)
+            null_image: Whether to use null image (True for negative prompts)
+
+        Returns:
+            prompt_embeds: [seq_len, 1152] tensor (variable sequence length)
+        """
+        # Check if text encoder has FP8 weights (requires autocast)
+        has_fp8_weights = self._has_fp8_text_encoder()
+
+        with torch.no_grad():
+            # For FP8 quantized text encoder, use autocast for mixed precision
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
+                    prompt_embeds = self.text_encoder.encode(
+                        text=prompt,
+                        use_image=use_image,
+                        null_image=null_image
+                    )
+            else:
+                prompt_embeds = self.text_encoder.encode(
+                    text=prompt,
+                    use_image=use_image,
+                    null_image=null_image
+                )
+
+        # SigLIP2Wrapper.encode() returns [1, seq_len, 1152], squeeze batch dim
+        result_embeds = prompt_embeds[0].detach()
+
+        # Free intermediate tensors to prevent VRAM accumulation
+        del prompt_embeds
+
+        return result_embeds
+
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -1827,11 +1959,16 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (embeddings, auxiliary_data):
             - Z-Image: (prompt_embeds, attention_mask)
+            - DEUS: (prompt_embeds, None)
             - SD1.5: (text_embeddings, None)
             - SDXL: (text_embeddings, pooled_embeddings)
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
+        elif self.is_deus:
+            # DEUS: Use image-conditional encoding for training
+            prompt_embeds = self.encode_prompt_deus(caption, use_image=True, null_image=False)
+            return (prompt_embeds, None)
         elif self.is_sdxl:
             text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, pooled_emb
@@ -2346,6 +2483,133 @@ class BaseTrainer(ABC):
             del added_cond_kwargs
 
         return loss, recon_loss_value
+
+    def train_step_deus(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        profile_vram: bool = False,
+    ) -> Tuple[torch.Tensor, float]:
+        """
+        Perform single training step (DEUS).
+
+        Args:
+            latents: Image latents [B, C, H, W]
+            prompt_embeds: SigLIP-2 embeddings [B, seq_len, 1152] (variable sequence length)
+            timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
+            debug_save_path: If provided, save latents for debugging
+            debug_captions: Captions for debug output
+            profile_vram: If True, print VRAM usage
+
+        Returns:
+            (loss_tensor, loss_value) - Loss tensor with grad and scalar value
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_deus] Start")
+
+        # DEUS uses DDPM with epsilon prediction (same as SD/SDXL)
+        noise_process = getattr(self, 'noise_process', 'ddpm')
+        prediction_target = getattr(self, 'prediction_target', 'epsilon')
+
+        # Move latents to GPU with correct dtype
+        # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
+        # Sample noise (now on GPU)
+        noise = torch.randn_like(latents)
+
+        if profile_vram:
+            print_vram_usage("[train_step_deus] After noise generation")
+
+        # Sample random timestep (or use provided timesteps)
+        batch_size = latents.shape[0]
+
+        if timesteps is None:
+            if noise_process == "ddpm":
+                # DDPM: sample discrete timesteps [0, num_train_timesteps)
+                if self.timestep_sampler is not None:
+                    # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                    timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
+                    timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
+                    timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+                else:
+                    # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+                    timesteps = torch.randint(
+                        0,
+                        self.noise_scheduler.config.num_train_timesteps,
+                        (batch_size,),
+                        device=self.device,
+                    ).long()
+        else:
+            # Timesteps provided externally
+            if noise_process == "ddpm":
+                # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
+                timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+
+        # Add noise to latents using unified framework
+        noisy_latents = add_noise_unified(
+            noise_process=noise_process,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        if profile_vram:
+            print_vram_usage("[train_step_deus] Before UNet forward")
+
+        # Enable gradients for gradient checkpointing
+        noisy_latents.requires_grad_(True)
+        prompt_embeds.requires_grad_(True)
+
+        # Predict noise using DEUS U-Net
+        # DEUS does NOT use added_cond_kwargs (unlike SDXL)
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                model_pred = self.unet(
+                    sample=noisy_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=prompt_embeds
+                ).sample
+        else:
+            model_pred = self.unet(
+                sample=noisy_latents,
+                timestep=timesteps,
+                encoder_hidden_states=prompt_embeds
+            ).sample
+
+        if profile_vram:
+            print_vram_usage("[train_step_deus] After UNet forward")
+
+        # Get target based on unified framework
+        target = get_target_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        # Calculate MSE loss (always in FP32 for numerical stability)
+        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+        # Apply Min-SNR weighting if enabled (DDPM only, not for flow matching)
+        if self.min_snr_gamma > 0 and noise_process == "ddpm":
+            # Min-SNR weighting: https://arxiv.org/abs/2303.09556
+            snr = compute_snr(timesteps, self.noise_scheduler)
+            mse_loss_weights = torch.stack([snr, self.min_snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
+            loss = (loss * mse_loss_weights.view(-1, 1, 1, 1)).mean()
+
+        if profile_vram:
+            print_vram_usage("[train_step_deus] After loss calculation")
+
+        # Return loss tensor (with grad) and scalar value (for logging)
+        return loss, loss.item()
 
     def train_step_zimage(
         self,

@@ -97,6 +97,50 @@ class DEUSLoRAAdapter(BaseLoRAAdapter):
         print(f"[DEUSLoRAAdapter] Injected {te_lora_count} LoRA layers into SigLIP-2 Text Encoder")
         return te_lora_count
 
+    def apply_lora_to_image_encoder(self, lora_layers: Dict[str, nn.Module]) -> int:
+        """
+        Apply LoRA to SigLIP-2 image encoder (future T2I support).
+
+        NOTE: This is currently not used (train_image_encoder=False by default).
+        Will be enabled when T2I dataset support is implemented.
+
+        Args:
+            lora_layers: Dictionary to store LoRA layer references
+
+        Returns:
+            Number of LoRA layers injected
+        """
+        from peft import inject_adapter_in_model, LoraConfig
+
+        # SigLIP-2 Image Encoder: Target MLP layers in vision transformer blocks
+        target_modules = ["mlp.fc1", "mlp.fc2"]
+
+        lora_config = LoraConfig(
+            r=self.lora_rank,
+            lora_alpha=self.lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=0.0,
+            bias="none",
+            init_lora_weights=True,
+        )
+
+        # Inject LoRA into SigLIP-2 image encoder
+        # Note: self.trainer.text_encoder is SigLIP2Wrapper, access image_model
+        self.trainer.text_encoder.image_model = inject_adapter_in_model(
+            lora_config,
+            self.trainer.text_encoder.image_model
+        )
+
+        # Collect LoRA layers
+        ie_lora_count = 0
+        for name, module in self.trainer.text_encoder.image_model.named_modules():
+            if "lora_" in name:
+                lora_layers[f"image_encoder.{name}"] = module
+                ie_lora_count += 1
+
+        print(f"[DEUSLoRAAdapter] Injected {ie_lora_count} LoRA layers into SigLIP-2 Image Encoder")
+        return ie_lora_count
+
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
         """
         Collect trainable LoRA parameters with per-component learning rates.
@@ -133,6 +177,18 @@ class DEUSLoRAAdapter(BaseLoRAAdapter):
         if te_lora_params:
             params.append({"params": te_lora_params, "lr": trainer.text_encoder_lr})
             print(f"[DEUSLoRAAdapter] Text Encoder LoRA params: {len(te_lora_params)}")
+
+        # Collect Image Encoder LoRA parameters (future T2I support)
+        ie_lora_params = []
+        for name, module in lora_layers.items():
+            if name.startswith("image_encoder."):
+                for param in module.parameters():
+                    if param.requires_grad:
+                        ie_lora_params.append(param)
+
+        if ie_lora_params:
+            params.append({"params": ie_lora_params, "lr": trainer.image_encoder_lr})
+            print(f"[DEUSLoRAAdapter] Image Encoder LoRA params: {len(ie_lora_params)}")
 
         return params
 
@@ -200,6 +256,13 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             trainer.text_encoder.text_model.requires_grad_(True)
             trainer.text_encoder.text_model.train()
 
+        # Image Encoder (future T2I support, currently disabled)
+        train_image_encoder = getattr(trainer, 'train_image_encoder', False)
+        if train_image_encoder and trainer.text_encoder is not None:
+            # SigLIP2Wrapper: enable gradients for image_model
+            trainer.text_encoder.image_model.requires_grad_(True)
+            trainer.text_encoder.image_model.train()
+
         # VAE is always frozen
         if trainer.vae is not None:
             trainer.vae.requires_grad_(False)
@@ -208,6 +271,7 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
         print(f"[DEUSFullParameterAdapter] Models prepared for training")
         print(f"  U-Net trainable: {trainer.train_unet}")
         print(f"  SigLIP-2 Text Encoder trainable: {trainer.train_text_encoder}")
+        print(f"  SigLIP-2 Image Encoder trainable: {train_image_encoder} (T2I, future)")
 
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
         """
@@ -231,6 +295,15 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             if te_params:
                 params.append({"params": te_params, "lr": trainer.text_encoder_lr})
                 print(f"[DEUSFullParameterAdapter] Text Encoder params: {len(te_params)}")
+
+        # Image Encoder (future T2I support)
+        train_image_encoder = getattr(trainer, 'train_image_encoder', False)
+        if train_image_encoder and trainer.text_encoder is not None:
+            # SigLIP2Wrapper: collect image_model parameters
+            ie_params = [p for p in trainer.text_encoder.image_model.parameters() if p.requires_grad]
+            if ie_params:
+                params.append({"params": ie_params, "lr": trainer.image_encoder_lr})
+                print(f"[DEUSFullParameterAdapter] Image Encoder params: {len(ie_params)}")
 
         return params
 
@@ -258,6 +331,12 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             for key, param in trainer.text_encoder.text_model.state_dict().items():
                 state_dict[f"text_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
+        # Image Encoder state dict (SigLIP-2, future T2I support)
+        train_image_encoder = getattr(trainer, 'train_image_encoder', False)
+        if train_image_encoder and trainer.text_encoder is not None:
+            for key, param in trainer.text_encoder.image_model.state_dict().items():
+                state_dict[f"image_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
+
         # VAE state dict (always include for complete checkpoint)
         if trainer.vae is not None:
             for key, param in trainer.vae.state_dict().items():
@@ -270,6 +349,7 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "deus",
             "train_unet": str(trainer.train_unet),
             "train_text_encoder": str(trainer.train_text_encoder),
+            "train_image_encoder": str(train_image_encoder),
         }
 
         # Save safetensors

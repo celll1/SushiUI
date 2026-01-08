@@ -80,15 +80,6 @@ class SigLIP2TextEncoder(nn.Module):
             # Get text model component
             self.text_model = self.model.text_model
 
-            # Verify position_embedding size (should already be correct from config update above)
-            if hasattr(self.text_model.embeddings, 'position_embedding'):
-                current_pos_emb_size = self.text_model.embeddings.position_embedding.weight.shape[0]
-                expected_size = self.text_model.config.max_position_embeddings
-                if current_pos_emb_size != expected_size:
-                    print(f"[SigLIP2] WARNING: position_embedding size mismatch after creation!")
-                    print(f"  Expected: {expected_size}, Got: {current_pos_emb_size}")
-                    # This should not happen if config was updated before model creation
-
             # Load tokenizer
             start_time = time.time()
             self.tokenizer = AutoTokenizer.from_pretrained(

@@ -3830,6 +3830,7 @@ class TrainingRunCreateRequest(BaseModel):
     optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
     optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
     optimizer_use_radam: bool = False  # Use RAdam (Rectified Adam) with Schedule-Free (adamw8bit_ringbuffer, lion8bit_ringbuffer)
+    optimizer_stochastic_rounding: bool = False  # Enable stochastic rounding for optimizers
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -4033,6 +4034,7 @@ async def create_training_run(
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 lora_dtype=request.lora_dtype or "fp32",
@@ -4113,6 +4115,7 @@ async def create_training_run(
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
@@ -4462,6 +4465,7 @@ async def update_training_run(
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
                 lora_dtype=request.lora_dtype or "fp32",
@@ -4542,6 +4546,7 @@ async def update_training_run(
                 optimizer_schedule_free_r=request.optimizer_schedule_free_r,
                 optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
                 optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,

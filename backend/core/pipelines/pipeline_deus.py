@@ -323,12 +323,22 @@ def create_deus_pipeline(
     unet = DeusUNet(config)
     unet = unet.to(dtype).to(device)
 
+    # Create scheduler (using Euler Ancestral Discrete Scheduler as default)
+    from diffusers import EulerAncestralDiscreteScheduler
+    scheduler = EulerAncestralDiscreteScheduler(
+        beta_start=0.00085,
+        beta_end=0.012,
+        beta_schedule="scaled_linear",
+        num_train_timesteps=1000,
+        prediction_type="epsilon"
+    )
+
     # Create pipeline
     pipeline = DeusPipeline(
         unet=unet,
         vae=vae,
         encoder=encoder,
-        scheduler=None,  # Simple linear schedule
+        scheduler=scheduler,
         dtype=dtype,
         device=device
     )
@@ -400,12 +410,22 @@ def load_deus_pipeline_from_checkpoint(
         print(f"[Pipeline] Creating new VAE (not in checkpoint)...")
         vae = SDXLVAEWrapper(dtype=dtype, device=device)
 
+    # Create scheduler (using Euler Ancestral Discrete Scheduler as default)
+    from diffusers import EulerAncestralDiscreteScheduler
+    scheduler = EulerAncestralDiscreteScheduler(
+        beta_start=0.00085,
+        beta_end=0.012,
+        beta_schedule="scaled_linear",
+        num_train_timesteps=1000,
+        prediction_type="epsilon"
+    )
+
     # Create pipeline
     pipeline = DeusPipeline(
         unet=unet,
         vae=vae,
         encoder=encoder,
-        scheduler=None,
+        scheduler=scheduler,
         dtype=dtype,
         device=device
     )

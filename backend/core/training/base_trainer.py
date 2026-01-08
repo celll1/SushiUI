@@ -733,19 +733,60 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Detected DEUS model")
         print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
 
-        from core.model_loader import ModelLoader
-        components = ModelLoader.load_deus_from_checkpoint(
+        from core.models.checkpoint_utils import load_unified_checkpoint
+        from diffusers import EulerAncestralDiscreteScheduler
+        
+        # Detect variant from checkpoint metadata
+        unet_variant = "medium"  # Default
+        try:
+            from safetensors import safe_open
+            with safe_open(self.model_path, framework='pt', device='cpu') as f:
+                metadata = f.metadata() or {}
+                detected_variant = metadata.get("unet_variant") or metadata.get("variant")
+                if detected_variant:
+                    unet_variant = detected_variant
+                    print(f"{self.log_prefix} Detected variant from checkpoint: {unet_variant}")
+        except Exception as e:
+            print(f"{self.log_prefix} Warning: Could not read checkpoint metadata: {e}")
+            print(f"{self.log_prefix} Using default variant: {unet_variant}")
+
+        # Load components from checkpoint
+        components = load_unified_checkpoint(
             checkpoint_path=self.model_path,
+            unet_variant=unet_variant,
             device="cpu",
-            torch_dtype=self.weight_dtype
+            dtype=self.weight_dtype,
+            load_text_encoder=True,
+            load_image_encoder=True,
+            load_vae=True,
+            load_unet=True
         )
 
         # Store components
         self.unet = components["unet"]
         self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]  # SigLIP2Wrapper
-        self.tokenizer = components["tokenizer"]
-        self.scheduler = components["scheduler"]
+        self.text_encoder = components["text_encoder"]  # SigLIP2TextEncoder
+        
+        # Get tokenizer from text encoder
+        if self.text_encoder is not None and hasattr(self.text_encoder, 'tokenizer'):
+            self.tokenizer = self.text_encoder.tokenizer
+        else:
+            # Fallback: create tokenizer if not available
+            from transformers import AutoTokenizer
+            print(f"{self.log_prefix} Creating tokenizer (not in text encoder)...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                "google/siglip2-so400m-patch16-naflex",
+                trust_remote_code=True
+            )
+        
+        # Create scheduler (for inference/sampling)
+        self.scheduler = EulerAncestralDiscreteScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+            prediction_type="epsilon"
+        )
 
         # DEUS specific: no text_encoder_2, no transformer
         self.text_encoder_2 = None

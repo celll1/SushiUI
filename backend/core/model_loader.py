@@ -269,22 +269,55 @@ class ModelLoader:
 
                     # Priority 1: Check metadata for explicit model_type
                     if "model_type" in metadata:
-                        model_type = metadata["model_type"]
-                        if model_type == "original" or model_type == "deus":
-                            print(f"[ModelLoader] Detected DEUS architecture from metadata: {model_path}")
+                        model_type = metadata["model_type"].lower() if isinstance(metadata["model_type"], str) else str(metadata["model_type"]).lower()
+                        
+                        # SDXL detection (highest priority - most common)
+                        if model_type in ["sdxl", "sd-xl", "stable-diffusion-xl", "stable_diffusion_xl"]:
+                            print(f"[ModelLoader] Detected SDXL from metadata (model_type={metadata['model_type']}): {model_path}")
+                            return "sdxl"
+                        # SD1.5 detection
+                        elif model_type in ["sd15", "sd-1.5", "sd_1.5", "stable-diffusion", "stable_diffusion", "sd"]:
+                            print(f"[ModelLoader] Detected SD1.5 from metadata (model_type={metadata['model_type']}): {model_path}")
+                            return "sd15"
+                        # DEUS detection
+                        elif model_type == "original" or model_type == "deus":
+                            print(f"[ModelLoader] Detected DEUS architecture from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "deus"
+                        # Z-Image detection
                         elif model_type == "zimage":
-                            print(f"[ModelLoader] Detected Z-Image from metadata: {model_path}")
+                            print(f"[ModelLoader] Detected Z-Image from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "zimage"
 
-                    # Priority 2: DEUS detection by SigLIP-2 encoder keys
-                    # DEUS uses SigLIP-2 text encoder instead of CLIP
-                    has_siglip2 = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
+                    # Priority 2: DEUS detection by unique U-Net keys
+                    # DEUS has unique features: rope_2d (RoPE 2D positional encoding)
+                    # Check for DEUS-specific U-Net keys
+                    has_deus_rope = any('rope_2d' in k for k in keys)
+                    has_siglip2_text = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
                     has_deus_unet = any(k.startswith('model.diffusion_model.') for k in keys)
-
-                    if has_siglip2 and has_deus_unet:
-                        print(f"[ModelLoader] Detected DEUS architecture (SigLIP-2 encoder found): {model_path}")
+                    
+                    # DEUS requires: SigLIP-2 text encoder + DEUS-specific U-Net (rope_2d)
+                    # SDXL has CLIP encoders, not SigLIP-2, and no rope_2d
+                    if has_siglip2_text and has_deus_unet and has_deus_rope:
+                        print(f"[ModelLoader] Detected DEUS architecture (SigLIP-2 encoder + rope_2d found): {model_path}")
                         return "deus"
+                    
+                    # Additional check: If SigLIP-2 encoder exists but no rope_2d, check for SDXL indicators
+                    # SDXL has CLIP encoders with specific key patterns:
+                    # - conditioner.embedders.0.text_model.encoder.layers (CLIP ViT-L)
+                    # - conditioner.embedders.1.text_model.encoder.layers (OpenCLIP ViT-bigG)
+                    # DEUS has SigLIP-2 encoder:
+                    # - conditioner.embedders.0.transformer.encoder.layers (SigLIP-2)
+                    has_clip_encoder = any(
+                        k.startswith('conditioner.embedders.0.text_model.') 
+                        or k.startswith('conditioner.embedders.1.text_model.')
+                        for k in keys
+                    )
+                    
+                    # If SigLIP-2 encoder exists but no rope_2d and CLIP encoder exists, it's likely SDXL
+                    # (SDXL might have SigLIP-2 as an additional encoder, but CLIP is primary)
+                    if has_siglip2_text and has_clip_encoder and not has_deus_rope:
+                        print(f"[ModelLoader] Found SigLIP-2 encoder but also CLIP encoders (SDXL indicator), treating as SDXL: {model_path}")
+                        # Continue to SDXL detection below
 
                     # Priority 3: SD/SDXL detection
                     # SD/SDXL models have U-Net keys starting with "model.diffusion_model."

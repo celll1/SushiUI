@@ -837,16 +837,20 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
 
         # Enable gradient checkpointing for SigLIP-2 MultiModalEncoder
-        # Text model supports gradient checkpointing
-        if hasattr(self.text_encoder, 'text_encoder') and hasattr(self.text_encoder.text_encoder, 'text_model'):
-            if hasattr(self.text_encoder.text_encoder.text_model, 'gradient_checkpointing_enable'):
-                self.text_encoder.text_encoder.text_model.gradient_checkpointing_enable()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
-        # Image model also supports gradient checkpointing
-        if hasattr(self.text_encoder, 'image_encoder') and hasattr(self.text_encoder.image_encoder, 'vision_model'):
-            if hasattr(self.text_encoder.image_encoder.vision_model, 'gradient_checkpointing_enable'):
-                self.text_encoder.image_encoder.vision_model.gradient_checkpointing_enable()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Image Encoder")
+        # Text encoder: self.text_encoder is SigLIP2MultiModalEncoder wrapper
+        # self.text_encoder.text_encoder is SigLIP2TextEncoder, which has gradient_checkpointing_enable()
+        if hasattr(self.text_encoder, 'text_encoder'):
+            if hasattr(self.text_encoder.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.text_encoder.gradient_checkpointing_enable()
+                # Note: This will call text_model.gradient_checkpointing_enable() internally
+            else:
+                print(f"{self.log_prefix} WARNING: SigLIP-2 Text Encoder does not support gradient_checkpointing_enable()")
+        # Image encoder: self.text_encoder.image_encoder is SigLIP2ImageEncoder, also has gradient_checkpointing_enable()
+        if hasattr(self.text_encoder, 'image_encoder'):
+            if hasattr(self.text_encoder.image_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.image_encoder.gradient_checkpointing_enable()
+            else:
+                print(f"{self.log_prefix} WARNING: SigLIP-2 Image Encoder does not support gradient_checkpointing_enable()")
 
         # Freeze all base weights (full parameter training will unfreeze specific layers later)
         self.vae.requires_grad_(False)

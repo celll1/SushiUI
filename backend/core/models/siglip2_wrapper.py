@@ -250,6 +250,18 @@ class SigLIP2TextEncoder(nn.Module):
         else:
             return outputs.last_hidden_state
 
+    def gradient_checkpointing_enable(self):
+        """
+        Enable gradient checkpointing for memory-efficient training.
+
+        This is forwarded to the underlying text_model.
+        """
+        if hasattr(self.text_model, 'gradient_checkpointing_enable'):
+            self.text_model.gradient_checkpointing_enable()
+            print(f"[SigLIP2] Gradient checkpointing enabled for text encoder")
+        else:
+            print(f"[SigLIP2] WARNING: text_model does not support gradient_checkpointing_enable()")
+
 
 class SigLIP2ImageEncoder(nn.Module):
     """
@@ -435,6 +447,18 @@ class SigLIP2ImageEncoder(nn.Module):
             return outputs.pooler_output
         else:
             return outputs.last_hidden_state
+
+    def gradient_checkpointing_enable(self):
+        """
+        Enable gradient checkpointing for memory-efficient training.
+
+        This is forwarded to the underlying vision_model.
+        """
+        if hasattr(self.vision_model, 'gradient_checkpointing_enable'):
+            self.vision_model.gradient_checkpointing_enable()
+            print(f"[SigLIP2] Gradient checkpointing enabled for image encoder")
+        else:
+            print(f"[SigLIP2] WARNING: vision_model does not support gradient_checkpointing_enable()")
 
 
 class SigLIP2MultiModalEncoder(nn.Module):

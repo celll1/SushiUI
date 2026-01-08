@@ -1225,23 +1225,24 @@ class DeusUNet(nn.Module):
         instead of storing them during forward pass. Expected memory reduction: ~60-70%.
 
         Applies checkpointing to:
-        - ResnetBlocks in down_blocks, mid_block, up_blocks
-        - Transformer2DModel blocks in down_blocks, mid_block, up_blocks
+        - ResnetBlocks in down_blocks, mid_block, up_blocks (via torch.utils.checkpoint in forward)
+        - Transformer2DModel blocks in down_blocks, mid_block, up_blocks (via gradient_checkpointing flag)
         """
         self._gradient_checkpointing = True
 
         # Enable gradient checkpointing for all Transformer2DModel blocks
+        # diffusers Transformer2DModel uses gradient_checkpointing attribute (not a method)
         for down_block in self.down_blocks:
             if hasattr(down_block, 'transformer') and down_block.transformer is not None:
-                down_block.transformer.enable_gradient_checkpointing()
+                down_block.transformer.gradient_checkpointing = True
 
         # Mid block transformer
-        if hasattr(self.mid_block[1], 'enable_gradient_checkpointing'):
-            self.mid_block[1].enable_gradient_checkpointing()
+        if hasattr(self.mid_block[1], 'gradient_checkpointing'):
+            self.mid_block[1].gradient_checkpointing = True
 
         for up_block in self.up_blocks:
             if hasattr(up_block, 'transformer') and up_block.transformer is not None:
-                up_block.transformer.enable_gradient_checkpointing()
+                up_block.transformer.gradient_checkpointing = True
 
         print(f"[UNet] DEUS U-Net: Gradient checkpointing enabled")
 

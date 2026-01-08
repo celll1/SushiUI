@@ -356,6 +356,8 @@ class TrainingConfigGenerator:
         optimizer_schedule_free: bool = False,
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
+        optimizer_use_radam: bool = False,
+        optimizer_stochastic_rounding: bool = False,
         save_every: int = 100,
         save_every_unit: str = "steps",
         max_step_saves_to_keep: int = 3,  # Fewer for full models (larger checkpoint size)

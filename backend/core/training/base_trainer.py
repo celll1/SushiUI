@@ -765,11 +765,26 @@ class BaseTrainer(ABC):
         # Store components
         self.unet = components["unet"]
         self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]  # SigLIP2TextEncoder
-        
+
+        # Create SigLIP2MultiModalEncoder wrapper (combines text + image encoders)
+        from core.models.siglip2_wrapper import SigLIP2MultiModalEncoder
+
+        text_encoder_raw = components["text_encoder"]  # SigLIP2TextEncoder
+        image_encoder_raw = components["image_encoder"]  # SigLIP2ImageEncoder
+
+        print(f"{self.log_prefix} Creating SigLIP2MultiModalEncoder wrapper...")
+        self.text_encoder = SigLIP2MultiModalEncoder(
+            dtype=self.weight_dtype,
+            device="cpu",  # Will move to GPU later
+            text_encoder=text_encoder_raw,
+            image_encoder=image_encoder_raw
+        )
+
         # Get tokenizer from text encoder
-        if self.text_encoder is not None and hasattr(self.text_encoder, 'tokenizer'):
+        if hasattr(self.text_encoder, 'tokenizer'):
             self.tokenizer = self.text_encoder.tokenizer
+        elif text_encoder_raw is not None and hasattr(text_encoder_raw, 'tokenizer'):
+            self.tokenizer = text_encoder_raw.tokenizer
         else:
             # Fallback: create tokenizer if not available
             from transformers import AutoTokenizer
@@ -821,14 +836,17 @@ class BaseTrainer(ABC):
         else:
             print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
 
-        # Enable gradient checkpointing for Text Encoder (SigLIP-2)
-        # SigLIP-2 text model supports gradient checkpointing
-        if hasattr(self.text_encoder.text_model, 'gradient_checkpointing_enable'):
-            self.text_encoder.text_model.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
-        elif hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (fallback)")
+        # Enable gradient checkpointing for SigLIP-2 MultiModalEncoder
+        # Text model supports gradient checkpointing
+        if hasattr(self.text_encoder, 'text_encoder') and hasattr(self.text_encoder.text_encoder, 'text_model'):
+            if hasattr(self.text_encoder.text_encoder.text_model, 'gradient_checkpointing_enable'):
+                self.text_encoder.text_encoder.text_model.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
+        # Image model also supports gradient checkpointing
+        if hasattr(self.text_encoder, 'image_encoder') and hasattr(self.text_encoder.image_encoder, 'vision_model'):
+            if hasattr(self.text_encoder.image_encoder.vision_model, 'gradient_checkpointing_enable'):
+                self.text_encoder.image_encoder.vision_model.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Image Encoder")
 
         # Freeze all base weights (full parameter training will unfreeze specific layers later)
         self.vae.requires_grad_(False)
@@ -2033,23 +2051,30 @@ class BaseTrainer(ABC):
         # Check if text encoder has FP8 weights (requires autocast)
         has_fp8_weights = self._has_fp8_text_encoder()
 
+        # Convert use_image/null_image to correct API parameters
+        # use_image=True, null_image=False → images=None, use_null_image=True (text + null image)
+        # use_image=False, null_image=True → images=None, use_null_image=True (text + null image for negative)
+        use_null_image = use_image or null_image
+
         with torch.no_grad():
             # For FP8 quantized text encoder, use autocast for mixed precision
             if has_fp8_weights:
                 with torch.autocast(device_type='cuda', dtype=self.training_dtype):
                     prompt_embeds = self.text_encoder.encode(
-                        text=prompt,
-                        use_image=use_image,
-                        null_image=null_image
+                        prompts=prompt,
+                        images=None,  # No real images for training (use null)
+                        use_null_image=use_null_image,
+                        clip_skip=0  # Use last layer (default)
                     )
             else:
                 prompt_embeds = self.text_encoder.encode(
-                    text=prompt,
-                    use_image=use_image,
-                    null_image=null_image
+                    prompts=prompt,
+                    images=None,  # No real images for training (use null)
+                    use_null_image=use_null_image,
+                    clip_skip=0  # Use last layer (default)
                 )
 
-        # SigLIP2Wrapper.encode() returns [1, seq_len, 1152], squeeze batch dim
+        # SigLIP2MultiModalEncoder.encode() returns [1, seq_len, 1152], squeeze batch dim
         result_embeds = prompt_embeds[0].detach()
 
         # Free intermediate tensors to prevent VRAM accumulation
@@ -2949,6 +2974,96 @@ class BaseTrainer(ABC):
     # Sample Generation (to be continued in next section)
     # ============================================================
 
+    def _generate_sample_deus(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 3.5,
+        seed: int = -1,
+        current_step: int = 0
+    ) -> "Image.Image":
+        """
+        Generate sample image during DEUS training using DeusPipeline.
+
+        Args:
+            prompt: Text prompt
+            height: Image height
+            width: Image width
+            num_inference_steps: Number of denoising steps
+            guidance_scale: CFG scale
+            seed: Random seed (-1 for random)
+            current_step: Current training step (for logging)
+
+        Returns:
+            PIL Image
+        """
+        from PIL import Image
+        from core.pipelines.pipeline_deus import DeusPipeline
+        import random
+
+        # Set models to eval mode
+        self.unet.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+
+        try:
+            # ========================================
+            # STEP 1: Create Temporary DeusPipeline
+            # ========================================
+            pipeline = DeusPipeline(
+                unet=self.unet,
+                vae=self.vae,
+                encoder=self.text_encoder,  # SigLIP2MultiModalEncoder
+                scheduler=self.original_scheduler,
+                dtype=self.weight_dtype,
+                device=self.device
+            )
+
+            # ========================================
+            # STEP 2: Generate
+            # ========================================
+            # Set seed
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            # Move to GPU for generation
+            self.unet.to(self.device)
+            self.text_encoder.to(self.device)
+            self.vae.to(self.device)
+
+            # Generate
+            images = pipeline(
+                prompt=prompt,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=actual_seed,
+                clip_skip=0  # Use last layer (default for training)
+            )
+
+            # Set back to train mode
+            self.unet.train()
+            self.text_encoder.train()
+
+            return images[0]
+
+        except Exception as e:
+            # Fallback: Return white placeholder on error
+            print(f"{self.log_prefix} [Sample] ERROR during DEUS generation: {type(e).__name__}: {str(e)}")
+            from PIL import Image
+            placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
+            return placeholder
+        finally:
+            # Ensure train mode is restored
+            self.unet.train()
+            if hasattr(self.text_encoder, 'train'):
+                self.text_encoder.train()
+
     def generate_sample(
         self,
         prompt: str,
@@ -2978,11 +3093,25 @@ class BaseTrainer(ABC):
             PIL Image
         """
         from PIL import Image
-        from core.inference.custom_sampling import custom_sampling_loop
-        from core.inference.schedulers import get_scheduler
         import random
 
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
+
+        # DEUS: Use DeusPipeline directly
+        if self.is_deus:
+            return self._generate_sample_deus(
+                prompt=prompt,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                current_step=current_step
+            )
+
+        # SD/SDXL: Use custom_sampling_loop
+        from core.inference.custom_sampling import custom_sampling_loop
+        from core.inference.schedulers import get_scheduler
 
         # Set models to eval mode
         self.unet.eval()

@@ -356,12 +356,20 @@ def load_unified_checkpoint(
                     # Replace old embedding
                     embeddings_layer.position_embedding = new_position_embedding
 
+                    # Also update config to reflect new size
+                    text_encoder.text_model.config.max_position_embeddings = target_size
+
                     print(f"[Checkpoint] Position embedding expanded successfully (interpolation)")
+                    print(f"[Checkpoint] Updated config.max_position_embeddings to {target_size}")
 
         # Move model to device (the structure itself, not just weights)
         text_encoder.text_model = text_encoder.text_model.to(device=device, dtype=dtype)
 
+        # Update text_encoder.config to match text_model.config
+        text_encoder.config = text_encoder.text_model.config
+
         print(f"[Checkpoint] Text encoder ready on {device}")
+        print(f"[Checkpoint] Text encoder config.max_position_embeddings: {text_encoder.config.max_position_embeddings}")
     elif load_text_encoder:
         print(f"[Checkpoint] WARNING: No text encoder weights found in checkpoint!")
 

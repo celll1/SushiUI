@@ -180,9 +180,16 @@ class SDXLVAEWrapper(nn.Module):
         """
         return self.vae(sample, return_dict=return_dict)
 
-    def to(self, device):
+    @property
+    def config(self):
+        """Access underlying VAE config."""
+        return self.vae.config
+
+    def to(self, device, **kwargs):
         """Move VAE to device."""
-        self.vae = self.vae.to(device)
+        # Extract non_blocking if provided (for compatibility with vram_optimization.py)
+        non_blocking = kwargs.get('non_blocking', False)
+        self.vae = self.vae.to(device, non_blocking=non_blocking)
         self.device_name = device
         return self
 

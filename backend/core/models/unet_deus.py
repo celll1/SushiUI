@@ -1396,7 +1396,13 @@ class DeusUNet(nn.Module):
                 mode='nearest'
             )
 
-        return x
+        # Return as simple namespace with .sample attribute for diffusers compatibility
+        # (diffusers U-Net returns UNet2DConditionOutput with .sample attribute)
+        class UNetOutput:
+            def __init__(self, sample):
+                self.sample = sample
+
+        return UNetOutput(x)
 
     @staticmethod
     def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:

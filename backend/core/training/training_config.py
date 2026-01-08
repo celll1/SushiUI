@@ -53,10 +53,12 @@ class TrainingConfigGenerator:
         multi_resolution_mode: str = "max",
         train_unet: bool = True,
         train_text_encoder: bool = False,
+        train_image_encoder: bool = False,  # DEUS Image Encoder (future T2I support)
         unet_lr: Optional[float] = None,
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        image_encoder_lr: Optional[float] = None,  # DEUS Image Encoder LR
         cache_latents_to_disk: bool = False,
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
@@ -249,6 +251,7 @@ class TrainingConfigGenerator:
                             "gradient_accumulation_steps": 1,
                             "train_unet": train_unet,
                             "train_text_encoder": train_text_encoder,
+                            "train_image_encoder": train_image_encoder,
                             # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
                             # Unified training framework (replaces noise_scheduler)
                             "noise_process": noise_process,  # "auto", "ddpm", "flow"
@@ -273,6 +276,7 @@ class TrainingConfigGenerator:
                             "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
+                            "image_encoder_lr": image_encoder_lr if image_encoder_lr is not None else learning_rate,
                             "mixed_precision": mixed_precision,  # Enable autocast for mixed precision
                             "debug_latents": debug_latents,
                             "debug_latents_every": debug_latents_every,
@@ -365,10 +369,12 @@ class TrainingConfigGenerator:
         multi_resolution_mode: str = "max",
         train_unet: bool = True,
         train_text_encoder: bool = True,
+        train_image_encoder: bool = False,  # DEUS Image Encoder (future T2I support)
         unet_lr: Optional[float] = None,
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        image_encoder_lr: Optional[float] = None,  # DEUS Image Encoder LR
         cache_latents_to_disk: bool = False,
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
@@ -452,6 +458,7 @@ class TrainingConfigGenerator:
             "gradient_accumulation_steps": 1,
             "train_unet": train_unet,
             "train_text_encoder": train_text_encoder,
+            "train_image_encoder": train_image_encoder,
             # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
             "optimizer": optimizer,
             "lr": learning_rate,
@@ -509,6 +516,8 @@ class TrainingConfigGenerator:
             train_config["text_encoder_1_lr"] = text_encoder_1_lr
         if text_encoder_2_lr is not None:
             train_config["text_encoder_2_lr"] = text_encoder_2_lr
+        if image_encoder_lr is not None:
+            train_config["image_encoder_lr"] = image_encoder_lr
 
         # Add bucketing parameters
         if enable_bucketing:

@@ -277,7 +277,16 @@ class ModelLoader:
                             print(f"[ModelLoader] Detected Z-Image from metadata: {model_path}")
                             return "zimage"
 
-                    # Priority 2: SD/SDXL detection
+                    # Priority 2: DEUS detection by SigLIP-2 encoder keys
+                    # DEUS uses SigLIP-2 text encoder instead of CLIP
+                    has_siglip2 = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
+                    has_deus_unet = any(k.startswith('model.diffusion_model.') for k in keys)
+
+                    if has_siglip2 and has_deus_unet:
+                        print(f"[ModelLoader] Detected DEUS architecture (SigLIP-2 encoder found): {model_path}")
+                        return "deus"
+
+                    # Priority 3: SD/SDXL detection
                     # SD/SDXL models have U-Net keys starting with "model.diffusion_model."
                     has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
 

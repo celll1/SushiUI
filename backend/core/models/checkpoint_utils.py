@@ -316,8 +316,10 @@ def load_unified_checkpoint(
         
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Text encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
-        
-        # Model is already on device (weights were loaded directly to device)
+
+        # Move model to device (the structure itself, not just weights)
+        text_encoder.text_model = text_encoder.text_model.to(device=device, dtype=dtype)
+
         print(f"[Checkpoint] Text encoder ready on {device}")
     elif load_text_encoder:
         print(f"[Checkpoint] WARNING: No text encoder weights found in checkpoint!")
@@ -356,8 +358,10 @@ def load_unified_checkpoint(
         
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Image encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
-        
-        # Model is already on device (weights were loaded directly to device)
+
+        # Move model to device (the structure itself, not just weights)
+        image_encoder.vision_model = image_encoder.vision_model.to(device=device, dtype=dtype)
+
         print(f"[Checkpoint] Image encoder ready on {device}")
     elif load_image_encoder:
         print(f"[Checkpoint] WARNING: No image encoder weights found in checkpoint!")

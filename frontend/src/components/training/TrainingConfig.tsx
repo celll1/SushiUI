@@ -79,6 +79,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [showSD15, setShowSD15] = useState(true);
   const [showSDXL, setShowSDXL] = useState(true);
   const [showZImage, setShowZImage] = useState(true);
+  const [showDEUS, setShowDEUS] = useState(true);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -235,6 +236,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (model.architecture === "sd15" && !showSD15) return false;
     if (model.architecture === "sdxl" && !showSDXL) return false;
     if (model.architecture === "zimage" && !showZImage) return false;
+    if (model.architecture === "deus" && !showDEUS) return false;
     return true;
   });
 
@@ -1079,6 +1081,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-3.5 h-3.5"
               />
               <span className="text-gray-300">Z-Image</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showDEUS}
+                onChange={(e) => setShowDEUS(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">DEUS</span>
             </label>
           </div>
 

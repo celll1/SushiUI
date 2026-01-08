@@ -153,10 +153,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
   const [trainTextEncoder, setTrainTextEncoder] = useState(true);
+  const [trainImageEncoder, setTrainImageEncoder] = useState(false);  // DEUS Image Encoder (future T2I)
   const [unetLr, setUnetLr] = useState<string>("1e-5");
   const [textEncoderLr, setTextEncoderLr] = useState<string>("1e-6");
   const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
   const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
+  const [imageEncoderLr, setImageEncoderLr] = useState<string>("");  // DEUS Image Encoder LR
 
   // Precision and dtype settings (VRAM optimization)
   const [weightDtype, setWeightDtype] = useState<string>("fp32");
@@ -221,6 +223,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const isZImageModel = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "zimage";
+  };
+
+  const isDEUSModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "deus";
   };
 
   // Filter models by architecture
@@ -292,10 +299,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Component-specific training
       if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
       if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
+      if (params.train_image_encoder !== undefined) setTrainImageEncoder(params.train_image_encoder);
       if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
       if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
       if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
       if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
+      if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) setImageEncoderLr(params.image_encoder_lr.toString());
 
       // Precision settings
       if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
@@ -821,10 +830,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       force_recache: forceRecache,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
+      train_image_encoder: trainImageEncoder,
       unet_lr: unetLr ? parseFloat(unetLr) : null,
       text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
       text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
       text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
+      image_encoder_lr: imageEncoderLr ? parseFloat(imageEncoderLr) : null,
       weight_dtype: weightDtype,
       training_dtype: trainingDtype,
       output_dtype: outputDtype,
@@ -1824,6 +1835,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                 </label>
               </div>
+
+              {/* Train Image Encoder (DEUS only, grayed out) */}
+              {isDEUSModel(baseModelPath) && (
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="train-image-encoder"
+                    checked={trainImageEncoder}
+                    onChange={(e) => setTrainImageEncoder(e.target.checked)}
+                    disabled={true}
+                    className="w-4 h-4 opacity-50 cursor-not-allowed"
+                  />
+                  <label htmlFor="train-image-encoder" className="text-xs text-gray-500 cursor-not-allowed">
+                    Train Image Encoder (T2I, Not Implemented)
+                  </label>
+                </div>
+              )}
             </div>
 
             {/* U-Net Learning Rate */}
@@ -1892,6 +1920,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Image Encoder Learning Rate (DEUS only, grayed out) */}
+            {trainImageEncoder && isDEUSModel(baseModelPath) && (
+              <div className="mb-3">
+                <label className="block text-xs text-gray-400 mb-1 opacity-50">
+                  Image Encoder LR <span className="text-xs text-gray-500">(T2I, Not Implemented)</span>
+                </label>
+                <input
+                  type="text"
+                  value={imageEncoderLr}
+                  onChange={(e) => setImageEncoderLr(e.target.value)}
+                  placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
+                  disabled={true}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm opacity-50 cursor-not-allowed"
+                />
               </div>
             )}
           </div>

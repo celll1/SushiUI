@@ -690,6 +690,17 @@ class DiffusionPipelineManager:
         # Debug: Log torch.compile parameter
         print(f"[DEUS] torch.compile parameter: {use_torch_compile} (type: {type(use_torch_compile)})")
 
+        # Sampler and scheduler settings
+        sampler = params.get("sampler", "euler_a")
+        schedule_type = params.get("schedule_type", "uniform")
+        if sampler:
+            try:
+                from core.inference.schedulers import get_scheduler
+                self.deus_pipeline.scheduler = get_scheduler(self.deus_pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using sampler: {sampler}, schedule: {schedule_type}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
+
         # Get DEUS components
         encoder = self.deus_pipeline.encoder
         unet = self.deus_pipeline.unet

@@ -2075,8 +2075,8 @@ class BaseTrainer(ABC):
                 )
 
         # SigLIP2MultiModalEncoder.encode() returns [1, seq_len, 1152]
-        # Keep sequence dimension (DEUS U-Net expects [seq_len, 1152] per item, will be batched later)
-        result_embeds = prompt_embeds[0].detach()  # [1, seq_len, 1152] -> [seq_len, 1152]
+        # Keep batch dimension for consistency with SDXL (both return [batch, seq_len, dim])
+        result_embeds = prompt_embeds.detach()  # [1, seq_len, 1152]
 
         # Free intermediate tensors to prevent VRAM accumulation
         del prompt_embeds
@@ -5087,31 +5087,31 @@ class BaseTrainer(ABC):
                         # Stack batch
                         latents = torch.cat(latents_list, dim=0)
 
-                        # Text embeddings are [seq_len, dim], use stack to get [batch_size, seq_len, dim]
+                        # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                         # IMPORTANT: Pad embeddings to same sequence length if chunking is used
                         if text_embeddings_list:
                             # Check if all embeddings have same sequence length
-                            seq_lengths = [emb.shape[0] for emb in text_embeddings_list]
+                            seq_lengths = [emb.shape[1] for emb in text_embeddings_list]
                             max_seq_len = max(seq_lengths)
 
                             if len(set(seq_lengths)) > 1:
                                 # Different sequence lengths - need padding
                                 padded_embeddings = []
                                 for emb in text_embeddings_list:
-                                    if emb.shape[0] < max_seq_len:
+                                    if emb.shape[1] < max_seq_len:
                                         # Pad to max_seq_len with zeros
-                                        pad_length = max_seq_len - emb.shape[0]
+                                        pad_length = max_seq_len - emb.shape[1]
                                         padding = torch.zeros(
-                                            (pad_length, emb.shape[1]),
+                                            (emb.shape[0], pad_length, emb.shape[2]),
                                             dtype=emb.dtype,
                                             device=emb.device
                                         )
-                                        emb = torch.cat([emb, padding], dim=0)
+                                        emb = torch.cat([emb, padding], dim=1)
                                     padded_embeddings.append(emb)
-                                text_embeddings = torch.stack(padded_embeddings, dim=0)  # [batch, seq_len, dim]
+                                text_embeddings = torch.cat(padded_embeddings, dim=0)  # [batch, seq_len, dim]
                             else:
-                                # All same length - use stack
-                                text_embeddings = torch.stack(text_embeddings_list, dim=0)  # [batch, seq_len, dim]
+                                # All same length - direct concatenation
+                                text_embeddings = torch.cat(text_embeddings_list, dim=0)  # [batch, seq_len, dim]
                         else:
                             text_embeddings = None
 

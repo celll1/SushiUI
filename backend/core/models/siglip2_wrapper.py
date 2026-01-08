@@ -398,7 +398,12 @@ class SigLIP2ImageEncoder(nn.Module):
 
         # Encode
         with torch.no_grad():
-            outputs = self.vision_model(**inputs)
+            # SigLIP2 vision model requires pixel_values, attention_mask, and spatial_shapes
+            outputs = self.vision_model(
+                pixel_values=inputs['pixel_values'],
+                attention_mask=inputs.get('attention_mask', None),
+                spatial_shapes=inputs.get('spatial_shapes', None)
+            )
 
         if return_pooled:
             # Return pooled output (CLS token)

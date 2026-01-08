@@ -698,7 +698,7 @@ def custom_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_uncond = unet(
                             latent_model_input,
@@ -735,7 +735,7 @@ def custom_sampling_loop(
                     print(f"[CustomSampling] [Debug]   prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_text = unet(
                             latent_model_input,
@@ -781,7 +781,7 @@ def custom_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred = unet(
                             latent_model_input,
@@ -1416,7 +1416,7 @@ def custom_img2img_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_uncond = unet(
                             latent_model_input,
@@ -1453,7 +1453,7 @@ def custom_img2img_sampling_loop(
                     print(f"[CustomSampling] [Debug]   prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_text = unet(
                             latent_model_input,
@@ -1499,7 +1499,7 @@ def custom_img2img_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred = unet(
                             latent_model_input,
@@ -2165,7 +2165,7 @@ def custom_inpaint_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_uncond = unet(
                             latent_model_input,
@@ -2202,7 +2202,7 @@ def custom_inpaint_sampling_loop(
                     print(f"[CustomSampling] [Debug]   prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_text = unet(
                             latent_model_input,
@@ -2248,7 +2248,7 @@ def custom_inpaint_sampling_loop(
 
                 # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
                 is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-                if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
+                if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred = unet(
                             latent_model_input,

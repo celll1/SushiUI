@@ -299,7 +299,29 @@ def load_unified_checkpoint(
         
         print(f"[Checkpoint] Loading text encoder weights...")
         start_time = time.time()
-        
+
+        # Check if position_embedding needs to be resized before loading weights
+        pos_emb_key = "embeddings.position_embedding.weight"
+        if pos_emb_key in text_encoder_state:
+            checkpoint_pos_emb_shape = text_encoder_state[pos_emb_key].shape
+            checkpoint_pos_emb_size = checkpoint_pos_emb_shape[0]
+            current_pos_emb_size = text_encoder.text_model.embeddings.position_embedding.weight.shape[0]
+
+            if checkpoint_pos_emb_size != current_pos_emb_size:
+                print(f"[Checkpoint] Position embedding size mismatch:")
+                print(f"  Current model: {current_pos_emb_size}")
+                print(f"  Checkpoint: {checkpoint_pos_emb_size}")
+                print(f"[Checkpoint] Recreating position_embedding layer to match checkpoint size...")
+
+                # Recreate position_embedding with checkpoint size
+                hidden_size = checkpoint_pos_emb_shape[1]
+                new_position_embedding = torch.nn.Embedding(checkpoint_pos_emb_size, hidden_size)
+                text_encoder.text_model.embeddings.position_embedding = new_position_embedding
+
+                # Update config to match
+                text_encoder.text_model.config.max_position_embeddings = checkpoint_pos_emb_size
+                print(f"[Checkpoint] Recreated position_embedding: {checkpoint_pos_emb_size} positions")
+
         # Optimized: Load weights directly (faster than load_state_dict for large models)
         # Convert weights to dtype and device before loading
         with torch.no_grad():
@@ -308,12 +330,12 @@ def load_unified_checkpoint(
                     param.data = text_encoder_state[name].to(dtype=dtype, device=device)
                 else:
                     print(f"[Checkpoint] WARNING: Missing weight for {name}")
-            
+
             # Also handle buffers (e.g., LayerNorm running_mean/running_var)
             for name, buffer in text_encoder.text_model.named_buffers():
                 if name in text_encoder_state:
                     buffer.data = text_encoder_state[name].to(dtype=dtype, device=device)
-        
+
         weights_load_time = time.time() - start_time
         print(f"[Checkpoint] Text encoder weights loaded from checkpoint in {weights_load_time:.2f}s!")
 

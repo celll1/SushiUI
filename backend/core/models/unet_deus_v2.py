@@ -492,6 +492,7 @@ class CrossAttnUpBlock2D(nn.Module):
         res_hidden_states_tuple: Tuple[torch.Tensor, ...],
         temb: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
+        upsample_size: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -543,7 +544,8 @@ class CrossAttnUpBlock2D(nn.Module):
         # Upsample at the END (for next up block)
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states)
+                # Pass upsample_size to preserve exact dimensions (critical for odd resolutions)
+                hidden_states = upsampler(hidden_states, output_size=upsample_size)
 
         return hidden_states
 
@@ -622,12 +624,14 @@ class UpBlock2D(nn.Module):
         hidden_states: torch.Tensor,
         res_hidden_states_tuple: Tuple[torch.Tensor, ...],
         temb: Optional[torch.Tensor] = None,
+        upsample_size: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         """
         Args:
             hidden_states: Current hidden states
             res_hidden_states_tuple: Skip connections from down blocks
             temb: Time embedding
+            upsample_size: Target size for upsampling (H, W)
         """
         for i, resnet in enumerate(self.resnets):
             # Check if this layer receives skip connection (last num_skip_connections layers get skips)
@@ -665,7 +669,8 @@ class UpBlock2D(nn.Module):
         # Upsample at the END (for next up block)
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states)
+                # Pass upsample_size to preserve exact dimensions (critical for odd resolutions)
+                hidden_states = upsampler(hidden_states, output_size=upsample_size)
 
         return hidden_states
 
@@ -921,12 +926,22 @@ class DeusUNet(nn.Module):
 
         # Down blocks (sparse skip: only specified blocks output skip connections)
         down_block_res_samples = ()
+        # Store ALL down block output sizes for upsample size preservation (SDXL-compatible)
+        down_block_output_sizes = []
 
         for i, down_block in enumerate(self.down_blocks):
             if hasattr(down_block, 'has_cross_attention') and down_block.has_cross_attention:
                 x, res_samples = down_block(x, t_emb, encoder_hidden_states)
             else:
                 x, res_samples = down_block(x, t_emb)
+
+            # Store output size BEFORE downsample (for upsample size preservation)
+            # res_samples[-2] is last ResNet output before downsample
+            # res_samples[-1] is downsample output
+            if len(res_samples) > 2:
+                down_block_output_sizes.append(res_samples[-2].shape[2:])  # (H, W) before downsample
+            else:
+                down_block_output_sizes.append(res_samples[-1].shape[2:])  # (H, W) if no downsample
 
             # Only collect skip connections from specified blocks
             # Each block outputs only the LAST ResNet output (before downsample)
@@ -946,16 +961,38 @@ class DeusUNet(nn.Module):
         x = self.mid_block[2](x, t_emb)
 
         # Up blocks (sparse skip: each block specifies how many skips it needs)
-        for up_block in self.up_blocks:
+        for i, up_block in enumerate(self.up_blocks):
             # Get skip connections for this up block
             num_skips = up_block.num_skip_connections
             res_samples = down_block_res_samples[-num_skips:] if num_skips > 0 else ()
             down_block_res_samples = down_block_res_samples[:-num_skips] if num_skips > 0 else down_block_res_samples
 
-            if hasattr(up_block, 'has_cross_attention') and up_block.has_cross_attention:
-                x = up_block(x, res_samples, t_emb, encoder_hidden_states)
+            # Get upsample target size from corresponding down block (SDXL-compatible size preservation)
+            # DEUS v2 architecture:
+            #   down_blocks[0]: 180x132 → 90x66 (downsample)
+            #   down_blocks[1]: 90x66 → 45x33 (downsample)
+            #   down_blocks[2]: 45x33 → 45x33 (NO downsample, last block)
+            #   mid_block: 45x33 → 45x33
+            #   up_blocks[0]: 45x33 → 90x66 (upsample to down_blocks[1] output size)
+            #   up_blocks[1]: 90x66 → 180x132 (upsample to down_blocks[0] output size)
+            #   up_blocks[2]: 180x132 → 180x132 (NO upsample, last block)
+            #
+            # Mapping:
+            #   up_blocks[0] → down_blocks[1] output (90x66)
+            #   up_blocks[1] → down_blocks[0] output (180x132)
+            #   up_blocks[2] → no upsample
+            if hasattr(up_block, 'upsamplers') and up_block.upsamplers is not None:
+                # This up block has upsampler → use corresponding down block's output size
+                # up_blocks[i] upsamples to down_blocks[len(down_blocks) - 2 - i] output size
+                down_block_idx = len(self.down_blocks) - 2 - i
+                upsample_size = down_block_output_sizes[down_block_idx]
             else:
-                x = up_block(x, res_samples, t_emb)
+                upsample_size = None
+
+            if hasattr(up_block, 'has_cross_attention') and up_block.has_cross_attention:
+                x = up_block(x, res_samples, t_emb, encoder_hidden_states, upsample_size=upsample_size)
+            else:
+                x = up_block(x, res_samples, t_emb, upsample_size=upsample_size)
 
         # Output projection
         x = self.conv_norm_out(x)

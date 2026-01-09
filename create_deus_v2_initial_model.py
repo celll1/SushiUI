@@ -40,6 +40,35 @@ tokenizer = AutoTokenizer.from_pretrained(siglip_model_name, trust_remote_code=T
 print(f"   Loaded: {siglip_model_name}")
 print(f"   Hidden size: {text_encoder.config.hidden_size}")
 print(f"   Num layers: {text_encoder.config.num_hidden_layers}")
+print(f"   Original max_position_embeddings: {text_encoder.config.max_position_embeddings}")
+
+# Expand position embeddings from 64 to 512
+print("   Expanding position embeddings to 512...")
+original_max_pos = text_encoder.config.max_position_embeddings  # 64
+target_max_pos = 512
+
+# Get current position embeddings
+pos_embed_weight = text_encoder.embeddings.position_embedding.weight.data  # [64, 1152]
+embedding_dim = pos_embed_weight.shape[1]
+
+# Create new position embeddings (512, 1152)
+new_pos_embed = torch.zeros(target_max_pos, embedding_dim, dtype=dtype, device=device)
+
+# Copy original embeddings (first 64)
+new_pos_embed[:original_max_pos] = pos_embed_weight
+
+# Interpolate for positions 64-511
+for i in range(original_max_pos, target_max_pos):
+    # Linear interpolation from last position
+    alpha = (i - original_max_pos) / (target_max_pos - original_max_pos)
+    new_pos_embed[i] = pos_embed_weight[-1] * (1 - alpha * 0.1)  # Slight decay
+
+# Update text encoder
+text_encoder.embeddings.position_embedding.weight.data = new_pos_embed
+text_encoder.embeddings.position_ids = torch.arange(target_max_pos).expand((1, -1)).to(device)
+text_encoder.config.max_position_embeddings = target_max_pos
+
+print(f"   Expanded to: {target_max_pos}")
 print()
 
 # 2. Load SDXL VAE
@@ -96,7 +125,7 @@ metadata = {
     "num_attention_heads": str(unet_config.num_attention_heads),
     "transformer_layers_per_block": str(unet_config.transformer_layers_per_block),
     "context_dim": str(unet_config.context_dim),
-    "max_position_embeddings": "77",  # SigLIP-2 default
+    "max_position_embeddings": "512",  # Expanded for long prompts
     "dtype": "float16",
     "created_by": "SushiUI DEUS v2 Initial Model Creator",
 }

@@ -846,19 +846,29 @@ class DeusUNet(nn.Module):
         # Enable gradient checkpointing for all blocks
         for down_block in self.down_blocks:
             down_block.gradient_checkpointing = True
-            # Transformer2DModel has its own gradient_checkpointing attribute
+            # Transformer2DModel needs _set_gradient_checkpointing
             if hasattr(down_block, 'attentions'):
                 for attn in down_block.attentions:
-                    attn.gradient_checkpointing = True
+                    if hasattr(attn, '_set_gradient_checkpointing'):
+                        attn._set_gradient_checkpointing(value=True)
+                    else:
+                        attn.gradient_checkpointing = True
 
         # Mid block transformer
-        self.mid_block[1].gradient_checkpointing = True
+        mid_attn = self.mid_block[1]
+        if hasattr(mid_attn, '_set_gradient_checkpointing'):
+            mid_attn._set_gradient_checkpointing(value=True)
+        else:
+            mid_attn.gradient_checkpointing = True
 
         for up_block in self.up_blocks:
             up_block.gradient_checkpointing = True
             if hasattr(up_block, 'attentions'):
                 for attn in up_block.attentions:
-                    attn.gradient_checkpointing = True
+                    if hasattr(attn, '_set_gradient_checkpointing'):
+                        attn._set_gradient_checkpointing(value=True)
+                    else:
+                        attn.gradient_checkpointing = True
 
         print(f"[UNet] DEUS U-Net v2: Gradient checkpointing enabled")
 

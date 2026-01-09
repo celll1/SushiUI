@@ -5491,8 +5491,29 @@ class BaseTrainer(ABC):
 
         # For Full Fine-Tuning, iterate through base model parameters
         else:
-            # Iterate through text encoder parameters (if trainable)
-            if hasattr(self, 'text_encoder') and self.text_encoder is not None:
+            # DEUS: text_encoder is SigLIP2MultiModalEncoder wrapper
+            # Access actual parameters via text_encoder.text_encoder.text_model
+            if self.is_deus and hasattr(self, 'text_encoder') and self.text_encoder is not None:
+                # SigLIP-2 Text Encoder
+                if hasattr(self.text_encoder, 'text_encoder') and self.text_encoder.text_encoder is not None:
+                    if hasattr(self.text_encoder.text_encoder, 'text_model'):
+                        for name, param in self.text_encoder.text_encoder.text_model.named_parameters():
+                            if param.grad is not None:
+                                param_norm = param.grad.data.norm(2).item()
+                                total_grad_norm += param_norm ** 2
+                                text_encoder_grad_norm += param_norm ** 2
+
+                # SigLIP-2 Image Encoder (future T2I support)
+                if hasattr(self.text_encoder, 'image_encoder') and self.text_encoder.image_encoder is not None:
+                    if hasattr(self.text_encoder.image_encoder, 'vision_model'):
+                        for name, param in self.text_encoder.image_encoder.vision_model.named_parameters():
+                            if param.grad is not None:
+                                param_norm = param.grad.data.norm(2).item()
+                                total_grad_norm += param_norm ** 2
+                                text_encoder_grad_norm += param_norm ** 2
+
+            # SD1.5/SDXL: Direct text_encoder access
+            elif hasattr(self, 'text_encoder') and self.text_encoder is not None:
                 for name, param in self.text_encoder.named_parameters():
                     if param.grad is not None:
                         param_norm = param.grad.data.norm(2).item()

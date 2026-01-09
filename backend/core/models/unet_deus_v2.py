@@ -510,6 +510,15 @@ class CrossAttnUpBlock2D(nn.Module):
                 res_hidden_states = res_hidden_states_tuple[-1]
                 res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
+                # Resize skip connection if spatial dimensions don't match
+                # (This can happen with bucketing/variable resolution training)
+                if hidden_states.shape[2:] != res_hidden_states.shape[2:]:
+                    res_hidden_states = torch.nn.functional.interpolate(
+                        res_hidden_states,
+                        size=hidden_states.shape[2:],
+                        mode='nearest'
+                    )
+
                 # Concatenate skip connection
                 hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
@@ -629,6 +638,15 @@ class UpBlock2D(nn.Module):
                 # Pop skip connection
                 res_hidden_states = res_hidden_states_tuple[-1]
                 res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+
+                # Resize skip connection if spatial dimensions don't match
+                # (This can happen with bucketing/variable resolution training)
+                if hidden_states.shape[2:] != res_hidden_states.shape[2:]:
+                    res_hidden_states = torch.nn.functional.interpolate(
+                        res_hidden_states,
+                        size=hidden_states.shape[2:],
+                        mode='nearest'
+                    )
 
                 # Concatenate skip connection
                 hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)

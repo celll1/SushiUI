@@ -346,15 +346,22 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
                 state_dict[f"unet.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
         # Text Encoder state dict (SigLIP-2)
+        # Note: trainer.text_encoder is SigLIP2MultiModalEncoder wrapper
+        # Access text_encoder.text_encoder.text_model for actual SigLIP-2 text model
         if trainer.train_text_encoder and trainer.text_encoder is not None:
-            for key, param in trainer.text_encoder.text_model.state_dict().items():
-                state_dict[f"text_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
+            if hasattr(trainer.text_encoder, 'text_encoder') and trainer.text_encoder.text_encoder is not None:
+                if hasattr(trainer.text_encoder.text_encoder, 'text_model'):
+                    for key, param in trainer.text_encoder.text_encoder.text_model.state_dict().items():
+                        state_dict[f"text_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
         # Image Encoder state dict (SigLIP-2, future T2I support)
+        # Access text_encoder.image_encoder.vision_model for actual SigLIP-2 vision model
         train_image_encoder = getattr(trainer, 'train_image_encoder', False)
         if train_image_encoder and trainer.text_encoder is not None:
-            for key, param in trainer.text_encoder.image_model.state_dict().items():
-                state_dict[f"image_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
+            if hasattr(trainer.text_encoder, 'image_encoder') and trainer.text_encoder.image_encoder is not None:
+                if hasattr(trainer.text_encoder.image_encoder, 'vision_model'):
+                    for key, param in trainer.text_encoder.image_encoder.vision_model.state_dict().items():
+                        state_dict[f"image_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
         # VAE state dict (always include for complete checkpoint)
         if trainer.vae is not None:

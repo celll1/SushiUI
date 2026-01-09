@@ -17,6 +17,7 @@ import time
 
 from .siglip2_wrapper import SigLIP2TextEncoder, SigLIP2ImageEncoder
 from .unet_deus import DeusUNet, UNetConfig
+from .unet_deus_v2 import DeusUNet as DeusUNetV2, UNetConfig as UNetConfigV2
 from .sdxl_vae_wrapper import SDXLVAEWrapper
 
 
@@ -166,7 +167,21 @@ def load_unified_checkpoint(
     vae_state = {}
 
     for key, value in state_dict.items():
-        if key.startswith("model.diffusion_model."):
+        # DEUS v2 format (diffusers-style)
+        if key.startswith("unet."):
+            # U-Net
+            new_key = key.replace("unet.", "")
+            unet_state[new_key] = value
+        elif key.startswith("text_encoder."):
+            # Text Encoder
+            new_key = key.replace("text_encoder.", "")
+            text_encoder_state[new_key] = value
+        elif key.startswith("vae."):
+            # VAE
+            new_key = key.replace("vae.", "")
+            vae_state[new_key] = value
+        # DEUS v1 format (ComfyUI-style, legacy)
+        elif key.startswith("model.diffusion_model."):
             # U-Net
             new_key = key.replace("model.diffusion_model.", "")
             unet_state[new_key] = value
@@ -189,10 +204,19 @@ def load_unified_checkpoint(
     print(f"  - Image Encoder: {len(image_encoder_state)} tensors")
     print(f"  - VAE: {len(vae_state)} tensors")
 
+    # Detect DEUS version from metadata
+    model_type = metadata.get("model_type", "deus")
+    is_deus_v2 = model_type == "deus_v2"
+
     # Create U-Net and load weights
-    print(f"[Checkpoint] Creating U-Net ({unet_variant})...")
-    config = UNetConfig.from_variant(unet_variant)
-    unet = DeusUNet(config)
+    if is_deus_v2:
+        print(f"[Checkpoint] Creating DEUS v2 U-Net ({unet_variant})...")
+        config = UNetConfigV2.from_variant(unet_variant)
+        unet = DeusUNetV2(config)
+    else:
+        print(f"[Checkpoint] Creating DEUS v1 U-Net ({unet_variant})...")
+        config = UNetConfig.from_variant(unet_variant)
+        unet = DeusUNet(config)
     unet = unet.to(dtype).to(device)
 
     if load_unet and len(unet_state) > 0:

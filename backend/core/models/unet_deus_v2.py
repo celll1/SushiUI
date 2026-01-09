@@ -850,14 +850,14 @@ class DeusUNet(nn.Module):
             if hasattr(down_block, 'attentions'):
                 for attn in down_block.attentions:
                     if hasattr(attn, '_set_gradient_checkpointing'):
-                        attn._set_gradient_checkpointing(value=True)
+                        attn._set_gradient_checkpointing(enable=True)
                     else:
                         attn.gradient_checkpointing = True
 
         # Mid block transformer
         mid_attn = self.mid_block[1]
         if hasattr(mid_attn, '_set_gradient_checkpointing'):
-            mid_attn._set_gradient_checkpointing(value=True)
+            mid_attn._set_gradient_checkpointing(enable=True)
         else:
             mid_attn.gradient_checkpointing = True
 
@@ -866,7 +866,7 @@ class DeusUNet(nn.Module):
             if hasattr(up_block, 'attentions'):
                 for attn in up_block.attentions:
                     if hasattr(attn, '_set_gradient_checkpointing'):
-                        attn._set_gradient_checkpointing(value=True)
+                        attn._set_gradient_checkpointing(enable=True)
                     else:
                         attn.gradient_checkpointing = True
 

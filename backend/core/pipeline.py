@@ -183,6 +183,25 @@ class DiffusionPipelineManager:
                 self.img2img_pipeline = model_result
                 self.inpaint_pipeline = model_result
 
+                # Initialize VRAM optimization: Move all components to CPU
+                print("[VRAM] Initializing sequential loading strategy for DEUS...")
+                # DEUS components are already on CPU (handled by DeusPipeline.__init__)
+                # Verify and ensure they're on CPU
+                if hasattr(model_result, 'unet') and model_result.unet is not None:
+                    model_result.unet.to('cpu')
+                if hasattr(model_result, 'vae') and model_result.vae is not None:
+                    model_result.vae.to('cpu')
+                if hasattr(model_result, 'encoder') and model_result.encoder is not None:
+                    # SigLIP2MultiModalEncoder components
+                    if hasattr(model_result.encoder, 'text_encoder') and model_result.encoder.text_encoder is not None:
+                        if hasattr(model_result.encoder.text_encoder, 'text_model'):
+                            model_result.encoder.text_encoder.text_model.to('cpu')
+                    if hasattr(model_result.encoder, 'image_encoder') and model_result.encoder.image_encoder is not None:
+                        if hasattr(model_result.encoder.image_encoder, 'vision_model'):
+                            model_result.encoder.image_encoder.vision_model.to('cpu')
+                torch.cuda.empty_cache()
+                print("[VRAM] All DEUS components moved to CPU. Will load to GPU as needed.")
+
                 # DEUS info
                 model_type = "deus"
                 is_v_prediction = False

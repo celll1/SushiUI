@@ -279,8 +279,8 @@ class ModelLoader:
                         elif model_type in ["sd15", "sd-1.5", "sd_1.5", "stable-diffusion", "stable_diffusion", "sd"]:
                             print(f"[ModelLoader] Detected SD1.5 from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "sd15"
-                        # DEUS detection
-                        elif model_type == "original" or model_type == "deus":
+                        # DEUS detection (v1 and v2)
+                        elif model_type in ["original", "deus", "deus_v2"]:
                             print(f"[ModelLoader] Detected DEUS architecture from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "deus"
                         # Z-Image detection
@@ -292,13 +292,25 @@ class ModelLoader:
                     # DEUS has unique features: rope_2d (RoPE 2D positional encoding)
                     # Check for DEUS-specific U-Net keys
                     has_deus_rope = any('rope_2d' in k for k in keys)
-                    has_siglip2_text = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
-                    has_deus_unet = any(k.startswith('model.diffusion_model.') for k in keys)
-                    
-                    # DEUS requires: SigLIP-2 text encoder + DEUS-specific U-Net (rope_2d)
+
+                    # DEUS v1 format (ComfyUI-style)
+                    has_siglip2_text_v1 = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
+                    has_deus_unet_v1 = any(k.startswith('model.diffusion_model.') for k in keys)
+
+                    # DEUS v2 format (diffusers-style)
+                    has_siglip2_text_v2 = any(k.startswith('text_encoder.') for k in keys)
+                    has_deus_unet_v2 = any(k.startswith('unet.') for k in keys)
+                    has_vae_v2 = any(k.startswith('vae.') for k in keys)
+
+                    # DEUS v1: SigLIP-2 text encoder + DEUS-specific U-Net (rope_2d)
                     # SDXL has CLIP encoders, not SigLIP-2, and no rope_2d
-                    if has_siglip2_text and has_deus_unet and has_deus_rope:
-                        print(f"[ModelLoader] Detected DEUS architecture (SigLIP-2 encoder + rope_2d found): {model_path}")
+                    if has_siglip2_text_v1 and has_deus_unet_v1 and has_deus_rope:
+                        print(f"[ModelLoader] Detected DEUS v1 architecture (SigLIP-2 encoder + rope_2d found): {model_path}")
+                        return "deus"
+
+                    # DEUS v2: text_encoder + unet + vae + rope_2d
+                    if has_siglip2_text_v2 and has_deus_unet_v2 and has_vae_v2 and has_deus_rope:
+                        print(f"[ModelLoader] Detected DEUS v2 architecture (text_encoder + unet + vae + rope_2d found): {model_path}")
                         return "deus"
                     
                     # Additional check: If SigLIP-2 encoder exists but no rope_2d, check for SDXL indicators

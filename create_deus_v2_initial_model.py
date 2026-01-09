@@ -2,7 +2,8 @@
 Create DEUS v2 initial checkpoint.
 
 Components:
-- SigLIP-2 text encoder (google/siglip2-so400m-patch16-naflex, pre-trained)
+- SigLIP-2 text encoder (google/siglip2-so400m-patch16-naflex, pre-trained, max_pos expanded to 512)
+- SigLIP-2 image encoder (google/siglip2-so400m-patch16-naflex, pre-trained, for TI2I fine-tuning)
 - SDXL VAE (madebyollin/sdxl-vae-fp16-fix, pre-trained)
 - DEUS v2 U-Net (randomly initialized)
 
@@ -27,23 +28,24 @@ print()
 device = "cpu"  # Load to CPU first, will be moved to GPU during inference
 dtype = torch.float16
 
-# 1. Load SigLIP-2 (text encoder)
-print("1. Loading SigLIP-2 text encoder...")
+# 1. Load SigLIP-2 (text encoder + image encoder)
+print("1. Loading SigLIP-2 encoders...")
 siglip_model_name = "google/siglip2-so400m-patch16-naflex"
-text_encoder = AutoModel.from_pretrained(
+siglip_model = AutoModel.from_pretrained(
     siglip_model_name,
     trust_remote_code=True,
     torch_dtype=dtype
-).text_model.to(device)
-tokenizer = AutoTokenizer.from_pretrained(siglip_model_name, trust_remote_code=True)
+)
 
-print(f"   Loaded: {siglip_model_name}")
-print(f"   Hidden size: {text_encoder.config.hidden_size}")
-print(f"   Num layers: {text_encoder.config.num_hidden_layers}")
-print(f"   Original max_position_embeddings: {text_encoder.config.max_position_embeddings}")
+# Extract text encoder
+text_encoder = siglip_model.text_model.to(device)
+print(f"   Text Encoder loaded: {siglip_model_name}")
+print(f"     Hidden size: {text_encoder.config.hidden_size}")
+print(f"     Num layers: {text_encoder.config.num_hidden_layers}")
+print(f"     Original max_position_embeddings: {text_encoder.config.max_position_embeddings}")
 
-# Expand position embeddings from 64 to 512
-print("   Expanding position embeddings to 512...")
+# Expand text encoder position embeddings from 64 to 512
+print("   Expanding text encoder position embeddings to 512...")
 original_max_pos = text_encoder.config.max_position_embeddings  # 64
 target_max_pos = 512
 
@@ -68,7 +70,17 @@ text_encoder.embeddings.position_embedding.weight.data = new_pos_embed
 text_encoder.embeddings.position_ids = torch.arange(target_max_pos).expand((1, -1)).to(device)
 text_encoder.config.max_position_embeddings = target_max_pos
 
-print(f"   Expanded to: {target_max_pos}")
+print(f"     Expanded to: {target_max_pos}")
+
+# Extract image encoder
+image_encoder = siglip_model.vision_model.to(device)
+print(f"   Image Encoder loaded: {siglip_model_name}")
+print(f"     Hidden size: {image_encoder.config.hidden_size}")
+print(f"     Num layers: {image_encoder.config.num_hidden_layers}")
+print(f"     Patch size: {image_encoder.config.patch_size}")
+
+# Load tokenizer
+tokenizer = AutoTokenizer.from_pretrained(siglip_model_name, trust_remote_code=True)
 print()
 
 # 2. Load SDXL VAE
@@ -98,6 +110,10 @@ state_dict = {}
 # Text encoder
 for key, value in text_encoder.state_dict().items():
     state_dict[f"text_encoder.{key}"] = value.to(dtype)
+
+# Image encoder
+for key, value in image_encoder.state_dict().items():
+    state_dict[f"image_encoder.{key}"] = value.to(dtype)
 
 # VAE
 for key, value in vae.state_dict().items():
@@ -149,11 +165,12 @@ print()
 print(f"Output: {output_path}")
 print()
 print("Components:")
-print(f"  - Text Encoder: SigLIP-2 ({text_encoder.config.hidden_size}D, pre-trained)")
+print(f"  - Text Encoder: SigLIP-2 ({text_encoder.config.hidden_size}D, max_pos={target_max_pos}, pre-trained)")
+print(f"  - Image Encoder: SigLIP-2 ({image_encoder.config.hidden_size}D, pre-trained)")
 print(f"  - VAE: SDXL VAE (madebyollin, pre-trained)")
 print(f"  - U-Net: DEUS v2 Medium ({unet_params / 1e9:.3f}B params, randomly initialized)")
 print()
 print("Next steps:")
-print("  1. Train the U-Net on your dataset")
+print("  1. Train the U-Net on your dataset (T2I or TI2I)")
 print("  2. Use the trained model for inference")
 print()

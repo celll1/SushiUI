@@ -2064,6 +2064,11 @@ class BaseTrainer(ABC):
 
         # Enable gradients when training text encoder
         if requires_grad:
+            # Debug: Check text encoder training status
+            if self.is_deus and hasattr(self.text_encoder, 'text_encoder'):
+                is_training = self.text_encoder.text_encoder.training
+                print(f"{self.log_prefix} [encode_prompt_deus] Text encoder training mode: {is_training}, requires_grad=True")
+
             # For FP8 quantized text encoder, use autocast for mixed precision
             if has_fp8_weights:
                 with torch.autocast(device_type='cuda', dtype=self.training_dtype):
@@ -2071,17 +2076,22 @@ class BaseTrainer(ABC):
                         prompts=prompt,
                         images=None,  # No real images for training (use null)
                         use_null_image=use_null_image,
-                        clip_skip=0  # Use last layer (default)
+                        clip_skip=0,  # Use last layer (default)
+                        requires_grad=True  # Enable gradients for training
                     )
             else:
                 prompt_embeds = self.text_encoder.encode(
                     prompts=prompt,
                     images=None,  # No real images for training (use null)
                     use_null_image=use_null_image,
-                    clip_skip=0  # Use last layer (default)
+                    clip_skip=0,  # Use last layer (default)
+                    requires_grad=True  # Enable gradients for training
                 )
             # Keep gradients attached (no detach)
             result_embeds = prompt_embeds
+
+            # Debug: Check if gradients are enabled in result
+            print(f"{self.log_prefix} [encode_prompt_deus] result_embeds.requires_grad: {result_embeds.requires_grad}")
         else:
             # Disable gradients for inference or when not training text encoder
             with torch.no_grad():
@@ -5123,7 +5133,9 @@ class BaseTrainer(ABC):
 
                             elif text_encoding_mode == "onthefly_gpu":
                                 # Encode on GPU without cache
+                                print(f"{self.log_prefix} [Training Loop] Encoding caption with requires_grad=True (onthefly_gpu mode)")
                                 embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                print(f"{self.log_prefix} [Training Loop] embeddings.requires_grad: {embeddings.requires_grad}")
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 
@@ -5155,6 +5167,9 @@ class BaseTrainer(ABC):
                             else:
                                 # All same length - direct concatenation
                                 text_embeddings = torch.cat(text_embeddings_list, dim=0)  # [batch, seq_len, dim]
+
+                            # Debug: Check if gradients are preserved after concatenation
+                            print(f"{self.log_prefix} [Training Loop] text_embeddings.requires_grad after cat: {text_embeddings.requires_grad}")
                         else:
                             text_embeddings = None
 
@@ -5494,7 +5509,18 @@ class BaseTrainer(ABC):
             # DEUS: text_encoder is SigLIP2MultiModalEncoder wrapper
             # Access actual parameters via text_encoder.text_encoder.text_model
             if self.is_deus and hasattr(self, 'text_encoder') and self.text_encoder is not None:
+                # Debug: Check structure once
+                if not hasattr(self, '_grad_norm_structure_checked'):
+                    print(f"{self.log_prefix} [GradNorm Debug] DEUS text encoder structure:")
+                    print(f"{self.log_prefix}   has text_encoder attr: {hasattr(self.text_encoder, 'text_encoder')}")
+                    if hasattr(self.text_encoder, 'text_encoder'):
+                        print(f"{self.log_prefix}   text_encoder is None: {self.text_encoder.text_encoder is None}")
+                        if self.text_encoder.text_encoder is not None:
+                            print(f"{self.log_prefix}   has text_model attr: {hasattr(self.text_encoder.text_encoder, 'text_model')}")
+                    self._grad_norm_structure_checked = True
+
                 # SigLIP-2 Text Encoder
+                te_grad_count = 0
                 if hasattr(self.text_encoder, 'text_encoder') and self.text_encoder.text_encoder is not None:
                     if hasattr(self.text_encoder.text_encoder, 'text_model'):
                         for name, param in self.text_encoder.text_encoder.text_model.named_parameters():
@@ -5502,6 +5528,12 @@ class BaseTrainer(ABC):
                                 param_norm = param.grad.data.norm(2).item()
                                 total_grad_norm += param_norm ** 2
                                 text_encoder_grad_norm += param_norm ** 2
+                                te_grad_count += 1
+
+                # Debug: Print count once
+                if not hasattr(self, '_grad_norm_te_count_printed'):
+                    print(f"{self.log_prefix} [GradNorm Debug] Text Encoder params with grad: {te_grad_count}")
+                    self._grad_norm_te_count_printed = True
 
                 # SigLIP-2 Image Encoder (future T2I support)
                 if hasattr(self.text_encoder, 'image_encoder') and self.text_encoder.image_encoder is not None:

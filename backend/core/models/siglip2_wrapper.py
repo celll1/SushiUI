@@ -485,13 +485,18 @@ class SigLIP2MultiModalEncoder(nn.Module):
         super().__init__()
 
         # Use provided encoders if available (from checkpoint), otherwise create new ones
-        if text_encoder is not None and image_encoder is not None:
-            print(f"[SigLIP2] Using provided text/image encoders (from checkpoint)")
+        if text_encoder is not None:
+            print(f"[SigLIP2] Using provided text encoder (from checkpoint)")
             self.text_encoder = text_encoder
+        else:
+            print(f"[SigLIP2] Creating new text encoder from HuggingFace")
+            self.text_encoder = SigLIP2TextEncoder(model_name, dtype, device)
+
+        if image_encoder is not None:
+            print(f"[SigLIP2] Using provided image encoder (from checkpoint)")
             self.image_encoder = image_encoder
         else:
-            print(f"[SigLIP2] Creating new text/image encoders from HuggingFace")
-            self.text_encoder = SigLIP2TextEncoder(model_name, dtype, device)
+            print(f"[SigLIP2] Creating new image encoder from HuggingFace")
             self.image_encoder = SigLIP2ImageEncoder(model_name, dtype, device)
 
         self.hidden_size = self.text_encoder.hidden_size

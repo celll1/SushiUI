@@ -146,7 +146,8 @@ class SigLIP2TextEncoder(nn.Module):
         prompts: Union[str, List[str]],
         max_length: Optional[int] = None,
         return_pooled: bool = False,
-        clip_skip: int = 0
+        clip_skip: int = 0,
+        requires_grad: bool = False
     ) -> torch.Tensor:
         """
         Encode text prompts.
@@ -156,6 +157,7 @@ class SigLIP2TextEncoder(nn.Module):
             max_length: Maximum token length (None = no limit)
             return_pooled: Return pooled output (CLS token) instead of sequence
             clip_skip: Number of layers to skip from the end (0=last layer, 1=penultimate, etc.)
+            requires_grad: Enable gradients for training (default: False)
 
         Returns:
             Text embeddings [batch_size, seq_len, hidden_size] or [batch_size, hidden_size]
@@ -180,8 +182,9 @@ class SigLIP2TextEncoder(nn.Module):
         actual_device = next(self.text_model.parameters()).device
         inputs = {k: v.to(actual_device) for k, v in inputs.items()}
 
-        # Encode
-        with torch.no_grad():
+        # Encode with or without gradients
+        if requires_grad:
+            # Training mode: enable gradients
             if clip_skip > 0:
                 # Manual layer iteration (output_hidden_states not supported in SigLIP2)
                 # Get embeddings
@@ -210,6 +213,37 @@ class SigLIP2TextEncoder(nn.Module):
                 # Use last layer (default)
                 outputs = self.text_model(**inputs)
                 hidden_state = outputs.last_hidden_state
+        else:
+            # Inference mode: disable gradients
+            with torch.no_grad():
+                if clip_skip > 0:
+                    # Manual layer iteration (output_hidden_states not supported in SigLIP2)
+                    # Get embeddings
+                    hidden_state = self.text_model.embeddings(inputs['input_ids'])
+
+                    # Prepare attention mask
+                    attention_mask = inputs.get('attention_mask')
+                    if attention_mask is not None:
+                        from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask
+                        attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_state.dtype)
+
+                    # Pass through layers
+                    num_layers = len(self.text_model.encoder.layers)  # Total: 27 layers (0-26)
+                    # clip_skip=0: use all 27 layers (0-26)
+                    # clip_skip=1: use 26 layers (0-25, penultimate)
+                    layers_to_use = num_layers - clip_skip
+
+                    for i, layer in enumerate(self.text_model.encoder.layers):
+                        if i >= layers_to_use:
+                            break
+                        hidden_state = layer(hidden_state, attention_mask)
+
+                    # Apply final layer norm
+                    hidden_state = self.text_model.final_layer_norm(hidden_state)
+                else:
+                    # Use last layer (default)
+                    outputs = self.text_model(**inputs)
+                    hidden_state = outputs.last_hidden_state
 
         if return_pooled:
             # Return pooled output (last token)
@@ -515,7 +549,8 @@ class SigLIP2MultiModalEncoder(nn.Module):
         prompts: Union[str, List[str]],
         images: Optional[Union[Image.Image, List[Image.Image]]] = None,
         use_null_image: bool = True,
-        clip_skip: int = 0
+        clip_skip: int = 0,
+        requires_grad: bool = False
     ) -> torch.Tensor:
         """
         Encode text and optional images, concatenating along sequence dimension.
@@ -525,13 +560,14 @@ class SigLIP2MultiModalEncoder(nn.Module):
             images: Optional images (None for T2I, single for I2I/TI2I, list for multi)
             use_null_image: Add null image embedding when no images provided
             clip_skip: Number of layers to skip from the end for text encoder (0=last layer, 1=penultimate)
+            requires_grad: Enable gradients for training (default: False)
 
         Returns:
             Concatenated embeddings [batch_size, total_seq_len, hidden_size]
             where total_seq_len = text_seq_len + image_seq_len (or +1 for null)
         """
         # Encode text with clip_skip
-        text_embeddings = self.text_encoder.encode(prompts, clip_skip=clip_skip)  # [B, text_seq, hidden]
+        text_embeddings = self.text_encoder.encode(prompts, clip_skip=clip_skip, requires_grad=requires_grad)  # [B, text_seq, hidden]
         batch_size = text_embeddings.shape[0]
 
         # Encode images (or use null)

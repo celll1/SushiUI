@@ -988,10 +988,23 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
+            # Get component-specific learning rates from train_config
+            unet_lr = train_config.get('unet_lr')
+            text_encoder_lr = train_config.get('text_encoder_lr')
+            text_encoder_1_lr = train_config.get('text_encoder_1_lr')
+            text_encoder_2_lr = train_config.get('text_encoder_2_lr')
+            image_encoder_lr = train_config.get('image_encoder_lr')
+
+            # Training scope control
+            train_text_encoder = train_config.get('train_text_encoder', False)
+            train_image_encoder = train_config.get('train_image_encoder', False)
+
             # Initialize trainer
             trainer = FullParameterTrainer(
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
+                run_name=run.run_name,  # Pass run_name for checkpoint filename generation
+                run_id=run_id,  # Pass run_id for DB metrics logging
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,
@@ -1004,6 +1017,15 @@ def main():
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
                 use_pinned_memory=train_config.get('use_pinned_memory', False),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
+                # Component-specific learning rates
+                unet_lr=unet_lr,
+                text_encoder_lr=text_encoder_lr,
+                text_encoder_1_lr=text_encoder_1_lr,
+                text_encoder_2_lr=text_encoder_2_lr,
+                image_encoder_lr=image_encoder_lr,
+                # Training scope control
+                train_text_encoder=train_text_encoder,
+                train_image_encoder=train_image_encoder,
                 # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,

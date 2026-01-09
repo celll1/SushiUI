@@ -52,6 +52,12 @@ class UNetConfig:
     layers_per_block: int = 2  # SDXL standard: 2 ResNet layers per block
     layers_per_up_block: int = 3  # SDXL up blocks have 3 ResNet layers
 
+    # Skip connections (DEUS original: sparse skip for memory efficiency)
+    # Explicitly specify which down blocks output skip connections (by index)
+    skip_connection_blocks: Tuple[int, ...] = (0, 1, 2)  # All down blocks output 1 skip each
+    # Number of skip connections each up block receives (must match total skips from down blocks)
+    skip_connections_per_up_block: Tuple[int, ...] = (1, 1, 1)  # Each up block receives 1 skip
+
     # Attention (SDXL style: block-specific settings)
     attention_head_dim: int = 64  # SDXL fixed at 64-dim per head
     num_attention_heads: Tuple[int, ...] = (5, 10, 20)  # Attention heads per block
@@ -392,6 +398,7 @@ class CrossAttnUpBlock2D(nn.Module):
         temb_channels: int,
         dropout: float = 0.0,
         num_layers: int = 3,
+        num_skip_connections: int = 3,  # Number of skip connections this block receives
         transformer_layers_per_block: Union[int, Tuple[int]] = 1,
         num_attention_heads: int = 1,
         attention_head_dim: int = 64,
@@ -405,6 +412,7 @@ class CrossAttnUpBlock2D(nn.Module):
 
         self.has_cross_attention = True
         self.num_attention_heads = num_attention_heads
+        self.num_skip_connections = num_skip_connections
 
         # Expand transformer_layers_per_block to list if needed
         if isinstance(transformer_layers_per_block, int):
@@ -414,9 +422,24 @@ class CrossAttnUpBlock2D(nn.Module):
         attentions = []
 
         for i in range(num_layers):
-            # First layer receives skip connection
-            res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
+            # Determine if this layer receives skip connection
+            # Skips are assigned from the END (last layer gets first skip)
+            # For num_skip_connections=2, num_layers=3:
+            #   i=0: no skip (layer 0 from end = 2 >= 2)
+            #   i=1: skip (layer 1 from end = 1 < 2)
+            #   i=2: skip (layer 2 from end = 0 < 2)
+            layer_from_end = num_layers - 1 - i
+            has_skip = layer_from_end < num_skip_connections
+
+            # Base ResNet in_channels (before concatenating skip)
             resnet_in_channels = prev_output_channel if i == 0 else out_channels
+
+            # Skip connection channels
+            if has_skip:
+                # Skip comes from down block → same as this up block's output channels
+                res_skip_channels = out_channels
+            else:
+                res_skip_channels = 0
 
             # ResNet block
             resnets.append(
@@ -477,13 +500,18 @@ class CrossAttnUpBlock2D(nn.Module):
             temb: Time embedding
             encoder_hidden_states: Cross-attention conditioning
         """
-        for resnet, attn in zip(self.resnets, self.attentions):
-            # Pop skip connection
-            res_hidden_states = res_hidden_states_tuple[-1]
-            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+        for i, (resnet, attn) in enumerate(zip(self.resnets, self.attentions)):
+            # Check if this layer receives skip connection (last num_skip_connections layers get skips)
+            layer_from_end = len(self.resnets) - 1 - i
+            has_skip = layer_from_end < self.num_skip_connections
 
-            # Concatenate skip connection
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            if has_skip and len(res_hidden_states_tuple) > 0:
+                # Pop skip connection
+                res_hidden_states = res_hidden_states_tuple[-1]
+                res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+
+                # Concatenate skip connection
+                hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             # ResNet
             if self.gradient_checkpointing and self.training:
@@ -503,7 +531,7 @@ class CrossAttnUpBlock2D(nn.Module):
                 return_dict=False,
             )[0]
 
-        # Upsample
+        # Upsample at the END (for next up block)
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
                 hidden_states = upsampler(hidden_states)
@@ -525,6 +553,7 @@ class UpBlock2D(nn.Module):
         temb_channels: int,
         dropout: float = 0.0,
         num_layers: int = 3,
+        num_skip_connections: int = 0,  # Number of skip connections this block receives
         add_upsample: bool = True,
         resnet_eps: float = 1e-6,
         resnet_act_fn: str = "silu",
@@ -532,12 +561,25 @@ class UpBlock2D(nn.Module):
     ):
         super().__init__()
 
+        self.num_skip_connections = num_skip_connections
+
         resnets = []
 
         for i in range(num_layers):
-            # First layer receives skip connection
-            res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
+            # Determine if this layer receives skip connection
+            # Skips are assigned from the END (last layer gets first skip)
+            layer_from_end = num_layers - 1 - i
+            has_skip = layer_from_end < num_skip_connections
+
+            # Base ResNet in_channels (before concatenating skip)
             resnet_in_channels = prev_output_channel if i == 0 else out_channels
+
+            # Skip connection channels
+            if has_skip:
+                # Skip comes from down block → same as this up block's output channels
+                res_skip_channels = out_channels
+            else:
+                res_skip_channels = 0
 
             resnets.append(
                 ResnetBlock2D(
@@ -578,13 +620,18 @@ class UpBlock2D(nn.Module):
             res_hidden_states_tuple: Skip connections from down blocks
             temb: Time embedding
         """
-        for resnet in self.resnets:
-            # Pop skip connection
-            res_hidden_states = res_hidden_states_tuple[-1]
-            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+        for i, resnet in enumerate(self.resnets):
+            # Check if this layer receives skip connection (last num_skip_connections layers get skips)
+            layer_from_end = len(self.resnets) - 1 - i
+            has_skip = layer_from_end < self.num_skip_connections
 
-            # Concatenate skip connection
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            if has_skip and len(res_hidden_states_tuple) > 0:
+                # Pop skip connection
+                res_hidden_states = res_hidden_states_tuple[-1]
+                res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+
+                # Concatenate skip connection
+                hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             # ResNet
             if self.gradient_checkpointing and self.training:
@@ -597,7 +644,7 @@ class UpBlock2D(nn.Module):
             else:
                 hidden_states = resnet(hidden_states, temb)
 
-        # Upsample
+        # Upsample at the END (for next up block)
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
                 hidden_states = upsampler(hidden_states)
@@ -725,19 +772,28 @@ class DeusUNet(nn.Module):
         reversed_transformer_layers = list(reversed(config.transformer_layers_per_block))
 
         # Up blocks 0-1: 1280ch, 640ch with attention
-        # IMPORTANT: SDXL up blocks maintain in_channels == out_channels (prev_output_channel)
+        # IMPORTANT: DEUS maintains sparse skip connections
         for i in range(len(config.block_out_channels) - 1):
             in_channels = reversed_block_out_channels[i]
-            out_channels = in_channels  # SDXL: Maintain channel size within up block
+            out_channels = in_channels  # Maintain channel size within up block
+
+            # prev_output_channel: output from previous block
+            # up_blocks[0]: from mid_block (1280ch)
+            # up_blocks[1]: from up_blocks[0] (1280ch)
+            if i == 0:
+                prev_output_channel = reversed_block_out_channels[0]  # mid_block output (1280ch)
+            else:
+                prev_output_channel = reversed_block_out_channels[i - 1]  # Previous up block output
 
             self.up_blocks.append(
                 CrossAttnUpBlock2D(
                     in_channels=in_channels,
                     out_channels=out_channels,
-                    prev_output_channel=in_channels,
+                    prev_output_channel=prev_output_channel,
                     temb_channels=time_embed_dim,
                     dropout=config.dropout,
                     num_layers=config.layers_per_up_block,
+                    num_skip_connections=config.skip_connections_per_up_block[i],
                     transformer_layers_per_block=reversed_transformer_layers[i],
                     num_attention_heads=reversed_num_attention_heads[i],
                     attention_head_dim=config.attention_head_dim,
@@ -750,14 +806,16 @@ class DeusUNet(nn.Module):
             )
 
         # Up block 2: 320ch, no attention
+        # prev_output_channel: from up_blocks[1] (640ch)
         self.up_blocks.append(
             UpBlock2D(
-                in_channels=reversed_block_out_channels[-2],
-                out_channels=reversed_block_out_channels[-1],
-                prev_output_channel=reversed_block_out_channels[-1],
+                in_channels=reversed_block_out_channels[-2],  # 640ch
+                out_channels=reversed_block_out_channels[-1],  # 320ch
+                prev_output_channel=reversed_block_out_channels[-2],  # Previous up block output (640ch)
                 temb_channels=time_embed_dim,
                 dropout=config.dropout,
                 num_layers=config.layers_per_up_block,
+                num_skip_connections=config.skip_connections_per_up_block[-1],
                 add_upsample=False,
                 resnet_eps=config.resnet_eps,
                 resnet_act_fn=config.resnet_act_fn,
@@ -833,26 +891,38 @@ class DeusUNet(nn.Module):
         # Apply RoPE
         x = self.rope_2d(x)
 
-        # Down blocks
-        down_block_res_samples = (x,)
+        # Down blocks (sparse skip: only specified blocks output skip connections)
+        down_block_res_samples = ()
 
-        for down_block in self.down_blocks:
+        for i, down_block in enumerate(self.down_blocks):
             if hasattr(down_block, 'has_cross_attention') and down_block.has_cross_attention:
                 x, res_samples = down_block(x, t_emb, encoder_hidden_states)
             else:
                 x, res_samples = down_block(x, t_emb)
-            down_block_res_samples += res_samples
+
+            # Only collect skip connections from specified blocks
+            # Each block outputs only the LAST ResNet output (before downsample)
+            # For layers_per_block=2: res_samples = [resnet0, resnet1, downsample_out]
+            # We want resnet1 (last ResNet before downsample)
+            if i in self.config.skip_connection_blocks:
+                # Take second-to-last (last ResNet output, before downsample)
+                # If no downsample, take last
+                if len(res_samples) > 2:
+                    down_block_res_samples += (res_samples[-2],)  # Last ResNet (before downsample)
+                else:
+                    down_block_res_samples += (res_samples[-1],)  # Last output (no downsample)
 
         # Mid block
         x = self.mid_block[0](x, t_emb)
         x = self.mid_block[1](x, encoder_hidden_states, return_dict=False)[0]
         x = self.mid_block[2](x, t_emb)
 
-        # Up blocks
+        # Up blocks (sparse skip: each block specifies how many skips it needs)
         for up_block in self.up_blocks:
             # Get skip connections for this up block
-            res_samples = down_block_res_samples[-len(up_block.resnets):]
-            down_block_res_samples = down_block_res_samples[:-len(up_block.resnets)]
+            num_skips = up_block.num_skip_connections
+            res_samples = down_block_res_samples[-num_skips:] if num_skips > 0 else ()
+            down_block_res_samples = down_block_res_samples[:-num_skips] if num_skips > 0 else down_block_res_samples
 
             if hasattr(up_block, 'has_cross_attention') and up_block.has_cross_attention:
                 x = up_block(x, res_samples, t_emb, encoder_hidden_states)

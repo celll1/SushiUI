@@ -960,8 +960,14 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
 
             {/* Tooltip box - responsive positioning */}
             {(() => {
-              const tooltipWidth = 180;
-              const tooltipHeight = 120;
+              const tooltipWidth = 160;
+              // Calculate height based on visible components
+              let lineCount = 1; // Step label
+              if (showTotal) lineCount += 2; // Total + Smooth
+              if (showTextEncoder && tooltip.textEncoder !== undefined) lineCount += 1;
+              if (showUNet && tooltip.unet !== undefined) lineCount += 1;
+              const tooltipHeight = lineCount * 15 + 10; // 15px per line + padding
+
               // Show tooltip on left if it would overflow on right
               const showLeft = tooltip.x + tooltipWidth + 20 > svgWidth;
               const tooltipX = showLeft ? tooltip.x - tooltipWidth - 10 : tooltip.x + 10;
@@ -972,10 +978,10 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                   {/* Background */}
                   <rect
                     x={tooltipX}
-                    y={tooltip.y - 65}
+                    y={tooltip.y - 40}
                     width={tooltipWidth}
                     height={tooltipHeight}
-                    fill="#1f2937"
+                    fill="rgba(31, 41, 55, 0.95)"
                     stroke="#4b5563"
                     strokeWidth="1"
                     rx="4"
@@ -984,7 +990,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                   {/* Text content */}
                   <text
                     x={textX}
-                    y={tooltip.y - 50}
+                    y={tooltip.y - 25}
                     fill="#e5e7eb"
                     fontSize="11"
                     fontFamily="monospace"
@@ -995,7 +1001,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                     <>
                       <text
                         x={textX}
-                        y={tooltip.y - 35}
+                        y={tooltip.y - 10}
                         fill="#8b5cf6"
                         fontSize="11"
                         fontFamily="monospace"
@@ -1004,7 +1010,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                       </text>
                       <text
                         x={textX}
-                        y={tooltip.y - 20}
+                        y={tooltip.y + 5}
                         fill="#a78bfa"
                         fontSize="11"
                         fontFamily="monospace"
@@ -1016,7 +1022,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                   {showTextEncoder && tooltip.textEncoder !== undefined && (
                     <text
                       x={textX}
-                      y={tooltip.y - 5}
+                      y={tooltip.y + 20}
                       fill="#34d399"
                       fontSize="11"
                       fontFamily="monospace"
@@ -1027,7 +1033,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                   {showUNet && tooltip.unet !== undefined && (
                     <text
                       x={textX}
-                      y={tooltip.y + 10}
+                      y={tooltip.y + 35}
                       fill="#fbbf24"
                       fontSize="11"
                       fontFamily="monospace"

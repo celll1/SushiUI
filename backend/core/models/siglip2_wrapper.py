@@ -178,6 +178,19 @@ class SigLIP2TextEncoder(nn.Module):
 
         inputs = self.tokenizer(prompts, **tokenizer_kwargs)
 
+        # Check if token count exceeds max_position_embeddings
+        input_ids = inputs['input_ids']
+        seq_length = input_ids.shape[1]
+        max_pos_embeddings = self.config.max_position_embeddings  # 512 for SigLIP-2
+
+        if seq_length > max_pos_embeddings:
+            print(f"[SigLIP2] WARNING: Token count {seq_length} exceeds max_position_embeddings {max_pos_embeddings}")
+            print(f"[SigLIP2] Auto-truncating to {max_pos_embeddings} tokens")
+            # Truncate to max_position_embeddings
+            inputs['input_ids'] = input_ids[:, :max_pos_embeddings]
+            if 'attention_mask' in inputs:
+                inputs['attention_mask'] = inputs['attention_mask'][:, :max_pos_embeddings]
+
         # Get actual device from text_model (may differ from self.device_name if moved)
         actual_device = next(self.text_model.parameters()).device
         inputs = {k: v.to(actual_device) for k, v in inputs.items()}

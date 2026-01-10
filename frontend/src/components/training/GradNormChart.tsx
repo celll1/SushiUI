@@ -288,7 +288,14 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
 
   // Calculate chart dimensions and scaling
   const height = 300;
-  const padding = { top: 20, right: 200, bottom: 40, left: 70 }; // right: 200 for tooltip space, left: 70 for scientific notation
+  // Responsive padding: reduce right padding on narrow screens for better chart visibility
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
+  const padding = {
+    top: 20,
+    right: isMobile ? 10 : 200, // Minimal padding on mobile, tooltip space on desktop
+    bottom: 40,
+    left: isMobile ? 50 : 70 // Slightly less left padding on mobile
+  };
   const chartWidth = svgWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
@@ -951,75 +958,86 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               strokeWidth="2"
             />
 
-            {/* Tooltip box - always on right side */}
-            <g>
-              {/* Background */}
-              <rect
-                x={tooltip.x + 10}
-                y={tooltip.y - 65}
-                width="180"
-                height={120}
-                fill="#1f2937"
-                stroke="#4b5563"
-                strokeWidth="1"
-                rx="4"
-              />
+            {/* Tooltip box - responsive positioning */}
+            {(() => {
+              const tooltipWidth = 180;
+              const tooltipHeight = 120;
+              // Show tooltip on left if it would overflow on right
+              const showLeft = tooltip.x + tooltipWidth + 20 > svgWidth;
+              const tooltipX = showLeft ? tooltip.x - tooltipWidth - 10 : tooltip.x + 10;
+              const textX = showLeft ? tooltip.x - tooltipWidth - 5 : tooltip.x + 15;
 
-              {/* Text content */}
-              <text
-                x={tooltip.x + 15}
-                y={tooltip.y - 50}
-                fill="#e5e7eb"
-                fontSize="11"
-                fontFamily="monospace"
-              >
-                Step: {tooltip.step}
-              </text>
-              {showTotal && (
-                <>
+              return (
+                <g>
+                  {/* Background */}
+                  <rect
+                    x={tooltipX}
+                    y={tooltip.y - 65}
+                    width={tooltipWidth}
+                    height={tooltipHeight}
+                    fill="#1f2937"
+                    stroke="#4b5563"
+                    strokeWidth="1"
+                    rx="4"
+                  />
+
+                  {/* Text content */}
                   <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 35}
-                    fill="#8b5cf6"
+                    x={textX}
+                    y={tooltip.y - 50}
+                    fill="#e5e7eb"
                     fontSize="11"
                     fontFamily="monospace"
                   >
-                    Total: {tooltip.total.toExponential(3)}
+                    Step: {tooltip.step}
                   </text>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 20}
-                    fill="#a78bfa"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Smooth: {tooltip.smoothTotal.toExponential(3)}
-                  </text>
-                </>
-              )}
-              {showTextEncoder && tooltip.textEncoder !== undefined && (
-                <text
-                  x={tooltip.x + 15}
-                  y={tooltip.y - 5}
-                  fill="#34d399"
-                  fontSize="11"
-                  fontFamily="monospace"
-                >
-                  Text Enc: {tooltip.textEncoder.toExponential(3)}
-                </text>
-              )}
-              {showUNet && tooltip.unet !== undefined && (
-                <text
-                  x={tooltip.x + 15}
-                  y={tooltip.y + 10}
-                  fill="#fbbf24"
-                  fontSize="11"
-                  fontFamily="monospace"
-                >
-                  UNet: {tooltip.unet.toExponential(3)}
-                </text>
-              )}
-            </g>
+                  {showTotal && (
+                    <>
+                      <text
+                        x={textX}
+                        y={tooltip.y - 35}
+                        fill="#8b5cf6"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Total: {tooltip.total.toExponential(3)}
+                      </text>
+                      <text
+                        x={textX}
+                        y={tooltip.y - 20}
+                        fill="#a78bfa"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Smooth: {tooltip.smoothTotal.toExponential(3)}
+                      </text>
+                    </>
+                  )}
+                  {showTextEncoder && tooltip.textEncoder !== undefined && (
+                    <text
+                      x={textX}
+                      y={tooltip.y - 5}
+                      fill="#34d399"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      Text Enc: {tooltip.textEncoder.toExponential(3)}
+                    </text>
+                  )}
+                  {showUNet && tooltip.unet !== undefined && (
+                    <text
+                      x={textX}
+                      y={tooltip.y + 10}
+                      fill="#fbbf24"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      UNet: {tooltip.unet.toExponential(3)}
+                    </text>
+                  )}
+                </g>
+              );
+            })()}
           </g>
         )}
       </svg>

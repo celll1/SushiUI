@@ -249,7 +249,14 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
   // Calculate chart dimensions and scaling
   const height = 300;
-  const padding = { top: 20, right: 180, bottom: 40, left: 60 }; // right: 180 for tooltip space
+  // Responsive padding: reduce right padding on narrow screens for better chart visibility
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
+  const padding = {
+    top: 20,
+    right: isMobile ? 10 : 180, // Minimal padding on mobile, tooltip space on desktop
+    bottom: 40,
+    left: isMobile ? 45 : 60 // Slightly less left padding on mobile
+  };
   const chartWidth = svgWidth - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
@@ -850,75 +857,86 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
               strokeWidth="2"
             />
 
-            {/* Tooltip box - always on right side */}
-            <g>
-              {/* Background */}
-              <rect
-                x={tooltip.x + 10}
-                y={tooltip.y - 55}
-                width="160"
-                height={tooltip.reconLoss !== undefined ? 85 : 50}
-                fill="#1f2937"
-                stroke="#4b5563"
-                strokeWidth="1"
-                rx="4"
-              />
+            {/* Tooltip box - responsive positioning */}
+            {(() => {
+              const tooltipWidth = 160;
+              const tooltipHeight = tooltip.reconLoss !== undefined ? 85 : 50;
+              // Show tooltip on left if it would overflow on right
+              const showLeft = tooltip.x + tooltipWidth + 20 > svgWidth;
+              const tooltipX = showLeft ? tooltip.x - tooltipWidth - 10 : tooltip.x + 10;
+              const textX = showLeft ? tooltip.x - tooltipWidth - 5 : tooltip.x + 15;
 
-              {/* Text content */}
-              <text
-                x={tooltip.x + 15}
-                y={tooltip.y - 40}
-                fill="#e5e7eb"
-                fontSize="11"
-                fontFamily="monospace"
-              >
-                Step: {tooltip.step}
-              </text>
-              {showLoss && (
-                <>
+              return (
+                <g>
+                  {/* Background */}
+                  <rect
+                    x={tooltipX}
+                    y={tooltip.y - 55}
+                    width={tooltipWidth}
+                    height={tooltipHeight}
+                    fill="#1f2937"
+                    stroke="#4b5563"
+                    strokeWidth="1"
+                    rx="4"
+                  />
+
+                  {/* Text content */}
                   <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 25}
-                    fill="#3b82f6"
+                    x={textX}
+                    y={tooltip.y - 40}
+                    fill="#e5e7eb"
                     fontSize="11"
                     fontFamily="monospace"
                   >
-                    Pred Loss: {tooltip.loss.toFixed(4)}
+                    Step: {tooltip.step}
                   </text>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y - 10}
-                    fill="#60a5fa"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Smooth: {tooltip.smoothLoss.toFixed(4)}
-                  </text>
-                </>
-              )}
-              {showReconLoss && tooltip.reconLoss !== undefined && (
-                <>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y + 5}
-                    fill="#10b981"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Recon Loss: {tooltip.reconLoss.toFixed(4)}
-                  </text>
-                  <text
-                    x={tooltip.x + 15}
-                    y={tooltip.y + 20}
-                    fill="#34d399"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
-                  </text>
-                </>
-              )}
-            </g>
+                  {showLoss && (
+                    <>
+                      <text
+                        x={textX}
+                        y={tooltip.y - 25}
+                        fill="#3b82f6"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Pred Loss: {tooltip.loss.toFixed(4)}
+                      </text>
+                      <text
+                        x={textX}
+                        y={tooltip.y - 10}
+                        fill="#60a5fa"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Smooth: {tooltip.smoothLoss.toFixed(4)}
+                      </text>
+                    </>
+                  )}
+                  {showReconLoss && tooltip.reconLoss !== undefined && (
+                    <>
+                      <text
+                        x={textX}
+                        y={tooltip.y + 5}
+                        fill="#10b981"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Recon Loss: {tooltip.reconLoss.toFixed(4)}
+                      </text>
+                      <text
+                        x={textX}
+                        y={tooltip.y + 20}
+                        fill="#34d399"
+                        fontSize="11"
+                        fontFamily="monospace"
+                      >
+                        Smooth: {tooltip.smoothReconLoss?.toFixed(4)}
+                      </text>
+                    </>
+                  )}
+                </g>
+              );
+            })()}
           </g>
         )}
       </svg>

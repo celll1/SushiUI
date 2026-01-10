@@ -585,6 +585,17 @@ class BaseTrainer(ABC):
         # Log prefix for subclass override
         self.log_prefix = "[Trainer]"
 
+        # Log component learning rates
+        print(f"{self.log_prefix} ===== Component Learning Rates =====")
+        print(f"{self.log_prefix}   Base LR: {self.learning_rate}")
+        print(f"{self.log_prefix}   U-Net LR: {self.unet_lr}")
+        print(f"{self.log_prefix}   Text Encoder LR: {self.text_encoder_lr}")
+        if hasattr(self, 'text_encoder_1_lr'):
+            print(f"{self.log_prefix}   Text Encoder 1 LR: {self.text_encoder_1_lr}")
+        if hasattr(self, 'text_encoder_2_lr'):
+            print(f"{self.log_prefix}   Text Encoder 2 LR: {self.text_encoder_2_lr}")
+        print(f"{self.log_prefix} ====================================")
+
         print(f"[Trainer] Precision settings:")
         print(f"  Weight dtype: {weight_dtype} ({self.weight_dtype})")
         print(f"  Training dtype: {training_dtype} ({self.training_dtype})")
@@ -1467,6 +1478,14 @@ class BaseTrainer(ABC):
             self.optimizer.train()
             print(f"{self.log_prefix} Optimizer set to train mode")
 
+        # Log actual LR values for each parameter group
+        print(f"{self.log_prefix} ===== Optimizer Parameter Group LRs =====")
+        for i, group in enumerate(self.optimizer.param_groups):
+            group_lr = group.get('lr', 'N/A')
+            num_params = len(group['params'])
+            print(f"{self.log_prefix}   Group {i}: lr={group_lr}, num_params={num_params}")
+        print(f"{self.log_prefix} ==========================================")
+
         # Setup LR scheduler
         from diffusers.optimization import get_scheduler as get_diffusers_scheduler
         self.lr_scheduler = get_diffusers_scheduler(
@@ -2064,11 +2083,6 @@ class BaseTrainer(ABC):
 
         # Enable gradients when training text encoder
         if requires_grad:
-            # Debug: Check text encoder training status
-            if self.is_deus and hasattr(self.text_encoder, 'text_encoder'):
-                is_training = self.text_encoder.text_encoder.training
-                print(f"{self.log_prefix} [encode_prompt_deus] Text encoder training mode: {is_training}, requires_grad=True")
-
             # For FP8 quantized text encoder, use autocast for mixed precision
             if has_fp8_weights:
                 with torch.autocast(device_type='cuda', dtype=self.training_dtype):
@@ -2089,9 +2103,6 @@ class BaseTrainer(ABC):
                 )
             # Keep gradients attached (no detach)
             result_embeds = prompt_embeds
-
-            # Debug: Check if gradients are enabled in result
-            print(f"{self.log_prefix} [encode_prompt_deus] result_embeds.requires_grad: {result_embeds.requires_grad}")
         else:
             # Disable gradients for inference or when not training text encoder
             with torch.no_grad():
@@ -5133,9 +5144,7 @@ class BaseTrainer(ABC):
 
                             elif text_encoding_mode == "onthefly_gpu":
                                 # Encode on GPU without cache
-                                print(f"{self.log_prefix} [Training Loop] Encoding caption with requires_grad=True (onthefly_gpu mode)")
                                 embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
-                                print(f"{self.log_prefix} [Training Loop] embeddings.requires_grad: {embeddings.requires_grad}")
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 
@@ -5167,9 +5176,6 @@ class BaseTrainer(ABC):
                             else:
                                 # All same length - direct concatenation
                                 text_embeddings = torch.cat(text_embeddings_list, dim=0)  # [batch, seq_len, dim]
-
-                            # Debug: Check if gradients are preserved after concatenation
-                            print(f"{self.log_prefix} [Training Loop] text_embeddings.requires_grad after cat: {text_embeddings.requires_grad}")
                         else:
                             text_embeddings = None
 

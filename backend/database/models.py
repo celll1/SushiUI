@@ -501,6 +501,24 @@ class TrainingRun(TrainingBase):
         # Get checkpoints from DB (sorted by step descending = newest first)
         checkpoint_paths = [ckpt.file_path for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)]
 
+        # Extract component-specific LRs from YAML config
+        unet_lr = None
+        text_encoder_lr = None
+        text_encoder_1_lr = None
+        text_encoder_2_lr = None
+
+        if self.config_yaml:
+            try:
+                import yaml
+                config = yaml.safe_load(self.config_yaml)
+                train_config = config.get('config', {}).get('process', [{}])[0].get('train', {})
+                unet_lr = train_config.get('unet_lr')
+                text_encoder_lr = train_config.get('text_encoder_lr')
+                text_encoder_1_lr = train_config.get('text_encoder_1_lr')
+                text_encoder_2_lr = train_config.get('text_encoder_2_lr')
+            except Exception:
+                pass  # Silently fail if YAML parsing fails
+
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
@@ -519,6 +537,10 @@ class TrainingRun(TrainingBase):
             "phase_detail": self.phase_detail,
             "loss": self.loss,
             "learning_rate": self.learning_rate,
+            "unet_lr": unet_lr,
+            "text_encoder_lr": text_encoder_lr,
+            "text_encoder_1_lr": text_encoder_1_lr,
+            "text_encoder_2_lr": text_encoder_2_lr,
             "output_dir": self.output_dir,
             "checkpoint_paths": checkpoint_paths,  # From DB, sorted newest first
             "log_file": self.log_file,

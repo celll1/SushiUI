@@ -874,7 +874,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
                     y={tooltip.y - 55}
                     width={tooltipWidth}
                     height={tooltipHeight}
-                    fill="#1f2937"
+                    fill="rgba(31, 41, 55, 0.95)"
                     stroke="#4b5563"
                     strokeWidth="1"
                     rx="4"

@@ -911,24 +911,40 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
-        <h2 className="text-lg font-semibold">{editRunId ? "Edit Training Run" : "New Training Run"}</h2>
-        <div className="flex items-center gap-2">
+      <div className="p-3 sm:p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
+        <h2 className="text-base sm:text-lg font-semibold truncate mr-2">{editRunId ? "Edit Training Run" : "New Training Run"}</h2>
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           <button
             type="button"
             onClick={() => setShowLoadPresetDialog(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors"
+            className="hidden sm:flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors"
           >
-            <FolderOpen className="h-4 w-4" />
+            <FolderOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             Load Preset
           </button>
           <button
             type="button"
+            onClick={() => setShowLoadPresetDialog(true)}
+            className="sm:hidden p-1.5 bg-blue-600 hover:bg-blue-500 rounded transition-colors"
+            title="Load Preset"
+          >
+            <FolderOpen className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => setShowPresetDialog(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+            className="hidden sm:flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs sm:text-sm transition-colors"
+          >
+            <Save className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            Save Preset
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPresetDialog(true)}
+            className="sm:hidden p-1.5 bg-green-600 hover:bg-green-500 rounded transition-colors"
+            title="Save Preset"
           >
             <Save className="h-4 w-4" />
-            Save Preset
           </button>
           <button
             onClick={onClose}
@@ -939,25 +955,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="p-4">
+      <form onSubmit={handleSubmit} className="p-3 sm:p-4">
         {error && (
-          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 text-sm mb-4">
+          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-2.5 sm:p-3 text-xs sm:text-sm mb-3 sm:mb-4">
             {error}
           </div>
         )}
 
-        <div className="columns-1 lg:columns-2 gap-4 space-y-4">
+        <div className="columns-1 lg:columns-2 gap-3 sm:gap-4 space-y-3 sm:space-y-4">
         {/* Run Name */}
         <div className="break-inside-avoid">
-          <label className="block text-sm font-medium mb-2">
-            Run Name <span className="text-gray-500 text-xs font-normal">(optional, auto-generated if empty)</span>
+          <label className="block text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
+            Run Name <span className="text-gray-500 text-xxs sm:text-xs font-normal">(optional, auto-generated if empty)</span>
           </label>
           <input
             type="text"
             value={runName}
             onChange={(e) => setRunName(e.target.value)}
             placeholder="Leave empty for auto-generated name (e.g., 20251130_174523_a1b2c3d4)"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+            className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
           />
         </div>
 
@@ -2678,18 +2694,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
 
         {/* Buttons - Outside grid */}
-        <div className="flex justify-end space-x-3 pt-4 mt-4">
+        <div className="flex flex-col sm:flex-row justify-end gap-2 sm:gap-3 pt-3 sm:pt-4 mt-3 sm:mt-4">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm transition-colors"
             disabled={loading}
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading}
           >
             {loading ? (editRunId ? "Updating..." : "Creating...") : (editRunId ? "Update Training Run" : "Create Training Run")}
@@ -2699,42 +2715,42 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       {/* Save Preset Dialog */}
       {showPresetDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Save Training Preset</h3>
-            <div className="space-y-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 sm:p-6 w-full max-w-md">
+            <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">Save Training Preset</h3>
+            <div className="space-y-3 sm:space-y-4">
               <div>
-                <label className="block text-sm text-gray-300 mb-1">Preset Name *</label>
+                <label className="block text-xs sm:text-sm text-gray-300 mb-1">Preset Name *</label>
                 <input
                   type="text"
                   value={presetName}
                   onChange={(e) => setPresetName(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-700 border border-gray-600 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
                   placeholder="e.g., SDXL LoRA Quick"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-300 mb-1">Description (Optional)</label>
+                <label className="block text-xs sm:text-sm text-gray-300 mb-1">Description (Optional)</label>
                 <textarea
                   value={presetDescription}
                   onChange={(e) => setPresetDescription(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-700 border border-gray-600 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
                   rows={3}
                   placeholder="Describe this preset..."
                 />
               </div>
-              <div className="flex gap-2 justify-end">
+              <div className="flex flex-col sm:flex-row gap-2 justify-end">
                 <button
                   type="button"
                   onClick={() => setShowPresetDialog(false)}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSavePreset}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-green-600 hover:bg-green-500 rounded text-xs sm:text-sm transition-colors"
                 >
                   Save
                 </button>
@@ -2746,8 +2762,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       {/* Load Preset Dialog */}
       {showLoadPresetDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">Load Training Preset</h3>
             {presets.length === 0 ? (
               <p className="text-gray-400 text-sm">No presets saved yet</p>

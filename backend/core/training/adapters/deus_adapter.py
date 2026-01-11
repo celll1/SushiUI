@@ -354,10 +354,9 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
                     for key, param in trainer.text_encoder.text_encoder.text_model.state_dict().items():
                         state_dict[f"text_encoder.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
-        # Image Encoder state dict (SigLIP-2, future T2I support)
+        # Image Encoder state dict (SigLIP-2, always save for inference even if not training)
         # Access text_encoder.image_encoder.vision_model for actual SigLIP-2 vision model
-        train_image_encoder = getattr(trainer, 'train_image_encoder', False)
-        if train_image_encoder and trainer.text_encoder is not None:
+        if trainer.text_encoder is not None:
             if hasattr(trainer.text_encoder, 'image_encoder') and trainer.text_encoder.image_encoder is not None:
                 if hasattr(trainer.text_encoder.image_encoder, 'vision_model'):
                     for key, param in trainer.text_encoder.image_encoder.vision_model.state_dict().items():
@@ -368,14 +367,22 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             for key, param in trainer.vae.state_dict().items():
                 state_dict[f"vae.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
+        # Detect DEUS version from U-Net class name
+        unet_class_name = trainer.unet.__class__.__name__ if trainer.unet is not None else ""
+        model_type = "deus_v2" if "V2" in unet_class_name else "deus"
+
+        # Check if image encoder is actually saved (not just trainable)
+        has_image_encoder = any(key.startswith("image_encoder.") for key in state_dict.keys())
+
         # Add metadata
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
-            "model_type": "deus",
+            "model_type": model_type,  # Use detected model_type instead of hardcoded "deus"
             "train_unet": str(trainer.train_unet),
             "train_text_encoder": str(trainer.train_text_encoder),
-            "train_image_encoder": str(train_image_encoder),
+            "train_image_encoder": str(getattr(trainer, 'train_image_encoder', False)),
+            "has_image_encoder": str(has_image_encoder),  # Whether image encoder is included in checkpoint
         }
 
         # Save safetensors

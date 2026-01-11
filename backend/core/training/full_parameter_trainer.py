@@ -24,6 +24,7 @@ Last Updated: Claude (2026-01-08) - Added DEUS support
 
 from pathlib import Path
 from typing import Dict, List
+import torch
 
 from .base_trainer import BaseTrainer
 from .adapters import (

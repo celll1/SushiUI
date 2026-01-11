@@ -1109,16 +1109,9 @@ class BaseTrainer(ABC):
         """
         import json
         import random
-        import re
 
-        # Extract short name from run_name (same logic as checkpoint saving)
-        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
-        if match:
-            short_name = match.group(1)
-        else:
-            short_name = self.run_name
-
-        state_file = self.output_dir / f"{short_name}_step_{step}_state.json"
+        # Use full run_name with zero-padded step (consistent with model checkpoint naming)
+        state_file = self.output_dir / f"{self.run_name}_step_{step:06d}_state.json"
 
         state = {
             "global_step": step,
@@ -1155,14 +1148,18 @@ class BaseTrainer(ABC):
         import random
         import re
 
-        # Extract short name from run_name (same logic as checkpoint saving)
-        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
-        if match:
-            short_name = match.group(1)
-        else:
-            short_name = self.run_name
+        # Try new naming format first (consistent with model checkpoint)
+        state_file = self.output_dir / f"{self.run_name}_step_{step:06d}_state.json"
 
-        state_file = self.output_dir / f"{short_name}_step_{step}_state.json"
+        # Fallback to old naming format (short name, no leading zeros) for backward compatibility
+        if not state_file.exists():
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)
+                state_file_legacy = self.output_dir / f"{short_name}_step_{step}_state.json"
+                if state_file_legacy.exists():
+                    state_file = state_file_legacy
+                    print(f"{self.log_prefix} Using legacy training state file: {state_file.name}")
 
         if not state_file.exists():
             print(f"{self.log_prefix} No training state file found: {state_file.name}")
@@ -1189,19 +1186,11 @@ class BaseTrainer(ABC):
         Args:
             step: Current global step
         """
-        import re
-
         if self.optimizer is None:
             return
 
-        # Extract short name from run_name (same logic as checkpoint saving)
-        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
-        if match:
-            short_name = match.group(1)
-        else:
-            short_name = self.run_name
-
-        optimizer_file = self.output_dir / f"{short_name}_step_{step}_optimizer.pt"
+        # Use full run_name with zero-padded step (consistent with model checkpoint naming)
+        optimizer_file = self.output_dir / f"{self.run_name}_step_{step:06d}_optimizer.pt"
 
         # Save optimizer state dict
         torch.save(self.optimizer.state_dict(), optimizer_file)
@@ -1223,14 +1212,18 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: Cannot load optimizer state (optimizer not initialized)")
             return False
 
-        # Extract short name from run_name (same logic as checkpoint saving)
-        match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
-        if match:
-            short_name = match.group(1)
-        else:
-            short_name = self.run_name
+        # Try new naming format first (consistent with model checkpoint)
+        optimizer_file = self.output_dir / f"{self.run_name}_step_{step:06d}_optimizer.pt"
 
-        optimizer_file = self.output_dir / f"{short_name}_step_{step}_optimizer.pt"
+        # Fallback to old naming format (short name, no leading zeros) for backward compatibility
+        if not optimizer_file.exists():
+            match = re.match(r'\d{8}_\d{6}_([a-f0-9]+)', self.run_name)
+            if match:
+                short_name = match.group(1)
+                optimizer_file_legacy = self.output_dir / f"{short_name}_step_{step}_optimizer.pt"
+                if optimizer_file_legacy.exists():
+                    optimizer_file = optimizer_file_legacy
+                    print(f"{self.log_prefix} Using legacy optimizer state file: {optimizer_file.name}")
 
         if not optimizer_file.exists():
             print(f"{self.log_prefix} No optimizer state file found: {optimizer_file.name}")

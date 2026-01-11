@@ -993,12 +993,19 @@ class BaseTrainer(ABC):
             text_encoder_raw = components["text_encoder"]  # SigLIP2TextEncoder
             image_encoder_raw = components["image_encoder"]  # SigLIP2ImageEncoder
 
+            # Get max_position_embeddings from text encoder (already loaded from checkpoint)
+            max_pos_embeddings = None
+            if text_encoder_raw is not None and hasattr(text_encoder_raw, 'config'):
+                max_pos_embeddings = text_encoder_raw.config.max_position_embeddings
+                print(f"{self.log_prefix} Text encoder max_position_embeddings: {max_pos_embeddings}")
+
             print(f"{self.log_prefix} Creating SigLIP2MultiModalEncoder wrapper...")
             self.text_encoder = SigLIP2MultiModalEncoder(
                 dtype=self.weight_dtype,
                 device="cpu",  # Will move to GPU later
                 text_encoder=text_encoder_raw,
-                image_encoder=image_encoder_raw
+                image_encoder=image_encoder_raw,
+                max_position_embeddings=max_pos_embeddings  # Preserve from checkpoint
             )
 
             # Get tokenizer from text encoder

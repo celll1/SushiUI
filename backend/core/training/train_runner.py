@@ -1029,6 +1029,8 @@ def main():
                 # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,
+                # Resume training
+                resume_from_checkpoint=resume_from_checkpoint,
             )
 
             # Note: setup_optimizer() is now called inside train() method

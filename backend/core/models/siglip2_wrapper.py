@@ -527,7 +527,8 @@ class SigLIP2MultiModalEncoder(nn.Module):
         dtype: torch.dtype = torch.float16,
         device: str = "cuda",
         text_encoder: Optional['SigLIP2TextEncoder'] = None,
-        image_encoder: Optional['SigLIP2ImageEncoder'] = None
+        image_encoder: Optional['SigLIP2ImageEncoder'] = None,
+        max_position_embeddings: Optional[int] = None
     ):
         super().__init__()
 
@@ -535,16 +536,31 @@ class SigLIP2MultiModalEncoder(nn.Module):
         if text_encoder is not None:
             print(f"[SigLIP2] Using provided text encoder (from checkpoint)")
             self.text_encoder = text_encoder
+
+            # If max_position_embeddings not provided, get from text encoder
+            if max_position_embeddings is None and hasattr(text_encoder, 'config'):
+                max_position_embeddings = text_encoder.config.max_position_embeddings
         else:
             print(f"[SigLIP2] Creating new text encoder from HuggingFace")
-            self.text_encoder = SigLIP2TextEncoder(model_name, dtype, device)
+            self.text_encoder = SigLIP2TextEncoder(
+                model_name,
+                dtype,
+                device,
+                max_position_embeddings=max_position_embeddings
+            )
 
         if image_encoder is not None:
             print(f"[SigLIP2] Using provided image encoder (from checkpoint)")
             self.image_encoder = image_encoder
         else:
             print(f"[SigLIP2] Creating new image encoder from HuggingFace")
-            self.image_encoder = SigLIP2ImageEncoder(model_name, dtype, device)
+            # Pass max_position_embeddings to preserve text encoder's config
+            self.image_encoder = SigLIP2ImageEncoder(
+                model_name,
+                dtype,
+                device,
+                max_position_embeddings=max_position_embeddings
+            )
 
         self.hidden_size = self.text_encoder.hidden_size
 

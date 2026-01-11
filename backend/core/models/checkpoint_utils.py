@@ -176,6 +176,10 @@ def load_unified_checkpoint(
             # Text Encoder
             new_key = key.replace("text_encoder.", "")
             text_encoder_state[new_key] = value
+        elif key.startswith("image_encoder."):
+            # Image Encoder (DEUS v2 format)
+            new_key = key.replace("image_encoder.", "")
+            image_encoder_state[new_key] = value
         elif key.startswith("vae."):
             # VAE
             new_key = key.replace("vae.", "")
@@ -190,7 +194,7 @@ def load_unified_checkpoint(
             new_key = key.replace("conditioner.embedders.0.transformer.", "")
             text_encoder_state[new_key] = value
         elif key.startswith("conditioner.embedders.1.model."):
-            # Image Encoder
+            # Image Encoder (DEUS v1 format)
             new_key = key.replace("conditioner.embedders.1.model.", "")
             image_encoder_state[new_key] = value
         elif key.startswith("first_stage_model."):

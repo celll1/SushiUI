@@ -152,8 +152,8 @@ class FullParameterTrainer(BaseTrainer):
                 step = int(match.group(1))
 
             # Load checkpoint using checkpoint_utils
-            from core.models.checkpoint_utils import load_checkpoint
-            loaded_components = load_checkpoint(str(checkpoint_path_obj), device='cpu')
+            from core.models.checkpoint_utils import load_unified_checkpoint
+            loaded_components = load_unified_checkpoint(str(checkpoint_path_obj), device='cpu')
 
             # Load U-Net (load_unified_checkpoint returns model objects, not state_dicts)
             if self.train_unet and loaded_components.get('unet') is not None:

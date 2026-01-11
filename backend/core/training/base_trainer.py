@@ -2907,8 +2907,13 @@ class BaseTrainer(ABC):
                 # DDPM: sample discrete timesteps [0, num_train_timesteps)
                 if self.timestep_sampler is not None:
                     # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                    # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+                    # DDPM: t=999 (noisy) → t=0 (clean)
+                    # Flow: t=0 (noisy) → t=1 (clean)
+                    # So we need to flip: YAML [0,1] → DDPM [999,0]
+                    # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
                     timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
-                    timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
+                    timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
                     timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
                 else:
                     # Legacy behavior: sample uniformly from [0, num_train_timesteps)
@@ -2930,8 +2935,11 @@ class BaseTrainer(ABC):
             # MNT: timesteps provided externally
             if noise_process == "ddpm":
                 # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
-                # timesteps in [0, 1] -> scale to [0, num_train_timesteps)
-                timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
+                # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+                # DDPM: t=999 (noisy) → t=0 (clean)
+                # Flow: t=0 (noisy) → t=1 (clean)
+                # So we need to flip: YAML [0,1] → DDPM [999,0]
+                timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
                 timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
             elif noise_process == "flow":
                 # Flow matching: timesteps are already [0, 1]
@@ -3202,8 +3210,13 @@ class BaseTrainer(ABC):
                 # DDPM: sample discrete timesteps [0, num_train_timesteps)
                 if self.timestep_sampler is not None:
                     # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                    # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+                    # DDPM: t=999 (noisy) → t=0 (clean)
+                    # Flow: t=0 (noisy) → t=1 (clean)
+                    # So we need to flip: YAML [0,1] → DDPM [999,0]
+                    # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
                     timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
-                    timesteps = (timesteps_continuous * self.noise_scheduler.config.num_train_timesteps).long()
+                    timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
                     timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
                 else:
                     # Legacy behavior: sample uniformly from [0, num_train_timesteps)
@@ -3217,7 +3230,11 @@ class BaseTrainer(ABC):
             # Timesteps provided externally
             if noise_process == "ddpm":
                 # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
-                timesteps = (timesteps * self.noise_scheduler.config.num_train_timesteps).long()
+                # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+                # DDPM: t=999 (noisy) → t=0 (clean)
+                # Flow: t=0 (noisy) → t=1 (clean)
+                # So we need to flip: YAML [0,1] → DDPM [999,0]
+                timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
                 timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
 
         # Add noise to latents using unified framework

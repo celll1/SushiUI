@@ -461,12 +461,15 @@ class BaseTrainer(ABC):
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
         optimizer_use_radam: bool = False,
+        # Resume training
+        resume_from_checkpoint: Optional[str] = None,
     ):
         """
         Initialize base trainer.
 
         Args:
-            model_path: Path to base Stable Diffusion model
+            model_path: Path to base Stable Diffusion model (or checkpoint for resume)
+            resume_from_checkpoint: "latest" to auto-detect, or path to specific checkpoint
             output_dir: Directory to save checkpoints
             run_name: Training run name (for checkpoint filename generation)
             learning_rate: Learning rate
@@ -519,6 +522,9 @@ class BaseTrainer(ABC):
         self.optimizer_schedule_free_r = optimizer_schedule_free_r
         self.optimizer_schedule_free_weight_lr_power = optimizer_schedule_free_weight_lr_power
         self.optimizer_use_radam = optimizer_use_radam
+
+        # Resume training
+        self.resume_from_checkpoint = resume_from_checkpoint
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -613,10 +619,40 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Initializing on {self.device}")
         print(f"{self.log_prefix} Tensorboard logs: {tensorboard_dir}")
-        print(f"{self.log_prefix} Loading model from {model_path}")
 
-        # Load model components
-        self._load_model_components()
+        # Check if resuming from checkpoint
+        checkpoint_to_load = None
+        if self.resume_from_checkpoint:
+            if self.resume_from_checkpoint.lower() == "latest":
+                # Find latest checkpoint in output directory
+                checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+                if checkpoint_files:
+                    # Get latest checkpoint by step number
+                    def get_step(path):
+                        try:
+                            step_str = path.stem.split("_step_")[-1]
+                            return int(step_str)
+                        except (ValueError, IndexError):
+                            return 0
+
+                    latest_checkpoint = max(checkpoint_files, key=get_step)
+                    checkpoint_to_load = str(latest_checkpoint)
+                    print(f"{self.log_prefix} Found checkpoint to resume from: {checkpoint_to_load}")
+            else:
+                # Specific checkpoint path provided
+                checkpoint_path_obj = Path(self.resume_from_checkpoint)
+                if checkpoint_path_obj.exists():
+                    checkpoint_to_load = self.resume_from_checkpoint
+                    print(f"{self.log_prefix} Using specified checkpoint: {checkpoint_to_load}")
+
+        if checkpoint_to_load:
+            # Load checkpoint directly as base model (resume training)
+            print(f"{self.log_prefix} Loading checkpoint as base model: {checkpoint_to_load}")
+            self._load_checkpoint_as_base(checkpoint_to_load)
+        else:
+            # Load base model (new training)
+            print(f"{self.log_prefix} Loading model from {model_path}")
+            self._load_model_components()
 
     def _load_model_components(self):
         """Load model components (dispatcher for different model types)."""
@@ -876,6 +912,165 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
         print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
+
+    def _load_checkpoint_as_base(self, checkpoint_path: str):
+        """
+        Load checkpoint directly as base model (for resume training).
+
+        Uses same VRAM-optimized loading pattern as _load_model_components():
+        - Load to CPU first
+        - Move to GPU in controlled manner
+        - Enable gradient checkpointing
+
+        This avoids loading base model + checkpoint (VRAM duplication).
+
+        Args:
+            checkpoint_path: Path to checkpoint file (.safetensors)
+        """
+        from core.model_loader import ModelLoader
+        from core.models.checkpoint_utils import load_unified_checkpoint
+        from diffusers import DDPMScheduler, EulerAncestralDiscreteScheduler
+
+        # Detect model type from checkpoint
+        model_type = ModelLoader.detect_model_type(checkpoint_path)
+        self.is_zimage = (model_type == "zimage")
+        self.is_deus = (model_type == "deus")
+        self.is_sdxl = False
+
+        if self.is_deus:
+            print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
+
+            # Detect variant from checkpoint metadata
+            unet_variant = "medium"  # Default
+            try:
+                from safetensors import safe_open
+                with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
+                    metadata = f.metadata() or {}
+                    detected_variant = metadata.get("unet_variant") or metadata.get("variant")
+                    if detected_variant:
+                        unet_variant = detected_variant
+                        print(f"{self.log_prefix} Detected variant from checkpoint: {unet_variant}")
+            except Exception as e:
+                print(f"{self.log_prefix} Warning: Could not read checkpoint metadata: {e}")
+                print(f"{self.log_prefix} Using default variant: {unet_variant}")
+
+            # Load components from checkpoint (CPU first, VRAM-optimized)
+            components = load_unified_checkpoint(
+                checkpoint_path=checkpoint_path,
+                unet_variant=unet_variant,
+                device="cpu",
+                dtype=self.weight_dtype,
+                load_text_encoder=True,
+                load_image_encoder=True,
+                load_vae=True,
+                load_unet=True
+            )
+
+            # Store components
+            self.unet = components["unet"]
+            self.vae = components["vae"]
+
+            # Create SigLIP2MultiModalEncoder wrapper (combines text + image encoders)
+            from core.models.siglip2_wrapper import SigLIP2MultiModalEncoder
+
+            text_encoder_raw = components["text_encoder"]  # SigLIP2TextEncoder
+            image_encoder_raw = components["image_encoder"]  # SigLIP2ImageEncoder
+
+            print(f"{self.log_prefix} Creating SigLIP2MultiModalEncoder wrapper...")
+            self.text_encoder = SigLIP2MultiModalEncoder(
+                dtype=self.weight_dtype,
+                device="cpu",  # Will move to GPU later
+                text_encoder=text_encoder_raw,
+                image_encoder=image_encoder_raw
+            )
+
+            # Get tokenizer from text encoder
+            if hasattr(self.text_encoder, 'tokenizer'):
+                self.tokenizer = self.text_encoder.tokenizer
+            elif text_encoder_raw is not None and hasattr(text_encoder_raw, 'tokenizer'):
+                self.tokenizer = text_encoder_raw.tokenizer
+            else:
+                # Fallback: create tokenizer if not available
+                from transformers import AutoTokenizer
+                print(f"{self.log_prefix} Creating tokenizer (not in text encoder)...")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    "google/siglip2-so400m-patch16-naflex",
+                    trust_remote_code=True
+                )
+
+            # Create scheduler (for inference/sampling)
+            self.scheduler = EulerAncestralDiscreteScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                prediction_type="epsilon"
+            )
+
+            # DEUS specific: no text_encoder_2, no transformer
+            self.text_encoder_2 = None
+            self.tokenizer_2 = None
+            self.transformer = None
+            self.transformer_original = None
+
+            # Save original scheduler for inference (sample generation)
+            self.original_scheduler = self.scheduler
+
+            # Use DDPMScheduler for training (same as SD/SDXL)
+            self.noise_scheduler = DDPMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                clip_sample=False,
+                prediction_type="epsilon"
+            )
+
+            # Convert VAE to vae_dtype
+            self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            # Setup Flash Attention if enabled
+            if self.use_flash_attention:
+                self._setup_flash_attention_deus()
+
+            # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
+            if hasattr(self.unet, 'enable_gradient_checkpointing'):
+                self.unet.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
+            else:
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
+
+            # Enable gradient checkpointing for SigLIP-2 MultiModalEncoder
+            if hasattr(self.text_encoder, 'text_encoder'):
+                if hasattr(self.text_encoder.text_encoder, 'gradient_checkpointing_enable'):
+                    self.text_encoder.text_encoder.gradient_checkpointing_enable()
+            if hasattr(self.text_encoder, 'image_encoder'):
+                if hasattr(self.text_encoder.image_encoder, 'gradient_checkpointing_enable'):
+                    self.text_encoder.image_encoder.gradient_checkpointing_enable()
+                    print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 encoders")
+
+            # Freeze VAE
+            self.vae.requires_grad_(False)
+
+            # Move models to GPU (controlled, VRAM-optimized)
+            # Text Encoder first (smallest)
+            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+            self.text_encoder.to(self.device)
+
+            # U-Net second
+            print(f"{self.log_prefix} Moving U-Net to {self.device}...")
+            self.unet.to(self.device)
+
+            # VAE stays on CPU (moved to GPU only during sample generation)
+            print(f"{self.log_prefix} VAE remains on CPU (will move to GPU during sample generation)")
+
+            print(f"{self.log_prefix} DEUS checkpoint loaded successfully as base model")
+            print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
+            print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
+            print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
+
+        else:
+            raise NotImplementedError(f"Checkpoint resume not yet implemented for model type: {model_type}")
 
     def _load_sd_sdxl_components(self):
         """Load SD/SDXL model components."""
@@ -4615,18 +4810,21 @@ class BaseTrainer(ABC):
         resume_training_state = None  # Training state for mid-epoch resume
 
         # Resume from checkpoint if requested
+        # NOTE: Checkpoint weights were already loaded in __init__() if resume_from_checkpoint was set
+        # Here we only need to extract step number and load training state (epoch/batch_idx)
         if resume_from_checkpoint:
             if resume_from_checkpoint.lower() == "latest":
                 # Auto-detect latest checkpoint
                 checkpoint_result = self.find_latest_checkpoint()
                 if checkpoint_result is not None:
                     checkpoint_path, checkpoint_step = checkpoint_result
-                    print(f"{self.log_prefix} Resuming from latest checkpoint: {checkpoint_path}")
-                    loaded_step = self.load_checkpoint(checkpoint_path)
-                    global_step = loaded_step
+                    print(f"{self.log_prefix} Resuming from checkpoint (weights already loaded in __init__): {checkpoint_path}")
+                    # NOTE: Model weights were already loaded in __init__()
+                    # We only need the step number here
+                    global_step = checkpoint_step
 
                     # Try to load training state for mid-epoch resume
-                    resume_training_state = self.load_training_state(loaded_step)
+                    resume_training_state = self.load_training_state(checkpoint_step)
                     if resume_training_state:
                         start_epoch = resume_training_state['epoch']
                         resume_batch_idx = resume_training_state['batch_idx']
@@ -4688,19 +4886,28 @@ class BaseTrainer(ABC):
                                     print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
 
                     # Load optimizer state (momentum, variance, etc.)
-                    self.load_optimizer_state(loaded_step)
+                    self.load_optimizer_state(checkpoint_step)
                 else:
                     print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
             else:
                 # User specified a specific checkpoint file
                 checkpoint_path = self.output_dir / resume_from_checkpoint
                 if checkpoint_path.exists():
-                    print(f"{self.log_prefix} Resuming from specified checkpoint: {checkpoint_path}")
-                    loaded_step = self.load_checkpoint(str(checkpoint_path))
-                    global_step = loaded_step
+                    print(f"{self.log_prefix} Resuming from specified checkpoint (weights already loaded in __init__): {checkpoint_path}")
+
+                    # NOTE: Model weights were already loaded in __init__()
+                    # Extract step number from filename
+                    import re
+                    match = re.search(r'_step_(\d+)', checkpoint_path.stem)
+                    if match:
+                        checkpoint_step = int(match.group(1))
+                        global_step = checkpoint_step
+                    else:
+                        print(f"{self.log_prefix} WARNING: Could not extract step number from filename: {checkpoint_path.name}")
+                        global_step = 0
 
                     # Try to load training state for mid-epoch resume
-                    resume_training_state = self.load_training_state(loaded_step)
+                    resume_training_state = self.load_training_state(checkpoint_step)
                     if resume_training_state:
                         start_epoch = resume_training_state['epoch']
                         resume_batch_idx = resume_training_state['batch_idx']
@@ -4762,7 +4969,7 @@ class BaseTrainer(ABC):
                                     print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
 
                     # Load optimizer state (momentum, variance, etc.)
-                    self.load_optimizer_state(loaded_step)
+                    self.load_optimizer_state(checkpoint_step)
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")

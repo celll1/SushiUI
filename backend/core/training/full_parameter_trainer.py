@@ -155,24 +155,24 @@ class FullParameterTrainer(BaseTrainer):
             from core.models.checkpoint_utils import load_checkpoint
             loaded_components = load_checkpoint(str(checkpoint_path_obj), device='cpu')
 
-            # Load U-Net
-            if self.train_unet and loaded_components.get('unet') is not None and self.unet is not None:
-                self.unet.load_state_dict(loaded_components['unet'])
+            # Load U-Net (load_unified_checkpoint returns model objects, not state_dicts)
+            if self.train_unet and loaded_components.get('unet') is not None:
+                self.unet = loaded_components['unet']
                 print(f"{self.log_prefix} Loaded U-Net from checkpoint")
 
             # Load Text Encoders
             if self.train_text_encoder:
-                if loaded_components.get('text_encoder') is not None and self.text_encoder is not None:
-                    self.text_encoder.load_state_dict(loaded_components['text_encoder'])
-                    print(f"{self.log_prefix} Loaded Text Encoder 1 from checkpoint")
+                if loaded_components.get('text_encoder') is not None:
+                    self.text_encoder = loaded_components['text_encoder']
+                    print(f"{self.log_prefix} Loaded Text Encoder from checkpoint")
 
-                if self.is_sdxl and loaded_components.get('text_encoder_2') is not None and self.text_encoder_2 is not None:
-                    self.text_encoder_2.load_state_dict(loaded_components['text_encoder_2'])
+                if self.is_sdxl and loaded_components.get('text_encoder_2') is not None:
+                    self.text_encoder_2 = loaded_components['text_encoder_2']
                     print(f"{self.log_prefix} Loaded Text Encoder 2 from checkpoint")
 
             # Load Image Encoder (if present)
-            if loaded_components.get('image_encoder') is not None and self.image_encoder is not None:
-                self.image_encoder.load_state_dict(loaded_components['image_encoder'])
+            if loaded_components.get('image_encoder') is not None:
+                self.image_encoder = loaded_components['image_encoder']
                 print(f"{self.log_prefix} Loaded Image Encoder from checkpoint")
 
             print(f"{self.log_prefix} Loaded checkpoint from step {step}")

@@ -966,6 +966,11 @@ def main():
             print("[TrainRunner] Training method: Full Parameter Fine-Tuning")
             from core.training.full_parameter_trainer import FullParameterTrainer
 
+            # Get resume from checkpoint setting
+            resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+            if resume_from_checkpoint:
+                print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
+
             # Get dtype settings from unified dtype section
             dtype_config = process_config.get('dtype', {})
             weight_dtype = dtype_config.get('weight', 'fp16')

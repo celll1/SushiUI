@@ -378,6 +378,14 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
         # Check if image encoder is actually saved (not just trainable)
         has_image_encoder = any(key.startswith("image_encoder.") for key in state_dict.keys())
 
+        # Get max_position_embeddings from text encoder config
+        max_position_embeddings = None
+        if trainer.text_encoder is not None:
+            if hasattr(trainer.text_encoder, 'text_encoder') and hasattr(trainer.text_encoder.text_encoder, 'config'):
+                max_position_embeddings = trainer.text_encoder.text_encoder.config.max_position_embeddings
+            elif hasattr(trainer.text_encoder, 'config'):
+                max_position_embeddings = trainer.text_encoder.config.max_position_embeddings
+
         # Add metadata
         metadata = {
             "step": str(step),
@@ -388,6 +396,10 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             "train_image_encoder": str(getattr(trainer, 'train_image_encoder', False)),
             "has_image_encoder": str(has_image_encoder),  # Whether image encoder is included in checkpoint
         }
+
+        # Add max_position_embeddings if available (for resume functionality)
+        if max_position_embeddings is not None:
+            metadata["max_position_embeddings"] = str(max_position_embeddings)
 
         # Save safetensors
         save_file(state_dict, output_path, metadata=metadata)

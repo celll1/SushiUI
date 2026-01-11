@@ -639,16 +639,33 @@ class BaseTrainer(ABC):
                     checkpoint_to_load = str(latest_checkpoint)
                     print(f"{self.log_prefix} Found checkpoint to resume from: {checkpoint_to_load}")
             else:
-                # Specific checkpoint path provided
-                checkpoint_path_obj = Path(self.resume_from_checkpoint)
+                # Specific checkpoint path provided (treat as relative to output_dir first, then absolute)
+                checkpoint_path_obj = self.output_dir / self.resume_from_checkpoint
                 if checkpoint_path_obj.exists():
-                    checkpoint_to_load = self.resume_from_checkpoint
+                    checkpoint_to_load = str(checkpoint_path_obj)
                     print(f"{self.log_prefix} Using specified checkpoint: {checkpoint_to_load}")
+                else:
+                    # Try as absolute path
+                    checkpoint_path_obj = Path(self.resume_from_checkpoint)
+                    if checkpoint_path_obj.exists():
+                        checkpoint_to_load = str(checkpoint_path_obj)
+                        print(f"{self.log_prefix} Using specified checkpoint (absolute path): {checkpoint_to_load}")
 
         if checkpoint_to_load:
             # Load checkpoint directly as base model (resume training)
             print(f"{self.log_prefix} Loading checkpoint as base model: {checkpoint_to_load}")
-            self._load_checkpoint_as_base(checkpoint_to_load)
+            try:
+                self._load_checkpoint_as_base(checkpoint_to_load)
+                print(f"{self.log_prefix} Successfully loaded checkpoint as base model")
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to load checkpoint: {e}")
+                print(f"{self.log_prefix} Checkpoint loading failed, but resume_from_checkpoint was specified.")
+                print(f"{self.log_prefix} Aborting training to prevent unintended behavior.")
+                raise RuntimeError(
+                    f"Failed to load checkpoint '{checkpoint_to_load}'. "
+                    f"Training aborted to prevent starting from base model when resume was requested. "
+                    f"Error: {e}"
+                )
         else:
             # Load base model (new training)
             print(f"{self.log_prefix} Loading model from {model_path}")
@@ -1069,8 +1086,248 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
             print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
 
+        elif self.is_zimage:
+            print(f"{self.log_prefix} Loading Z-Image checkpoint as base model")
+
+            # Z-Image checkpoints from training are saved with all components
+            # We can load them as a complete model checkpoint
+            from core.model_loader import ModelLoader
+
+            # Detect format (ComfyUI or diffusers)
+            from safetensors import safe_open
+            with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
+                keys = list(f.keys())
+                # ComfyUI format has keys like "model.diffusion_model.x_embedder.proj.weight"
+                # Diffusers format has keys like "transformer.x_embedder.proj.weight"
+                is_comfy_format = any(k.startswith("model.diffusion_model.") for k in keys)
+
+            if is_comfy_format:
+                # ComfyUI format checkpoint
+                print(f"{self.log_prefix} Detected ComfyUI format Z-Image checkpoint")
+                components = ModelLoader.load_zimage_from_comfy_safetensors(
+                    file_path=checkpoint_path,
+                    device="cpu",
+                    torch_dtype=self.weight_dtype,
+                    base_model_repo="Tongyi-MAI/Z-Image-Turbo"
+                )
+            else:
+                # Diffusers format checkpoint (training checkpoint)
+                # Extract checkpoint directory (assumes checkpoint is in training output dir with other components)
+                checkpoint_dir = Path(checkpoint_path).parent
+
+                # Check if other components exist in the same directory
+                # Training saves: model_step_xxx.safetensors, vae/, text_encoder/, tokenizer/, scheduler/
+                if (checkpoint_dir / "vae").exists():
+                    # Load from directory structure
+                    print(f"{self.log_prefix} Loading Z-Image from checkpoint directory: {checkpoint_dir}")
+                    components = ModelLoader.load_zimage_from_diffusers(
+                        model_path=str(checkpoint_dir),
+                        device="cpu",
+                        torch_dtype=self.weight_dtype
+                    )
+
+                    # Load transformer weights from checkpoint file
+                    from safetensors.torch import load_file
+                    print(f"{self.log_prefix} Loading transformer weights from: {checkpoint_path}")
+                    transformer_state_dict = load_file(checkpoint_path, device="cpu")
+                    components["transformer"].load_state_dict(transformer_state_dict, strict=False)
+                else:
+                    # Single-file checkpoint with all components (full model save)
+                    # This requires special handling - for now, raise error
+                    raise RuntimeError(
+                        f"Z-Image checkpoint resume from single-file format not yet supported. "
+                        f"Please ensure checkpoint directory contains vae/, text_encoder/, tokenizer/, scheduler/ subdirectories. "
+                        f"Checkpoint: {checkpoint_path}"
+                    )
+
+            # Store components
+            self.transformer_original = components["transformer"]
+            self.vae = components["vae"]
+            self.text_encoder = components["text_encoder"]
+            self.tokenizer = components["tokenizer"]
+            self.scheduler = components["scheduler"]
+
+            # Z-Image specific: no text_encoder_2, no unet
+            self.text_encoder_2 = None
+            self.tokenizer_2 = None
+            self.unet = None
+            self.noise_scheduler = self.scheduler
+
+            # Save original scheduler for inference (sample generation)
+            self.original_scheduler = self.scheduler
+
+            # Convert VAE to vae_dtype
+            self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            # Wrap transformer with BatchedZImageWrapperOptimized
+            from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
+            print(f"{self.log_prefix} Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")
+            self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
+            print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing")
+
+            # Setup Flash Attention if enabled
+            if self.use_flash_attention:
+                self._setup_flash_attention_zimage()
+
+            # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
+            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+                self.transformer.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
+            else:
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
+
+            # Enable gradient checkpointing for Text Encoder
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
+
+            # Freeze all base weights (full parameter training will unfreeze specific layers later)
+            self.vae.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)
+            self.transformer.requires_grad_(False)
+
+            # Move models to GPU (controlled, VRAM-optimized)
+            # Text Encoder first (smallest)
+            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+            self.text_encoder.to(self.device)
+
+            # Transformer second (Block Swap will be set up separately if enabled)
+            if self.blocks_to_swap > 0:
+                print(f"{self.log_prefix} Block Swap enabled: Transformer will stay on CPU during setup")
+                # Block Swap setup will happen later in training setup
+            else:
+                print(f"{self.log_prefix} Moving Transformer to {self.device}...")
+                self.transformer_original.to(self.device)
+
+            # VAE stays on CPU (moved to GPU only during sample generation)
+            print(f"{self.log_prefix} VAE remains on CPU (will move to GPU during sample generation)")
+
+            print(f"{self.log_prefix} Z-Image checkpoint loaded successfully as base model")
+
         else:
-            raise NotImplementedError(f"Checkpoint resume not yet implemented for model type: {model_type}")
+            # SD/SDXL checkpoint resume
+            print(f"{self.log_prefix} Loading SD/SDXL checkpoint as base model")
+
+            from safetensors import safe_open
+
+            # Load checkpoint state dict to CPU
+            state_dict = {}
+            with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
+                for key in f.keys():
+                    state_dict[key] = f.get_tensor(key)
+
+            # Detect if SDXL or SD1.5 based on state dict keys
+            # SDXL has text_encoder_2 keys
+            is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in state_dict.keys())
+
+            # Load components using diffusers from_single_file
+            # This properly reconstructs the model from checkpoint state dict
+            if is_sdxl_model:
+                print(f"{self.log_prefix} Detected SDXL checkpoint")
+                from diffusers import StableDiffusionXLPipeline
+
+                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
+                    checkpoint_path,
+                    torch_dtype=self.weight_dtype,
+                    use_safetensors=True,
+                    device_map=None,  # Load to CPU first
+                )
+            else:
+                print(f"{self.log_prefix} Detected SD1.5 checkpoint")
+                from diffusers import StableDiffusionPipeline
+
+                temp_pipeline = StableDiffusionPipeline.from_single_file(
+                    checkpoint_path,
+                    torch_dtype=self.weight_dtype,
+                    use_safetensors=True,
+                    device_map=None,  # Load to CPU first
+                )
+
+            # Extract components
+            self.vae = temp_pipeline.vae
+            self.text_encoder = temp_pipeline.text_encoder
+            self.tokenizer = temp_pipeline.tokenizer
+            self.unet = temp_pipeline.unet
+
+            # Save original scheduler for inference (sample generation)
+            self.original_scheduler = temp_pipeline.scheduler
+
+            # Use DDPMScheduler for training
+            self.noise_scheduler = DDPMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                clip_sample=False,
+                prediction_type="epsilon"
+            )
+
+            # SDXL-specific components
+            if is_sdxl_model:
+                self.text_encoder_2 = temp_pipeline.text_encoder_2
+                self.tokenizer_2 = temp_pipeline.tokenizer_2
+            else:
+                self.text_encoder_2 = None
+                self.tokenizer_2 = None
+
+            # Store SDXL flag
+            self.is_sdxl = is_sdxl_model
+
+            # No transformer for SD/SDXL
+            self.transformer = None
+            self.transformer_original = None
+
+            # Clean up temporary pipeline
+            del temp_pipeline
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # Convert VAE to vae_dtype
+            self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            # Setup Flash Attention if enabled
+            if self.use_flash_attention:
+                self._setup_flash_attention_sd_sdxl()
+
+            # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
+            if hasattr(self.unet, 'enable_gradient_checkpointing'):
+                self.unet.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
+            else:
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
+
+            # Enable gradient checkpointing for Text Encoders
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
+
+            if self.text_encoder_2 is not None:
+                if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
+                    self.text_encoder_2.gradient_checkpointing_enable()
+                    print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
+
+            # Freeze VAE
+            self.vae.requires_grad_(False)
+
+            # Move models to GPU (controlled, VRAM-optimized)
+            # Text Encoder 1 first (smallest)
+            print(f"{self.log_prefix} Moving Text Encoder 1 to {self.device}...")
+            self.text_encoder.to(self.device)
+
+            # Text Encoder 2 (if SDXL)
+            if self.text_encoder_2 is not None:
+                print(f"{self.log_prefix} Moving Text Encoder 2 to {self.device}...")
+                self.text_encoder_2.to(self.device)
+
+            # U-Net second
+            print(f"{self.log_prefix} Moving U-Net to {self.device}...")
+            self.unet.to(self.device)
+
+            # VAE stays on CPU (moved to GPU only during sample generation)
+            print(f"{self.log_prefix} VAE remains on CPU (will move to GPU during sample generation)")
+
+            print(f"{self.log_prefix} {'SDXL' if is_sdxl_model else 'SD1.5'} checkpoint loaded successfully as base model")
 
     def _load_sd_sdxl_components(self):
         """Load SD/SDXL model components."""

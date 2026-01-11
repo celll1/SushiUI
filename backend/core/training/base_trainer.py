@@ -2081,16 +2081,12 @@ class BaseTrainer(ABC):
                 with torch.autocast(device_type='cuda', dtype=self.training_dtype):
                     prompt_embeds = self.text_encoder.encode(
                         prompts=prompt,
-                        images=None,  # No real images for training (use null)
-                        use_null_image=use_null_image,
                         clip_skip=0,  # Use last layer (default)
                         requires_grad=True  # Enable gradients for training
                     )
             else:
                 prompt_embeds = self.text_encoder.encode(
                     prompts=prompt,
-                    images=None,  # No real images for training (use null)
-                    use_null_image=use_null_image,
                     clip_skip=0,  # Use last layer (default)
                     requires_grad=True  # Enable gradients for training
                 )
@@ -2104,15 +2100,11 @@ class BaseTrainer(ABC):
                     with torch.autocast(device_type='cuda', dtype=self.training_dtype):
                         prompt_embeds = self.text_encoder.encode(
                             prompts=prompt,
-                            images=None,  # No real images for training (use null)
-                            use_null_image=use_null_image,
                             clip_skip=0  # Use last layer (default)
                         )
                 else:
                     prompt_embeds = self.text_encoder.encode(
                         prompts=prompt,
-                        images=None,  # No real images for training (use null)
-                        use_null_image=use_null_image,
                         clip_skip=0  # Use last layer (default)
                     )
             # Detach gradients

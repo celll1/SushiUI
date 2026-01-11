@@ -3078,10 +3078,12 @@ class BaseTrainer(ABC):
         num_inference_steps: int = 28,
         guidance_scale: float = 3.5,
         seed: int = -1,
-        current_step: int = 0
+        current_step: int = 0,
+        schedule_type: str = "uniform"
     ) -> "Image.Image":
         """
-        Generate sample image during DEUS training using DeusPipeline.
+        Generate sample image during DEUS training.
+        Uses custom_sampling_loop() - EXACTLY the same method as SDXL sample generation.
 
         Args:
             prompt: Text prompt
@@ -3091,74 +3093,179 @@ class BaseTrainer(ABC):
             guidance_scale: CFG scale
             seed: Random seed (-1 for random)
             current_step: Current training step (for logging)
+            schedule_type: Timestep schedule type (uniform, karras, exponential)
 
         Returns:
             PIL Image
         """
         from PIL import Image
-        from core.pipelines.pipeline_deus import DeusPipeline
+        from core.inference.custom_sampling import custom_sampling_loop
+        from core.inference.schedulers import get_scheduler
         import random
+
+        print(f"{self.log_prefix} Generating DEUS sample: {prompt[:50]}...")
 
         # Set models to eval mode
         self.unet.eval()
         self.vae.eval()
-        self.text_encoder.eval()
+        # SigLIP2MultiModalEncoder has no eval() - it's a wrapper
+        if hasattr(self.text_encoder, 'text_model'):
+            self.text_encoder.text_model.eval()
 
         try:
             # ========================================
-            # STEP 1: Create Temporary DeusPipeline
+            # STEP 1: Create Temporary Pipeline Object
             # ========================================
-            pipeline = DeusPipeline(
+            # custom_sampling_loop() requires a pipeline object with scheduler, unet, vae, etc.
+            class TempDeusPipeline:
+                def __init__(self, unet, vae, encoder, scheduler):
+                    self.unet = unet
+                    self.vae = vae
+                    self.encoder = encoder  # SigLIP2MultiModalEncoder
+                    self.scheduler = scheduler
+                    # Set default config
+                    self.vae_scale_factor = 8
+                    self.image_processor = None  # Not needed for custom_sampling_loop
+
+            # Map schedule_type (sgm_uniform -> uniform)
+            schedule_type_mapped = schedule_type
+            if schedule_type == "sgm_uniform":
+                schedule_type_mapped = "uniform"
+
+            # Create scheduler using get_scheduler()
+            class SchedulerContainer:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+            scheduler_container = SchedulerContainer(self.original_scheduler)
+            scheduler = get_scheduler(
+                pipeline=scheduler_container,
+                sampler="euler",
+                schedule_type=schedule_type_mapped
+            )
+
+            # Create temporary pipeline
+            pipeline = TempDeusPipeline(
                 unet=self.unet,
                 vae=self.vae,
-                encoder=self.text_encoder,  # SigLIP2MultiModalEncoder
-                scheduler=self.original_scheduler,
-                dtype=self.weight_dtype,
-                device=self.device
+                encoder=self.text_encoder,
+                scheduler=scheduler
             )
 
             # ========================================
-            # STEP 2: Generate
+            # STEP 2: Text Encoding (with VRAM optimization)
             # ========================================
-            # Set seed
+            self.move_text_encoder_to_gpu()
+
+            # Encode positive prompt
+            clip_skip = 0  # DEUS: Use last layer (layer 27) for training
+            positive_text_embeddings = self.text_encoder.text_encoder.encode([prompt], clip_skip=clip_skip)
+
+            # Encode negative prompt (empty string for training samples)
+            negative_text_embeddings = self.text_encoder.text_encoder.encode([""], clip_skip=clip_skip)
+
+            # Pad negative embeddings to match positive if needed
+            if positive_text_embeddings.shape[1] != negative_text_embeddings.shape[1]:
+                seq_len_diff = positive_text_embeddings.shape[1] - negative_text_embeddings.shape[1]
+                padding = torch.zeros(
+                    (negative_text_embeddings.shape[0], seq_len_diff, negative_text_embeddings.shape[2]),
+                    dtype=negative_text_embeddings.dtype,
+                    device=negative_text_embeddings.device
+                )
+                negative_text_embeddings = torch.cat([negative_text_embeddings, padding], dim=1)
+                log_verbose(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_text_embeddings.shape[1] - seq_len_diff} -> {negative_text_embeddings.shape[1]} tokens")
+
+            # Add image embeddings (use null image for T2I)
+            null_image_embedding = self.text_encoder.null_image_embedding.expand(1, -1, -1)
+            prompt_embeds = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
+            negative_prompt_embeds = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
+
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
+
+            # ========================================
+            # STEP 3: Create Generator
+            # ========================================
             if seed < 0:
                 actual_seed = random.randint(0, 2**32 - 1)
             else:
                 actual_seed = seed
 
-            # Move to GPU for generation
-            self.unet.to(self.device)
-            self.text_encoder.to(self.device)
-            self.vae.to(self.device)
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
-            # Generate
-            images = pipeline(
-                prompt=prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                seed=actual_seed,
-                clip_skip=0  # Use last layer (default for training)
-            )
+            # ========================================
+            # STEP 4: Call custom_sampling_loop (SAME as SDXL)
+            # ========================================
+            self.move_main_model_to_gpu()
+            self.move_vae_to_gpu()
 
-            # Set back to train mode
-            self.unet.train()
-            self.text_encoder.train()
+            log_verbose(f"{self.log_prefix} [Sample] Using custom_sampling_loop()")
+            log_verbose(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
 
-            return images[0]
+            # Use autocast for sample generation (ensures LoRA dtype compatibility)
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                image = custom_sampling_loop(
+                    pipeline=pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                    negative_pooled_prompt_embeds=None,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    guidance_rescale=0.0,  # No rescale for DEUS
+                    width=width,
+                    height=height,
+                    generator=generator,
+                    ancestral_generator=None,  # Not needed for training samples
+                    latents=None,
+                    prompt_embeds_callback=None,  # No prompt editing for training samples
+                    progress_callback=None,
+                    step_callback=None,
+                    developer_mode=False,
+                    cfg_schedule_type="constant",  # Simple constant CFG for training samples
+                    cfg_schedule_min=1.0,
+                    cfg_schedule_max=None,
+                    cfg_schedule_power=2.0,
+                    cfg_rescale_snr_alpha=0.0,
+                    dynamic_threshold_percentile=0.0,
+                    dynamic_threshold_mimic_scale=1.0,
+                    nag_enable=False,  # No NAG for training samples
+                    nag_scale=5.0,
+                    nag_tau=3.5,
+                    nag_alpha=0.25,
+                    nag_sigma_end=0.0,
+                    nag_negative_prompt_embeds=None,
+                    nag_negative_pooled_prompt_embeds=None,
+                    attention_type="normal",  # Normal attention for training samples
+                )
+
+                # Move models back to CPU
+                self.move_main_model_to_cpu()
+                self.move_vae_to_cpu()
+                torch.cuda.empty_cache()
+
+                log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
+                return image
 
         except Exception as e:
-            # Fallback: Return white placeholder on error
-            print(f"{self.log_prefix} [Sample] ERROR during DEUS generation: {type(e).__name__}: {str(e)}")
+            print(f"{self.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
+            print(f"{self.log_prefix} [Sample] Sample generation failed - this is expected for early training steps")
+            print(f"{self.log_prefix} [Sample] Training will continue normally")
+
+            # Return a placeholder image (blank white image)
             from PIL import Image
             placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
             return placeholder
+
         finally:
-            # Ensure train mode is restored
+            # Restore training mode
             self.unet.train()
-            if hasattr(self.text_encoder, 'train'):
-                self.text_encoder.train()
+            self.vae.train()
+            if hasattr(self.text_encoder, 'text_model'):
+                self.text_encoder.text_model.train()
+
+            # Ensure U-Net is back on GPU for training continuation
+            self.move_main_model_to_gpu()
 
     def generate_sample(
         self,
@@ -3193,7 +3300,7 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
 
-        # DEUS: Use DeusPipeline directly
+        # DEUS: Use custom_sampling_loop with VRAM optimization
         if self.is_deus:
             return self._generate_sample_deus(
                 prompt=prompt,
@@ -3202,7 +3309,8 @@ class BaseTrainer(ABC):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 seed=seed,
-                current_step=current_step
+                current_step=current_step,
+                schedule_type=schedule_type
             )
 
         # SD/SDXL: Use custom_sampling_loop

@@ -351,6 +351,17 @@ def load_unified_checkpoint(
         # Update text_encoder.config to match text_model.config
         text_encoder.config = text_encoder.text_model.config
 
+        # Fix max_position_embeddings from actual position_embedding weight shape
+        # (Metadata may be missing, but weight shape is always correct)
+        if "embeddings.position_embedding.weight" in text_encoder_state:
+            actual_max_pos = text_encoder_state["embeddings.position_embedding.weight"].shape[0]
+            if text_encoder.config.max_position_embeddings != actual_max_pos:
+                print(f"[Checkpoint] Detected max_position_embeddings mismatch:")
+                print(f"  Config: {text_encoder.config.max_position_embeddings}")
+                print(f"  Weight shape: {actual_max_pos}")
+                print(f"  Updating config to match weight shape...")
+                text_encoder.config.max_position_embeddings = actual_max_pos
+
         print(f"[Checkpoint] Text encoder ready on {device}")
         print(f"[Checkpoint] Text encoder config.max_position_embeddings: {text_encoder.config.max_position_embeddings}")
     elif load_text_encoder:

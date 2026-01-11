@@ -309,6 +309,10 @@ def load_unified_checkpoint(
     if 'max_position_embeddings' in metadata:
         max_position_embeddings = int(metadata['max_position_embeddings'])
         print(f"[Checkpoint] max_position_embeddings from metadata: {max_position_embeddings}")
+    elif "embeddings.position_embedding.weight" in text_encoder_state:
+        # Fallback: Detect from weight shape if metadata missing
+        max_position_embeddings = text_encoder_state["embeddings.position_embedding.weight"].shape[0]
+        print(f"[Checkpoint] max_position_embeddings from weight shape: {max_position_embeddings}")
 
     # Create text encoder and load weights
     text_encoder = None

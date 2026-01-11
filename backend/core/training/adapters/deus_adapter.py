@@ -333,9 +333,13 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
         Args:
             step: Current training step
             epoch: Current training epoch
-            output_path: Path to save checkpoint (file path, not directory)
+            output_path: Path to save checkpoint (without extension, .safetensors will be added)
         """
         trainer = self.trainer
+
+        # Add .safetensors extension if not present
+        if not str(output_path).endswith('.safetensors'):
+            output_path = Path(str(output_path) + '.safetensors')
 
         # Collect state dict from trainable components
         state_dict = {}

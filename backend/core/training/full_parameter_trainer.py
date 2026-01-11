@@ -155,23 +155,42 @@ class FullParameterTrainer(BaseTrainer):
             from core.models.checkpoint_utils import load_unified_checkpoint
             loaded_components = load_unified_checkpoint(str(checkpoint_path_obj), device='cpu')
 
-            # Load U-Net (load_unified_checkpoint returns model objects, not state_dicts)
+            # Delete old models to free VRAM before loading checkpoint
+            import gc
             if self.train_unet and loaded_components.get('unet') is not None:
+                if self.unet is not None:
+                    del self.unet
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 self.unet = loaded_components['unet']
+                # Move to GPU (same as new training initialization)
+                self.unet.to(self.device)
                 print(f"{self.log_prefix} Loaded U-Net from checkpoint")
 
             # Load Text Encoders
             if self.train_text_encoder:
                 if loaded_components.get('text_encoder') is not None:
+                    if self.text_encoder is not None:
+                        del self.text_encoder
+                        gc.collect()
+                        torch.cuda.empty_cache()
                     self.text_encoder = loaded_components['text_encoder']
                     print(f"{self.log_prefix} Loaded Text Encoder from checkpoint")
 
                 if self.is_sdxl and loaded_components.get('text_encoder_2') is not None:
+                    if self.text_encoder_2 is not None:
+                        del self.text_encoder_2
+                        gc.collect()
+                        torch.cuda.empty_cache()
                     self.text_encoder_2 = loaded_components['text_encoder_2']
                     print(f"{self.log_prefix} Loaded Text Encoder 2 from checkpoint")
 
             # Load Image Encoder (if present)
             if loaded_components.get('image_encoder') is not None:
+                if hasattr(self, 'image_encoder') and self.image_encoder is not None:
+                    del self.image_encoder
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 self.image_encoder = loaded_components['image_encoder']
                 print(f"{self.log_prefix} Loaded Image Encoder from checkpoint")
 

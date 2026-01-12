@@ -3182,9 +3182,10 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
             del predicted_latent
 
-        # Return loss tensor (with gradient) and reconstruction loss value
+        # Return loss tensor (with gradient), pred_loss value, and recon_loss value
         # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
         # The training loop will call .backward() on the loss tensor.
+        pred_loss_value = mse_loss.item()
         recon_loss_value = recon_loss.item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
@@ -3193,7 +3194,7 @@ class BaseTrainer(ABC):
         if self.is_sdxl and added_cond_kwargs is not None:
             del added_cond_kwargs
 
-        return loss, recon_loss_value
+        return loss, pred_loss_value, recon_loss_value
 
     # ============================================================
     # DEPRECATED: train_step_deus() is no longer used
@@ -3634,9 +3635,10 @@ class BaseTrainer(ABC):
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent
 
-        # Return loss tensor (with gradient) and reconstruction loss value
+        # Return loss tensor (with gradient), pred_loss value, and recon_loss value
         # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
         # The training loop will call .backward() on the loss tensor.
+        pred_loss_value = mse_loss.item()
         recon_loss_value = recon_loss.item()
 
         # Free intermediate tensors explicitly to reduce VRAM usage
@@ -3644,7 +3646,7 @@ class BaseTrainer(ABC):
         del noise, noisy_latents, noisy_latents_4d, model_pred, target
         del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
-        return loss, recon_loss_value
+        return loss, pred_loss_value, recon_loss_value
 
     # ============================================================
     # Sample Generation (to be continued in next section)
@@ -5936,7 +5938,7 @@ class BaseTrainer(ABC):
                         if self.is_zimage:
                             # auxiliary_data_list contains attention_mask for Z-Image
                             attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
-                            loss, recon_loss = self.train_step_zimage(
+                            loss, pred_loss, recon_loss = self.train_step_zimage(
                                 latents=latents,
                                 prompt_embeds=text_embeddings,
                                 attention_mask=attention_mask,
@@ -5951,7 +5953,7 @@ class BaseTrainer(ABC):
                             if self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                                 # Pooled embeddings are [1, dim], use cat to get [batch_size, dim]
                                 pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
-                            loss, recon_loss = self.train_step(
+                            loss, pred_loss, recon_loss = self.train_step(
                                 latents=latents,
                                 text_embeddings=text_embeddings,
                                 pooled_embeddings=pooled_embeddings,
@@ -6032,22 +6034,25 @@ class BaseTrainer(ABC):
 
                         # Logging (convert loss tensor to float for logging)
                         loss_value = loss.item()
+                        pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
                         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
                         current_lr = self.lr_scheduler.get_last_lr()[0]
 
                         # TensorBoard logging (for external tools, backward compatibility)
-                        self.writer.add_scalar("train/loss", loss_value, global_step)
-                        self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)
+                        self.writer.add_scalar("train/loss", loss_value, global_step)  # Combined loss (for backprop)
+                        self.writer.add_scalar("train/pred_loss", pred_loss_value, global_step)  # Prediction loss (MSE)
+                        self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)  # Reconstruction loss
                         self.writer.add_scalar("train/lr", current_lr, global_step)
                         self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
                         self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
                         self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
 
                         # Database logging (for fast frontend queries, UPSERT on duplicate step)
+                        # Note: 'loss' column stores pred_loss (prediction loss) for individual monitoring
                         if self.run_id is not None:
                             self._log_metrics_to_db(
                                 step=global_step,
-                                loss=loss_value,
+                                loss=pred_loss_value,  # Store pred_loss in 'loss' column
                                 recon_loss=recon_loss_value,
                                 learning_rate=current_lr,
                                 grad_norm=grad_norm_total,
@@ -6062,8 +6067,8 @@ class BaseTrainer(ABC):
                             # Also clear CUDA cache to prevent fragmented memory accumulation
                             torch.cuda.empty_cache()
 
-                        # Free loss tensor after logging
-                        del loss, recon_loss
+                        # Free loss tensors after logging
+                        del loss, pred_loss, recon_loss
 
                         # Save checkpoint
                         if global_step % save_every_n_steps == 0:
@@ -6352,12 +6357,17 @@ class BaseTrainer(ABC):
 
         Args:
             step: Global training step
-            loss: Total loss value
+            loss: Prediction loss value (MSE with Min-SNR weighting)
             recon_loss: Reconstruction loss value
             learning_rate: Current learning rate
             grad_norm: Total gradient norm (optional)
             grad_norm_text_encoder: Text encoder gradient norm (optional)
             grad_norm_unet: U-Net/Transformer gradient norm (optional)
+
+        Note:
+            The 'loss' parameter stores prediction loss (not combined loss).
+            This allows monitoring pred_loss and recon_loss separately in DB.
+            Combined loss can be calculated as: (1-β)*loss + β*recon_loss
         """
         try:
             from database.models import TrainingMetrics

@@ -483,6 +483,7 @@ class TrainingConfigGenerator:
             "mixed_precision": mixed_precision,
             "use_flash_attention": use_flash_attention,
             "min_snr_gamma": min_snr_gamma,
+            "reconstruction_loss_weight": reconstruction_loss_weight,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
             "num_optimizer_groups": num_optimizer_groups,

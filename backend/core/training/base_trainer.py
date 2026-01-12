@@ -3315,32 +3315,76 @@ class BaseTrainer(ABC):
             timesteps=timesteps,
         )
 
-        # Calculate MSE loss (always in FP32 for numerical stability)
-        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        # Calculate prediction loss (MSE, always in FP32 for numerical stability)
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Apply Min-SNR weighting if enabled (DDPM only, not for flow matching)
         if self.min_snr_gamma > 0 and noise_process == "ddpm":
             # Min-SNR weighting: https://arxiv.org/abs/2303.09556
-            snr = compute_snr(timesteps, self.noise_scheduler)
-            mse_loss_weights = torch.stack([snr, self.min_snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
-            loss = (loss * mse_loss_weights.view(-1, 1, 1, 1)).mean()
+            snr = compute_snr(self.noise_scheduler, timesteps)
+            loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
+        else:
+            loss_per_sample_weighted = loss_per_sample
+
+        mse_loss = loss_per_sample_weighted.mean()
+
+        # Calculate reconstruction loss (for monitoring or dual loss training)
+        # If reconstruction_loss_weight > 0, compute with gradients for backprop
+        # Otherwise, compute without gradients (monitoring only)
+        if self.reconstruction_loss_weight > 0:
+            # Dual loss training: compute reconstruction loss with gradients
+            predicted_latent = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=self.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
+
+            recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+            recon_loss = recon_loss_per_sample.mean()
+
+            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+            alpha = 1.0 - self.reconstruction_loss_weight
+            beta = self.reconstruction_loss_weight
+            loss = alpha * mse_loss + beta * recon_loss
+        else:
+            # Standard training: prediction loss only
+            # Calculate reconstruction loss for monitoring (no gradients)
+            with torch.no_grad():
+                predicted_latent = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
+                recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
+                recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+                recon_loss = recon_loss_per_sample.mean()
+
+            loss = mse_loss
 
         if profile_vram:
             print_vram_usage("[train_step_deus] After loss calculation")
 
         # Get loss value before cleanup
         loss_value = loss.item()
+        recon_loss_value = recon_loss.item()
 
         # Free intermediate tensors explicitly to prevent VRAM accumulation
         # CRITICAL: These tensors accumulate across training steps if not deleted
-        del noise, noisy_latents, model_pred, target
+        del noise, noisy_latents, model_pred, target, predicted_latent, recon_loss
         if 'snr' in locals():
             del snr
-        if 'mse_loss_weights' in locals():
-            del mse_loss_weights
 
-        # Return loss tensor (with grad) and scalar value (for logging)
-        return loss, loss_value
+        # Return loss tensor (with grad) and reconstruction loss value (for logging)
+        return loss, recon_loss_value
 
     def train_step_zimage(
         self,
@@ -3454,9 +3498,9 @@ class BaseTrainer(ABC):
         # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
         regularization_loss = torch.tensor(0.0, device=self.device)
 
-        # Compute predicted latent once (used by both regularization losses)
+        # Compute predicted latent once (used by regularization losses and dual loss)
         predicted_latent_for_reg = None
-        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
+        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None or self.reconstruction_loss_weight > 0:
             # Compute predicted latent using unified framework
             predicted_latent_for_reg = predict_original_latent_unified(
                 noise_process=noise_process,
@@ -3486,14 +3530,14 @@ class BaseTrainer(ABC):
             )
             regularization_loss = regularization_loss + energy_reg_loss
 
-        # Total loss
-        loss = mse_loss + regularization_loss
-
-        # Calculate reconstruction loss
-        with torch.no_grad():
-            # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+        # Calculate reconstruction loss (for monitoring or dual loss training)
+        # If reconstruction_loss_weight > 0, compute with gradients for backprop
+        # Otherwise, compute without gradients (monitoring only)
+        if self.reconstruction_loss_weight > 0:
+            # Dual loss training: compute reconstruction loss with gradients
+            # Reuse predicted_latent_for_reg if already computed (has gradients)
             if predicted_latent_for_reg is not None:
-                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+                predicted_latent_for_recon = predicted_latent_for_reg
             else:
                 predicted_latent_for_recon = predict_original_latent_unified(
                     noise_process=noise_process,
@@ -3507,6 +3551,37 @@ class BaseTrainer(ABC):
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
             recon_loss = recon_loss_per_sample.mean()
+
+            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+            alpha = 1.0 - self.reconstruction_loss_weight
+            beta = self.reconstruction_loss_weight
+            combined_loss = alpha * mse_loss + beta * recon_loss
+
+            # Total loss with regularization
+            loss = combined_loss + regularization_loss
+        else:
+            # Standard training: prediction loss only
+            # Calculate reconstruction loss for monitoring (no gradients)
+            with torch.no_grad():
+                # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+                if predicted_latent_for_reg is not None:
+                    predicted_latent_for_recon = predicted_latent_for_reg.detach()
+                else:
+                    predicted_latent_for_recon = predict_original_latent_unified(
+                        noise_process=noise_process,
+                        prediction_target=prediction_target,
+                        noise_scheduler=self.noise_scheduler,
+                        noisy_latents=noisy_latents,
+                        model_pred=model_pred,
+                        timesteps=timesteps,
+                    )
+
+                recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+                recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+                recon_loss = recon_loss_per_sample.mean()
+
+            # Total loss (prediction loss + regularization)
+            loss = mse_loss + regularization_loss
 
         if profile_vram:
             print_vram_usage("[train_step_zimage] After loss calculation")

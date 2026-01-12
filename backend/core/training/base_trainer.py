@@ -3195,196 +3195,207 @@ class BaseTrainer(ABC):
 
         return loss, recon_loss_value
 
-    def train_step_deus(
-        self,
-        latents: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        timesteps: Optional[torch.Tensor] = None,
-        debug_save_path: Optional[Path] = None,
-        debug_captions: Optional[List[str]] = None,
-        profile_vram: bool = False,
-    ) -> Tuple[torch.Tensor, float]:
-        """
-        Perform single training step (DEUS).
-
-        Args:
-            latents: Image latents [B, C, H, W]
-            prompt_embeds: SigLIP-2 embeddings [B, seq_len, 1152] (variable sequence length)
-            timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
-            debug_save_path: If provided, save latents for debugging
-            debug_captions: Captions for debug output
-            profile_vram: If True, print VRAM usage
-
-        Returns:
-            (loss_tensor, loss_value) - Loss tensor with grad and scalar value
-        """
-        if profile_vram:
-            print_vram_usage("[train_step_deus] Start")
-
-        # DEUS uses DDPM with epsilon prediction (same as SD/SDXL)
-        noise_process = getattr(self, 'noise_process', 'ddpm')
-        prediction_target = getattr(self, 'prediction_target', 'epsilon')
-
-        # Move latents to GPU with correct dtype
-        # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
-        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-
-        # Sample noise (now on GPU)
-        noise = torch.randn_like(latents)
-
-        if profile_vram:
-            print_vram_usage("[train_step_deus] After noise generation")
-
-        # Sample random timestep (or use provided timesteps)
-        batch_size = latents.shape[0]
-
-        if timesteps is None:
-            if noise_process == "ddpm":
-                # DDPM: sample discrete timesteps [0, num_train_timesteps)
-                if self.timestep_sampler is not None:
-                    # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
-                    # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-                    # DDPM: t=999 (noisy) → t=0 (clean)
-                    # Flow: t=0 (noisy) → t=1 (clean)
-                    # So we need to flip: YAML [0,1] → DDPM [999,0]
-                    # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
-                    timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
-                    timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
-                    timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
-                else:
-                    # Legacy behavior: sample uniformly from [0, num_train_timesteps)
-                    timesteps = torch.randint(
-                        0,
-                        self.noise_scheduler.config.num_train_timesteps,
-                        (batch_size,),
-                        device=self.device,
-                    ).long()
-        else:
-            # Timesteps provided externally
-            if noise_process == "ddpm":
-                # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
-                # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-                # DDPM: t=999 (noisy) → t=0 (clean)
-                # Flow: t=0 (noisy) → t=1 (clean)
-                # So we need to flip: YAML [0,1] → DDPM [999,0]
-                timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
-                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
-
-        # Add noise to latents using unified framework
-        noisy_latents = add_noise_unified(
-            noise_process=noise_process,
-            noise_scheduler=self.noise_scheduler,
-            latents=latents,
-            noise=noise,
-            timesteps=timesteps,
-        )
-
-        if profile_vram:
-            print_vram_usage("[train_step_deus] Before UNet forward")
-
-        # Enable gradients for gradient checkpointing
-        noisy_latents.requires_grad_(True)
-        prompt_embeds.requires_grad_(True)
-
-        # Predict noise using DEUS U-Net
-        # DEUS does NOT use added_cond_kwargs (unlike SDXL)
-        if self.mixed_precision:
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                model_pred = self.unet(
-                    sample=noisy_latents,
-                    timestep=timesteps,
-                    encoder_hidden_states=prompt_embeds
-                ).sample
-        else:
-            model_pred = self.unet(
-                sample=noisy_latents,
-                timestep=timesteps,
-                encoder_hidden_states=prompt_embeds
-            ).sample
-
-        if profile_vram:
-            print_vram_usage("[train_step_deus] After UNet forward")
-
-        # Get target based on unified framework
-        target = get_target_unified(
-            noise_process=noise_process,
-            prediction_target=prediction_target,
-            noise_scheduler=self.noise_scheduler,
-            latents=latents,
-            noise=noise,
-            timesteps=timesteps,
-        )
-
-        # Calculate prediction loss (MSE, always in FP32 for numerical stability)
-        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-        loss_per_sample = loss_per_element.mean([1, 2, 3])
-
-        # Apply Min-SNR weighting if enabled (DDPM only, not for flow matching)
-        if self.min_snr_gamma > 0 and noise_process == "ddpm":
-            # Min-SNR weighting: https://arxiv.org/abs/2303.09556
-            snr = compute_snr(self.noise_scheduler, timesteps)
-            loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
-        else:
-            loss_per_sample_weighted = loss_per_sample
-
-        mse_loss = loss_per_sample_weighted.mean()
-
-        # Calculate reconstruction loss (for monitoring or dual loss training)
-        # If reconstruction_loss_weight > 0, compute with gradients for backprop
-        # Otherwise, compute without gradients (monitoring only)
-        if self.reconstruction_loss_weight > 0:
-            # Dual loss training: compute reconstruction loss with gradients
-            predicted_latent = predict_original_latent_unified(
-                noise_process=noise_process,
-                prediction_target=prediction_target,
-                noise_scheduler=self.noise_scheduler,
-                noisy_latents=noisy_latents,
-                model_pred=model_pred,
-                timesteps=timesteps,
-            )
-
-            recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
-            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-            recon_loss = recon_loss_per_sample.mean()
-
-            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
-            alpha = 1.0 - self.reconstruction_loss_weight
-            beta = self.reconstruction_loss_weight
-            loss = alpha * mse_loss + beta * recon_loss
-        else:
-            # Standard training: prediction loss only
-            # Calculate reconstruction loss for monitoring (no gradients)
-            with torch.no_grad():
-                predicted_latent = predict_original_latent_unified(
-                    noise_process=noise_process,
-                    prediction_target=prediction_target,
-                    noise_scheduler=self.noise_scheduler,
-                    noisy_latents=noisy_latents,
-                    model_pred=model_pred,
-                    timesteps=timesteps,
-                )
-
-                recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
-                recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-                recon_loss = recon_loss_per_sample.mean()
-
-            loss = mse_loss
-
-        if profile_vram:
-            print_vram_usage("[train_step_deus] After loss calculation")
-
-        # Get loss value before cleanup
-        loss_value = loss.item()
-        recon_loss_value = recon_loss.item()
-
-        # Free intermediate tensors explicitly to prevent VRAM accumulation
-        # CRITICAL: These tensors accumulate across training steps if not deleted
-        del noise, noisy_latents, model_pred, target, predicted_latent, recon_loss
-        if 'snr' in locals():
-            del snr
-
-        # Return loss tensor (with grad) and reconstruction loss value (for logging)
-        return loss, recon_loss_value
+    # ============================================================
+    # DEPRECATED: train_step_deus() is no longer used
+    # ============================================================
+    # DEUS models now use train_step() (SD/SDXL common method) for training.
+    # This method was originally created for DEUS-specific optimizations,
+    # but DEUS shares the same training logic (DDPM + epsilon prediction) as SD/SDXL.
+    # The text_embeddings format from encode_prompt_deus() is compatible with train_step().
+    #
+    # Kept here (commented out) for future reference if DEUS-specific optimizations are needed.
+    # ============================================================
+    #
+    # def train_step_deus(
+    #     self,
+    #     latents: torch.Tensor,
+    #     prompt_embeds: torch.Tensor,
+    #     timesteps: Optional[torch.Tensor] = None,
+    #     debug_save_path: Optional[Path] = None,
+    #     debug_captions: Optional[List[str]] = None,
+    #     profile_vram: bool = False,
+    # ) -> Tuple[torch.Tensor, float]:
+    #     """
+    #     Perform single training step (DEUS).
+    #
+    #     Args:
+    #         latents: Image latents [B, C, H, W]
+    #         prompt_embeds: SigLIP-2 embeddings [B, seq_len, 1152] (variable sequence length)
+    #         timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
+    #         debug_save_path: If provided, save latents for debugging
+    #         debug_captions: Captions for debug output
+    #         profile_vram: If True, print VRAM usage
+    #
+    #     Returns:
+    #         (loss_tensor, recon_loss_value) - Loss tensor with grad and recon loss value
+    #     """
+    #     if profile_vram:
+    #         print_vram_usage("[train_step_deus] Start")
+    #
+    #     # DEUS uses DDPM with epsilon prediction (same as SD/SDXL)
+    #     noise_process = getattr(self, 'noise_process', 'ddpm')
+    #     prediction_target = getattr(self, 'prediction_target', 'epsilon')
+    #
+    #     # Move latents to GPU with correct dtype
+    #     # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
+    #     latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+    #
+    #     # Sample noise (now on GPU)
+    #     noise = torch.randn_like(latents)
+    #
+    #     if profile_vram:
+    #         print_vram_usage("[train_step_deus] After noise generation")
+    #
+    #     # Sample random timestep (or use provided timesteps)
+    #     batch_size = latents.shape[0]
+    #
+    #     if timesteps is None:
+    #         if noise_process == "ddpm":
+    #             # DDPM: sample discrete timesteps [0, num_train_timesteps)
+    #             if self.timestep_sampler is not None:
+    #                 # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+    #                 # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+    #                 # DDPM: t=999 (noisy) → t=0 (clean)
+    #                 # Flow: t=0 (noisy) → t=1 (clean)
+    #                 # So we need to flip: YAML [0,1] → DDPM [999,0]
+    #                 # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
+    #                 timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
+    #                 timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
+    #                 timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+    #             else:
+    #                 # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+    #                 timesteps = torch.randint(
+    #                     0,
+    #                     self.noise_scheduler.config.num_train_timesteps,
+    #                     (batch_size,),
+    #                     device=self.device,
+    #                 ).long()
+    #     else:
+    #         # Timesteps provided externally
+    #         if noise_process == "ddpm":
+    #             # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
+    #             # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+    #             # DDPM: t=999 (noisy) → t=0 (clean)
+    #             # Flow: t=0 (noisy) → t=1 (clean)
+    #             # So we need to flip: YAML [0,1] → DDPM [999,0]
+    #             timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
+    #             timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+    #
+    #     # Add noise to latents using unified framework
+    #     noisy_latents = add_noise_unified(
+    #         noise_process=noise_process,
+    #         noise_scheduler=self.noise_scheduler,
+    #         latents=latents,
+    #         noise=noise,
+    #         timesteps=timesteps,
+    #     )
+    #
+    #     if profile_vram:
+    #         print_vram_usage("[train_step_deus] Before UNet forward")
+    #
+    #     # Enable gradients for gradient checkpointing
+    #     noisy_latents.requires_grad_(True)
+    #     prompt_embeds.requires_grad_(True)
+    #
+    #     # Predict noise using DEUS U-Net
+    #     # DEUS does NOT use added_cond_kwargs (unlike SDXL)
+    #     if self.mixed_precision:
+    #         with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+    #             model_pred = self.unet(
+    #                 sample=noisy_latents,
+    #                 timestep=timesteps,
+    #                 encoder_hidden_states=prompt_embeds
+    #             ).sample
+    #     else:
+    #         model_pred = self.unet(
+    #             sample=noisy_latents,
+    #             timestep=timesteps,
+    #             encoder_hidden_states=prompt_embeds
+    #         ).sample
+    #
+    #     if profile_vram:
+    #         print_vram_usage("[train_step_deus] After UNet forward")
+    #
+    #     # Get target based on unified framework
+    #     target = get_target_unified(
+    #         noise_process=noise_process,
+    #         prediction_target=prediction_target,
+    #         noise_scheduler=self.noise_scheduler,
+    #         latents=latents,
+    #         noise=noise,
+    #         timesteps=timesteps,
+    #     )
+    #
+    #     # Calculate prediction loss (MSE, always in FP32 for numerical stability)
+    #     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+    #     loss_per_sample = loss_per_element.mean([1, 2, 3])
+    #
+    #     # Apply Min-SNR weighting if enabled (DDPM only, not for flow matching)
+    #     if self.min_snr_gamma > 0 and noise_process == "ddpm":
+    #         # Min-SNR weighting: https://arxiv.org/abs/2303.09556
+    #         snr = compute_snr(self.noise_scheduler, timesteps)
+    #         loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
+    #     else:
+    #         loss_per_sample_weighted = loss_per_sample
+    #
+    #     mse_loss = loss_per_sample_weighted.mean()
+    #
+    #     # Calculate reconstruction loss (for monitoring or dual loss training)
+    #     # If reconstruction_loss_weight > 0, compute with gradients for backprop
+    #     # Otherwise, compute without gradients (monitoring only)
+    #     if self.reconstruction_loss_weight > 0:
+    #         # Dual loss training: compute reconstruction loss with gradients
+    #         predicted_latent = predict_original_latent_unified(
+    #             noise_process=noise_process,
+    #             prediction_target=prediction_target,
+    #             noise_scheduler=self.noise_scheduler,
+    #             noisy_latents=noisy_latents,
+    #             model_pred=model_pred,
+    #             timesteps=timesteps,
+    #         )
+    #
+    #         recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
+    #         recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+    #         recon_loss = recon_loss_per_sample.mean()
+    #
+    #         # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+    #         alpha = 1.0 - self.reconstruction_loss_weight
+    #         beta = self.reconstruction_loss_weight
+    #         loss = alpha * mse_loss + beta * recon_loss
+    #     else:
+    #         # Standard training: prediction loss only
+    #         # Calculate reconstruction loss for monitoring (no gradients)
+    #         with torch.no_grad():
+    #             predicted_latent = predict_original_latent_unified(
+    #                 noise_process=noise_process,
+    #                 prediction_target=prediction_target,
+    #                 noise_scheduler=self.noise_scheduler,
+    #                 noisy_latents=noisy_latents,
+    #                 model_pred=model_pred,
+    #                 timesteps=timesteps,
+    #             )
+    #
+    #             recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
+    #             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+    #             recon_loss = recon_loss_per_sample.mean()
+    #
+    #         loss = mse_loss
+    #
+    #     if profile_vram:
+    #         print_vram_usage("[train_step_deus] After loss calculation")
+    #
+    #     # Get loss value before cleanup
+    #     loss_value = loss.item()
+    #     recon_loss_value = recon_loss.item()
+    #
+    #     # Free intermediate tensors explicitly to prevent VRAM accumulation
+    #     # CRITICAL: These tensors accumulate across training steps if not deleted
+    #     del noise, noisy_latents, model_pred, target, predicted_latent, recon_loss
+    #     if 'snr' in locals():
+    #         del snr
+    #
+    #     # Return loss tensor (with grad) and reconstruction loss value (for logging)
+    #     return loss, recon_loss_value
 
     def train_step_zimage(
         self,

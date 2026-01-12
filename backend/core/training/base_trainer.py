@@ -434,6 +434,7 @@ class BaseTrainer(ABC):
         debug_vram: bool = False,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        reconstruction_loss_weight: float = 0.0,
         # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
         prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
         max_prompt_chunks: int = 0,  # 0 = unlimited
@@ -535,6 +536,7 @@ class BaseTrainer(ABC):
         self.debug_vram = debug_vram
         self.use_flash_attention = use_flash_attention
         self.min_snr_gamma = min_snr_gamma
+        self.reconstruction_loss_weight = reconstruction_loss_weight
 
         # Initialize GradScaler for mixed precision training
         # GradScaler is needed when:
@@ -3086,14 +3088,14 @@ class BaseTrainer(ABC):
             )
             regularization_loss = regularization_loss + energy_reg_loss
 
-        # Total loss
-        loss = mse_loss + regularization_loss
-
-        # Calculate reconstruction loss for monitoring
-        with torch.no_grad():
-            # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+        # Calculate reconstruction loss (for monitoring or dual loss training)
+        # If reconstruction_loss_weight > 0, compute with gradients for backprop
+        # Otherwise, compute without gradients (monitoring only)
+        if self.reconstruction_loss_weight > 0:
+            # Dual loss training: compute reconstruction loss with gradients
+            # Reuse predicted_latent_for_reg if already computed (has gradients)
             if predicted_latent_for_reg is not None:
-                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+                predicted_latent_for_recon = predicted_latent_for_reg
             else:
                 predicted_latent_for_recon = predict_original_latent_unified(
                     noise_process=noise_process,
@@ -3107,6 +3109,37 @@ class BaseTrainer(ABC):
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
             recon_loss = recon_loss_per_sample.mean()
+
+            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+            alpha = 1.0 - self.reconstruction_loss_weight
+            beta = self.reconstruction_loss_weight
+            combined_loss = alpha * mse_loss + beta * recon_loss
+
+            # Total loss with regularization
+            loss = combined_loss + regularization_loss
+        else:
+            # Standard training: prediction loss only
+            # Calculate reconstruction loss for monitoring (no gradients)
+            with torch.no_grad():
+                # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+                if predicted_latent_for_reg is not None:
+                    predicted_latent_for_recon = predicted_latent_for_reg.detach()
+                else:
+                    predicted_latent_for_recon = predict_original_latent_unified(
+                        noise_process=noise_process,
+                        prediction_target=prediction_target,
+                        noise_scheduler=self.noise_scheduler,
+                        noisy_latents=noisy_latents,
+                        model_pred=model_pred,
+                        timesteps=timesteps,
+                    )
+
+                recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+                recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+                recon_loss = recon_loss_per_sample.mean()
+
+            # Total loss (prediction loss + regularization)
+            loss = mse_loss + regularization_loss
 
         if profile_vram:
             print_vram_usage("[train_step] After loss calculation")

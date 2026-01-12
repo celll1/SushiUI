@@ -67,6 +67,7 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        reconstruction_loss_weight: float = 0.0,
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
@@ -286,6 +287,7 @@ class TrainingConfigGenerator:
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
                             "min_snr_gamma": min_snr_gamma,
+                            "reconstruction_loss_weight": reconstruction_loss_weight,
                             "blocks_to_swap": blocks_to_swap,
                             "use_pinned_memory": use_pinned_memory,
                             "num_optimizer_groups": num_optimizer_groups,
@@ -385,6 +387,7 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        reconstruction_loss_weight: float = 0.0,
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,

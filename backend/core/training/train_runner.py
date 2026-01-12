@@ -616,6 +616,7 @@ def main():
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
+            reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)  # Dual loss weight (default: 0.0, pred loss only)
 
             # Get component-specific learning rates from train_config
             unet_lr = train_config.get('unet_lr')
@@ -663,6 +664,7 @@ def main():
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
                 min_snr_gamma=min_snr_gamma,
+                reconstruction_loss_weight=reconstruction_loss_weight,
                 # Component-specific learning rates
                 unet_lr=unet_lr,
                 text_encoder_lr=text_encoder_lr,
@@ -988,6 +990,7 @@ def main():
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
+            reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)  # Dual loss weight (default: 0.0, pred loss only)
 
             # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -1019,6 +1022,7 @@ def main():
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
                 min_snr_gamma=min_snr_gamma,
+                reconstruction_loss_weight=reconstruction_loss_weight,
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
                 use_pinned_memory=train_config.get('use_pinned_memory', False),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),

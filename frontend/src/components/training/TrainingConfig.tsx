@@ -169,6 +169,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [mixedPrecision, setMixedPrecision] = useState(true);
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
+  const [reconstructionLossWeight, setReconstructionLossWeight] = useState<number>(0.0);
 
   // Text encoding mode
   const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
@@ -316,6 +317,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
       if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
       if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
+      if (params.reconstruction_loss_weight !== undefined) setReconstructionLossWeight(params.reconstruction_loss_weight);
 
       // Memory optimization
       if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
@@ -631,6 +633,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       mixedPrecision,
       useFlashAttention,
       minSnrGamma,
+      reconstructionLossWeight,
       textEncodingMode,
       textEncodingSwapInterval,
       latentEncodingMode,
@@ -726,6 +729,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.mixedPrecision !== undefined) setMixedPrecision(config.mixedPrecision);
     if (config.useFlashAttention !== undefined) setUseFlashAttention(config.useFlashAttention);
     if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
+    if (config.reconstructionLossWeight !== undefined) setReconstructionLossWeight(config.reconstructionLossWeight);
     if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
     if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
     if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
@@ -845,6 +849,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       mixed_precision: mixedPrecision,
       use_flash_attention: useFlashAttention,
       min_snr_gamma: minSnrGamma,
+      reconstruction_loss_weight: reconstructionLossWeight,
       text_encoding_mode: textEncodingMode,
       text_encoding_swap_interval: textEncodingSwapInterval,
       latent_encoding_mode: latentEncodingMode,
@@ -2088,10 +2093,31 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Default: 5.0. Set to 0 to disable. Prevents overfitting to high-noise timesteps.
               </p>
             </div>
+
+            {/* Reconstruction Loss Weight */}
+            <div>
+              <label htmlFor="reconstruction-loss-weight" className="block text-xs font-medium text-gray-400 mb-1">
+                Reconstruction Loss Weight
+              </label>
+              <input
+                type="number"
+                id="reconstruction-loss-weight"
+                value={reconstructionLossWeight}
+                onChange={(e) => setReconstructionLossWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setReconstructionLossWeight(0.0); }}
+                step={0.05}
+                min={0}
+                max={1.0}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500">
+                Default: 0.0 (prediction loss only). Dual loss: loss = (1-β)*pred_loss + β*recon_loss. Try 0.1 for faster learning in noisy timesteps.
+              </p>
+            </div>
           </div>
 
           <p className="text-xs text-gray-500">
-            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps.
+            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps. Reconstruction loss weight enables dual loss training (direct image quality optimization).
           </p>
         </div>
 

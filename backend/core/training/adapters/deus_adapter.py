@@ -371,9 +371,8 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             for key, param in trainer.vae.state_dict().items():
                 state_dict[f"vae.{key}"] = param.detach().cpu().to(trainer.output_dtype)
 
-        # Detect DEUS version from U-Net class name
-        unet_class_name = trainer.unet.__class__.__name__ if trainer.unet is not None else ""
-        model_type = "deus_v2" if "V2" in unet_class_name else "deus"
+        # DEUS v1 is deprecated, always use deus_v2
+        model_type = "deus_v2"
 
         # Check if image encoder is actually saved (not just trainable)
         has_image_encoder = any(key.startswith("image_encoder.") for key in state_dict.keys())

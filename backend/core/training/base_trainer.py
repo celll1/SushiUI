@@ -6306,6 +6306,7 @@ class BaseTrainer(ABC):
                         # Log loss immediately for each MNT iteration so frontend
                         # updates every step, not just every MNT*grad_accum steps.
                         # Grad norm will be updated after optimizer step.
+                        # Extract loss values BEFORE deleting loss tensor
                         mnt_loss_value = loss.item()
                         mnt_pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
                         mnt_recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
@@ -6340,6 +6341,19 @@ class BaseTrainer(ABC):
                                 epoch=epoch,
                                 loss=mnt_loss_value,
                             )
+
+                        # ============================================================
+                        # MNT VRAM Cleanup: Free computation graph and reduce fragmentation
+                        # ============================================================
+                        # Delete loss tensor AFTER extracting values (backward already done)
+                        # This frees the computation graph memory
+                        del loss, pred_loss, recon_loss
+
+                        # Force CUDA memory cleanup between MNT iterations to prevent
+                        # VRAM fragmentation and accumulation. Skip on last iteration
+                        # since batch cleanup follows immediately.
+                        if multi_noise_timesteps > 1 and mnt_idx < multi_noise_timesteps - 1:
+                            torch.cuda.empty_cache()
 
                     # Free batch tensors AFTER all MNT iterations complete
                     del latents, text_embeddings

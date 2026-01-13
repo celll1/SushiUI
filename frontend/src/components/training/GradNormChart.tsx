@@ -30,6 +30,38 @@ const calculateSmoothing = (data: MetricPoint[], smoothingFactor: number): Metri
   return smoothed;
 };
 
+// Calculate robust Y-axis range using percentiles (excludes outliers)
+const calculateRobustYRange = (
+  values: number[],
+  lowerPercentile: number = 1,
+  upperPercentile: number = 99
+): { min: number; max: number } => {
+  if (values.length === 0) return { min: 0, max: 1 };
+
+  // Filter out invalid values (NaN, Infinity)
+  const validValues = values.filter(v => isFinite(v) && !isNaN(v));
+  if (validValues.length === 0) return { min: 0, max: 1 };
+
+  // Sort values
+  const sorted = [...validValues].sort((a, b) => a - b);
+
+  // Calculate percentile indices
+  const lowerIndex = Math.floor(sorted.length * (lowerPercentile / 100));
+  const upperIndex = Math.ceil(sorted.length * (upperPercentile / 100)) - 1;
+
+  const pMin = sorted[Math.max(0, lowerIndex)];
+  const pMax = sorted[Math.min(sorted.length - 1, upperIndex)];
+
+  // Add 5% padding
+  const range = pMax - pMin;
+  const padding = range * 0.05;
+
+  return {
+    min: Math.max(0, pMin - padding), // Don't go below 0 for grad norm values
+    max: pMax + padding
+  };
+};
+
 interface GradNormChartProps {
   runId: number;
   isRunning: boolean;
@@ -302,14 +334,14 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const autoMaxStep = Math.max(...gradNormData.map((d) => d.step));
   const autoMinStep = Math.min(...gradNormData.map((d) => d.step));
 
-  // Calculate min/max considering all grad norms
+  // Calculate min/max considering all grad norms using percentile-based range
+  // This excludes outliers for more readable charts
   const allValues = [
     ...(showTotal ? gradNormData.map((d) => d.value) : []),
     ...(showTextEncoder ? gradNormTEData.map((d) => d.value) : []),
     ...(showUNet ? gradNormUNetData.map((d) => d.value) : [])
   ];
-  const autoMaxGradNorm = allValues.length > 0 ? Math.max(...allValues) : 1;
-  const autoMinGradNorm = allValues.length > 0 ? Math.min(...allValues) : 0;
+  const { min: autoMinGradNorm, max: autoMaxGradNorm } = calculateRobustYRange(allValues);
 
   // Use custom scale if enabled, otherwise use auto scale
   const maxStep = xAxisMode === "custom" ? customXMax : autoMaxStep;

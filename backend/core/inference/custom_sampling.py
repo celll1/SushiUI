@@ -1935,6 +1935,9 @@ def custom_inpaint_sampling_loop(
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
 
+    # Debug flag for first iteration logging (used throughout the loop)
+    first_iteration_debug = True
+
     for i, t in enumerate(timesteps):
         # Check for cancellation (only in inference context, not training)
         try:
@@ -2361,6 +2364,10 @@ def custom_inpaint_sampling_loop(
 
             # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
             latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
+
+        # Reset debug flag after first iteration
+        if first_iteration_debug:
+            first_iteration_debug = False
 
         if progress_callback is not None:
             # Calculate CFG metrics for developer mode

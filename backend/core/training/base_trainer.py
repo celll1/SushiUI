@@ -539,6 +539,7 @@ class BaseTrainer(ABC):
 
         # Resume training
         self.resume_from_checkpoint = resume_from_checkpoint
+        self._loaded_checkpoint_path = None  # Actual checkpoint path loaded (may differ from requested if fallback occurred)
 
         # Convert dtype strings to torch.dtype
         self.weight_dtype = get_torch_dtype(weight_dtype)
@@ -668,19 +669,55 @@ class BaseTrainer(ABC):
 
         if checkpoint_to_load:
             # Load checkpoint directly as base model (resume training)
+            # Use fallback mechanism to handle corrupted checkpoints
             print(f"{self.log_prefix} Loading checkpoint as base model: {checkpoint_to_load}")
             try:
                 self._load_checkpoint_as_base(checkpoint_to_load)
                 print(f"{self.log_prefix} Successfully loaded checkpoint as base model")
+                self._loaded_checkpoint_path = checkpoint_to_load
             except Exception as e:
-                print(f"{self.log_prefix} ERROR: Failed to load checkpoint: {e}")
-                print(f"{self.log_prefix} Checkpoint loading failed, but resume_from_checkpoint was specified.")
-                print(f"{self.log_prefix} Aborting training to prevent unintended behavior.")
-                raise RuntimeError(
-                    f"Failed to load checkpoint '{checkpoint_to_load}'. "
-                    f"Training aborted to prevent starting from base model when resume was requested. "
-                    f"Error: {e}"
-                )
+                error_str = str(e).lower()
+                # Check for corruption-related errors
+                is_corruption = any(x in error_str for x in [
+                    "incomplete metadata",
+                    "file not fully covered",
+                    "deserializing header",
+                    "safetensor",
+                    "corrupted",
+                    "truncated",
+                    "unexpected end",
+                    "invalid header",
+                ])
+
+                if is_corruption:
+                    print(f"{self.log_prefix} WARNING: Checkpoint appears corrupted: {e}")
+                    print(f"{self.log_prefix} Attempting to fall back to previous checkpoint...")
+
+                    # Try fallback mechanism
+                    success, loaded_path = self._try_load_checkpoint_with_fallback(checkpoint_to_load)
+
+                    if success and loaded_path:
+                        print(f"{self.log_prefix} Successfully loaded fallback checkpoint: {loaded_path}")
+                        self._loaded_checkpoint_path = loaded_path
+                    else:
+                        print(f"{self.log_prefix} ERROR: All checkpoints failed to load")
+                        print(f"{self.log_prefix} Checkpoint loading failed, but resume_from_checkpoint was specified.")
+                        print(f"{self.log_prefix} Aborting training to prevent unintended behavior.")
+                        raise RuntimeError(
+                            f"Failed to load checkpoint '{checkpoint_to_load}' and all fallback checkpoints. "
+                            f"Training aborted to prevent starting from base model when resume was requested. "
+                            f"Error: {e}"
+                        )
+                else:
+                    # Non-corruption error, don't fallback
+                    print(f"{self.log_prefix} ERROR: Failed to load checkpoint: {e}")
+                    print(f"{self.log_prefix} Checkpoint loading failed, but resume_from_checkpoint was specified.")
+                    print(f"{self.log_prefix} Aborting training to prevent unintended behavior.")
+                    raise RuntimeError(
+                        f"Failed to load checkpoint '{checkpoint_to_load}'. "
+                        f"Training aborted to prevent starting from base model when resume was requested. "
+                        f"Error: {e}"
+                    )
         else:
             # Load base model (new training)
             print(f"{self.log_prefix} Loading model from {model_path}")
@@ -1823,6 +1860,104 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Selected latest checkpoint: {latest_checkpoint_path.name} (step {step})")
         return (str(latest_checkpoint_path), step)
+
+    def _get_sorted_checkpoints(self) -> List[Tuple[Path, int]]:
+        """
+        Get all checkpoints sorted by step number (descending, newest first).
+
+        Returns:
+            List of (checkpoint_path, step_number) tuples, sorted newest first.
+            Empty list if no checkpoints exist.
+        """
+        checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+
+        if not checkpoint_files:
+            return []
+
+        def get_step(path):
+            try:
+                step_str = path.stem.split("_step_")[-1]
+                return int(step_str)
+            except (ValueError, IndexError):
+                return 0
+
+        # Sort by step number descending (newest first)
+        sorted_checkpoints = sorted(checkpoint_files, key=get_step, reverse=True)
+        return [(ckpt, get_step(ckpt)) for ckpt in sorted_checkpoints]
+
+    def _try_load_checkpoint_with_fallback(self, checkpoint_path: str) -> Tuple[bool, Optional[str]]:
+        """
+        Try to load a checkpoint, with fallback to previous checkpoints if corrupted.
+
+        Args:
+            checkpoint_path: Path to the checkpoint to load (or "latest" for auto-detection)
+
+        Returns:
+            Tuple of (success, loaded_checkpoint_path).
+            If success is False, loaded_checkpoint_path is None.
+        """
+        # Get sorted list of all checkpoints
+        sorted_checkpoints = self._get_sorted_checkpoints()
+
+        if not sorted_checkpoints:
+            print(f"{self.log_prefix} No checkpoints found for fallback")
+            return (False, None)
+
+        # If specific checkpoint was requested, find its index
+        if checkpoint_path and checkpoint_path.lower() != "latest":
+            checkpoint_path_obj = Path(checkpoint_path)
+            start_idx = 0
+            for i, (ckpt, step) in enumerate(sorted_checkpoints):
+                if ckpt.name == checkpoint_path_obj.name or str(ckpt) == checkpoint_path:
+                    start_idx = i
+                    break
+        else:
+            # Start from the newest checkpoint
+            start_idx = 0
+
+        # Try loading checkpoints starting from the requested one
+        for i in range(start_idx, len(sorted_checkpoints)):
+            ckpt_path, ckpt_step = sorted_checkpoints[i]
+            ckpt_path_str = str(ckpt_path)
+
+            if i > start_idx:
+                print(f"{self.log_prefix} Attempting fallback to previous checkpoint: {ckpt_path.name} (step {ckpt_step})")
+
+            try:
+                self._load_checkpoint_as_base(ckpt_path_str)
+                if i > start_idx:
+                    print(f"{self.log_prefix} Successfully loaded fallback checkpoint: {ckpt_path.name}")
+                return (True, ckpt_path_str)
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for corruption-related errors
+                is_corruption = any(x in error_str for x in [
+                    "incomplete metadata",
+                    "file not fully covered",
+                    "deserializing header",
+                    "safetensor",
+                    "corrupted",
+                    "truncated",
+                    "unexpected end",
+                    "invalid header",
+                ])
+
+                if is_corruption:
+                    print(f"{self.log_prefix} WARNING: Checkpoint corrupted: {ckpt_path.name}")
+                    print(f"{self.log_prefix}   Error: {e}")
+                    if i + 1 < len(sorted_checkpoints):
+                        print(f"{self.log_prefix}   Will try previous checkpoint...")
+                        continue
+                    else:
+                        print(f"{self.log_prefix} ERROR: No more checkpoints to try")
+                        return (False, None)
+                else:
+                    # Non-corruption error, don't fallback
+                    print(f"{self.log_prefix} ERROR: Failed to load checkpoint (non-corruption): {e}")
+                    raise
+
+        print(f"{self.log_prefix} ERROR: All checkpoints failed to load")
+        return (False, None)
 
     def _cleanup_old_checkpoints(self, max_step_saves_to_keep: int):
         """
@@ -5290,8 +5425,22 @@ class BaseTrainer(ABC):
         # Here we only need to extract step number and load training state (epoch/batch_idx)
         if resume_from_checkpoint:
             if resume_from_checkpoint.lower() == "latest":
-                # Auto-detect latest checkpoint
-                checkpoint_result = self.find_latest_checkpoint()
+                # Use the checkpoint that was actually loaded in __init__ (may differ from "latest" if fallback occurred)
+                if self._loaded_checkpoint_path:
+                    checkpoint_path = self._loaded_checkpoint_path
+                    # Extract step number from filename
+                    import re
+                    match = re.search(r'_step_(\d+)', Path(checkpoint_path).stem)
+                    if match:
+                        checkpoint_step = int(match.group(1))
+                    else:
+                        print(f"{self.log_prefix} WARNING: Could not extract step number from loaded checkpoint: {checkpoint_path}")
+                        checkpoint_step = 0
+                    checkpoint_result = (checkpoint_path, checkpoint_step)
+                else:
+                    # Fallback to find_latest_checkpoint (should not normally happen)
+                    checkpoint_result = self.find_latest_checkpoint()
+
                 if checkpoint_result is not None:
                     checkpoint_path, checkpoint_step = checkpoint_result
                     print(f"{self.log_prefix} Resuming from checkpoint (weights already loaded in __init__): {checkpoint_path}")

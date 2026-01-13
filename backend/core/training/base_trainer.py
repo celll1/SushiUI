@@ -110,7 +110,7 @@ def get_torch_dtype(dtype_str: str) -> torch.dtype:
     return dtype_map[dtype_str]
 
 
-def compute_snr(noise_scheduler, timesteps):
+def compute_snr(noise_scheduler, timesteps, alphas_cumprod_cached=None):
     """
     Computes SNR (Signal-to-Noise Ratio) from diffusion timesteps.
 
@@ -119,12 +119,17 @@ def compute_snr(noise_scheduler, timesteps):
     Args:
         noise_scheduler: DDPMScheduler instance
         timesteps: Tensor of timesteps [batch_size]
+        alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (optional, for performance)
 
     Returns:
         SNR values [batch_size]
     """
     # Get alpha_bar for each timestep
-    alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=timesteps.device)
+    # Use cached version if available (avoids repeated .to(device) calls)
+    if alphas_cumprod_cached is not None:
+        alphas_cumprod = alphas_cumprod_cached
+    else:
+        alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=timesteps.device)
     alpha_bar = alphas_cumprod[timesteps].float()
 
     # SNR = alpha / (1 - alpha)
@@ -133,7 +138,7 @@ def compute_snr(noise_scheduler, timesteps):
     return snr
 
 
-def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return_weights=False):
+def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return_weights=False, alphas_cumprod_cached=None):
     """
     Apply Min-SNR gamma weighting to loss.
 
@@ -149,12 +154,13 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return
         noise_scheduler: DDPMScheduler instance
         min_snr_gamma: Minimum SNR gamma value (default: 5.0, standard for SD/SDXL)
         return_weights: If True, also return the weight values [batch_size]
+        alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (optional, for performance)
 
     Returns:
         Weighted loss (same shape as input)
         If return_weights=True: (weighted_loss, weights [batch_size])
     """
-    snr = compute_snr(noise_scheduler, timesteps)
+    snr = compute_snr(noise_scheduler, timesteps, alphas_cumprod_cached)
 
     # Min-SNR gamma weighting: min(SNR, gamma) / SNR
     # This clamps the weight for low-noise (high SNR) timesteps
@@ -2876,6 +2882,7 @@ class BaseTrainer(ABC):
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
+        alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
         """
         Perform single training step (SD/SDXL).
@@ -2888,6 +2895,7 @@ class BaseTrainer(ABC):
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
+            alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (for SNR weight computation)
 
         Returns:
             (loss_tensor, loss_value) - Loss tensor with grad and scalar value
@@ -3049,11 +3057,13 @@ class BaseTrainer(ABC):
             if self.reconstruction_loss_weight > 0:
                 # Return weights for dual loss compensation
                 loss_per_sample_weighted, min_snr_weights = apply_snr_weight(
-                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma, return_weights=True
+                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma,
+                    return_weights=True, alphas_cumprod_cached=alphas_cumprod_cached
                 )
             else:
                 loss_per_sample_weighted = apply_snr_weight(
-                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma
+                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma,
+                    alphas_cumprod_cached=alphas_cumprod_cached
                 )
         else:
             loss_per_sample_weighted = loss_per_sample
@@ -3063,8 +3073,9 @@ class BaseTrainer(ABC):
         # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
         regularization_loss = torch.tensor(0.0, device=self.device)
 
-        # Compute predicted latent once (used by both regularization losses)
+        # Compute predicted latent once (used by both regularization losses and debug save)
         predicted_latent_for_reg = None
+        predicted_latent_for_recon = None  # Will be set in reconstruction loss path
         if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None:
             # Compute predicted latent from model_pred (keep gradients for backprop)
             predicted_latent_for_reg = predict_original_latent_unified(
@@ -3197,22 +3208,30 @@ class BaseTrainer(ABC):
             debug_save_path.mkdir(parents=True, exist_ok=True)
             timestep_value = timesteps[0].item()
 
-            with torch.no_grad():
-                predicted_latent = predict_original_latent_unified(
-                    noise_process=noise_process,
-                    prediction_target=prediction_target,
-                    noise_scheduler=self.noise_scheduler,
-                    noisy_latents=noisy_latents,
-                    model_pred=model_pred,
-                    timesteps=timesteps,
-                )
+            # Reuse predicted_latent from reconstruction loss calculation if available
+            # This avoids redundant computation (predict_original_latent_unified is expensive)
+            if predicted_latent_for_recon is not None:
+                predicted_latent_for_debug = predicted_latent_for_recon.detach()
+            elif predicted_latent_for_reg is not None:
+                predicted_latent_for_debug = predicted_latent_for_reg.detach()
+            else:
+                # Fallback: compute predicted_latent if not available
+                with torch.no_grad():
+                    predicted_latent_for_debug = predict_original_latent_unified(
+                        noise_process=noise_process,
+                        prediction_target=prediction_target,
+                        noise_scheduler=self.noise_scheduler,
+                        noisy_latents=noisy_latents,
+                        model_pred=model_pred,
+                        timesteps=timesteps,
+                    )
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
                 'noisy_latents': noisy_latents[0:1].detach().cpu(),
                 'predicted_noise': model_pred[0:1].detach().cpu(),
                 'actual_noise': noise[0:1].detach().cpu(),
-                'predicted_latent': predicted_latent[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent_for_debug[0:1].detach().cpu(),
                 'timestep': timestep_value,
                 'loss': loss_per_sample_weighted[0].item(),
                 'loss_batch_mean': loss.item(),
@@ -3228,7 +3247,7 @@ class BaseTrainer(ABC):
                 debug_data['all_captions'] = debug_captions
 
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
-            del predicted_latent
+            del predicted_latent_for_debug
 
         # Return loss tensor (with gradient), pred_loss value, and recon_loss value
         # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
@@ -3455,6 +3474,7 @@ class BaseTrainer(ABC):
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
+        alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
         """
         Perform single training step (Z-Image).
@@ -3467,6 +3487,7 @@ class BaseTrainer(ABC):
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
+            alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (unused for Z-Image, included for API consistency)
 
         Returns:
             Tuple of (loss tensor, reconstruction loss value)
@@ -5146,6 +5167,11 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Timestep range: [{timestep_sampler.min_timestep:.3f}, {timestep_sampler.max_timestep:.3f}]")
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
+        # Cache alphas_cumprod on GPU to avoid repeated .to(device) calls in compute_snr()
+        # This is called thousands of times during training, so caching saves significant overhead
+        alphas_cumprod_cached = self.noise_scheduler.alphas_cumprod.to(device=self.device)
+        print(f"{self.log_prefix} Cached alphas_cumprod on GPU ({alphas_cumprod_cached.shape[0]} steps)")
+
         if multi_noise_timesteps > 1:
             print(f"{self.log_prefix} MNT enabled: Each batch will be processed {multi_noise_timesteps} times with different timesteps")
 
@@ -6084,6 +6110,7 @@ class BaseTrainer(ABC):
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions if debug_save_path else None,
                                 profile_vram=self.debug_vram,
+                                alphas_cumprod_cached=alphas_cumprod_cached,
                             )
                         else:
                             loss, pred_loss, recon_loss = self.train_step(
@@ -6094,6 +6121,7 @@ class BaseTrainer(ABC):
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions if debug_save_path else None,
                                 profile_vram=self.debug_vram,
+                                alphas_cumprod_cached=alphas_cumprod_cached,
                             )
 
                         # Backward pass with GradScaler if enabled

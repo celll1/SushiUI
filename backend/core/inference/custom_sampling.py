@@ -26,6 +26,42 @@ import math
 from math import pi, cos
 
 
+def vae_output_to_pil(image: torch.Tensor) -> Image.Image:
+    """Convert VAE decoder output tensor to PIL Image with robust nan/inf handling.
+
+    Args:
+        image: VAE decoder output tensor [B, C, H, W] in range [-1, 1]
+
+    Returns:
+        PIL Image
+
+    Note:
+        - nan values are replaced with gray (0.5)
+        - positive inf values are replaced with white (1.0)
+        - negative inf values are replaced with black (0.0)
+        - Valid pixels are preserved even if some pixels are invalid
+    """
+    # Scale from [-1, 1] to [0, 1]
+    image = (image / 2 + 0.5)
+
+    # Replace nan/inf with fallback values before clamping
+    if torch.isnan(image).any() or torch.isinf(image).any():
+        nan_count = torch.isnan(image).sum().item()
+        inf_count = torch.isinf(image).sum().item()
+        total_pixels = image.numel()
+        print(f"[VAE Decode] Warning: {nan_count} nan, {inf_count} inf out of {total_pixels} pixels ({(nan_count + inf_count) / total_pixels * 100:.2f}%)")
+
+        # Replace nan with gray (0.5), positive inf with white (1.0), negative inf with black (0.0)
+        image = torch.where(torch.isnan(image), torch.tensor(0.5, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isposinf(image), torch.tensor(1.0, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
+
+    image = image.clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).round().astype("uint8")
+    return Image.fromarray(image[0])
+
+
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
     """Calculate CFG metrics for developer mode visualization
 
@@ -911,11 +947,8 @@ def custom_sampling_loop(
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    # Convert to PIL
-    image = (image / 2 + 0.5).clamp(0, 1)
-    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-    image = (image * 255).round().astype("uint8")
-    image = Image.fromarray(image[0])
+    # Convert to PIL with robust nan/inf handling
+    image = vae_output_to_pil(image)
 
     return image
 
@@ -1627,11 +1660,8 @@ def custom_img2img_sampling_loop(
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    # Convert to PIL
-    image = (image / 2 + 0.5).clamp(0, 1)
-    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-    image = (image * 255).round().astype("uint8")
-    image = Image.fromarray(image[0])
+    # Convert to PIL with robust nan/inf handling
+    image = vae_output_to_pil(image)
 
     return image
 
@@ -2375,7 +2405,22 @@ def custom_inpaint_sampling_loop(
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    image = (image / 2 + 0.5).clamp(0, 1)
+    # Scale from [-1, 1] to [0, 1] with robust nan/inf handling
+    image = (image / 2 + 0.5)
+
+    # Replace nan/inf with fallback values before clamping
+    if torch.isnan(image).any() or torch.isinf(image).any():
+        nan_count = torch.isnan(image).sum().item()
+        inf_count = torch.isinf(image).sum().item()
+        total_pixels = image.numel()
+        print(f"[VAE Decode] Warning: {nan_count} nan, {inf_count} inf out of {total_pixels} pixels ({(nan_count + inf_count) / total_pixels * 100:.2f}%)")
+
+        # Replace nan with gray (0.5), positive inf with white (1.0), negative inf with black (0.0)
+        image = torch.where(torch.isnan(image), torch.tensor(0.5, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isposinf(image), torch.tensor(1.0, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
+
+    image = image.clamp(0, 1)
 
     # Apply pixel-space mask blending for non-inpaint UNets
     # This preserves the original image exactly in non-masked regions

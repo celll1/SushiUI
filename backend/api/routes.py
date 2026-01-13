@@ -5434,28 +5434,36 @@ async def get_training_metrics_db(
         grad_norm_te_data = []
         grad_norm_unet_data = []
 
+        import math
+
+        def is_valid_float(v):
+            """Check if value is a valid JSON-serializable float (not inf/nan)."""
+            if v is None:
+                return False
+            return not (math.isinf(v) or math.isnan(v))
+
         for m in metrics:
             point = {
                 "step": m.step,
                 "timestamp": m.timestamp.isoformat() if m.timestamp else None
             }
 
-            if m.loss is not None:
+            if is_valid_float(m.loss):
                 loss_data.append({**point, "value": m.loss})
 
-            if m.recon_loss is not None:
+            if is_valid_float(m.recon_loss):
                 recon_loss_data.append({**point, "value": m.recon_loss})
 
-            if m.learning_rate is not None:
+            if is_valid_float(m.learning_rate):
                 lr_data.append({**point, "value": m.learning_rate})
 
-            if m.grad_norm is not None:
+            if is_valid_float(m.grad_norm):
                 grad_norm_data.append({**point, "value": m.grad_norm})
 
-            if m.grad_norm_text_encoder is not None:
+            if is_valid_float(m.grad_norm_text_encoder):
                 grad_norm_te_data.append({**point, "value": m.grad_norm_text_encoder})
 
-            if m.grad_norm_unet is not None:
+            if is_valid_float(m.grad_norm_unet):
                 grad_norm_unet_data.append({**point, "value": m.grad_norm_unet})
 
         return {

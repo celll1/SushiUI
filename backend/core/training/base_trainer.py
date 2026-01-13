@@ -6134,17 +6134,18 @@ class BaseTrainer(ABC):
                         self.writer.add_scalar("train/recon_loss", mnt_recon_loss_value, global_step)
                         self.writer.add_scalar("train/lr", mnt_current_lr, global_step)
 
-                        # Database logging (per-iteration, grad_norm=0 placeholder)
-                        # Grad norm will be updated after optimizer step for the entire group
+                        # Database logging (per-iteration, loss only - grad_norm logged at optimizer step)
+                        # Grad norm is only available after optimizer step, so we don't log it here.
+                        # This prevents grad_norm=0 from corrupting smoothed grad norm charts.
                         if self.run_id is not None:
                             self._log_metrics_to_db(
                                 step=global_step,
                                 loss=mnt_pred_loss_value,
                                 recon_loss=mnt_recon_loss_value,
                                 learning_rate=mnt_current_lr,
-                                grad_norm=0.0,  # Placeholder, updated after optimizer step
-                                grad_norm_text_encoder=0.0,
-                                grad_norm_unet=0.0
+                                grad_norm=None,  # Don't set - will be updated after optimizer step
+                                grad_norm_text_encoder=None,
+                                grad_norm_unet=None
                             )
 
                         # Progress callback (per-iteration for real-time UI updates)

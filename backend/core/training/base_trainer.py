@@ -5643,8 +5643,14 @@ class BaseTrainer(ABC):
                 # (This regenerates captions with different shuffle/dropout based on epoch_num)
                 for dataset in datasets:
                     if hasattr(dataset, 'reload_for_epoch'):
-                        dataset.items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
-                        print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
+                        new_items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
+                        if new_items is not None:
+                            # Dataset was reloaded with new items
+                            dataset.items = new_items
+                            print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
+                        else:
+                            # Dataset reload skipped (same epoch as initial load, items already loaded)
+                            print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
 
                 # Validate and generate text encoder cache for new captions (all architectures)
                 # Only for pre_encoded_cache mode

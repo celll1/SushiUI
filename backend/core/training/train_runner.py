@@ -522,11 +522,14 @@ def main():
             This wrapper converts the old dataset_items format (list of dicts) to
             the new Dataset object format expected by BaseTrainer.train().
             """
-            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict):
+            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict, initial_epoch: int = 0):
                 self.unique_id = unique_id
                 self.items = items
                 self.dataset_config = dataset_config
                 self.cache_dir = Path(f"./latent_cache/{unique_id}")
+                # Track which epoch the initial items were loaded for (to avoid redundant reload)
+                self._initial_load_epoch = initial_epoch
+                self._has_been_reloaded = False
 
                 # Extract caption configuration from first item (all items share same config)
                 if items:
@@ -542,13 +545,23 @@ def main():
                         "category_order": [],
                     }
 
-            def reload_for_epoch(self, epoch_num: int, run_id: int) -> List[Dict]:
+            def reload_for_epoch(self, epoch_num: int, run_id: int) -> List[Dict] | None:
                 """
                 Reload dataset items with caption processing for the current epoch.
 
                 This method is called by the trainer at the start of each epoch to
                 get freshly processed captions (with shuffling, etc.).
+
+                Returns:
+                    List of items if reload was performed, None if skipped (same epoch as initial load)
                 """
+                # Skip reload if this is the same epoch as initial load and hasn't been reloaded yet
+                # This avoids redundant dataset scanning at training start
+                if not self._has_been_reloaded and epoch_num == self._initial_load_epoch:
+                    self._has_been_reloaded = True  # Mark as "processed" so next epoch will reload
+                    return None  # Signal to caller that reload was skipped (use existing items)
+
+                self._has_been_reloaded = True
                 dataset_id = self.dataset_config["dataset_id"]
                 caption_types = self.dataset_config.get("caption_types", [])
                 items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id, caption_types=caption_types)

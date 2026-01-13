@@ -133,7 +133,7 @@ def compute_snr(noise_scheduler, timesteps):
     return snr
 
 
-def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0):
+def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return_weights=False):
     """
     Apply Min-SNR gamma weighting to loss.
 
@@ -148,15 +148,20 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0):
         timesteps: Tensor of timesteps [batch_size]
         noise_scheduler: DDPMScheduler instance
         min_snr_gamma: Minimum SNR gamma value (default: 5.0, standard for SD/SDXL)
+        return_weights: If True, also return the weight values [batch_size]
 
     Returns:
         Weighted loss (same shape as input)
+        If return_weights=True: (weighted_loss, weights [batch_size])
     """
     snr = compute_snr(noise_scheduler, timesteps)
 
     # Min-SNR gamma weighting: min(SNR, gamma) / SNR
     # This clamps the weight for low-noise (high SNR) timesteps
     mse_loss_weights = torch.clamp(snr, max=min_snr_gamma) / snr
+
+    # Keep original 1D weights for return
+    weights_1d = mse_loss_weights.clone()
 
     # Reshape to match loss dimensions [batch_size, 1, 1, 1]
     while mse_loss_weights.dim() < loss.dim():
@@ -165,6 +170,8 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0):
     # Apply weighting
     weighted_loss = loss * mse_loss_weights
 
+    if return_weights:
+        return weighted_loss, weights_1d
     return weighted_loss
 
 
@@ -3035,8 +3042,19 @@ class BaseTrainer(ABC):
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Apply Min-SNR gamma weighting
+        # When dual loss is enabled (reconstruction_loss_weight > 0), also return weights
+        # to compensate for lost prediction weight by boosting reconstruction weight
+        min_snr_weights = None
         if self.min_snr_gamma > 0:
-            loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
+            if self.reconstruction_loss_weight > 0:
+                # Return weights for dual loss compensation
+                loss_per_sample_weighted, min_snr_weights = apply_snr_weight(
+                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma, return_weights=True
+                )
+            else:
+                loss_per_sample_weighted = apply_snr_weight(
+                    loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma
+                )
         else:
             loss_per_sample_weighted = loss_per_sample
 
@@ -3108,12 +3126,42 @@ class BaseTrainer(ABC):
 
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-            recon_loss = recon_loss_per_sample.mean()
 
-            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+            # Dual loss with min-SNR weight compensation
+            # When min_snr_gamma > 0, the prediction loss is reduced by min_snr_weights for clean timesteps.
+            # We compensate for this "lost" weight by boosting the reconstruction loss weight.
+            #
+            # Original dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+            # With min-SNR: pred_loss is already weighted by min_snr_weights
+            #
+            # Compensation formula (per-sample):
+            #   lost_weight = (1 - min_snr_weight) * alpha  (weight originally for pred_loss that was reduced)
+            #   effective_beta = beta + lost_weight        (boost recon_loss by lost amount)
+            #   combined_loss = pred_loss_weighted + effective_beta * recon_loss
+            #
+            # Note: pred_loss already has min_snr_weight applied, so we use it directly without alpha multiplier
+
             alpha = 1.0 - self.reconstruction_loss_weight
             beta = self.reconstruction_loss_weight
-            combined_loss = alpha * mse_loss + beta * recon_loss
+
+            if min_snr_weights is not None:
+                # Per-sample compensation: boost recon_loss weight based on how much pred_loss was reduced
+                # lost_weight[i] = (1 - min_snr_weights[i]) * alpha
+                # effective_beta[i] = beta + lost_weight[i]
+                lost_weight = (1.0 - min_snr_weights) * alpha  # [batch_size]
+                effective_beta = beta + lost_weight  # [batch_size]
+
+                # Per-sample combined loss
+                # loss_per_sample_weighted already has min_snr weighting applied
+                combined_loss_per_sample = loss_per_sample_weighted + effective_beta * recon_loss_per_sample
+                combined_loss = combined_loss_per_sample.mean()
+            else:
+                # No min-SNR: standard dual loss
+                recon_loss = recon_loss_per_sample.mean()
+                combined_loss = alpha * mse_loss + beta * recon_loss
+
+            # For return value
+            recon_loss = recon_loss_per_sample.mean()
 
             # Total loss with regularization
             loss = combined_loss + regularization_loss
@@ -5474,8 +5522,8 @@ class BaseTrainer(ABC):
                     resume_training_state = None
 
                 # Initialize swap mode buffer if needed (all architectures)
-                swap_buffer = [] if text_encoding_mode == "swap_onthefly" else None
-                swap_buffer_idx = 0
+                # Use dict keyed by image_path for robust lookup (immune to index misalignment)
+                swap_buffer = {} if text_encoding_mode == "swap_onthefly" else None
                 next_swap_at_step = 0 if swap_buffer is not None else -1
 
                 # Pre-fill swap buffer for first interval
@@ -5502,15 +5550,13 @@ class BaseTrainer(ABC):
                         caption = item.get("caption", "")
                         image_path = item["image_path"]
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
-                        # Store on CPU to save GPU VRAM
+                        # Store on CPU to save GPU VRAM, keyed by image_path
                         # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
-                        # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
-                        swap_buffer.append((
+                        swap_buffer[image_path] = (
                             embeddings.cpu(),
                             auxiliary_data.cpu() if auxiliary_data is not None else None,
                             caption,  # String (CPU memory, minimal overhead)
-                            image_path  # String (CPU memory, minimal overhead)
-                        ))
+                        )
 
                         # Send progress update
                         if progress_callback and idx % 10 == 0:
@@ -5529,8 +5575,8 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Buffer pre-filled with {len(swap_buffer)} embeddings")
 
                 # Initialize latent swap mode buffer if needed
-                latent_swap_buffer = [] if latent_encoding_mode == "swap_onthefly" else None
-                latent_swap_buffer_idx = 0
+                # Use dict keyed by image_path for robust lookup (immune to index misalignment)
+                latent_swap_buffer = {} if latent_encoding_mode == "swap_onthefly" else None
                 next_latent_swap_at_step = 0 if latent_swap_buffer is not None else -1
 
                 # Pre-fill latent swap buffer for first interval
@@ -5567,13 +5613,12 @@ class BaseTrainer(ABC):
                             target_height=height,
                             bucket_strategy=bucket_strategy
                         )
-                        # Store on CPU to save GPU VRAM
-                        # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
-                        latent_swap_buffer.append((
+                        # Store on CPU to save GPU VRAM, keyed by image_path
+                        # This eliminates index-based lookup issues with variable batch sizes
+                        latent_swap_buffer[image_path] = (
                             latent.cpu(),
                             caption,  # String (CPU memory, minimal overhead)
-                            image_path  # String (CPU memory, minimal overhead)
-                        ))
+                        )
 
                         # Send progress update
                         if progress_callback and idx % 10 == 0:
@@ -5660,21 +5705,18 @@ class BaseTrainer(ABC):
                         # Move main model to CPU
                         self.move_main_model_to_cpu()
 
-                        # Clear old buffer and encode new captions
+                        # Clear old buffer and encode new captions (dict keyed by image_path)
                         swap_buffer.clear()
-                        swap_buffer_idx = 0
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
                             caption = item.get("caption", "")
                             image_path = item["image_path"]
                             embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
-                            # Store on CPU to save GPU VRAM
-                            # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
-                            swap_buffer.append((
+                            # Store on CPU to save GPU VRAM, keyed by image_path
+                            swap_buffer[image_path] = (
                                 embeddings.cpu(),
                                 auxiliary_data.cpu() if auxiliary_data is not None else None,
                                 caption,  # String (CPU memory, minimal overhead)
-                                image_path  # String (CPU memory, minimal overhead)
-                            ))
+                            )
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
@@ -5718,9 +5760,8 @@ class BaseTrainer(ABC):
                         # Move main model to CPU
                         self.move_main_model_to_cpu()
 
-                        # Clear old buffer and encode new latents
+                        # Clear old buffer and encode new latents (dict keyed by image_path)
                         latent_swap_buffer.clear()
-                        latent_swap_buffer_idx = 0
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
                             image_path = item["image_path"]
                             caption = item.get("caption", "")
@@ -5735,13 +5776,11 @@ class BaseTrainer(ABC):
                                 target_height=height,
                                 bucket_strategy=bucket_strategy
                             )
-                            # Store on CPU to save GPU VRAM
-                            # IMPORTANT: Also store caption and image_path to ensure correct pairing during training
-                            latent_swap_buffer.append((
+                            # Store on CPU to save GPU VRAM, keyed by image_path
+                            latent_swap_buffer[image_path] = (
                                 latent.cpu(),
                                 caption,  # String (CPU memory, minimal overhead)
-                                image_path  # String (CPU memory, minimal overhead)
-                            ))
+                            )
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
@@ -5763,15 +5802,9 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
 
                     # MNT loop: Process same batch with different noise-timesteps
-                    # Save swap buffer indices for this batch (restore after MNT iterations)
-                    swap_buffer_idx_batch_start = swap_buffer_idx
-                    latent_swap_buffer_idx_batch_start = latent_swap_buffer_idx
+                    # Note: Both swap buffers are now dicts keyed by image_path, no index management needed
 
                     for mnt_idx in range(multi_noise_timesteps):
-                        # Restore swap buffer indices for each MNT iteration (reuse same embeddings/latents)
-                        swap_buffer_idx = swap_buffer_idx_batch_start
-                        latent_swap_buffer_idx = latent_swap_buffer_idx_batch_start
-
                         # Prepare batch data
                         latents_list = []
                         text_embeddings_list = []
@@ -5781,31 +5814,35 @@ class BaseTrainer(ABC):
                             # BucketManager stores bucket_width/bucket_height, not width/height
                             width = item.get("width") or item.get("bucket_width")
                             height = item.get("height") or item.get("bucket_height")
+                            image_path = item["image_path"]
 
                             # Load latent (mode-specific)
                             if latent_encoding_mode == "swap_onthefly":
-                                # Get from swap buffer (now 3-tuple: latent, caption, image_path)
-                                if latent_swap_buffer_idx < len(latent_swap_buffer):
-                                    latent_cpu, buffer_caption, buffer_image_path = latent_swap_buffer[latent_swap_buffer_idx]
+                                # Get from swap buffer using image_path as key (dict lookup)
+                                # This eliminates index-based alignment issues
+                                if image_path in latent_swap_buffer:
+                                    latent_cpu, buffer_caption = latent_swap_buffer[image_path]
                                     # Transfer to GPU
                                     latent = latent_cpu.to(self.device, non_blocking=True)
                                     latents_list.append(latent)
-                                    # Store caption/image_path for later (will be used by text encoding or debug)
-                                    # Note: caption will be overridden again if text_encoding_mode == "swap_onthefly"
+                                    # Update caption from buffer (ensures correct pairing)
                                     item["caption"] = buffer_caption
-                                    item["image_path"] = buffer_image_path
-                                    latent_swap_buffer_idx += 1
                                 else:
-                                    # Fallback to on-the-fly encoding
-                                    print(f"{self.log_prefix} WARNING: Latent swap buffer exhausted, encoding on-the-fly")
-                                    image = Image.open(item["image_path"])
+                                    # Fallback to on-the-fly encoding (image not in buffer)
+                                    # This happens when buffer hasn't been refilled yet for this batch
+                                    print(f"{self.log_prefix} WARNING: Image not in latent swap buffer, encoding on-the-fly: {image_path}")
+                                    self.move_vae_to_gpu()
+                                    image = Image.open(image_path)
                                     latent = self.encode_image(
                                         image=image,
                                         target_width=width,
                                         target_height=height,
                                         bucket_strategy=bucket_strategy
                                     )
+                                    # Ensure latent is on training device
+                                    latent = latent.to(self.device)
                                     latents_list.append(latent)
+                                    self.move_vae_to_cpu()
 
                             elif latent_encoding_mode == "pre_encoded_cache":
                                 # Load from disk cache
@@ -5844,9 +5881,10 @@ class BaseTrainer(ABC):
                             caption = item.get("caption", "")
 
                             if text_encoding_mode == "swap_onthefly":
-                                # Get from swap buffer (now 4-tuple: embeddings, auxiliary, caption, image_path)
-                                if swap_buffer_idx < len(swap_buffer):
-                                    embeddings_cpu, auxiliary_cpu, buffer_caption, buffer_image_path = swap_buffer[swap_buffer_idx]
+                                # Get from swap buffer using image_path as key (dict lookup)
+                                # This eliminates index-based alignment issues
+                                if image_path in swap_buffer:
+                                    embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
                                     # Transfer to GPU
                                     embeddings = embeddings_cpu.to(self.device, non_blocking=True)
                                     auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
@@ -5854,10 +5892,9 @@ class BaseTrainer(ABC):
                                     auxiliary_data_list.append(auxiliary)
                                     # Override caption from buffer (correct pairing)
                                     caption = buffer_caption
-                                    swap_buffer_idx += 1
                                 else:
-                                    # Shouldn't happen, but fallback to on-the-fly encoding
-                                    print(f"{self.log_prefix} WARNING: Swap buffer exhausted, encoding on-the-fly")
+                                    # Fallback to on-the-fly encoding (image not in buffer)
+                                    print(f"{self.log_prefix} WARNING: Image not in text swap buffer, encoding on-the-fly: {image_path}")
                                     embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
                                     text_embeddings_list.append(embeddings)
                                     auxiliary_data_list.append(auxiliary)
@@ -5888,7 +5925,29 @@ class BaseTrainer(ABC):
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 
-                        # Stack batch
+                        # Stack batch with size validation
+                        # Filter out latents with mismatched spatial dimensions (rare edge case)
+                        if len(latents_list) > 1:
+                            # Get expected shape from first latent
+                            expected_shape = latents_list[0].shape[2:]  # (H, W)
+                            valid_indices = []
+                            for idx, lat in enumerate(latents_list):
+                                if lat.shape[2:] == expected_shape:
+                                    valid_indices.append(idx)
+                                else:
+                                    print(f"{self.log_prefix} WARNING: Latent size mismatch in batch - expected {expected_shape}, got {lat.shape[2:]}, skipping item")
+
+                            if len(valid_indices) < len(latents_list):
+                                # Filter lists to keep only valid items
+                                latents_list = [latents_list[i] for i in valid_indices]
+                                text_embeddings_list = [text_embeddings_list[i] for i in valid_indices]
+                                auxiliary_data_list = [auxiliary_data_list[i] for i in valid_indices]
+
+                        # Skip batch if no valid latents remain
+                        if len(latents_list) == 0:
+                            print(f"{self.log_prefix} WARNING: No valid latents in batch, skipping")
+                            continue
+
                         latents = torch.cat(latents_list, dim=0)
 
                         # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]

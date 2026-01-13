@@ -6181,9 +6181,13 @@ class BaseTrainer(ABC):
                     # ============================================================
                     # MNT loop: Process same batch with different noise-timesteps
                     # ============================================================
-                    # Each MNT iteration: forward pass → backward pass → free graph
-                    # Input tensors are detached to start fresh computation graph each iteration
-                    # This prevents "backward through graph twice" error
+                    # Sequential MNT Implementation (VRAM optimized):
+                    # Each MNT iteration: forward → backward → optimizer.step() → zero_grad()
+                    # This prevents gradient accumulation across MNT iterations, keeping
+                    # VRAM usage at MNT=1 level regardless of actual MNT value.
+                    #
+                    # For gradient accumulation across batches, we track accumulated_steps
+                    # and only run optimizer.step() when accumulation is complete.
                     #
                     # IMPORTANT: When Text Encoder is trainable AND MNT > 1, we need to
                     # re-encode text embeddings for each MNT iteration to maintain gradient flow.
@@ -6349,6 +6353,67 @@ class BaseTrainer(ABC):
                         # This frees the computation graph memory
                         del loss, pred_loss, recon_loss
 
+                        # ============================================================
+                        # Sequential MNT: Optimizer step after each MNT iteration
+                        # ============================================================
+                        # This prevents gradient accumulation across MNT iterations,
+                        # keeping VRAM at MNT=1 level.
+                        #
+                        # Key insight: Each MNT iteration is treated as an independent
+                        # training step. Gradient accumulation (if configured) happens
+                        # across these MNT steps, not across batches.
+                        #
+                        # global_step = (batch_idx * multi_noise_timesteps) + (mnt_idx + 1)
+                        # We step optimizer when global_step is divisible by gradient_accumulation_steps
+                        should_step_optimizer = (global_step % gradient_accumulation_steps == 0)
+
+                        if should_step_optimizer:
+                            if not self.use_fused_backward and self.fused_optimizer_groups is None:
+                                # Normal flow: optimizer.step() and zero_grad() here
+                                if self.use_grad_scaler:
+                                    # GradScaler flow
+                                    self.grad_scaler.unscale_(self.optimizer)
+                                    grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                    if max_grad_norm > 0:
+                                        torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                                    self.grad_scaler.step(self.optimizer)
+                                    self.grad_scaler.update()
+                                    self.optimizer.zero_grad()
+                                else:
+                                    # Normal flow without GradScaler
+                                    grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                    if max_grad_norm > 0:
+                                        torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                                    self.optimizer.step()
+                                    self.optimizer.zero_grad()
+                            else:
+                                # Fused backward/groups flow - calculate grad norm (step/zero_grad by hooks)
+                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+
+                            # LR scheduler step
+                            if self.fused_optimizer_groups is not None:
+                                for lr_scheduler in self.lr_schedulers:
+                                    lr_scheduler.step()
+                            else:
+                                self.lr_scheduler.step()
+
+                            # Log grad_norm to TensorBoard
+                            self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
+                            self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
+                            self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
+
+                            # Update grad_norm in database
+                            if self.run_id is not None:
+                                self._log_metrics_to_db(
+                                    step=global_step,
+                                    loss=None,
+                                    recon_loss=None,
+                                    learning_rate=None,
+                                    grad_norm=grad_norm_total,
+                                    grad_norm_text_encoder=grad_norm_te,
+                                    grad_norm_unet=grad_norm_unet
+                                )
+
                         # Force CUDA memory cleanup between MNT iterations to prevent
                         # VRAM fragmentation and accumulation. Skip on last iteration
                         # since batch cleanup follows immediately.
@@ -6362,165 +6427,100 @@ class BaseTrainer(ABC):
                     if pooled_embeddings is not None:
                         del pooled_embeddings
 
-                    # Gradient accumulation check (after all MNT iterations)
-                    # effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
-                    if global_step % effective_gradient_accumulation == 0:
-                        if not self.use_fused_backward and self.fused_optimizer_groups is None:
-                            # Normal flow: optimizer.step() and zero_grad() here
-                            if self.use_grad_scaler:
-                                # GradScaler flow
-                                # Unscale first for accurate grad norm and clipping
-                                self.grad_scaler.unscale_(self.optimizer)
+                    # ============================================================
+                    # Post-batch processing (Sequential MNT: optimizer step done in loop)
+                    # ============================================================
+                    # With Sequential MNT, optimizer.step() is called inside the MNT loop
+                    # after each MNT iteration. Here we only handle:
+                    # - TensorBoard flushing
+                    # - Checkpoint saving
+                    # - Sample generation
 
-                                # Calculate gradient norms AFTER unscale, BEFORE clipping
-                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                    # Flush TensorBoard writer periodically to prevent DRAM accumulation
+                    # (TensorBoard buffers events internally, can accumulate GBs over long training)
+                    if global_step % 100 == 0:
+                        self.writer.flush()
+                        # Also clear CUDA cache to prevent fragmented memory accumulation
+                        torch.cuda.empty_cache()
 
-                                # Gradient clipping
-                                if max_grad_norm > 0:
-                                    torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
-
-                                # Optimizer step with GradScaler
-                                self.grad_scaler.step(self.optimizer)
-                                self.grad_scaler.update()
-                                self.optimizer.zero_grad()
+                    # Save checkpoint (check against global_step which increments per MNT iteration)
+                    if global_step % save_every_n_steps == 0:
+                        self.save_checkpoint(step=global_step, epoch=epoch)
+                        # Save training state (epoch progress) for mid-epoch resume
+                        self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
+                        # Save optimizer state (momentum, variance, etc.)
+                        self.save_optimizer_state(step=global_step)
+                        # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
+                        if hasattr(self, '_cleanup_old_checkpoints'):
+                            import inspect
+                            sig = inspect.signature(self._cleanup_old_checkpoints)
+                            if len(sig.parameters) == 3:
+                                # LoRATrainer version: (current_step, max_to_keep, save_every)
+                                self._cleanup_old_checkpoints(global_step, max_step_saves_to_keep, save_every_n_steps)
                             else:
-                                # Normal flow without GradScaler
-                                # Calculate gradient norms BEFORE clipping
-                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                # BaseTrainer/FullParameterTrainer version: (max_step_saves_to_keep)
+                                self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                        # Clear CUDA cache after checkpoint save to free temporary buffers
+                        torch.cuda.empty_cache()
 
-                                # Gradient clipping
-                                if max_grad_norm > 0:
-                                    torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
-
-                                # Optimizer step
-                                self.optimizer.step()
-                                self.optimizer.zero_grad()
+                    # Generate sample
+                    # Also generate at step 0 to verify base model output
+                    should_generate_sample = (
+                        (global_step == 0 and sample_every_n_steps > 0) or
+                        (global_step > 0 and global_step % sample_every_n_steps == 0)
+                    )
+                    if should_generate_sample:
+                        print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+                        if self.is_zimage:
+                            sample = self._generate_sample_zimage(
+                                prompt=sample_prompt,
+                                width=sample_width,
+                                height=sample_height,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed
+                            )
                         else:
-                            # Fused backward/groups flow - calculate grad norm here (step/zero_grad already called by hooks)
-                            grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
-                        # else: Fused backward/groups flow - step() and zero_grad() already called by hooks
+                            sample = self.generate_sample(
+                                prompt=sample_prompt,
+                                width=sample_width,
+                                height=sample_height,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed,
+                                current_step=global_step,
+                                schedule_type=sample_schedule_type
+                            )
 
-                        # LR scheduler step
-                        if self.fused_optimizer_groups is not None:
-                            # Step all schedulers for optimizer groups
-                            for lr_scheduler in self.lr_schedulers:
-                                lr_scheduler.step()
-                        else:
-                            # Single scheduler
-                            self.lr_scheduler.step()
+                        # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
+                        sample_path = self.output_dir / "samples" / f"step_{global_step:06d}_sample_0.png"
+                        sample_path.parent.mkdir(parents=True, exist_ok=True)
+                        sample.save(sample_path)
+                        print(f"{self.log_prefix} Saved sample to {sample_path}")
 
-                        # ============================================================
-                        # Post-optimizer-step grad norm update
-                        # ============================================================
-                        # Update grad_norm for the last MNT steps in this accumulation group
-                        # TensorBoard: grad_norm only logged at optimizer step
-                        self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
-                        self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
-                        self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
+                        # Log to TensorBoard (same as stable version)
+                        import torchvision
+                        image_tensor = torchvision.transforms.ToTensor()(sample)
+                        self.writer.add_image("samples/sample_0", image_tensor, global_step=global_step)
 
-                        # Update all steps in this accumulation group with the same grad_norm
-                        # (grad_norm is computed from accumulated gradients, same for all steps in group)
-                        if self.run_id is not None:
-                            # Update grad_norm for all steps in this accumulation group
-                            start_step = global_step - effective_gradient_accumulation + 1
-                            for update_step in range(start_step, global_step + 1):
-                                self._log_metrics_to_db(
-                                    step=update_step,
-                                    loss=None,  # Don't update loss (already logged per-iteration)
-                                    recon_loss=None,
-                                    learning_rate=None,
-                                    grad_norm=grad_norm_total,
-                                    grad_norm_text_encoder=grad_norm_te,
-                                    grad_norm_unet=grad_norm_unet
-                                )
+                        # Free sample-related tensors and clear VRAM cache
+                        del sample, image_tensor
+                        torch.cuda.empty_cache()
 
-                        # Flush TensorBoard writer periodically to prevent DRAM accumulation
-                        # (TensorBoard buffers events internally, can accumulate GBs over long training)
-                        if global_step % 100 == 0:
-                            self.writer.flush()
-                            # Also clear CUDA cache to prevent fragmented memory accumulation
-                            torch.cuda.empty_cache()
+                        # onthefly_gpu mode: Restore text encoders to GPU after sample generation
+                        if text_encoding_mode == "onthefly_gpu":
+                            self.move_text_encoder_to_gpu()
 
-                        # Note: loss, pred_loss, recon_loss already deleted in MNT loop (Line 6350)
+                    # Note: Progress callback is now called per-MNT-iteration (above)
+                    # for real-time frontend updates during MNT training.
 
-                        # Save checkpoint
-                        if global_step % save_every_n_steps == 0:
-                            self.save_checkpoint(step=global_step, epoch=epoch)
-                            # Save training state (epoch progress) for mid-epoch resume
-                            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
-                            # Save optimizer state (momentum, variance, etc.)
-                            self.save_optimizer_state(step=global_step)
-                            # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
-                            if hasattr(self, '_cleanup_old_checkpoints'):
-                                import inspect
-                                sig = inspect.signature(self._cleanup_old_checkpoints)
-                                if len(sig.parameters) == 3:
-                                    # LoRATrainer version: (current_step, max_to_keep, save_every)
-                                    self._cleanup_old_checkpoints(global_step, max_step_saves_to_keep, save_every_n_steps)
-                                else:
-                                    # BaseTrainer/FullParameterTrainer version: (max_step_saves_to_keep)
-                                    self._cleanup_old_checkpoints(max_step_saves_to_keep)
-                            # Clear CUDA cache after checkpoint save to free temporary buffers
-                            torch.cuda.empty_cache()
+                    # Check if total_steps reached (step-based training)
+                    if total_steps is not None and global_step >= total_steps:
+                        print(f"\n{self.log_prefix} Reached target steps ({total_steps}), stopping training")
+                        return  # Exit training loop
 
-                        # Generate sample
-                        # Also generate at step 0 to verify base model output
-                        should_generate_sample = (
-                            (global_step == 0 and sample_every_n_steps > 0) or
-                            (global_step > 0 and global_step % sample_every_n_steps == 0)
-                        )
-                        if should_generate_sample:
-                            print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-                            if self.is_zimage:
-                                sample = self._generate_sample_zimage(
-                                    prompt=sample_prompt,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed
-                                )
-                            else:
-                                sample = self.generate_sample(
-                                    prompt=sample_prompt,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed,
-                                    current_step=global_step,
-                                    schedule_type=sample_schedule_type
-                                )
-
-                            # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
-                            sample_path = self.output_dir / "samples" / f"step_{global_step:06d}_sample_0.png"
-                            sample_path.parent.mkdir(parents=True, exist_ok=True)
-                            sample.save(sample_path)
-                            print(f"{self.log_prefix} Saved sample to {sample_path}")
-
-                            # Log to TensorBoard (same as stable version)
-                            import torchvision
-                            image_tensor = torchvision.transforms.ToTensor()(sample)
-                            self.writer.add_image("samples/sample_0", image_tensor, global_step=global_step)
-
-                            # Free sample-related tensors and clear VRAM cache
-                            del sample, image_tensor
-                            torch.cuda.empty_cache()
-
-                            # onthefly_gpu mode: Restore text encoders to GPU after sample generation
-                            if text_encoding_mode == "onthefly_gpu":
-                                self.move_text_encoder_to_gpu()
-
-                        # Note: Progress callback is now called per-MNT-iteration (above)
-                        # for real-time frontend updates during MNT training.
-
-                        # Check if total_steps reached (step-based training)
-                        if total_steps is not None and global_step >= total_steps:
-                            print(f"\n{self.log_prefix} Reached target steps ({total_steps}), stopping training")
-                            return  # Exit training loop
-                    else:
-                        # Gradient accumulation: Free loss tensor but don't do optimizer step yet
-                        del loss, recon_loss
+                    # Note: With Sequential MNT, optimizer.step() and loss deletion
+                    # are handled inside the MNT loop. No else clause needed here.
 
         except KeyboardInterrupt:
             print(f"\n{self.log_prefix} Training interrupted by user")

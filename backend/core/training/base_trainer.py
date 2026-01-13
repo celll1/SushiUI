@@ -6117,6 +6117,46 @@ class BaseTrainer(ABC):
                         # Increment global step for each MNT iteration
                         global_step += 1
 
+                        # ============================================================
+                        # Per-MNT-iteration logging (for real-time frontend updates)
+                        # ============================================================
+                        # Log loss immediately for each MNT iteration so frontend
+                        # updates every step, not just every MNT*grad_accum steps.
+                        # Grad norm will be updated after optimizer step.
+                        mnt_loss_value = loss.item()
+                        mnt_pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
+                        mnt_recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+                        mnt_current_lr = self.lr_scheduler.get_last_lr()[0]
+
+                        # TensorBoard logging (per-iteration for loss only)
+                        self.writer.add_scalar("train/loss", mnt_loss_value, global_step)
+                        self.writer.add_scalar("train/pred_loss", mnt_pred_loss_value, global_step)
+                        self.writer.add_scalar("train/recon_loss", mnt_recon_loss_value, global_step)
+                        self.writer.add_scalar("train/lr", mnt_current_lr, global_step)
+
+                        # Database logging (per-iteration, grad_norm=0 placeholder)
+                        # Grad norm will be updated after optimizer step for the entire group
+                        if self.run_id is not None:
+                            self._log_metrics_to_db(
+                                step=global_step,
+                                loss=mnt_pred_loss_value,
+                                recon_loss=mnt_recon_loss_value,
+                                learning_rate=mnt_current_lr,
+                                grad_norm=0.0,  # Placeholder, updated after optimizer step
+                                grad_norm_text_encoder=0.0,
+                                grad_norm_unet=0.0
+                            )
+
+                        # Progress callback (per-iteration for real-time UI updates)
+                        if progress_callback:
+                            progress_callback(
+                                phase="training",
+                                step=global_step,
+                                total=actual_total_steps,
+                                epoch=epoch,
+                                loss=mnt_loss_value,
+                            )
+
                     # Free batch tensors AFTER all MNT iterations complete
                     del latents, text_embeddings
                     if attention_mask is not None:
@@ -6171,33 +6211,30 @@ class BaseTrainer(ABC):
                             # Single scheduler
                             self.lr_scheduler.step()
 
-                        # Logging (convert loss tensor to float for logging)
-                        loss_value = loss.item()
-                        pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
-                        recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
-                        current_lr = self.lr_scheduler.get_last_lr()[0]
-
-                        # TensorBoard logging (for external tools, backward compatibility)
-                        self.writer.add_scalar("train/loss", loss_value, global_step)  # Combined loss (for backprop)
-                        self.writer.add_scalar("train/pred_loss", pred_loss_value, global_step)  # Prediction loss (MSE)
-                        self.writer.add_scalar("train/recon_loss", recon_loss_value, global_step)  # Reconstruction loss
-                        self.writer.add_scalar("train/lr", current_lr, global_step)
+                        # ============================================================
+                        # Post-optimizer-step grad norm update
+                        # ============================================================
+                        # Update grad_norm for the last MNT steps in this accumulation group
+                        # TensorBoard: grad_norm only logged at optimizer step
                         self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
                         self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
                         self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
 
-                        # Database logging (for fast frontend queries, UPSERT on duplicate step)
-                        # Note: 'loss' column stores pred_loss (prediction loss) for individual monitoring
+                        # Update all steps in this accumulation group with the same grad_norm
+                        # (grad_norm is computed from accumulated gradients, same for all steps in group)
                         if self.run_id is not None:
-                            self._log_metrics_to_db(
-                                step=global_step,
-                                loss=pred_loss_value,  # Store pred_loss in 'loss' column
-                                recon_loss=recon_loss_value,
-                                learning_rate=current_lr,
-                                grad_norm=grad_norm_total,
-                                grad_norm_text_encoder=grad_norm_te,
-                                grad_norm_unet=grad_norm_unet
-                            )
+                            # Update grad_norm for all steps in this accumulation group
+                            start_step = global_step - effective_gradient_accumulation + 1
+                            for update_step in range(start_step, global_step + 1):
+                                self._log_metrics_to_db(
+                                    step=update_step,
+                                    loss=None,  # Don't update loss (already logged per-iteration)
+                                    recon_loss=None,
+                                    learning_rate=None,
+                                    grad_norm=grad_norm_total,
+                                    grad_norm_text_encoder=grad_norm_te,
+                                    grad_norm_unet=grad_norm_unet
+                                )
 
                         # Flush TensorBoard writer periodically to prevent DRAM accumulation
                         # (TensorBoard buffers events internally, can accumulate GBs over long training)
@@ -6277,15 +6314,8 @@ class BaseTrainer(ABC):
                             if text_encoding_mode == "onthefly_gpu":
                                 self.move_text_encoder_to_gpu()
 
-                        # Progress callback
-                        if progress_callback:
-                            progress_callback(
-                                phase="training",
-                                step=global_step,
-                                total=actual_total_steps,
-                                epoch=epoch,
-                                loss=loss_value,
-                            )
+                        # Note: Progress callback is now called per-MNT-iteration (above)
+                        # for real-time frontend updates during MNT training.
 
                         # Check if total_steps reached (step-based training)
                         if total_steps is not None and global_step >= total_steps:
@@ -6479,9 +6509,9 @@ class BaseTrainer(ABC):
     def _log_metrics_to_db(
         self,
         step: int,
-        loss: float,
-        recon_loss: float,
-        learning_rate: float,
+        loss: float = None,
+        recon_loss: float = None,
+        learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
         grad_norm_unet: float = None
@@ -6493,15 +6523,16 @@ class BaseTrainer(ABC):
         - UPSERT behavior: Same (run_id, step) will overwrite existing values
         - Allows training restart from checkpoint without duplicating metrics
         - Fast queries: indexed by (run_id, step) for incremental fetching
+        - Partial update: If a parameter is None, existing value is preserved
 
         Args:
             step: Global training step
-            loss: Prediction loss value (MSE with Min-SNR weighting)
-            recon_loss: Reconstruction loss value
-            learning_rate: Current learning rate
-            grad_norm: Total gradient norm (optional)
-            grad_norm_text_encoder: Text encoder gradient norm (optional)
-            grad_norm_unet: U-Net/Transformer gradient norm (optional)
+            loss: Prediction loss value (MSE with Min-SNR weighting), None to keep existing
+            recon_loss: Reconstruction loss value, None to keep existing
+            learning_rate: Current learning rate, None to keep existing
+            grad_norm: Total gradient norm, None to keep existing
+            grad_norm_text_encoder: Text encoder gradient norm, None to keep existing
+            grad_norm_unet: U-Net/Transformer gradient norm, None to keep existing
 
         Note:
             The 'loss' parameter stores prediction loss (not combined loss).
@@ -6523,21 +6554,28 @@ class BaseTrainer(ABC):
 
             if existing:
                 # Update existing metric (training restarted from checkpoint)
-                existing.loss = loss
-                existing.recon_loss = recon_loss
-                existing.learning_rate = learning_rate
-                existing.grad_norm = grad_norm
-                existing.grad_norm_text_encoder = grad_norm_text_encoder
-                existing.grad_norm_unet = grad_norm_unet
+                # Only update fields that are not None (partial update support)
+                if loss is not None:
+                    existing.loss = loss
+                if recon_loss is not None:
+                    existing.recon_loss = recon_loss
+                if learning_rate is not None:
+                    existing.learning_rate = learning_rate
+                if grad_norm is not None:
+                    existing.grad_norm = grad_norm
+                if grad_norm_text_encoder is not None:
+                    existing.grad_norm_text_encoder = grad_norm_text_encoder
+                if grad_norm_unet is not None:
+                    existing.grad_norm_unet = grad_norm_unet
                 existing.timestamp = datetime.now()
             else:
-                # Insert new metric
+                # Insert new metric (use 0.0 as default for required fields)
                 metric = TrainingMetrics(
                     run_id=self.run_id,
                     step=step,
-                    loss=loss,
-                    recon_loss=recon_loss,
-                    learning_rate=learning_rate,
+                    loss=loss if loss is not None else 0.0,
+                    recon_loss=recon_loss if recon_loss is not None else 0.0,
+                    learning_rate=learning_rate if learning_rate is not None else 0.0,
                     grad_norm=grad_norm,
                     grad_norm_text_encoder=grad_norm_text_encoder,
                     grad_norm_unet=grad_norm_unet

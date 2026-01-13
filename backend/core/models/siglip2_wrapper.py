@@ -301,13 +301,90 @@ class SigLIP2TextEncoder(nn.Module):
         """
         Enable gradient checkpointing for memory-efficient training.
 
-        This is forwarded to the underlying text_model.
+        SigLIP2's Siglip2TextTransformer doesn't have built-in gradient_checkpointing_enable(),
+        so we implement it manually by wrapping the encoder's forward pass.
         """
         if hasattr(self.text_model, 'gradient_checkpointing_enable'):
+            # Use built-in if available (future HuggingFace updates may add it)
             self.text_model.gradient_checkpointing_enable()
-            print(f"[SigLIP2] Gradient checkpointing enabled for text encoder")
+            print(f"[SigLIP2] Gradient checkpointing enabled for text encoder (built-in)")
+        elif hasattr(self.text_model, 'encoder') and hasattr(self.text_model.encoder, 'layers'):
+            # Manual implementation: wrap encoder layers with checkpoint
+            self._enable_manual_gradient_checkpointing(self.text_model.encoder)
+            print(f"[SigLIP2] Gradient checkpointing enabled for text encoder (manual, {len(self.text_model.encoder.layers)} layers)")
         else:
-            print(f"[SigLIP2] WARNING: text_model does not support gradient_checkpointing_enable()")
+            print(f"[SigLIP2] WARNING: text_model does not support gradient checkpointing")
+
+    def _enable_manual_gradient_checkpointing(self, encoder):
+        """
+        Manually enable gradient checkpointing by monkey-patching encoder forward.
+
+        This wraps each encoder layer with torch.utils.checkpoint.checkpoint()
+        to trade computation for memory during backward pass.
+        """
+        import torch.utils.checkpoint as checkpoint_utils
+
+        # Store original forward method
+        original_forward = encoder.forward
+
+        # Get reference to layers (need to capture in closure)
+        layers = encoder.layers
+
+        def checkpointed_forward(inputs_embeds, attention_mask=None, **kwargs):
+            """
+            Forward pass with gradient checkpointing on each layer.
+
+            Note: SigLIP2's Siglip2Encoder.forward() uses 'inputs_embeds' (not 'hidden_states').
+            We replicate this but wrap each layer call with checkpoint().
+
+            Args:
+                inputs_embeds: Input embeddings [batch_size, seq_len, hidden_size]
+                attention_mask: Attention mask [batch_size, seq_len] or None
+                **kwargs: Additional arguments (output_attentions, output_hidden_states, return_dict)
+            """
+            output_attentions = kwargs.get('output_attentions', False)
+            output_hidden_states = kwargs.get('output_hidden_states', False)
+            return_dict = kwargs.get('return_dict', True)
+
+            hidden_states = inputs_embeds
+            all_hidden_states = () if output_hidden_states else None
+            all_attentions = () if output_attentions else None
+
+            for layer in layers:
+                if output_hidden_states:
+                    all_hidden_states = all_hidden_states + (hidden_states,)
+
+                # Use checkpoint to save memory (recomputes activations during backward)
+                # use_reentrant=False is recommended for modern PyTorch
+                hidden_states = checkpoint_utils.checkpoint(
+                    layer,
+                    hidden_states,
+                    attention_mask,
+                    use_reentrant=False
+                )
+
+                if output_attentions:
+                    # Note: When using checkpoint, attention weights are not available
+                    # This is a limitation of gradient checkpointing
+                    all_attentions = all_attentions + (None,)
+
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+
+            # Return in expected format
+            if return_dict:
+                from transformers.modeling_outputs import BaseModelOutput
+                return BaseModelOutput(
+                    last_hidden_state=hidden_states,
+                    hidden_states=all_hidden_states,
+                    attentions=all_attentions
+                )
+            else:
+                return (hidden_states, all_hidden_states, all_attentions)
+
+        # Replace forward method
+        encoder.forward = checkpointed_forward
+        encoder._gradient_checkpointing_enabled = True
 
 
 class SigLIP2ImageEncoder(nn.Module):
@@ -499,13 +576,85 @@ class SigLIP2ImageEncoder(nn.Module):
         """
         Enable gradient checkpointing for memory-efficient training.
 
-        This is forwarded to the underlying vision_model.
+        SigLIP2's Siglip2VisionTransformer doesn't have built-in gradient_checkpointing_enable(),
+        so we implement it manually by wrapping the encoder's forward pass.
         """
         if hasattr(self.vision_model, 'gradient_checkpointing_enable'):
+            # Use built-in if available (future HuggingFace updates may add it)
             self.vision_model.gradient_checkpointing_enable()
-            print(f"[SigLIP2] Gradient checkpointing enabled for image encoder")
+            print(f"[SigLIP2] Gradient checkpointing enabled for image encoder (built-in)")
+        elif hasattr(self.vision_model, 'encoder') and hasattr(self.vision_model.encoder, 'layers'):
+            # Manual implementation: wrap encoder layers with checkpoint
+            self._enable_manual_gradient_checkpointing(self.vision_model.encoder)
+            print(f"[SigLIP2] Gradient checkpointing enabled for image encoder (manual, {len(self.vision_model.encoder.layers)} layers)")
         else:
-            print(f"[SigLIP2] WARNING: vision_model does not support gradient_checkpointing_enable()")
+            print(f"[SigLIP2] WARNING: vision_model does not support gradient checkpointing")
+
+    def _enable_manual_gradient_checkpointing(self, encoder):
+        """
+        Manually enable gradient checkpointing by monkey-patching encoder forward.
+
+        This wraps each encoder layer with torch.utils.checkpoint.checkpoint()
+        to trade computation for memory during backward pass.
+        """
+        import torch.utils.checkpoint as checkpoint_utils
+
+        # Get reference to layers (need to capture in closure)
+        layers = encoder.layers
+
+        def checkpointed_forward(inputs_embeds, attention_mask=None, **kwargs):
+            """
+            Forward pass with gradient checkpointing on each layer.
+
+            Note: SigLIP2's Siglip2Encoder.forward() uses 'inputs_embeds' (not 'hidden_states').
+            We replicate this but wrap each layer call with checkpoint().
+
+            Args:
+                inputs_embeds: Input embeddings [batch_size, seq_len, hidden_size]
+                attention_mask: Attention mask [batch_size, seq_len] or None
+                **kwargs: Additional arguments (output_attentions, output_hidden_states, return_dict)
+            """
+            output_attentions = kwargs.get('output_attentions', False)
+            output_hidden_states = kwargs.get('output_hidden_states', False)
+            return_dict = kwargs.get('return_dict', True)
+
+            hidden_states = inputs_embeds
+            all_hidden_states = () if output_hidden_states else None
+            all_attentions = () if output_attentions else None
+
+            for layer in layers:
+                if output_hidden_states:
+                    all_hidden_states = all_hidden_states + (hidden_states,)
+
+                # Use checkpoint to save memory (recomputes activations during backward)
+                # use_reentrant=False is recommended for modern PyTorch
+                hidden_states = checkpoint_utils.checkpoint(
+                    layer,
+                    hidden_states,
+                    attention_mask,
+                    use_reentrant=False
+                )
+
+                if output_attentions:
+                    all_attentions = all_attentions + (None,)
+
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+
+            # Return in expected format
+            if return_dict:
+                from transformers.modeling_outputs import BaseModelOutput
+                return BaseModelOutput(
+                    last_hidden_state=hidden_states,
+                    hidden_states=all_hidden_states,
+                    attentions=all_attentions
+                )
+            else:
+                return (hidden_states, all_hidden_states, all_attentions)
+
+        # Replace forward method
+        encoder.forward = checkpointed_forward
+        encoder._gradient_checkpointing_enabled = True
 
 
 class SigLIP2MultiModalEncoder(nn.Module):

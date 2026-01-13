@@ -81,6 +81,95 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
+def detect_start_epoch_from_checkpoint(output_dir: str, resume_from_checkpoint: str) -> int:
+    """
+    Detect the start epoch from checkpoint state file.
+
+    This is used to load dataset items with the correct epoch_num at initialization,
+    avoiding redundant dataset scanning when resuming training.
+
+    Args:
+        output_dir: Training output directory containing checkpoints
+        resume_from_checkpoint: Checkpoint setting ("latest", specific path, or None)
+
+    Returns:
+        Start epoch (0 for new training, actual epoch for resume)
+    """
+    import json
+    import re
+
+    if not resume_from_checkpoint:
+        return 0
+
+    output_path = Path(output_dir)
+    if not output_path.exists():
+        return 0
+
+    # Find the latest checkpoint step
+    if resume_from_checkpoint == "latest":
+        # Find all state files
+        state_files = list(output_path.glob("*_step_*_state.json"))
+        if not state_files:
+            return 0
+
+        # Extract step numbers and find the latest
+        def get_step(path):
+            try:
+                step_str = path.stem.split("_step_")[-1].replace("_state", "")
+                return int(step_str)
+            except:
+                return 0
+
+        state_files_with_steps = [(f, get_step(f)) for f in state_files]
+        state_files_with_steps.sort(key=lambda x: x[1], reverse=True)
+
+        if not state_files_with_steps:
+            return 0
+
+        latest_state_file = state_files_with_steps[0][0]
+    else:
+        # Specific checkpoint path - find corresponding state file
+        checkpoint_path = Path(resume_from_checkpoint)
+        if not checkpoint_path.exists():
+            # Try relative to output_dir
+            checkpoint_path = output_path / resume_from_checkpoint
+
+        if not checkpoint_path.exists():
+            return 0
+
+        # Extract step from checkpoint filename
+        try:
+            step_str = checkpoint_path.stem.split("_step_")[-1]
+            step = int(step_str)
+        except:
+            return 0
+
+        # Find corresponding state file
+        state_file_pattern = f"*_step_{step:06d}_state.json"
+        state_files = list(output_path.glob(state_file_pattern))
+
+        # Try without leading zeros for legacy format
+        if not state_files:
+            state_file_pattern = f"*_step_{step}_state.json"
+            state_files = list(output_path.glob(state_file_pattern))
+
+        if not state_files:
+            return 0
+
+        latest_state_file = state_files[0]
+
+    # Read epoch from state file
+    try:
+        with open(latest_state_file, 'r') as f:
+            state = json.load(f)
+        epoch = state.get('epoch', 0)
+        print(f"[TrainRunner] Detected start_epoch={epoch} from checkpoint: {latest_state_file.name}")
+        return epoch
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to read state file {latest_state_file}: {e}")
+        return 0
+
+
 def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: int = None, caption_types: list = None) -> list:
     """
     Get all items from dataset with caption processing applied.
@@ -471,6 +560,22 @@ def main():
             print("[TrainRunner] ERROR: No datasets configured")
             sys.exit(1)
 
+        # ============================================================
+        # Detect Start Epoch for Resume Training (before dataset loading)
+        # ============================================================
+        # Extract train_config early to check resume_from_checkpoint
+        process_config = config['config']['process'][0]
+        train_config = process_config['train']
+        resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+
+        # Detect start_epoch from checkpoint to load dataset with correct epoch_num
+        # This avoids redundant dataset scanning when resuming (initial load + epoch start)
+        start_epoch = detect_start_epoch_from_checkpoint(run.output_dir, resume_from_checkpoint)
+        if start_epoch > 0:
+            print(f"[TrainRunner] Resume training detected: loading dataset for epoch {start_epoch}")
+        else:
+            print(f"[TrainRunner] New training: loading dataset for epoch 0")
+
         print(f"[TrainRunner] Loading {len(dataset_configs)} dataset(s)...")
 
         # Load all datasets and combine items
@@ -486,9 +591,9 @@ def main():
             print(f"[TrainRunner] Dataset {i+1}: {dataset.name} ({dataset.path})")
             dataset_unique_ids.append(dataset.unique_id)
 
-            # Get dataset items and tag with dataset_unique_id for cache management
+            # Get dataset items with correct epoch_num (start_epoch for resume, 0 for new training)
             caption_types = ds_config.get("caption_types", [])
-            dataset_items = get_dataset_items(datasets_db, dataset_id, run_id=run_id, caption_types=caption_types)
+            dataset_items = get_dataset_items(datasets_db, dataset_id, epoch_num=start_epoch, run_id=run_id, caption_types=caption_types)
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
 
             # Add dataset_unique_id to each item for cache management
@@ -506,9 +611,7 @@ def main():
         # Use combined dataset items
         dataset_items = all_dataset_items
 
-        # Extract training parameters from config
-        process_config = config['config']['process'][0]
-        train_config = process_config['train']
+        # Extract remaining config sections (process_config and train_config already extracted above)
         network_config = process_config.get('network', {})
         model_config = process_config.get('model', {})
 
@@ -592,14 +695,14 @@ def main():
             if dataset and dataset.unique_id in items_by_dataset:
                 items_by_dataset[dataset.unique_id]["config"] = ds_config
 
-        # Create Dataset wrapper objects
+        # Create Dataset wrapper objects with initial_epoch for skip-reload optimization
         training_datasets = [
-            TrainRunnerDataset(unique_id, data["items"], data["config"])
+            TrainRunnerDataset(unique_id, data["items"], data["config"], initial_epoch=start_epoch)
             for unique_id, data in items_by_dataset.items()
             if data["config"] is not None
         ]
 
-        print(f"[TrainRunner] Created {len(training_datasets)} dataset wrapper(s)")
+        print(f"[TrainRunner] Created {len(training_datasets)} dataset wrapper(s) (initial_epoch={start_epoch})")
         for ds in training_datasets:
             print(f"  Dataset {ds.unique_id}: {len(ds.items)} items")
 

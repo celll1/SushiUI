@@ -3392,7 +3392,7 @@ class BaseTrainer(ABC):
 
         # Free intermediate tensors explicitly to reduce VRAM usage
         # But keep 'loss' tensor for backward pass
-        del noise, noisy_latents, model_pred, recon_loss
+        del noise, noisy_latents, model_pred, target, recon_loss
         if self.is_sdxl and added_cond_kwargs is not None:
             del added_cond_kwargs
 
@@ -6441,8 +6441,7 @@ class BaseTrainer(ABC):
                             # Also clear CUDA cache to prevent fragmented memory accumulation
                             torch.cuda.empty_cache()
 
-                        # Free loss tensors after logging
-                        del loss, pred_loss, recon_loss
+                        # Note: loss, pred_loss, recon_loss already deleted in MNT loop (Line 6350)
 
                         # Save checkpoint
                         if global_step % save_every_n_steps == 0:

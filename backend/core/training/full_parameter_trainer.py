@@ -5,11 +5,10 @@ This is a modular implementation using model-specific adapters:
 - SD15FullParameterAdapter: SD1.5 models
 - SDXLFullParameterAdapter: SDXL models
 - ZImageFullParameterAdapter: Z-Image models
-- DEUSFullParameterAdapter: DEUS models
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, Z-Image, and DEUS
+- Supports SD1.5, SDXL, and Z-Image
 - Clean separation of concerns
 - Easy to extend with new model types
 
@@ -19,7 +18,6 @@ References:
 - musubi-tuner (Apache-2 license) by kohya-ss (Z-Image support)
 
 Author: Claude (2026-01-04)
-Last Updated: Claude (2026-01-08) - Added DEUS support
 """
 
 from pathlib import Path
@@ -31,7 +29,6 @@ from .adapters import (
     SD15FullParameterAdapter,
     SDXLFullParameterAdapter,
     ZImageFullParameterAdapter,
-    DEUSFullParameterAdapter,
 )
 
 
@@ -47,7 +44,7 @@ class FullParameterTrainer(BaseTrainer):
         self,
         train_unet: bool = True,
         train_text_encoder: bool = False,
-        train_image_encoder: bool = False,  # DEUS Image Encoder (future T2I support)
+        train_image_encoder: bool = False,  # Image Encoder (future support)
         **kwargs
     ):
         """
@@ -56,7 +53,7 @@ class FullParameterTrainer(BaseTrainer):
         Args:
             train_unet: Whether to train U-Net/Transformer
             train_text_encoder: Whether to train Text Encoder(s)
-            train_image_encoder: Whether to train Image Encoder (DEUS only, future T2I)
+            train_image_encoder: Whether to train Image Encoder (future support)
             **kwargs: Additional arguments passed to BaseTrainer
         """
         # Full fine-tune settings (set before super().__init__)
@@ -84,9 +81,6 @@ class FullParameterTrainer(BaseTrainer):
         if self.is_zimage:
             self.adapter = ZImageFullParameterAdapter(self)
             print(f"{self.log_prefix} Using ZImageFullParameterAdapter")
-        elif self.is_deus:
-            self.adapter = DEUSFullParameterAdapter(self)
-            print(f"{self.log_prefix} Using DEUSFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")
@@ -142,7 +136,7 @@ class FullParameterTrainer(BaseTrainer):
 
         # Detect checkpoint format: safetensors file vs diffusers directory
         if checkpoint_path_obj.is_file() and checkpoint_path_obj.suffix == ".safetensors":
-            # Single safetensors file format (DEUS/Z-Image training)
+            # Single safetensors file format (Z-Image training)
             if not checkpoint_path_obj.exists():
                 raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 

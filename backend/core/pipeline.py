@@ -44,6 +44,11 @@ class DiffusionPipelineManager:
         self.zimage_components: Optional[Dict[str, Any]] = None
         self.is_zimage_model: bool = False
 
+        # DEUS components (SDXL-like architecture with SigLIP-2 text encoder)
+        # Key differences from SDXL: single text encoder (1152d), no time_ids, 2-Pass CFG
+        self.deus_components: Optional[Dict[str, Any]] = None
+        self.is_deus_model: bool = False
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -136,6 +141,16 @@ class DiffusionPipelineManager:
                 self.zimage_components = None
                 self.is_zimage_model = False
 
+            # Clean up DEUS components
+            if self.deus_components is not None:
+                print("[Pipeline] Cleaning up DEUS components...")
+                for comp_name, comp in self.deus_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.deus_components = None
+                self.is_deus_model = False
+
             # Force garbage collection
             gc.collect()
 
@@ -207,14 +222,66 @@ class DiffusionPipelineManager:
                 print("[Pipeline] Z-Image model loaded successfully")
                 return
 
+            # Check if DEUS (SDXL-like with SigLIP-2, detected by "unet" key without "transformer")
+            if isinstance(model_result, dict) and "unet" in model_result and "transformer" not in model_result:
+                # DEUS component-based model
+                print("[Pipeline] DEUS model detected (component-based dict with unet)")
+                self.deus_components = model_result
+                self.is_deus_model = True
+                self.is_zimage_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # Initialize VRAM optimization: Move all components to CPU
+                # DEUS uses SDXL-like VRAM optimization (sequential offloading)
+                print("[VRAM] Initializing sequential loading strategy for DEUS...")
+                from core.vram_optimization import (
+                    move_text_encoders_to_cpu,
+                    move_unet_to_cpu,
+                    move_vae_to_cpu
+                )
+                # Note: DEUS has single text encoder, but we can use the same functions
+                if self.deus_components.get("text_encoder") is not None:
+                    self.deus_components["text_encoder"].to("cpu")
+                if self.deus_components.get("unet") is not None:
+                    self.deus_components["unet"].to("cpu")
+                if self.deus_components.get("vae") is not None:
+                    self.deus_components["vae"].to("cpu")
+                torch.cuda.empty_cache()
+                print("[VRAM] All DEUS components moved to CPU. Will load to GPU as needed.")
+
+                # DEUS info
+                model_type = "deus"
+                is_v_prediction = False  # DEUS uses epsilon prediction
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] DEUS model loaded successfully")
+                return
+
             # Standard SD1.5/SDXL pipeline
             base_pipeline = model_result
             self.is_zimage_model = False
+            self.is_deus_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
             model_arch = "SDXL" if is_sdxl else "SD1.5"
-            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image)")
+            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image/DEUS)")
 
             # Log component devices after loading
             self._log_component_devices(base_pipeline, "After model loading")
@@ -600,6 +667,177 @@ class DiffusionPipelineManager:
             scheduler_config["stochastic_sampling"] = is_ancestral
 
             return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
+
+    def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from text using DEUS (SDXL-like with SigLIP-2)
+
+        DEUS is similar to SDXL but with key differences:
+        - Single text encoder: SigLIP-2 (1152d) instead of dual CLIP (2048d)
+        - No added_cond_kwargs: No time_ids or pooled_embeds needed
+        - 2-Pass CFG: Due to variable sequence length, negative and positive are processed separately
+
+        Uses custom_sampling_loop with is_deus=True for advanced features:
+        - Prompt editing
+        - LoRA step range
+        - NAG
+        - CFG schedule
+        - Progress callback
+        - ControlNet (future)
+
+        Args:
+            params: Generation parameters (same as SDXL)
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting txt2img generation (using custom_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+
+            print(f"[DEUS] Generating {width}x{height} image")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            # Move text encoder to GPU for encoding
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            # DEUS uses SigLIP-2 (single text encoder, 1152d)
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # DEUS doesn't use pooled embeddings (unlike SDXL)
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_sampling_loop with is_deus=True for 2-Pass CFG
+            image = custom_sampling_loop(
+                pipeline=pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                width=width,
+                height=height,
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                latents=None,
+                prompt_embeds_callback=None,  # TODO: Add prompt editing support
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,  # TODO: Add ControlNet support
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] Generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
 
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
@@ -2573,6 +2811,10 @@ class DiffusionPipelineManager:
         # Z-Image handling
         if self.is_zimage_model:
             return self._generate_txt2img_zimage(params, progress_callback, step_callback)
+
+        # DEUS handling (SDXL-like with SigLIP-2 text encoder)
+        if self.is_deus_model:
+            return self._generate_txt2img_deus(params, progress_callback, step_callback)
 
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")

@@ -113,40 +113,58 @@ class DeusPipeline(nn.Module):
         # Encode prompt (text + optional images)
         print(f"[Pipeline] Encoding prompt (clip_skip={clip_skip})...")
 
-        # For CFG, encode both prompts together to ensure same sequence length
+        # For CFG, encode both prompts with new token format
         if guidance_scale > 1.0:
             if negative_prompt is None:
                 negative_prompt = [""] * len(prompt)
             elif isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
 
-            # Concatenate prompts for batch encoding (ensures same seq_len with padding)
-            all_prompts = negative_prompt + prompt
-
-            # Encode all prompts together (text encoder will pad to same length)
-            all_text_embeddings = self.encoder.text_encoder.encode(all_prompts, clip_skip=clip_skip)
-
-            # Split into negative and positive
             batch_size_single = len(prompt)
-            negative_text_embeddings = all_text_embeddings[:batch_size_single]
-            positive_text_embeddings = all_text_embeddings[batch_size_single:]
 
-            # Add image embeddings (only to positive prompt)
+            # Encode with new format: <text> [IMG0] <image> [END] for TI2I, <text> [END] for T2I
             if images is None:
-                # Use null image for both
-                null_image_embedding = self.encoder.null_image_embedding.expand(batch_size_single, -1, -1)
-                negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
-                encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
+                # T2I: Use [END] token only (no images)
+                encoder_hidden_states = self.encoder.encode(
+                    prompts=prompt,
+                    images=None,
+                    use_end_token=True,
+                    clip_skip=clip_skip
+                )
+                negative_encoder_hidden_states = self.encoder.encode(
+                    prompts=negative_prompt,
+                    images=None,
+                    use_end_token=True,
+                    clip_skip=clip_skip
+                )
             else:
-                # Encode images for positive prompt
+                # TI2I: Use [IMG0] token + image + [END] token
                 if not isinstance(images, list):
                     images = [images]
-                image_embeddings = self.encoder.image_encoder.encode(images)
+                encoder_hidden_states = self.encoder.encode(
+                    prompts=prompt,
+                    images=images,
+                    use_end_token=True,
+                    clip_skip=clip_skip
+                )
+                # Negative: Use [END] token only (no images for negative)
+                negative_encoder_hidden_states = self.encoder.encode(
+                    prompts=negative_prompt,
+                    images=None,
+                    use_end_token=True,
+                    clip_skip=clip_skip
+                )
 
-                # Add null to negative, images to positive
-                null_image_embedding = self.encoder.null_image_embedding.expand(batch_size_single, -1, -1)
-                negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
-                encoder_hidden_states = torch.cat([positive_text_embeddings, image_embeddings], dim=1)
+            # Pad negative embeddings to match positive if needed (TI2I has longer positive)
+            if encoder_hidden_states.shape[1] != negative_encoder_hidden_states.shape[1]:
+                seq_len_diff = encoder_hidden_states.shape[1] - negative_encoder_hidden_states.shape[1]
+                if seq_len_diff > 0:
+                    padding = torch.zeros(
+                        (negative_encoder_hidden_states.shape[0], seq_len_diff, negative_encoder_hidden_states.shape[2]),
+                        dtype=negative_encoder_hidden_states.dtype,
+                        device=negative_encoder_hidden_states.device
+                    )
+                    negative_encoder_hidden_states = torch.cat([negative_encoder_hidden_states, padding], dim=1)
 
             # Repeat for num_images_per_prompt
             if num_images_per_prompt > 1:
@@ -158,11 +176,11 @@ class DeusPipeline(nn.Module):
             # Concatenate for CFG
             encoder_hidden_states = torch.cat([negative_encoder_hidden_states, encoder_hidden_states])
         else:
-            # No CFG, just encode positive prompt
+            # No CFG, just encode positive prompt with [END] token
             encoder_hidden_states = self.encoder.encode(
                 prompts=prompt,
                 images=images,
-                use_null_image=True,
+                use_end_token=True,
                 clip_skip=clip_skip
             )
 

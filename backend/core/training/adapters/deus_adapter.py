@@ -1,19 +1,21 @@
 """
-SDXL model adapter for LoRA and Full Parameter training.
+DEUS model adapter for LoRA and Full Parameter training.
 
 Model characteristics:
-- Dual text encoders (TE1: CLIP ViT-L, TE2: OpenCLIP ViT-bigG)
-- U-Net with 11 Transformer2DModel blocks
-- Pooled embeddings from TE2
-- Time IDs for micro-conditioning
+- Single SigLIP-2 text encoder (1152d output, variable sequence length)
+- U-Net with Transformer2DModel blocks (similar to SDXL)
+- No pooled embeddings (unlike SDXL)
+- No time_ids / added_cond_kwargs (unlike SDXL)
+- SDXL VAE (same scaling factor 0.13025)
+- DDPM epsilon prediction (same as SDXL)
 
-Critical fixes from rewrite:
-1. Text Encoder layer selection: All layers (not specific layers)
-2. TE2 penultimate layer: hidden_states[-2] (NOT final layer)
-3. EOS token pooling workaround: Manually pool last token for TI compatibility
-4. Component-specific learning rates: te1_lr, te2_lr, unet_lr
+Key differences from SDXL:
+1. Single text encoder (SigLIP-2) vs dual CLIP
+2. No pooled_embeddings in forward pass
+3. No time_ids / added_cond_kwargs
+4. U-Net forward: unet(latents, timesteps, encoder_hidden_states)
 
-Author: Claude (2026-01-04)
+Author: Claude (2026-01-15)
 """
 
 from pathlib import Path
@@ -28,22 +30,20 @@ from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
 # ============================================================
-# SDXL LoRA Adapter
+# DEUS LoRA Adapter
 # ============================================================
 
-class SDXLLoRAAdapter(BaseLoRAAdapter):
-    """LoRA adapter for SDXL models."""
+class DEUSLoRAAdapter(BaseLoRAAdapter):
+    """LoRA adapter for DEUS models."""
 
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         """
-        Apply LoRA to all Linear layers in Transformer2DModel modules (diffusers style).
+        Apply LoRA to all Linear layers in Transformer2DModel modules.
 
-        SDXL has 11 transformer blocks:
-        - down_blocks.1.attentions.0-1 (IN04, IN05)
-        - down_blocks.2.attentions.0-1 (IN07, IN08)
-        - mid_block.attentions.0 (MID)
-        - up_blocks.0.attentions.0-2 (OUT00-OUT02)
-        - up_blocks.1.attentions.0-2 (OUT03-OUT05)
+        DEUS uses a U-Net architecture similar to SDXL with Transformer2DModel blocks.
+        The block structure is the same as SDXL, but DEUS uses:
+        - DeusCrossAttnDownBlock2D / DeusCrossAttnUpBlock2D
+        - DeusMidBlock2DCrossAttn
 
         Following sd-scripts approach: iterate ALL Linear layers within Transformer2DModel.
         This includes:
@@ -60,10 +60,11 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         count = 0
         unet = self.trainer.unet
 
-        # Find all Transformer2DModel blocks
+        # Find all Transformer2DModel blocks (or DEUS-specific transformer blocks)
         for block_name, block_module in unet.named_modules():
             # Find Transformer2DModel blocks
-            if block_module.__class__.__name__ != "Transformer2DModel":
+            # DEUS may use "Transformer2DModel" or a custom variant
+            if block_module.__class__.__name__ not in ["Transformer2DModel", "DeusTransformer2DModel"]:
                 continue
 
             # Iterate ALL child Linear modules within this Transformer2DModel (sd-scripts approach)
@@ -107,12 +108,13 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
         """
-        Apply LoRA to both Text Encoders (TE1: CLIP ViT-L, TE2: OpenCLIP ViT-bigG).
+        Apply LoRA to SigLIP-2 Text Encoder.
 
-        Critical fix: Apply to ALL layers (not specific layers).
+        SigLIP-2 structure (same as CLIP):
+        - text_model.encoder.layers[N].mlp.fc1
+        - text_model.encoder.layers[N].mlp.fc2
 
-        TE1 (CLIP ViT-L): 12 layers × 2 (fc1, fc2) = 24 LoRA layers
-        TE2 (OpenCLIP ViT-bigG): 32 layers × 2 (fc1, fc2) = 64 LoRA layers
+        DEUS uses a single text encoder (SigLIP-2), unlike SDXL's dual CLIP.
 
         Args:
             lora_layers: Dictionary to store LoRA layer references
@@ -122,12 +124,28 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         """
         count = 0
 
-        # Text Encoder 1 (CLIP ViT-L): All layers
+        # SigLIP-2 Text Encoder: All layers
         if hasattr(self.trainer, "text_encoder") and self.trainer.text_encoder is not None:
-            for layer_idx, layer in enumerate(self.trainer.text_encoder.text_model.encoder.layers):
+            text_encoder = self.trainer.text_encoder
+
+            # Navigate to encoder layers
+            # SigLIP structure: text_encoder.text_model.encoder.layers
+            # Or directly: text_encoder.encoder.layers (depends on how it's loaded)
+            encoder_layers = None
+
+            if hasattr(text_encoder, "text_model") and hasattr(text_encoder.text_model, "encoder"):
+                encoder_layers = text_encoder.text_model.encoder.layers
+            elif hasattr(text_encoder, "encoder"):
+                encoder_layers = text_encoder.encoder.layers
+
+            if encoder_layers is None:
+                print("[DEUSLoRAAdapter] Warning: Could not find text encoder layers")
+                return count
+
+            for layer_idx, layer in enumerate(encoder_layers):
                 # mlp.fc1
-                # Use sd-scripts compatible naming: lora_te1_text_model_encoder_layers_{N}_mlp_fc1
-                lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc1"
+                # Use naming: lora_te_text_model_encoder_layers_{N}_mlp_fc1
+                lora_name = f"lora_te_text_model_encoder_layers_{layer_idx}_mlp_fc1"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
                 )
@@ -136,29 +154,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                 count += 1
 
                 # mlp.fc2
-                lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc2"
-                lora_layer = LoRALinearLayer(
-                    layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
-                )
-                layer.mlp.fc2 = lora_layer
-                lora_layers[lora_name] = lora_layer
-                count += 1
-
-        # Text Encoder 2 (OpenCLIP ViT-bigG): All layers
-        if hasattr(self.trainer, "text_encoder_2") and self.trainer.text_encoder_2 is not None:
-            for layer_idx, layer in enumerate(self.trainer.text_encoder_2.text_model.encoder.layers):
-                # mlp.fc1
-                # Use sd-scripts compatible naming: lora_te2_text_model_encoder_layers_{N}_mlp_fc1
-                lora_name = f"lora_te2_text_model_encoder_layers_{layer_idx}_mlp_fc1"
-                lora_layer = LoRALinearLayer(
-                    layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
-                )
-                layer.mlp.fc1 = lora_layer
-                lora_layers[lora_name] = lora_layer
-                count += 1
-
-                # mlp.fc2
-                lora_name = f"lora_te2_text_model_encoder_layers_{layer_idx}_mlp_fc2"
+                lora_name = f"lora_te_text_model_encoder_layers_{layer_idx}_mlp_fc2"
                 lora_layer = LoRALinearLayer(
                     layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
                 )
@@ -180,27 +176,22 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         """
         params = []
         unet_params = []
-        te1_params = []
-        te2_params = []
+        te_params = []
 
         for lora_name, lora_layer in lora_layers.items():
             if lora_name.startswith("lora_unet_"):
                 unet_params.extend(lora_layer.lora_down.parameters())
                 unet_params.extend(lora_layer.lora_up.parameters())
-            elif lora_name.startswith("lora_te1_"):
-                te1_params.extend(lora_layer.lora_down.parameters())
-                te1_params.extend(lora_layer.lora_up.parameters())
-            elif lora_name.startswith("lora_te2_"):
-                te2_params.extend(lora_layer.lora_down.parameters())
-                te2_params.extend(lora_layer.lora_up.parameters())
+            elif lora_name.startswith("lora_te_"):
+                te_params.extend(lora_layer.lora_down.parameters())
+                te_params.extend(lora_layer.lora_up.parameters())
 
         # Add parameter groups with component-specific learning rates
         if unet_params:
             params.append({"params": unet_params, "lr": self.trainer.unet_lr})
-        if te1_params:
-            params.append({"params": te1_params, "lr": self.trainer.text_encoder_1_lr})
-        if te2_params:
-            params.append({"params": te2_params, "lr": self.trainer.text_encoder_2_lr})
+        if te_params:
+            # Use text_encoder_lr for single text encoder
+            params.append({"params": te_params, "lr": self.trainer.text_encoder_lr})
 
         return params
 
@@ -235,20 +226,20 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             "lora_alpha": str(self.lora_alpha),
             "step": str(step),
             "epoch": str(epoch),
-            "model_type": "sdxl",
+            "model_type": "deus",
         }
 
         # Save safetensors
         save_file(lora_state_dict, output_path, metadata=metadata)
-        print(f"[SDXLLoRAAdapter] Saved LoRA checkpoint: {output_path}")
+        print(f"[DEUSLoRAAdapter] Saved LoRA checkpoint: {output_path}")
 
 
 # ============================================================
-# SDXL Full Parameter Adapter
+# DEUS Full Parameter Adapter
 # ============================================================
 
-class SDXLFullParameterAdapter(BaseFullParameterAdapter):
-    """Full parameter adapter for SDXL models."""
+class DEUSFullParameterAdapter(BaseFullParameterAdapter):
+    """Full parameter adapter for DEUS models."""
 
     def prepare_models_for_training(self):
         """Prepare models for full parameter training."""
@@ -263,19 +254,15 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             if trainer.text_encoder is not None:
                 trainer.text_encoder.requires_grad_(True)
                 trainer.text_encoder.train()
-            if trainer.text_encoder_2 is not None:
-                trainer.text_encoder_2.requires_grad_(True)
-                trainer.text_encoder_2.train()
 
         # VAE is always frozen
         if trainer.vae is not None:
             trainer.vae.requires_grad_(False)
             trainer.vae.eval()
 
-        print(f"[SDXLFullParameterAdapter] Models prepared for training")
+        print(f"[DEUSFullParameterAdapter] Models prepared for training")
         print(f"  U-Net trainable: {trainer.train_unet}")
-        print(f"  Text Encoder 1 trainable: {trainer.train_text_encoder}")
-        print(f"  Text Encoder 2 trainable: {trainer.train_text_encoder}")
+        print(f"  Text Encoder trainable: {trainer.train_text_encoder}")
 
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
         """
@@ -294,14 +281,9 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
 
         if trainer.train_text_encoder:
             if trainer.text_encoder is not None:
-                te1_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
-                if te1_params:
-                    params.append({"params": te1_params, "lr": trainer.text_encoder_1_lr})
-
-            if trainer.text_encoder_2 is not None:
-                te2_params = [p for p in trainer.text_encoder_2.parameters() if p.requires_grad]
-                if te2_params:
-                    params.append({"params": te2_params, "lr": trainer.text_encoder_2_lr})
+                te_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
+                if te_params:
+                    params.append({"params": te_params, "lr": trainer.text_encoder_lr})
 
         return params
 
@@ -309,11 +291,10 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         """
         Save full parameter checkpoint in single safetensors format.
 
-        Uses ComfyUI-compatible key prefixes:
+        Uses DEUS-compatible key prefixes (same as DeusPipeline.save_to_single_file):
         - UNet: "model.diffusion_model.*"
         - VAE: "first_stage_model.*"
-        - Text Encoder 1: "conditioner.embedders.0.transformer.*"
-        - Text Encoder 2: "conditioner.embedders.1.model.*"
+        - Text Encoder: "conditioner.embedders.0.model.*"
 
         Args:
             step: Current training step
@@ -333,46 +314,36 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save U-Net weights with ComfyUI prefix
+        # Save U-Net weights with DEUS prefix
         if trainer.train_unet and trainer.unet is not None:
-            print(f"[SDXLFullParameterAdapter] Collecting U-Net weights...")
+            print(f"[DEUSFullParameterAdapter] Collecting U-Net weights...")
             unet_state = trainer.unet.state_dict()
             for key, value in unet_state.items():
-                # Convert diffusers key to ComfyUI format
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights with ComfyUI prefix
+        # Save VAE weights with DEUS prefix
         if trainer.vae is not None:
-            print(f"[SDXLFullParameterAdapter] Collecting VAE weights...")
+            print(f"[DEUSFullParameterAdapter] Collecting VAE weights...")
             vae_state = trainer.vae.state_dict()
             for key, value in vae_state.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        # Save Text Encoder 1 weights with ComfyUI prefix
+        # Save Text Encoder weights with DEUS prefix (SigLIP-2)
         if trainer.train_text_encoder and trainer.text_encoder is not None:
-            print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 1 weights...")
-            te1_state = trainer.text_encoder.state_dict()
-            for key, value in te1_state.items():
-                # SDXL TE1: conditioner.embedders.0.transformer.*
-                combined_state_dict[f"conditioner.embedders.0.transformer.{key}"] = value.cpu()
-
-        # Save Text Encoder 2 weights with ComfyUI prefix
-        if trainer.train_text_encoder and trainer.text_encoder_2 is not None:
-            print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 2 weights...")
-            te2_state = trainer.text_encoder_2.state_dict()
-            for key, value in te2_state.items():
-                # SDXL TE2: conditioner.embedders.1.model.*
-                combined_state_dict[f"conditioner.embedders.1.model.{key}"] = value.cpu()
+            print(f"[DEUSFullParameterAdapter] Collecting Text Encoder (SigLIP-2) weights...")
+            te_state = trainer.text_encoder.state_dict()
+            for key, value in te_state.items():
+                combined_state_dict[f"conditioner.embedders.0.model.{key}"] = value.cpu()
 
         # Save to safetensors with metadata
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
-            "model_type": "sdxl",
+            "model_type": "deus",
         }
 
-        print(f"[SDXLFullParameterAdapter] Saving to {output_path}...")
+        print(f"[DEUSFullParameterAdapter] Saving to {output_path}...")
         save_file(combined_state_dict, output_path, metadata=metadata)
 
         total_params = sum(p.numel() for p in combined_state_dict.values())
-        print(f"[SDXLFullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")
+        print(f"[DEUSFullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")

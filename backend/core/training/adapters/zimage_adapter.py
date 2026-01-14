@@ -271,44 +271,70 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
         """
-        Save full parameter checkpoint in diffusers format.
+        Save full parameter checkpoint in single safetensors format.
+
+        Uses ComfyUI-compatible key prefixes:
+        - Transformer: "model.diffusion_model.*"
+        - VAE: "first_stage_model.*"
+        - Text Encoder: "text_encoders.qwen3.*" (Qwen3 for Z-Image)
 
         Args:
             step: Current training step
             epoch: Current training epoch
-            output_path: Directory to save checkpoint
+            output_path: Path to save checkpoint (should be .safetensors file)
         """
+        from safetensors.torch import save_file
+
         trainer = self.trainer
 
-        # Create checkpoint directory
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Ensure output_path is a file path, not directory
+        if output_path.is_dir():
+            output_path = output_path / f"model_step_{step}.safetensors"
+        elif not str(output_path).endswith(".safetensors"):
+            output_path = Path(str(output_path) + ".safetensors")
 
-        # Save Transformer
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        combined_state_dict = {}
+
+        # Save Transformer weights with ComfyUI prefix
         if trainer.train_unet and trainer.transformer is not None:
+            print(f"[ZImageFullParameterAdapter] Collecting Transformer weights...")
             # Access the original transformer inside the wrapper
             target_transformer = (
                 trainer.transformer.transformer
                 if hasattr(trainer.transformer, 'transformer')
                 else trainer.transformer
             )
-            transformer_path = output_path / "transformer"
-            target_transformer.save_pretrained(transformer_path)
+            transformer_state = target_transformer.state_dict()
+            for key, value in transformer_state.items():
+                combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save Text Encoder
+        # Save VAE weights with ComfyUI prefix
+        if trainer.vae is not None:
+            print(f"[ZImageFullParameterAdapter] Collecting VAE weights...")
+            vae_state = trainer.vae.state_dict()
+            for key, value in vae_state.items():
+                combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
+
+        # Save Text Encoder weights with Z-Image prefix
         if trainer.train_text_encoder and trainer.text_encoder is not None:
-            te_path = output_path / "text_encoder"
-            trainer.text_encoder.save_pretrained(te_path)
+            print(f"[ZImageFullParameterAdapter] Collecting Text Encoder (Qwen3) weights...")
+            te_state = trainer.text_encoder.state_dict()
+            for key, value in te_state.items():
+                # Z-Image uses text_encoders.qwen3 prefix
+                combined_state_dict[f"text_encoders.qwen3.{key}"] = value.cpu()
 
-        # Save metadata
+        # Save to safetensors with metadata
         metadata = {
-            "step": step,
-            "epoch": epoch,
+            "step": str(step),
+            "epoch": str(epoch),
             "model_type": "zimage",
         }
 
-        import json
-        metadata_path = output_path / "metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        print(f"[ZImageFullParameterAdapter] Saving to {output_path}...")
+        save_file(combined_state_dict, output_path, metadata=metadata)
 
-        print(f"[ZImageFullParameterAdapter] Saved checkpoint: {output_path}")
+        total_params = sum(p.numel() for p in combined_state_dict.values())
+        print(f"[ZImageFullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")

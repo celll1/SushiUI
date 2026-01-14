@@ -41,7 +41,7 @@ class SDXLVAEWrapper(nn.Module):
         super().__init__()
 
         self.model_name = model_name
-        self.dtype = dtype
+        self._dtype = dtype  # Store as internal variable (property 'dtype' returns vae.dtype)
         self.device_name = device
 
         if load_from_checkpoint:
@@ -100,6 +100,16 @@ class SDXLVAEWrapper(nn.Module):
             print(f"  Scaling factor: {self.scaling_factor:.4f}")
             print(f"  Block out channels: {self.vae.config.block_out_channels}")
 
+    @property
+    def config(self):
+        """Return internal VAE config for compatibility with diffusers pipelines."""
+        return self.vae.config
+
+    @property
+    def dtype(self):
+        """Return VAE dtype."""
+        return self.vae.dtype
+
     def encode(
         self,
         images: torch.Tensor,
@@ -129,7 +139,8 @@ class SDXLVAEWrapper(nn.Module):
     def decode(
         self,
         latents: torch.Tensor,
-        return_dict: bool = False
+        return_dict: bool = False,
+        skip_scaling: bool = False
     ) -> torch.Tensor:
         """
         Decode latents to images.
@@ -137,12 +148,14 @@ class SDXLVAEWrapper(nn.Module):
         Args:
             latents: Latents [batch_size, 4, height//8, width//8]
             return_dict: Return dict with 'sample'
+            skip_scaling: If True, skip latent unscaling (use when caller already scaled)
 
         Returns:
             Decoded images [batch_size, 3, height, width] in range [-1, 1]
         """
-        # Unscale latents
-        latents = latents / self.scaling_factor
+        # Unscale latents (skip if caller already did this)
+        if not skip_scaling:
+            latents = latents / self.scaling_factor
 
         # Decode
         decoded = self.vae.decode(latents, return_dict=return_dict)

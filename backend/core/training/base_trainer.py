@@ -2678,10 +2678,10 @@ class BaseTrainer(ABC):
         # Check if text encoder has FP8 weights (requires autocast)
         has_fp8_weights = self._has_fp8_text_encoder()
 
-        # Convert use_image/null_image to correct API parameters
-        # use_image=True, null_image=False → images=None, use_null_image=True (text + null image)
-        # use_image=False, null_image=True → images=None, use_null_image=True (text + null image for negative)
-        use_null_image = use_image or null_image
+        # New token format: <text> [END] for T2I mode
+        # use_image/null_image parameters are now converted to use_end_token
+        # T2I always uses [END] token to mark sequence termination
+        use_end_token = use_image or null_image
 
         # Enable gradients when training text encoder
         if requires_grad:
@@ -2691,12 +2691,14 @@ class BaseTrainer(ABC):
                     prompt_embeds = self.text_encoder.encode(
                         prompts=prompt,
                         clip_skip=0,  # Use last layer (default)
+                        use_end_token=use_end_token,  # Append [END] token for T2I mode
                         requires_grad=True  # Enable gradients for training
                     )
             else:
                 prompt_embeds = self.text_encoder.encode(
                     prompts=prompt,
                     clip_skip=0,  # Use last layer (default)
+                    use_end_token=use_end_token,  # Append [END] token for T2I mode
                     requires_grad=True  # Enable gradients for training
                 )
             # Keep gradients attached (no detach)
@@ -2709,12 +2711,14 @@ class BaseTrainer(ABC):
                     with torch.autocast(device_type='cuda', dtype=self.training_dtype):
                         prompt_embeds = self.text_encoder.encode(
                             prompts=prompt,
-                            clip_skip=0  # Use last layer (default)
+                            clip_skip=0,  # Use last layer (default)
+                            use_end_token=use_end_token  # Append [END] token for T2I mode
                         )
                 else:
                     prompt_embeds = self.text_encoder.encode(
                         prompts=prompt,
-                        clip_skip=0  # Use last layer (default)
+                        clip_skip=0,  # Use last layer (default)
+                        use_end_token=use_end_token  # Append [END] token for T2I mode
                     )
             # Detach gradients
             result_embeds = prompt_embeds.detach()
@@ -2773,9 +2777,12 @@ class BaseTrainer(ABC):
                     self.text_encoder.image_encoder.to(self.device)
                     if hasattr(self.text_encoder.image_encoder, 'vision_model'):
                         self.text_encoder.image_encoder.vision_model.to(self.device)
-                # Move null_image_embedding parameter (small, 1x1x1152)
-                if hasattr(self.text_encoder, 'null_image_embedding'):
-                    self.text_encoder.null_image_embedding.data = self.text_encoder.null_image_embedding.data.to(self.device)
+                # Move special token parameters (small, 1x1x1152 each)
+                if hasattr(self.text_encoder, 'end_token'):
+                    self.text_encoder.end_token.data = self.text_encoder.end_token.data.to(self.device)
+                if hasattr(self.text_encoder, 'img_tokens'):
+                    for img_token in self.text_encoder.img_tokens:
+                        img_token.data = img_token.data.to(self.device)
             else:
                 # SD/SDXL: CLIPTextModel
                 self.text_encoder.to(self.device)
@@ -2800,9 +2807,12 @@ class BaseTrainer(ABC):
                 train_image_encoder = getattr(self, 'train_image_encoder', False)
                 if train_image_encoder and hasattr(self.text_encoder, 'image_encoder'):
                     self.text_encoder.image_encoder.to("cpu")
-                # Move null_image_embedding parameter
-                if hasattr(self.text_encoder, 'null_image_embedding'):
-                    self.text_encoder.null_image_embedding.data = self.text_encoder.null_image_embedding.data.to("cpu")
+                # Move special token parameters
+                if hasattr(self.text_encoder, 'end_token'):
+                    self.text_encoder.end_token.data = self.text_encoder.end_token.data.to("cpu")
+                if hasattr(self.text_encoder, 'img_tokens'):
+                    for img_token in self.text_encoder.img_tokens:
+                        img_token.data = img_token.data.to("cpu")
             else:
                 # SD/SDXL: CLIPTextModel
                 self.text_encoder.to("cpu")
@@ -3943,28 +3953,35 @@ class BaseTrainer(ABC):
             # ========================================
             self.move_text_encoder_to_gpu()
 
-            # Encode positive prompt
+            # Encode positive prompt with [END] token (T2I format: <text> [END])
             clip_skip = 0  # DEUS: Use last layer (layer 27) for training
-            positive_text_embeddings = self.text_encoder.text_encoder.encode([prompt], clip_skip=clip_skip)
+            prompt_embeds = self.text_encoder.encode(
+                prompts=[prompt],
+                images=None,  # T2I: no image
+                use_end_token=True,
+                clip_skip=clip_skip,
+                requires_grad=False
+            )
 
-            # Encode negative prompt (empty string for training samples)
-            negative_text_embeddings = self.text_encoder.text_encoder.encode([""], clip_skip=clip_skip)
+            # Encode negative prompt with [END] token
+            negative_prompt_embeds = self.text_encoder.encode(
+                prompts=[""],
+                images=None,
+                use_end_token=True,
+                clip_skip=clip_skip,
+                requires_grad=False
+            )
 
             # Pad negative embeddings to match positive if needed
-            if positive_text_embeddings.shape[1] != negative_text_embeddings.shape[1]:
-                seq_len_diff = positive_text_embeddings.shape[1] - negative_text_embeddings.shape[1]
+            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
+                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
                 padding = torch.zeros(
-                    (negative_text_embeddings.shape[0], seq_len_diff, negative_text_embeddings.shape[2]),
-                    dtype=negative_text_embeddings.dtype,
-                    device=negative_text_embeddings.device
+                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
+                    dtype=negative_prompt_embeds.dtype,
+                    device=negative_prompt_embeds.device
                 )
-                negative_text_embeddings = torch.cat([negative_text_embeddings, padding], dim=1)
-                log_verbose(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_text_embeddings.shape[1] - seq_len_diff} -> {negative_text_embeddings.shape[1]} tokens")
-
-            # Add image embeddings (use null image for T2I)
-            null_image_embedding = self.text_encoder.null_image_embedding.expand(1, -1, -1)
-            prompt_embeds = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
-            negative_prompt_embeds = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
+                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+                log_verbose(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
 
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()

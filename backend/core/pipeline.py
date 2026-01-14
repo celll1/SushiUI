@@ -1040,8 +1040,7 @@ class DiffusionPipelineManager:
             # Prepare ancestral generator for scheduler step (Euler Ancestral, etc.)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for ancestral sampling
-                import random
+                # Generate random seed for ancestral sampling (use top-level random module)
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 ancestral_generator = torch.Generator(device="cuda").manual_seed(actual_ancestral_seed)
                 print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
@@ -1405,8 +1404,7 @@ class DiffusionPipelineManager:
             # Prepare ancestral generator for scheduler step (Euler Ancestral, etc.)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for ancestral sampling
-                import random
+                # Generate random seed for ancestral sampling (use top-level random module)
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 ancestral_generator = torch.Generator(device="cuda").manual_seed(actual_ancestral_seed)
                 print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
@@ -2866,29 +2864,42 @@ class DiffusionPipelineManager:
             if not negative_prompt:
                 negative_prompt = ""
 
-            # Encode both prompts together (ensures same sequence length)
-            all_prompts = [negative_prompt, prompt]
-            all_text_embeddings = encoder.text_encoder.encode(all_prompts, clip_skip=clip_skip)
-            print(f"[DEUS] Raw text embeddings shape (before CFG): {all_text_embeddings.shape}")
+            # Use new encode() with [END] token for T2I format: <text> [END]
+            # Encode positive and negative prompts with [END] token
+            encoder_hidden_states = encoder.encode(
+                prompts=[prompt],
+                images=None,
+                use_end_token=True,
+                clip_skip=clip_skip
+            )
+            negative_encoder_hidden_states = encoder.encode(
+                prompts=[negative_prompt],
+                images=None,
+                use_end_token=True,
+                clip_skip=clip_skip
+            )
 
-            # Split into negative and positive
-            negative_text_embeddings = all_text_embeddings[0:1]
-            positive_text_embeddings = all_text_embeddings[1:2]
+            # Pad negative embeddings to match positive if needed
+            if encoder_hidden_states.shape[1] != negative_encoder_hidden_states.shape[1]:
+                seq_len_diff = encoder_hidden_states.shape[1] - negative_encoder_hidden_states.shape[1]
+                if seq_len_diff > 0:
+                    padding = torch.zeros(
+                        (negative_encoder_hidden_states.shape[0], seq_len_diff, negative_encoder_hidden_states.shape[2]),
+                        dtype=negative_encoder_hidden_states.dtype,
+                        device=negative_encoder_hidden_states.device
+                    )
+                    negative_encoder_hidden_states = torch.cat([negative_encoder_hidden_states, padding], dim=1)
 
-            # Add null image embedding (T2I doesn't use image encoder)
-            null_image_embedding = encoder.null_image_embedding  # [1, 1, 1152]
-            negative_encoder_hidden_states = torch.cat([negative_text_embeddings, null_image_embedding], dim=1)
-            encoder_hidden_states = torch.cat([positive_text_embeddings, null_image_embedding], dim=1)
-            print(f"[DEUS] After adding null image embedding - negative: {negative_encoder_hidden_states.shape}, positive: {encoder_hidden_states.shape}")
+            print(f"[DEUS] Encoded with [END] token - positive: {encoder_hidden_states.shape}, negative: {negative_encoder_hidden_states.shape}")
 
             # Return separately for 2-pass CFG
             return encoder_hidden_states, negative_encoder_hidden_states
         else:
-            # No CFG, just encode positive prompt
+            # No CFG, just encode positive prompt with [END] token
             encoder_hidden_states = encoder.encode(
                 prompts=[prompt],
                 images=None,
-                use_null_image=True,
+                use_end_token=True,
                 clip_skip=clip_skip
             )
             print(f"[DEUS] Text embeddings shape (no CFG): {encoder_hidden_states.shape}")

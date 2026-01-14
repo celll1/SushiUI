@@ -938,11 +938,17 @@ def custom_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
+    # For DEUS with SDXLVAEWrapper, use skip_scaling=True since we scale here
+    # For standard pipelines, VAE.decode() doesn't scale internally
     latents = latents / pipeline.vae.config.scaling_factor
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        if is_deus:
+            # SDXLVAEWrapper.decode() scales internally by default, skip since we already scaled
+            image = pipeline.vae.decode(latents, return_dict=True, skip_scaling=True).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
@@ -1651,11 +1657,17 @@ def custom_img2img_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
+    # For DEUS with SDXLVAEWrapper, use skip_scaling=True since we scale here
+    # For standard pipelines, VAE.decode() doesn't scale internally
     latents = latents / pipeline.vae.config.scaling_factor
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        if is_deus:
+            # SDXLVAEWrapper.decode() scales internally by default, skip since we already scaled
+            image = pipeline.vae.decode(latents, return_dict=True, skip_scaling=True).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
@@ -2403,11 +2415,17 @@ def custom_inpaint_sampling_loop(
     log_device_status("Ready for VAE decode (inpaint)", pipeline)
 
     # Decode latents to image
+    # For DEUS with SDXLVAEWrapper, use skip_scaling=True since we scale here
+    # For standard pipelines, VAE.decode() doesn't scale internally
     latents = latents / pipeline.vae.config.scaling_factor
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        if is_deus:
+            # SDXLVAEWrapper.decode() scales internally by default, skip since we already scaled
+            image = pipeline.vae.decode(latents, return_dict=True, skip_scaling=True).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)

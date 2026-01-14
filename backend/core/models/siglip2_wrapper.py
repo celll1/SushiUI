@@ -662,13 +662,20 @@ class SigLIP2MultiModalEncoder(nn.Module):
     Multi-modal encoder combining text and optional images.
 
     Supports:
-    - T2I: Text only (image_embeddings = learned null embeddings)
-    - I2I: Single image + optional text
-    - TI2I: Text + Image instruction
-    - Multi-image: Multiple images + text
+    - T2I: Text only → <text> [END]
+    - I2I: Single image + text → <text> [IMG0] <image0> [END]
+    - TI2I: Text + Image instruction → <txt1> [IMG0] <img0> <txt2> [END]
+    - Multi-image: Multiple images + text → <txt> [IMG0] <img0> [IMG1] <img1> [END]
+
+    Special tokens (learned parameters, each [1, 1, hidden_size]):
+    - [END]: Sequence end token (always appended)
+    - [IMG0], [IMG1], ...: Image start tokens (prepended before each image)
 
     All inputs are concatenated along sequence dimension.
     """
+
+    # Maximum number of images supported
+    MAX_IMAGES = 4
 
     def __init__(
         self,
@@ -713,54 +720,184 @@ class SigLIP2MultiModalEncoder(nn.Module):
 
         self.hidden_size = self.text_encoder.hidden_size
 
-        # Learned null image embedding (for T2I mode when no images provided)
-        self.null_image_embedding = nn.Parameter(
+        # Special tokens (learned parameters)
+        # [END] token: sequence terminator
+        self.end_token = nn.Parameter(
             torch.randn(1, 1, self.hidden_size, dtype=dtype, device=device) * 0.02
         )
 
+        # [IMG0], [IMG1], ... tokens: image start markers
+        self.img_tokens = nn.ParameterList([
+            nn.Parameter(
+                torch.randn(1, 1, self.hidden_size, dtype=dtype, device=device) * 0.02
+            )
+            for _ in range(self.MAX_IMAGES)
+        ])
+
+        # Legacy: Keep null_image_embedding as alias to end_token for backward compatibility
+        # (old checkpoints may have this parameter)
+        # Note: New models should use end_token directly
+        self.null_image_embedding = self.end_token  # Alias (not a separate parameter)
+
         print(f"[SigLIP2] Multi-modal encoder initialized:")
         print(f"  Hidden size: {self.hidden_size}")
+        print(f"  Special tokens: [END] + [IMG0..IMG{self.MAX_IMAGES-1}]")
         print(f"  Supports: T2I, I2I, TI2I, Multi-image")
 
     def encode(
         self,
         prompts: Union[str, List[str]],
-        images: Optional[Union[Image.Image, List[Image.Image]]] = None,
-        use_null_image: bool = True,
+        images: Optional[Union[Image.Image, List[Image.Image], List[List[Image.Image]]]] = None,
+        use_end_token: bool = True,
         clip_skip: int = 0,
         requires_grad: bool = False
     ) -> torch.Tensor:
         """
-        Encode text and optional images, concatenating along sequence dimension.
+        Encode text and optional images with special tokens.
+
+        Output format:
+        - T2I (no images):     <text> [END]
+        - Single image:        <text> [IMG0] <image0> [END]
+        - Multi-image:         <text> [IMG0] <img0> [IMG1] <img1> ... [END]
 
         Args:
-            prompts: Text prompts
-            images: Optional images (None for T2I, single for I2I/TI2I, list for multi)
-            use_null_image: Add null image embedding when no images provided
-            clip_skip: Number of layers to skip from the end for text encoder (0=last layer, 1=penultimate)
+            prompts: Text prompts (str or List[str])
+            images: Optional images:
+                - None: T2I mode
+                - Single Image: I2I mode
+                - List[Image]: Multi-image mode (same images for all batches)
+                - List[List[Image]]: Per-batch images (images[b] = list of images for batch b)
+            use_end_token: Append [END] token (default: True, should always be True for DEUS)
+            clip_skip: Number of layers to skip from the end for text encoder (0=last layer)
             requires_grad: Enable gradients for training (default: False)
 
         Returns:
             Concatenated embeddings [batch_size, total_seq_len, hidden_size]
-            where total_seq_len = text_seq_len + image_seq_len (or +1 for null)
         """
         # Encode text with clip_skip
         text_embeddings = self.text_encoder.encode(prompts, clip_skip=clip_skip, requires_grad=requires_grad)  # [B, text_seq, hidden]
         batch_size = text_embeddings.shape[0]
+        device = text_embeddings.device
 
-        # Encode images (or use null)
-        if images is None:
-            if use_null_image:
-                # T2I mode: use learned null image embedding
-                image_embeddings = self.null_image_embedding.expand(batch_size, -1, -1)  # [B, 1, hidden]
+        # Start building sequence with text embeddings
+        sequence_parts = [text_embeddings]
+
+        # Process images
+        if images is not None:
+            # Normalize images to List[List[Image]] format
+            if isinstance(images, Image.Image):
+                # Single image for all batches
+                images_per_batch = [[images]] * batch_size
+            elif isinstance(images, list):
+                if len(images) == 0:
+                    images_per_batch = [[] for _ in range(batch_size)]
+                elif isinstance(images[0], Image.Image):
+                    # List of images (same for all batches)
+                    images_per_batch = [images] * batch_size
+                else:
+                    # List[List[Image]] - per-batch images
+                    images_per_batch = images
             else:
-                # No image embeddings
-                return text_embeddings
-        else:
-            # Encode images
-            image_embeddings = self.image_encoder.encode(images)  # [B, num_patches, hidden]
+                raise ValueError(f"Unsupported images type: {type(images)}")
 
-        # Concatenate: [text_tokens, image_patches]
-        combined_embeddings = torch.cat([text_embeddings, image_embeddings], dim=1)
+            # Validate image count
+            max_images = max(len(imgs) for imgs in images_per_batch)
+            if max_images > self.MAX_IMAGES:
+                raise ValueError(f"Too many images: {max_images} > {self.MAX_IMAGES}")
+
+            # For simplicity, assume all batches have same number of images
+            # (batching with different image counts requires padding/masking)
+            if len(set(len(imgs) for imgs in images_per_batch)) > 1:
+                raise ValueError("All batches must have the same number of images for now")
+
+            num_images = len(images_per_batch[0])
+
+            # Encode each image with its [IMGn] token
+            for img_idx in range(num_images):
+                # Get [IMGn] token
+                img_token = self.img_tokens[img_idx].expand(batch_size, -1, -1)  # [B, 1, hidden]
+                img_token = img_token.to(device=device)
+                sequence_parts.append(img_token)
+
+                # Encode image
+                batch_images = [imgs[img_idx] for imgs in images_per_batch]
+                image_embeddings = self.image_encoder.encode(batch_images)  # [B, num_patches, hidden]
+                sequence_parts.append(image_embeddings)
+
+        # Append [END] token
+        if use_end_token:
+            end_token = self.end_token.expand(batch_size, -1, -1)  # [B, 1, hidden]
+            end_token = end_token.to(device=device)
+            sequence_parts.append(end_token)
+
+        # Concatenate all parts
+        combined_embeddings = torch.cat(sequence_parts, dim=1)
+
+        return combined_embeddings
+
+    def encode_with_interleaved_images(
+        self,
+        text_segments: List[str],
+        images: List[Image.Image],
+        image_positions: List[int],
+        clip_skip: int = 0,
+        requires_grad: bool = False
+    ) -> torch.Tensor:
+        """
+        Encode text with images interleaved at specified positions.
+
+        Example:
+            text_segments = ["A photo of", "next to", "in a garden"]
+            images = [img1, img2]
+            image_positions = [1, 2]  # Insert img1 after segment 0, img2 after segment 1
+            → <txt0> [IMG0] <img0> <txt1> [IMG1] <img1> <txt2> [END]
+
+        Args:
+            text_segments: List of text segments
+            images: List of images to insert
+            image_positions: Position indices where each image should be inserted
+                (image[i] is inserted after text_segments[image_positions[i]-1])
+            clip_skip: Number of layers to skip from the end
+            requires_grad: Enable gradients for training
+
+        Returns:
+            Concatenated embeddings [1, total_seq_len, hidden_size]
+        """
+        if len(images) != len(image_positions):
+            raise ValueError("Number of images must match number of image_positions")
+        if len(images) > self.MAX_IMAGES:
+            raise ValueError(f"Too many images: {len(images)} > {self.MAX_IMAGES}")
+
+        device = self.end_token.device
+        sequence_parts = []
+
+        # Create a mapping of position -> image index
+        pos_to_img = {pos: idx for idx, pos in enumerate(image_positions)}
+
+        # Process text segments and insert images
+        for seg_idx, text_seg in enumerate(text_segments):
+            # Encode text segment
+            if text_seg:  # Skip empty segments
+                text_emb = self.text_encoder.encode(text_seg, clip_skip=clip_skip, requires_grad=requires_grad)
+                sequence_parts.append(text_emb)
+
+            # Check if an image should be inserted after this segment
+            if seg_idx + 1 in pos_to_img:
+                img_idx = pos_to_img[seg_idx + 1]
+
+                # Add [IMGn] token
+                img_token = self.img_tokens[img_idx].to(device=device)
+                sequence_parts.append(img_token)
+
+                # Encode and add image
+                image_emb = self.image_encoder.encode(images[img_idx])
+                sequence_parts.append(image_emb)
+
+        # Add [END] token
+        end_token = self.end_token.to(device=device)
+        sequence_parts.append(end_token)
+
+        # Concatenate all parts
+        combined_embeddings = torch.cat(sequence_parts, dim=1)
 
         return combined_embeddings

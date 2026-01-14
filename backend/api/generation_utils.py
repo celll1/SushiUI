@@ -72,7 +72,6 @@ def create_progress_callback_factory(
     websocket_manager,
     is_sdxl: bool,
     is_zimage: bool = False,
-    is_deus: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None
 ) -> Callable:
@@ -86,7 +85,6 @@ def create_progress_callback_factory(
         websocket_manager: WebSocketマネージャー
         is_sdxl: SDXLモデルかどうか
         is_zimage: Z-Imageモデルかどうか
-        is_deus: DEUSモデルかどうか
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
 
@@ -108,8 +106,8 @@ def create_progress_callback_factory(
             try:
                 # Debug: Log model type being used for preview
                 if step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}")
-                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus)
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}")
+                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage)
                 if preview_pil:
                     buffered = BytesIO()
                     preview_pil.save(buffered, format="JPEG", quality=85)

@@ -10,10 +10,9 @@
 1. [Stable Diffusion 1.5 (SD1.5)](#stable-diffusion-15-sd15)
 2. [Stable Diffusion XL (SDXL)](#stable-diffusion-xl-sdxl)
 3. [Z-Image](#z-image)
-4. [DEUS (Dual-Embeddings U-Net Structure)](#deus-dual-embeddings-u-net-structure)
-5. [アーキテクチャの検出方法](#アーキテクチャの検出方法)
-6. [共通仕様](#共通仕様)
-7. [トレーニングオプション](#トレーニングオプション)
+4. [アーキテクチャの検出方法](#アーキテクチャの検出方法)
+5. [共通仕様](#共通仕様)
+6. [トレーニングオプション](#トレーニングオプション)
 
 ---
 
@@ -359,118 +358,6 @@ target_modules = ["to_q", "to_k", "to_v", "to_out.0"]  # ZImageAttention modules
 
 ---
 
-## DEUS (Dual-Embeddings U-Net Structure)
-
-### 概要
-- **リリース**: 2026年（カスタムアーキテクチャ）
-- **ベースモデル**: カスタム実装
-- **解像度**: 1024x1024（標準）
-- **主な特徴**: SigLIP-2デュアルモードエンコーディング（テキストのみ + 画像条件付き）
-
-### コンポーネント構成
-
-#### Text Encoder (SigLIP-2)
-- **モデル**: `google/siglip2-so400m-patch16-naflex`
-- **アーキテクチャ**: Vision-languageモデル（デュアルエンコーディング機能）
-- **最大トークン長**: 可変（7-293トークン）
-- **出力次元**: `[batch, seq_len, 1152]`
-- **Penultimate layer**: `hidden_states[-2]`（レイヤー26）を使用
-
-**エンコーディングモード**:
-1. **テキストのみ** (`use_image=False`):
-   - シーケンス長: 7-29トークン
-   - 画像パッチなし
-2. **画像条件付き** (`use_image=True`):
-   - シーケンス長: 265-293トークン
-   - 画像パッチ埋め込みを含む
-
-#### U-Net
-- **モデル**: DeusUNet（カスタムアーキテクチャ）
-- **バリアント**: Small（~1.2B）、Medium（~2.5B）、Large（~5.0B）
-- **入力チャンネル**: 4（latent space）
-- **出力チャンネル**: 4
-- **Attention層**: SigLIP-2埋め込みを使用した標準cross-attention
-- **Time embedding**: Sinusoidal position embeddings（標準DDPM）
-- **Skip connections**: `skip_connection_interval`で設定可能
-
-#### VAE
-- **モデル**: SDXL VAE（`madebyollin/sdxl-vae-fp16-fix`）
-- **ダウンスケール係数**: 8（1024x1024 → 128x128 latents）
-- **Latent channels**: 4
-- **Scaling factor**: 0.13025
-
-### Training用の入力
-
-#### UNet Forward Pass
-```python
-unet(
-    sample=noisy_latents,           # [B, 4, H/8, W/8]
-    timestep=timesteps,              # [B]
-    encoder_hidden_states=prompt_embeds  # [B, seq_len, 1152]
-)
-```
-
-**必須パラメータ**:
-- `sample`: ノイズが加えられたlatents
-- `timestep`: 拡散ステップ（0 ~ num_train_timesteps）
-- `encoder_hidden_states`: SigLIP-2埋め込み
-
-**不要なパラメータ**:
-- `added_cond_kwargs`: DEUSでは使用しない（SDXLとは異なる）
-
-### Text Encoding
-
-```python
-# SigLIP2Wrapper経由
-prompt_embeds = encoder.encode(
-    text=prompt,
-    use_image=True,      # 画像条件付きエンコーディングの場合True
-    null_image=False     # positiveの場合False、negativeの場合True
-)
-# Shape: [1, seq_len, 1152] where seq_len varies (7-293)
-```
-
-**重要な注意点**:
-- シーケンス長は可変（SD/SDXLのように固定ではない）
-- バッチサイズは1、または同じシーケンス長の画像をグループ化
-- 効果的な大きなバッチサイズにはgradient accumulationを使用
-
-### Noise Scheduler
-- **タイプ**: `DDPMScheduler`（SD/SDXLと同じ）
-- **Beta schedule**: `"scaled_linear"`
-- **Beta start**: 0.00085
-- **Beta end**: 0.012
-- **Timesteps**: 1000
-- **Prediction target**: Epsilon（SD/SDXLと同じ）
-
-### SDXLとの違い
-
-| 機能 | SDXL | DEUS |
-|------|------|------|
-| **Text Encoder** | デュアルCLIP（ViT-L + ViT-bigG） | SigLIP-2（デュアルモード） |
-| **埋め込み次元** | 2048（768+1280） | 1152 |
-| **シーケンス長** | 固定（77） | **可変**（7-293） |
-| **Pooled embeddings** | あり（1280次元） | なし |
-| **Time IDs** | あり（6値） | なし |
-| **CFG（推論）** | バッチ連結 | **2-pass** |
-| **CFG（学習）** | 標準（negativeをバッチ連結） | **標準**（SDXLと同じ） |
-
-**重要な知見**: 学習中、DEUSは標準CFG（negativeとpositiveをバッチング）を使用します。2-pass CFGは推論時のみ使用されます（シーケンス長の不一致のため）。
-
-### LoRA Target Layers
-
-**U-Net**:
-```python
-target_modules = ["to_q", "to_k", "to_v", "to_out.0"]
-```
-
-**Text Encoder（SigLIP-2）**:
-```python
-target_modules = ["mlp.fc1", "mlp.fc2"]  # Transformer blocksのMLP層
-```
-
----
-
 ## アーキテクチャの検出方法
 
 ### U-Net Configからの検出
@@ -483,15 +370,11 @@ is_sdxl = hasattr(unet.config, "addition_embed_type")
 from core.model_loader import ModelLoader
 model_type = ModelLoader.detect_model_type(model_path)
 is_zimage = (model_type == "zimage")
-
-# DEUS detection (via ModelLoader)
-model_type = ModelLoader.detect_model_type(model_path)
-is_deus = (model_type == "deus")
 ```
 
 **理由**:
 - SDXLのU-Netには `addition_embed_type` という設定パラメータがある
-- Z-Image/DEUSはModelLoaderの`detect_model_type()`で検出
+- Z-ImageはModelLoaderの`detect_model_type()`で検出
 
 ### Pipelineからの検出
 
@@ -501,10 +384,6 @@ is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not
 
 # Z-Image: Check for transformer
 is_zimage = hasattr(pipeline, 'transformer') and pipeline.transformer is not None
-
-# DEUS: Check for DeusPipeline type
-from core.pipelines.pipeline_deus import DeusPipeline
-is_deus = isinstance(pipeline, DeusPipeline)
 ```
 
 ### Safetensorsからのロード時
@@ -594,7 +473,7 @@ torch.nn.utils.clip_grad_norm_(
 すべてのアーキテクチャで共通（Z-Imageを除く）:
 
 ```python
-# SD1.5/SDXL/DEUS: Epsilon prediction
+# SD1.5/SDXL: Epsilon prediction
 loss = F.mse_loss(
     model_pred.float(),
     noise.float(),
@@ -742,13 +621,7 @@ optimizer_use_radam: bool = False                          # Use RAdam variant
 - [Z-Image Paper](https://arxiv.org/abs/2501.00000) (仮のリンク)
 - SushiUI実装: `backend/core/models/zimage_transformer.py`
 
-### DEUS
-- SushiUI実装: `backend/core/pipelines/pipeline_deus.py`
-- SushiUI実装: `backend/core/models/unet_deus.py`
-- SushiUI実装: `backend/core/models/siglip2_wrapper.py`
-
 ### SushiUI参照実装
-- `backend/core/inference/custom_sampling.py`: 2-pass CFG実装（DEUS）
 - `backend/core/prompt_chunking.py`: SDXLデュアルtext encoder処理
 - `backend/core/pipeline.py`: モデルタイプ検出ロジック
 - `backend/core/training/base_trainer.py`: トレーニングオプション実装
@@ -761,4 +634,4 @@ optimizer_use_radam: bool = False                          # Use RAdam variant
 ---
 
 **最終更新**: 2026-01-08
-**対応アーキテクチャ**: SD1.5, SDXL, Z-Image, DEUS
+**対応アーキテクチャ**: SD1.5, SDXL, Z-Image

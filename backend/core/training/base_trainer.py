@@ -456,7 +456,7 @@ class BaseTrainer(ABC):
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
-        image_encoder_lr: Optional[float] = None,  # DEUS Image Encoder (future T2I support)
+        image_encoder_lr: Optional[float] = None,  # Image Encoder (future T2I support)
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
@@ -729,13 +729,10 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = (model_type == "deus")
         self.is_sdxl = False
 
         if self.is_zimage:
             self._load_zimage_components()
-        elif self.is_deus:
-            self._load_deus_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -844,144 +841,6 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
 
-    def _load_deus_components(self):
-        """Load DEUS model components."""
-        print(f"{self.log_prefix} Detected DEUS model")
-        print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
-
-        from core.models.checkpoint_utils import load_unified_checkpoint
-        from diffusers import EulerAncestralDiscreteScheduler
-        
-        # Detect variant from checkpoint metadata
-        unet_variant = "medium"  # Default
-        try:
-            from safetensors import safe_open
-            with safe_open(self.model_path, framework='pt', device='cpu') as f:
-                metadata = f.metadata() or {}
-                detected_variant = metadata.get("unet_variant") or metadata.get("variant")
-                if detected_variant:
-                    unet_variant = detected_variant
-                    print(f"{self.log_prefix} Detected variant from checkpoint: {unet_variant}")
-        except Exception as e:
-            print(f"{self.log_prefix} Warning: Could not read checkpoint metadata: {e}")
-            print(f"{self.log_prefix} Using default variant: {unet_variant}")
-
-        # Load components from checkpoint
-        components = load_unified_checkpoint(
-            checkpoint_path=self.model_path,
-            unet_variant=unet_variant,
-            device="cpu",
-            dtype=self.weight_dtype,
-            load_text_encoder=True,
-            load_image_encoder=True,
-            load_vae=True,
-            load_unet=True
-        )
-
-        # Store components
-        self.unet = components["unet"]
-        self.vae = components["vae"]
-
-        # Create SigLIP2MultiModalEncoder wrapper (combines text + image encoders)
-        from core.models.siglip2_wrapper import SigLIP2MultiModalEncoder
-
-        text_encoder_raw = components["text_encoder"]  # SigLIP2TextEncoder
-        image_encoder_raw = components["image_encoder"]  # SigLIP2ImageEncoder
-
-        print(f"{self.log_prefix} Creating SigLIP2MultiModalEncoder wrapper...")
-        self.text_encoder = SigLIP2MultiModalEncoder(
-            dtype=self.weight_dtype,
-            device="cpu",  # Will move to GPU later
-            text_encoder=text_encoder_raw,
-            image_encoder=image_encoder_raw
-        )
-
-        # Get tokenizer from text encoder
-        if hasattr(self.text_encoder, 'tokenizer'):
-            self.tokenizer = self.text_encoder.tokenizer
-        elif text_encoder_raw is not None and hasattr(text_encoder_raw, 'tokenizer'):
-            self.tokenizer = text_encoder_raw.tokenizer
-        else:
-            # Fallback: create tokenizer if not available
-            from transformers import AutoTokenizer
-            print(f"{self.log_prefix} Creating tokenizer (not in text encoder)...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                "google/siglip2-so400m-patch16-naflex",
-                trust_remote_code=True
-            )
-        
-        # Create scheduler (for inference/sampling)
-        self.scheduler = EulerAncestralDiscreteScheduler(
-            beta_start=0.00085,
-            beta_end=0.012,
-            beta_schedule="scaled_linear",
-            num_train_timesteps=1000,
-            prediction_type="epsilon"
-        )
-
-        # DEUS specific: no text_encoder_2, no transformer
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.transformer = None
-        self.transformer_original = None
-
-        # Save original scheduler for inference (sample generation)
-        self.original_scheduler = self.scheduler
-
-        # Use DDPMScheduler for training (same as SD/SDXL)
-        self.noise_scheduler = DDPMScheduler(
-            beta_start=0.00085,
-            beta_end=0.012,
-            beta_schedule="scaled_linear",
-            num_train_timesteps=1000,
-            clip_sample=False,
-            prediction_type="epsilon"
-        )
-
-        # Convert VAE to vae_dtype
-        self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        # Setup Flash Attention if enabled
-        if self.use_flash_attention:
-            self._setup_flash_attention_deus()
-
-        # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
-        else:
-            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
-
-        # Enable gradient checkpointing for SigLIP-2 MultiModalEncoder
-        # Text encoder: self.text_encoder is SigLIP2MultiModalEncoder wrapper
-        # self.text_encoder.text_encoder is SigLIP2TextEncoder, which has gradient_checkpointing_enable()
-        if hasattr(self.text_encoder, 'text_encoder'):
-            if hasattr(self.text_encoder.text_encoder, 'gradient_checkpointing_enable'):
-                self.text_encoder.text_encoder.gradient_checkpointing_enable()
-                # Note: This will call text_model.gradient_checkpointing_enable() internally
-            else:
-                print(f"{self.log_prefix} WARNING: SigLIP-2 Text Encoder does not support gradient_checkpointing_enable()")
-        # Image encoder: self.text_encoder.image_encoder is SigLIP2ImageEncoder, also has gradient_checkpointing_enable()
-        if hasattr(self.text_encoder, 'image_encoder'):
-            if hasattr(self.text_encoder.image_encoder, 'gradient_checkpointing_enable'):
-                self.text_encoder.image_encoder.gradient_checkpointing_enable()
-            else:
-                print(f"{self.log_prefix} WARNING: SigLIP-2 Image Encoder does not support gradient_checkpointing_enable()")
-
-        # Freeze all base weights (full parameter training will unfreeze specific layers later)
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.unet.requires_grad_(False)
-
-        # Move U-Net to GPU (no Block Swap support for DEUS yet)
-        print(f"{self.log_prefix} Moving U-Net to {self.device}...")
-        self.unet.to(self.device)
-
-        print(f"{self.log_prefix} DEUS model loaded successfully")
-        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-        print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
-        print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
-
     def _load_checkpoint_as_base(self, checkpoint_path: str):
         """
         Load checkpoint directly as base model (for resume training).
@@ -1003,149 +862,9 @@ class BaseTrainer(ABC):
         # Detect model type from checkpoint
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = (model_type == "deus")
         self.is_sdxl = False
 
-        if self.is_deus:
-            print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
-
-            # Detect variant from checkpoint metadata
-            unet_variant = "medium"  # Default
-            try:
-                from safetensors import safe_open
-                with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
-                    metadata = f.metadata() or {}
-                    detected_variant = metadata.get("unet_variant") or metadata.get("variant")
-                    if detected_variant:
-                        unet_variant = detected_variant
-                        print(f"{self.log_prefix} Detected variant from checkpoint: {unet_variant}")
-            except Exception as e:
-                print(f"{self.log_prefix} Warning: Could not read checkpoint metadata: {e}")
-                print(f"{self.log_prefix} Using default variant: {unet_variant}")
-
-            # Load components from checkpoint (CPU first, VRAM-optimized)
-            components = load_unified_checkpoint(
-                checkpoint_path=checkpoint_path,
-                unet_variant=unet_variant,
-                device="cpu",
-                dtype=self.weight_dtype,
-                load_text_encoder=True,
-                load_image_encoder=True,
-                load_vae=True,
-                load_unet=True
-            )
-
-            # Store components
-            self.unet = components["unet"]
-            self.vae = components["vae"]
-
-            # Create SigLIP2MultiModalEncoder wrapper (combines text + image encoders)
-            from core.models.siglip2_wrapper import SigLIP2MultiModalEncoder
-
-            text_encoder_raw = components["text_encoder"]  # SigLIP2TextEncoder
-            image_encoder_raw = components["image_encoder"]  # SigLIP2ImageEncoder
-
-            # Get max_position_embeddings from text encoder (already loaded from checkpoint)
-            max_pos_embeddings = None
-            if text_encoder_raw is not None and hasattr(text_encoder_raw, 'config'):
-                max_pos_embeddings = text_encoder_raw.config.max_position_embeddings
-                print(f"{self.log_prefix} Text encoder max_position_embeddings: {max_pos_embeddings}")
-
-            print(f"{self.log_prefix} Creating SigLIP2MultiModalEncoder wrapper...")
-            self.text_encoder = SigLIP2MultiModalEncoder(
-                dtype=self.weight_dtype,
-                device="cpu",  # Will move to GPU later
-                text_encoder=text_encoder_raw,
-                image_encoder=image_encoder_raw,
-                max_position_embeddings=max_pos_embeddings  # Preserve from checkpoint
-            )
-
-            # Get tokenizer from text encoder
-            if hasattr(self.text_encoder, 'tokenizer'):
-                self.tokenizer = self.text_encoder.tokenizer
-            elif text_encoder_raw is not None and hasattr(text_encoder_raw, 'tokenizer'):
-                self.tokenizer = text_encoder_raw.tokenizer
-            else:
-                # Fallback: create tokenizer if not available
-                from transformers import AutoTokenizer
-                print(f"{self.log_prefix} Creating tokenizer (not in text encoder)...")
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    "google/siglip2-so400m-patch16-naflex",
-                    trust_remote_code=True
-                )
-
-            # Create scheduler (for inference/sampling)
-            self.scheduler = EulerAncestralDiscreteScheduler(
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                num_train_timesteps=1000,
-                prediction_type="epsilon"
-            )
-
-            # DEUS specific: no text_encoder_2, no transformer
-            self.text_encoder_2 = None
-            self.tokenizer_2 = None
-            self.transformer = None
-            self.transformer_original = None
-
-            # Save original scheduler for inference (sample generation)
-            self.original_scheduler = self.scheduler
-
-            # Use DDPMScheduler for training (same as SD/SDXL)
-            self.noise_scheduler = DDPMScheduler(
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                num_train_timesteps=1000,
-                clip_sample=False,
-                prediction_type="epsilon"
-            )
-
-            # Convert VAE to vae_dtype
-            self.vae = self.vae.to(dtype=self.vae_dtype)
-
-            # Setup Flash Attention if enabled
-            if self.use_flash_attention:
-                self._setup_flash_attention_deus()
-
-            # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-            if hasattr(self.unet, 'enable_gradient_checkpointing'):
-                self.unet.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
-            else:
-                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
-
-            # Enable gradient checkpointing for SigLIP-2 MultiModalEncoder
-            if hasattr(self.text_encoder, 'text_encoder'):
-                if hasattr(self.text_encoder.text_encoder, 'gradient_checkpointing_enable'):
-                    self.text_encoder.text_encoder.gradient_checkpointing_enable()
-            if hasattr(self.text_encoder, 'image_encoder'):
-                if hasattr(self.text_encoder.image_encoder, 'gradient_checkpointing_enable'):
-                    self.text_encoder.image_encoder.gradient_checkpointing_enable()
-                    print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 encoders")
-
-            # Freeze VAE
-            self.vae.requires_grad_(False)
-
-            # Move models to GPU (controlled, VRAM-optimized)
-            # Text Encoder first (smallest)
-            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-            self.text_encoder.to(self.device)
-
-            # U-Net second
-            print(f"{self.log_prefix} Moving U-Net to {self.device}...")
-            self.unet.to(self.device)
-
-            # VAE stays on CPU (moved to GPU only during sample generation)
-            print(f"{self.log_prefix} VAE remains on CPU (will move to GPU during sample generation)")
-
-            print(f"{self.log_prefix} DEUS checkpoint loaded successfully as base model")
-            print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-            print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
-            print(f"{self.log_prefix} VAE scaling factor: {self.vae.config.scaling_factor}")
-
-        elif self.is_zimage:
+        if self.is_zimage:
             print(f"{self.log_prefix} Loading Z-Image checkpoint as base model")
 
             # Z-Image checkpoints from training are saved with all components
@@ -1547,16 +1266,6 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
             ZImageAttention._attention_backend = "flash"
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
-
-    def _setup_flash_attention_deus(self):
-        """Setup Flash Attention for DEUS models."""
-        try:
-            from diffusers.models.attention_processor import AttnProcessor2_0
-            print(f"{self.log_prefix} Setting Flash Attention for DEUS U-Net...")
-            self.unet.set_attn_processor(AttnProcessor2_0())
-            print(f"{self.log_prefix} [OK] Flash Attention enabled for DEUS U-Net")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
 
     def _setup_flash_attention_sd_sdxl(self):
         """Setup Flash Attention for SD/SDXL models."""
@@ -2305,12 +2014,7 @@ class BaseTrainer(ABC):
         Returns:
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
-            For DEUS: text_embeddings tensor (SigLIP-2, variable-length support)
         """
-        # DEUS: SigLIP-2 supports variable-length inputs without chunking
-        if self.is_deus:
-            return self._encode_prompt_deus(prompt, requires_grad)
-
         # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
         tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
         tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
@@ -2415,63 +2119,6 @@ class BaseTrainer(ABC):
                     )[0]
 
                 return text_embeddings
-
-    def _encode_prompt_deus(self, prompt: str, requires_grad: bool = False):
-        """
-        Encode prompt for DEUS using SigLIP-2 (variable-length support, no chunking).
-
-        Args:
-            prompt: Text prompt to encode
-            requires_grad: Whether to enable gradient computation for text encoder
-
-        Returns:
-            text_embeddings tensor (no pooled output for SigLIP-2)
-        """
-        # Get max_position_embeddings from actual position_embedding layer
-        # (config may not reflect the actual layer size after weight loading)
-        if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
-            embeddings_layer = self.text_encoder.text_model.embeddings
-            if hasattr(embeddings_layer, 'position_embedding'):
-                # Use actual position_embedding size
-                max_length = embeddings_layer.position_embedding.weight.shape[0]
-            elif hasattr(self.text_encoder, 'config') and hasattr(self.text_encoder.config, 'max_position_embeddings'):
-                max_length = self.text_encoder.config.max_position_embeddings
-            else:
-                max_length = 512  # Conservative default (original SigLIP-2)
-        else:
-            max_length = 512  # Conservative default
-
-        # SigLIP-2 tokenizer: use actual max_length
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
-
-        # Check if text encoder has FP8 weights (requires autocast)
-        has_fp8_weights = self._has_fp8_text_encoder()
-
-        with context_manager:
-            # For FP8 quantized text encoder, use autocast for mixed precision
-            if has_fp8_weights:
-                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                    # SigLIP-2: returns last_hidden_state directly
-                    text_embeddings = self.text_encoder(
-                        text_inputs.input_ids.to(self.device),
-                        attention_mask=text_inputs.attention_mask.to(self.device) if hasattr(text_inputs, 'attention_mask') else None,
-                    )
-            else:
-                # SigLIP-2: returns last_hidden_state directly
-                text_embeddings = self.text_encoder(
-                    text_inputs.input_ids.to(self.device),
-                    attention_mask=text_inputs.attention_mask.to(self.device) if hasattr(text_inputs, 'attention_mask') else None,
-                )
-
-        return text_embeddings
 
     def _encode_prompt_chunked(self, prompt: str, requires_grad: bool = False):
         """
@@ -2656,81 +2303,6 @@ class BaseTrainer(ABC):
 
         return result_embeds, result_mask
 
-    def encode_prompt_deus(
-        self,
-        prompt: str,
-        use_image: bool = True,
-        null_image: bool = False,
-        requires_grad: bool = False
-    ) -> torch.Tensor:
-        """
-        Encode prompt using SigLIP-2 text encoder (DEUS).
-
-        Args:
-            prompt: Text prompt
-            use_image: Whether to use image-conditional encoding (True for training)
-            null_image: Whether to use null image (True for negative prompts)
-            requires_grad: Whether to enable gradients (True when training text encoder)
-
-        Returns:
-            prompt_embeds: [seq_len, 1152] tensor (variable sequence length)
-        """
-        # Check if text encoder has FP8 weights (requires autocast)
-        has_fp8_weights = self._has_fp8_text_encoder()
-
-        # New token format: <text> [END] for T2I mode
-        # use_image/null_image parameters are now converted to use_end_token
-        # T2I always uses [END] token to mark sequence termination
-        use_end_token = use_image or null_image
-
-        # Enable gradients when training text encoder
-        if requires_grad:
-            # For FP8 quantized text encoder, use autocast for mixed precision
-            if has_fp8_weights:
-                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                    prompt_embeds = self.text_encoder.encode(
-                        prompts=prompt,
-                        clip_skip=0,  # Use last layer (default)
-                        use_end_token=use_end_token,  # Append [END] token for T2I mode
-                        requires_grad=True  # Enable gradients for training
-                    )
-            else:
-                prompt_embeds = self.text_encoder.encode(
-                    prompts=prompt,
-                    clip_skip=0,  # Use last layer (default)
-                    use_end_token=use_end_token,  # Append [END] token for T2I mode
-                    requires_grad=True  # Enable gradients for training
-                )
-            # Keep gradients attached (no detach)
-            result_embeds = prompt_embeds
-        else:
-            # Disable gradients for inference or when not training text encoder
-            with torch.no_grad():
-                # For FP8 quantized text encoder, use autocast for mixed precision
-                if has_fp8_weights:
-                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                        prompt_embeds = self.text_encoder.encode(
-                            prompts=prompt,
-                            clip_skip=0,  # Use last layer (default)
-                            use_end_token=use_end_token  # Append [END] token for T2I mode
-                        )
-                else:
-                    prompt_embeds = self.text_encoder.encode(
-                        prompts=prompt,
-                        clip_skip=0,  # Use last layer (default)
-                        use_end_token=use_end_token  # Append [END] token for T2I mode
-                    )
-            # Detach gradients
-            result_embeds = prompt_embeds.detach()
-
-        # SigLIP2MultiModalEncoder.encode() returns [1, seq_len, 1152]
-        # Keep batch dimension for consistency with SDXL (both return [batch, seq_len, dim])
-
-        # Free intermediate tensors to prevent VRAM accumulation
-        del prompt_embeds
-
-        return result_embeds
-
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -2738,17 +2310,11 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (embeddings, auxiliary_data):
             - Z-Image: (prompt_embeds, attention_mask)
-            - DEUS: (prompt_embeds, None)
             - SD1.5: (text_embeddings, None)
             - SDXL: (text_embeddings, pooled_embeddings)
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
-        elif self.is_deus:
-            # DEUS: Use image-conditional encoding for training
-            # Pass requires_grad to enable text encoder training
-            prompt_embeds = self.encode_prompt_deus(caption, use_image=True, null_image=False, requires_grad=requires_grad)
-            return (prompt_embeds, None)
         elif self.is_sdxl:
             text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, pooled_emb
@@ -2763,32 +2329,11 @@ class BaseTrainer(ABC):
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
         if self.text_encoder is not None:
-            # DEUS: SigLIP2MultiModalEncoder wrapper
-            if self.is_deus:
-                # Move text encoder (SigLIP2TextEncoder)
-                if hasattr(self.text_encoder, 'text_encoder'):
-                    self.text_encoder.text_encoder.to(self.device)
-                    # Ensure text_model.embeddings stays on GPU (critical for gradient checkpointing)
-                    if hasattr(self.text_encoder.text_encoder, 'text_model'):
-                        self.text_encoder.text_encoder.text_model.to(self.device)
-                # Move image encoder (SigLIP2ImageEncoder) - only if training it
-                train_image_encoder = getattr(self, 'train_image_encoder', False)
-                if train_image_encoder and hasattr(self.text_encoder, 'image_encoder'):
-                    self.text_encoder.image_encoder.to(self.device)
-                    if hasattr(self.text_encoder.image_encoder, 'vision_model'):
-                        self.text_encoder.image_encoder.vision_model.to(self.device)
-                # Move special token parameters (small, 1x1x1152 each)
-                if hasattr(self.text_encoder, 'end_token'):
-                    self.text_encoder.end_token.data = self.text_encoder.end_token.data.to(self.device)
-                if hasattr(self.text_encoder, 'img_tokens'):
-                    for img_token in self.text_encoder.img_tokens:
-                        img_token.data = img_token.data.to(self.device)
-            else:
-                # SD/SDXL: CLIPTextModel
-                self.text_encoder.to(self.device)
-                # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
-                if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
-                    self.text_encoder.text_model.embeddings.to(self.device)
+            # SD/SDXL: CLIPTextModel
+            self.text_encoder.to(self.device)
+            # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
+            if hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'embeddings'):
+                self.text_encoder.text_model.embeddings.to(self.device)
         if self.is_sdxl and self.text_encoder_2 is not None:
             self.text_encoder_2.to(self.device)
             # Ensure embedding layer stays on GPU (critical for gradient checkpointing)
@@ -2798,24 +2343,7 @@ class BaseTrainer(ABC):
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""
         if self.text_encoder is not None:
-            # DEUS: SigLIP2MultiModalEncoder wrapper
-            if self.is_deus:
-                # Move text encoder (SigLIP2TextEncoder)
-                if hasattr(self.text_encoder, 'text_encoder'):
-                    self.text_encoder.text_encoder.to("cpu")
-                # Move image encoder (SigLIP2ImageEncoder) - only if it was moved to GPU
-                train_image_encoder = getattr(self, 'train_image_encoder', False)
-                if train_image_encoder and hasattr(self.text_encoder, 'image_encoder'):
-                    self.text_encoder.image_encoder.to("cpu")
-                # Move special token parameters
-                if hasattr(self.text_encoder, 'end_token'):
-                    self.text_encoder.end_token.data = self.text_encoder.end_token.data.to("cpu")
-                if hasattr(self.text_encoder, 'img_tokens'):
-                    for img_token in self.text_encoder.img_tokens:
-                        img_token.data = img_token.data.to("cpu")
-            else:
-                # SD/SDXL: CLIPTextModel
-                self.text_encoder.to("cpu")
+            self.text_encoder.to("cpu")
         if self.is_sdxl and self.text_encoder_2 is not None:
             self.text_encoder_2.to("cpu")
         torch.cuda.empty_cache()
@@ -2967,18 +2495,17 @@ class BaseTrainer(ABC):
                 # Clean up intermediate tensors
                 del h, mean, logvar
             else:
-                # SD/SDXL/DEUS VAE - 統一された処理フロー
-                # DEUSはSDXLVAEWrapperを使用しているが、内部のAutoencoderKLにアクセスして同じ形式で処理
+                # SD/SDXL VAE - 統一された処理フロー
                 from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
-                
+
                 if isinstance(self.vae, SDXLVAEWrapper):
                     # SDXLVAEWrapperの場合、内部のAutoencoderKLにアクセス
                     vae_model = self.vae.vae
                 else:
                     # 標準のAutoencoderKL
                     vae_model = self.vae
-                
-                # 統一されたエンコード処理（SDXLとDEUSで同じ形式）
+
+                # 統一されたエンコード処理
                 encoder_output = vae_model.encode(image_tensor)
                 latents = encoder_output.latent_dist.sample()
 
@@ -3408,208 +2935,6 @@ class BaseTrainer(ABC):
 
         return loss, pred_loss_value, recon_loss_value
 
-    # ============================================================
-    # DEPRECATED: train_step_deus() is no longer used
-    # ============================================================
-    # DEUS models now use train_step() (SD/SDXL common method) for training.
-    # This method was originally created for DEUS-specific optimizations,
-    # but DEUS shares the same training logic (DDPM + epsilon prediction) as SD/SDXL.
-    # The text_embeddings format from encode_prompt_deus() is compatible with train_step().
-    #
-    # Kept here (commented out) for future reference if DEUS-specific optimizations are needed.
-    # ============================================================
-    #
-    # def train_step_deus(
-    #     self,
-    #     latents: torch.Tensor,
-    #     prompt_embeds: torch.Tensor,
-    #     timesteps: Optional[torch.Tensor] = None,
-    #     debug_save_path: Optional[Path] = None,
-    #     debug_captions: Optional[List[str]] = None,
-    #     profile_vram: bool = False,
-    # ) -> Tuple[torch.Tensor, float]:
-    #     """
-    #     Perform single training step (DEUS).
-    #
-    #     Args:
-    #         latents: Image latents [B, C, H, W]
-    #         prompt_embeds: SigLIP-2 embeddings [B, seq_len, 1152] (variable sequence length)
-    #         timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
-    #         debug_save_path: If provided, save latents for debugging
-    #         debug_captions: Captions for debug output
-    #         profile_vram: If True, print VRAM usage
-    #
-    #     Returns:
-    #         (loss_tensor, recon_loss_value) - Loss tensor with grad and recon loss value
-    #     """
-    #     if profile_vram:
-    #         print_vram_usage("[train_step_deus] Start")
-    #
-    #     # DEUS uses DDPM with epsilon prediction (same as SD/SDXL)
-    #     noise_process = getattr(self, 'noise_process', 'ddpm')
-    #     prediction_target = getattr(self, 'prediction_target', 'epsilon')
-    #
-    #     # Move latents to GPU with correct dtype
-    #     # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
-    #     latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-    #
-    #     # Sample noise (now on GPU)
-    #     noise = torch.randn_like(latents)
-    #
-    #     if profile_vram:
-    #         print_vram_usage("[train_step_deus] After noise generation")
-    #
-    #     # Sample random timestep (or use provided timesteps)
-    #     batch_size = latents.shape[0]
-    #
-    #     if timesteps is None:
-    #         if noise_process == "ddpm":
-    #             # DDPM: sample discrete timesteps [0, num_train_timesteps)
-    #             if self.timestep_sampler is not None:
-    #                 # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
-    #                 # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-    #                 # DDPM: t=999 (noisy) → t=0 (clean)
-    #                 # Flow: t=0 (noisy) → t=1 (clean)
-    #                 # So we need to flip: YAML [0,1] → DDPM [999,0]
-    #                 # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
-    #                 timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
-    #                 timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
-    #                 timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
-    #             else:
-    #                 # Legacy behavior: sample uniformly from [0, num_train_timesteps)
-    #                 timesteps = torch.randint(
-    #                     0,
-    #                     self.noise_scheduler.config.num_train_timesteps,
-    #                     (batch_size,),
-    #                     device=self.device,
-    #                 ).long()
-    #     else:
-    #         # Timesteps provided externally
-    #         if noise_process == "ddpm":
-    #             # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
-    #             # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-    #             # DDPM: t=999 (noisy) → t=0 (clean)
-    #             # Flow: t=0 (noisy) → t=1 (clean)
-    #             # So we need to flip: YAML [0,1] → DDPM [999,0]
-    #             timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
-    #             timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
-    #
-    #     # Add noise to latents using unified framework
-    #     noisy_latents = add_noise_unified(
-    #         noise_process=noise_process,
-    #         noise_scheduler=self.noise_scheduler,
-    #         latents=latents,
-    #         noise=noise,
-    #         timesteps=timesteps,
-    #     )
-    #
-    #     if profile_vram:
-    #         print_vram_usage("[train_step_deus] Before UNet forward")
-    #
-    #     # Enable gradients for gradient checkpointing
-    #     noisy_latents.requires_grad_(True)
-    #     prompt_embeds.requires_grad_(True)
-    #
-    #     # Predict noise using DEUS U-Net
-    #     # DEUS does NOT use added_cond_kwargs (unlike SDXL)
-    #     if self.mixed_precision:
-    #         with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-    #             model_pred = self.unet(
-    #                 sample=noisy_latents,
-    #                 timestep=timesteps,
-    #                 encoder_hidden_states=prompt_embeds
-    #             ).sample
-    #     else:
-    #         model_pred = self.unet(
-    #             sample=noisy_latents,
-    #             timestep=timesteps,
-    #             encoder_hidden_states=prompt_embeds
-    #         ).sample
-    #
-    #     if profile_vram:
-    #         print_vram_usage("[train_step_deus] After UNet forward")
-    #
-    #     # Get target based on unified framework
-    #     target = get_target_unified(
-    #         noise_process=noise_process,
-    #         prediction_target=prediction_target,
-    #         noise_scheduler=self.noise_scheduler,
-    #         latents=latents,
-    #         noise=noise,
-    #         timesteps=timesteps,
-    #     )
-    #
-    #     # Calculate prediction loss (MSE, always in FP32 for numerical stability)
-    #     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-    #     loss_per_sample = loss_per_element.mean([1, 2, 3])
-    #
-    #     # Apply Min-SNR weighting if enabled (DDPM only, not for flow matching)
-    #     if self.min_snr_gamma > 0 and noise_process == "ddpm":
-    #         # Min-SNR weighting: https://arxiv.org/abs/2303.09556
-    #         snr = compute_snr(self.noise_scheduler, timesteps)
-    #         loss_per_sample_weighted = apply_snr_weight(loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma)
-    #     else:
-    #         loss_per_sample_weighted = loss_per_sample
-    #
-    #     mse_loss = loss_per_sample_weighted.mean()
-    #
-    #     # Calculate reconstruction loss (for monitoring or dual loss training)
-    #     # If reconstruction_loss_weight > 0, compute with gradients for backprop
-    #     # Otherwise, compute without gradients (monitoring only)
-    #     if self.reconstruction_loss_weight > 0:
-    #         # Dual loss training: compute reconstruction loss with gradients
-    #         predicted_latent = predict_original_latent_unified(
-    #             noise_process=noise_process,
-    #             prediction_target=prediction_target,
-    #             noise_scheduler=self.noise_scheduler,
-    #             noisy_latents=noisy_latents,
-    #             model_pred=model_pred,
-    #             timesteps=timesteps,
-    #         )
-    #
-    #         recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
-    #         recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-    #         recon_loss = recon_loss_per_sample.mean()
-    #
-    #         # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
-    #         alpha = 1.0 - self.reconstruction_loss_weight
-    #         beta = self.reconstruction_loss_weight
-    #         loss = alpha * mse_loss + beta * recon_loss
-    #     else:
-    #         # Standard training: prediction loss only
-    #         # Calculate reconstruction loss for monitoring (no gradients)
-    #         with torch.no_grad():
-    #             predicted_latent = predict_original_latent_unified(
-    #                 noise_process=noise_process,
-    #                 prediction_target=prediction_target,
-    #                 noise_scheduler=self.noise_scheduler,
-    #                 noisy_latents=noisy_latents,
-    #                 model_pred=model_pred,
-    #                 timesteps=timesteps,
-    #             )
-    #
-    #             recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
-    #             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-    #             recon_loss = recon_loss_per_sample.mean()
-    #
-    #         loss = mse_loss
-    #
-    #     if profile_vram:
-    #         print_vram_usage("[train_step_deus] After loss calculation")
-    #
-    #     # Get loss value before cleanup
-    #     loss_value = loss.item()
-    #     recon_loss_value = recon_loss.item()
-    #
-    #     # Free intermediate tensors explicitly to prevent VRAM accumulation
-    #     # CRITICAL: These tensors accumulate across training steps if not deleted
-    #     del noise, noisy_latents, model_pred, target, predicted_latent, recon_loss
-    #     if 'snr' in locals():
-    #         del snr
-    #
-    #     # Return loss tensor (with grad) and reconstruction loss value (for logging)
-    #     return loss, recon_loss_value
-
     def train_step_zimage(
         self,
         latents: torch.Tensor,
@@ -3863,212 +3188,8 @@ class BaseTrainer(ABC):
         return loss, pred_loss_value, recon_loss_value
 
     # ============================================================
-    # Sample Generation (to be continued in next section)
+    # Sample Generation
     # ============================================================
-
-    def _generate_sample_deus(
-        self,
-        prompt: str,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 28,
-        guidance_scale: float = 3.5,
-        seed: int = -1,
-        current_step: int = 0,
-        schedule_type: str = "uniform"
-    ) -> "Image.Image":
-        """
-        Generate sample image during DEUS training.
-        Uses custom_sampling_loop() - EXACTLY the same method as SDXL sample generation.
-
-        Args:
-            prompt: Text prompt
-            height: Image height
-            width: Image width
-            num_inference_steps: Number of denoising steps
-            guidance_scale: CFG scale
-            seed: Random seed (-1 for random)
-            current_step: Current training step (for logging)
-            schedule_type: Timestep schedule type (uniform, karras, exponential)
-
-        Returns:
-            PIL Image
-        """
-        from PIL import Image
-        from core.inference.custom_sampling import custom_sampling_loop
-        from core.inference.schedulers import get_scheduler
-        import random
-
-        print(f"{self.log_prefix} Generating DEUS sample: {prompt[:50]}...")
-
-        # Set models to eval mode
-        self.unet.eval()
-        self.vae.eval()
-        # SigLIP2MultiModalEncoder has no eval() - it's a wrapper
-        if hasattr(self.text_encoder, 'text_model'):
-            self.text_encoder.text_model.eval()
-
-        try:
-            # ========================================
-            # STEP 1: Create Temporary Pipeline Object
-            # ========================================
-            # custom_sampling_loop() requires a pipeline object with scheduler, unet, vae, etc.
-            class TempDeusPipeline:
-                def __init__(self, unet, vae, encoder, scheduler):
-                    self.unet = unet
-                    self.vae = vae
-                    self.encoder = encoder  # SigLIP2MultiModalEncoder
-                    self.scheduler = scheduler
-                    # Set default config
-                    self.vae_scale_factor = 8
-                    self.image_processor = None  # Not needed for custom_sampling_loop
-
-            # Map schedule_type (sgm_uniform -> uniform)
-            schedule_type_mapped = schedule_type
-            if schedule_type == "sgm_uniform":
-                schedule_type_mapped = "uniform"
-
-            # Create scheduler using get_scheduler()
-            class SchedulerContainer:
-                def __init__(self, scheduler):
-                    self.scheduler = scheduler
-
-            scheduler_container = SchedulerContainer(self.original_scheduler)
-            scheduler = get_scheduler(
-                pipeline=scheduler_container,
-                sampler="euler",
-                schedule_type=schedule_type_mapped
-            )
-
-            # Create temporary pipeline
-            pipeline = TempDeusPipeline(
-                unet=self.unet,
-                vae=self.vae,
-                encoder=self.text_encoder,
-                scheduler=scheduler
-            )
-
-            # ========================================
-            # STEP 2: Text Encoding (with VRAM optimization)
-            # ========================================
-            self.move_text_encoder_to_gpu()
-
-            # Encode positive prompt with [END] token (T2I format: <text> [END])
-            clip_skip = 0  # DEUS: Use last layer (layer 27) for training
-            prompt_embeds = self.text_encoder.encode(
-                prompts=[prompt],
-                images=None,  # T2I: no image
-                use_end_token=True,
-                clip_skip=clip_skip,
-                requires_grad=False
-            )
-
-            # Encode negative prompt with [END] token
-            negative_prompt_embeds = self.text_encoder.encode(
-                prompts=[""],
-                images=None,
-                use_end_token=True,
-                clip_skip=clip_skip,
-                requires_grad=False
-            )
-
-            # Pad negative embeddings to match positive if needed
-            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
-                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
-                padding = torch.zeros(
-                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
-                    dtype=negative_prompt_embeds.dtype,
-                    device=negative_prompt_embeds.device
-                )
-                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
-                log_verbose(f"{self.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
-
-            self.move_text_encoder_to_cpu()
-            torch.cuda.empty_cache()
-
-            # ========================================
-            # STEP 3: Create Generator
-            # ========================================
-            if seed < 0:
-                actual_seed = random.randint(0, 2**32 - 1)
-            else:
-                actual_seed = seed
-
-            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
-
-            # ========================================
-            # STEP 4: Call custom_sampling_loop (SAME as SDXL)
-            # ========================================
-            self.move_main_model_to_gpu()
-            self.move_vae_to_gpu()
-
-            log_verbose(f"{self.log_prefix} [Sample] Using custom_sampling_loop()")
-            log_verbose(f"{self.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
-
-            # Use autocast for sample generation (ensures LoRA dtype compatibility)
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                image = custom_sampling_loop(
-                    pipeline=pipeline,
-                    prompt_embeds=prompt_embeds,
-                    negative_prompt_embeds=negative_prompt_embeds,
-                    pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
-                    negative_pooled_prompt_embeds=None,
-                    num_inference_steps=num_inference_steps,
-                    guidance_scale=guidance_scale,
-                    guidance_rescale=0.0,  # No rescale for DEUS
-                    width=width,
-                    height=height,
-                    generator=generator,
-                    ancestral_generator=None,  # Not needed for training samples
-                    latents=None,
-                    prompt_embeds_callback=None,  # No prompt editing for training samples
-                    progress_callback=None,
-                    step_callback=None,
-                    developer_mode=False,
-                    cfg_schedule_type="constant",  # Simple constant CFG for training samples
-                    cfg_schedule_min=1.0,
-                    cfg_schedule_max=None,
-                    cfg_schedule_power=2.0,
-                    cfg_rescale_snr_alpha=0.0,
-                    dynamic_threshold_percentile=0.0,
-                    dynamic_threshold_mimic_scale=1.0,
-                    nag_enable=False,  # No NAG for training samples
-                    nag_scale=5.0,
-                    nag_tau=3.5,
-                    nag_alpha=0.25,
-                    nag_sigma_end=0.0,
-                    nag_negative_prompt_embeds=None,
-                    nag_negative_pooled_prompt_embeds=None,
-                    attention_type="normal",  # Normal attention for training samples
-                )
-
-                # Move models back to CPU
-                self.move_main_model_to_cpu()
-                self.move_vae_to_cpu()
-                torch.cuda.empty_cache()
-
-                log_verbose(f"{self.log_prefix} Sample generated successfully (seed: {actual_seed})")
-                return image
-
-        except Exception as e:
-            print(f"{self.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
-            print(f"{self.log_prefix} [Sample] Sample generation failed - this is expected for early training steps")
-            print(f"{self.log_prefix} [Sample] Training will continue normally")
-
-            # Return a placeholder image (blank white image)
-            from PIL import Image
-            placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
-            return placeholder
-
-        finally:
-            # Restore training mode
-            self.unet.train()
-            self.vae.train()
-            if hasattr(self.text_encoder, 'text_model'):
-                self.text_encoder.text_model.train()
-
-            # Ensure U-Net is back on GPU for training continuation
-            self.move_main_model_to_gpu()
 
     def generate_sample(
         self,
@@ -4102,19 +3223,6 @@ class BaseTrainer(ABC):
         import random
 
         print(f"{self.log_prefix} Generating sample: {prompt[:50]}...")
-
-        # DEUS: Use custom_sampling_loop with VRAM optimization
-        if self.is_deus:
-            return self._generate_sample_deus(
-                prompt=prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                current_step=current_step,
-                schedule_type=schedule_type
-            )
 
         # SD/SDXL: Use custom_sampling_loop
         from core.inference.custom_sampling import custom_sampling_loop
@@ -6638,46 +5746,8 @@ class BaseTrainer(ABC):
 
         # For Full Fine-Tuning, iterate through base model parameters
         else:
-            # DEUS: text_encoder is SigLIP2MultiModalEncoder wrapper
-            # Access actual parameters via text_encoder.text_encoder.text_model
-            if self.is_deus and hasattr(self, 'text_encoder') and self.text_encoder is not None:
-                # Debug: Check structure once
-                if not hasattr(self, '_grad_norm_structure_checked'):
-                    print(f"{self.log_prefix} [GradNorm Debug] DEUS text encoder structure:")
-                    print(f"{self.log_prefix}   has text_encoder attr: {hasattr(self.text_encoder, 'text_encoder')}")
-                    if hasattr(self.text_encoder, 'text_encoder'):
-                        print(f"{self.log_prefix}   text_encoder is None: {self.text_encoder.text_encoder is None}")
-                        if self.text_encoder.text_encoder is not None:
-                            print(f"{self.log_prefix}   has text_model attr: {hasattr(self.text_encoder.text_encoder, 'text_model')}")
-                    self._grad_norm_structure_checked = True
-
-                # SigLIP-2 Text Encoder
-                te_grad_count = 0
-                if hasattr(self.text_encoder, 'text_encoder') and self.text_encoder.text_encoder is not None:
-                    if hasattr(self.text_encoder.text_encoder, 'text_model'):
-                        for name, param in self.text_encoder.text_encoder.text_model.named_parameters():
-                            if param.grad is not None:
-                                param_norm = param.grad.data.norm(2).item()
-                                total_grad_norm += param_norm ** 2
-                                text_encoder_grad_norm += param_norm ** 2
-                                te_grad_count += 1
-
-                # Debug: Print count once
-                if not hasattr(self, '_grad_norm_te_count_printed'):
-                    print(f"{self.log_prefix} [GradNorm Debug] Text Encoder params with grad: {te_grad_count}")
-                    self._grad_norm_te_count_printed = True
-
-                # SigLIP-2 Image Encoder (future T2I support)
-                if hasattr(self.text_encoder, 'image_encoder') and self.text_encoder.image_encoder is not None:
-                    if hasattr(self.text_encoder.image_encoder, 'vision_model'):
-                        for name, param in self.text_encoder.image_encoder.vision_model.named_parameters():
-                            if param.grad is not None:
-                                param_norm = param.grad.data.norm(2).item()
-                                total_grad_norm += param_norm ** 2
-                                text_encoder_grad_norm += param_norm ** 2
-
             # SD1.5/SDXL: Direct text_encoder access
-            elif hasattr(self, 'text_encoder') and self.text_encoder is not None:
+            if hasattr(self, 'text_encoder') and self.text_encoder is not None:
                 for name, param in self.text_encoder.named_parameters():
                     if param.grad is not None:
                         param_norm = param.grad.data.norm(2).item()

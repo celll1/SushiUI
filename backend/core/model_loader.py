@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
-ModelType = Literal["sd15", "sdxl", "zimage", "deus"]
+ModelType = Literal["sd15", "sdxl", "zimage"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -212,29 +212,13 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, Z-Image, or DEUS based on config or structure
+        """Detect if model is SD1.5, SDXL, or Z-Image based on config or structure
 
         Supports:
-        - DEUS architecture (directory with unet/, encoder/, vae/)
         - Z-Image diffusers format (directory with transformer/, vae/, etc.)
         - Z-Image Comfy format (single safetensors with transformer weights only)
         - SD1.5/SDXL diffusers and safetensors
         """
-        # DEUS architecture detection (diffusers-like format)
-        if os.path.isdir(model_path):
-            # DEUS has unet/ directory with specific config markers
-            unet_config = os.path.join(model_path, "unet", "config.json")
-            if os.path.exists(unet_config):
-                try:
-                    with open(unet_config, 'r') as f:
-                        config = json.load(f)
-                        # DEUS has unique markers: skip_connection_interval, variant
-                        if "skip_connection_interval" in config and "variant" in config:
-                            print(f"[ModelLoader] Detected DEUS architecture: {model_path}")
-                            return "deus"
-                except Exception as e:
-                    print(f"[ModelLoader] Warning: Could not read unet config: {e}")
-
         # Z-Image detection (diffusers format)
         if os.path.isdir(model_path):
             # Z-Image has transformer/ directory with unique config
@@ -279,59 +263,12 @@ class ModelLoader:
                         elif model_type in ["sd15", "sd-1.5", "sd_1.5", "stable-diffusion", "stable_diffusion", "sd"]:
                             print(f"[ModelLoader] Detected SD1.5 from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "sd15"
-                        # DEUS detection (v1 and v2)
-                        elif model_type in ["original", "deus", "deus_v2"]:
-                            print(f"[ModelLoader] Detected DEUS architecture from metadata (model_type={metadata['model_type']}): {model_path}")
-                            return "deus"
                         # Z-Image detection
                         elif model_type == "zimage":
                             print(f"[ModelLoader] Detected Z-Image from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "zimage"
 
-                    # Priority 2: DEUS detection by unique U-Net keys
-                    # DEUS has unique features: rope_2d (RoPE 2D positional encoding)
-                    # Check for DEUS-specific U-Net keys
-                    has_deus_rope = any('rope_2d' in k for k in keys)
-
-                    # DEUS v1 format (ComfyUI-style)
-                    has_siglip2_text_v1 = any(k.startswith('conditioner.embedders.0.transformer.') for k in keys)
-                    has_deus_unet_v1 = any(k.startswith('model.diffusion_model.') for k in keys)
-
-                    # DEUS v2 format (diffusers-style)
-                    has_siglip2_text_v2 = any(k.startswith('text_encoder.') for k in keys)
-                    has_deus_unet_v2 = any(k.startswith('unet.') for k in keys)
-                    has_vae_v2 = any(k.startswith('vae.') for k in keys)
-
-                    # DEUS v1: SigLIP-2 text encoder + DEUS-specific U-Net (rope_2d)
-                    # SDXL has CLIP encoders, not SigLIP-2, and no rope_2d
-                    if has_siglip2_text_v1 and has_deus_unet_v1 and has_deus_rope:
-                        print(f"[ModelLoader] Detected DEUS v1 architecture (SigLIP-2 encoder + rope_2d found): {model_path}")
-                        return "deus"
-
-                    # DEUS v2: text_encoder + unet + vae + rope_2d
-                    if has_siglip2_text_v2 and has_deus_unet_v2 and has_vae_v2 and has_deus_rope:
-                        print(f"[ModelLoader] Detected DEUS v2 architecture (text_encoder + unet + vae + rope_2d found): {model_path}")
-                        return "deus"
-                    
-                    # Additional check: If SigLIP-2 encoder exists but no rope_2d, check for SDXL indicators
-                    # SDXL has CLIP encoders with specific key patterns:
-                    # - conditioner.embedders.0.text_model.encoder.layers (CLIP ViT-L)
-                    # - conditioner.embedders.1.text_model.encoder.layers (OpenCLIP ViT-bigG)
-                    # DEUS has SigLIP-2 encoder:
-                    # - conditioner.embedders.0.transformer.encoder.layers (SigLIP-2)
-                    has_clip_encoder = any(
-                        k.startswith('conditioner.embedders.0.text_model.') 
-                        or k.startswith('conditioner.embedders.1.text_model.')
-                        for k in keys
-                    )
-                    
-                    # If SigLIP-2 encoder exists but no rope_2d and CLIP encoder exists, it's likely SDXL
-                    # (SDXL might have SigLIP-2 as an additional encoder, but CLIP is primary)
-                    if has_siglip2_text and has_clip_encoder and not has_deus_rope:
-                        print(f"[ModelLoader] Found SigLIP-2 encoder but also CLIP encoders (SDXL indicator), treating as SDXL: {model_path}")
-                        # Continue to SDXL detection below
-
-                    # Priority 3: SD/SDXL detection
+                    # Priority 2: SD/SDXL detection
                     # SD/SDXL models have U-Net keys starting with "model.diffusion_model."
                     has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
 
@@ -713,15 +650,6 @@ class ModelLoader:
         model_type = ModelLoader.detect_model_type(file_path)
         print(f"[ModelLoader] Detected model type: {model_type}")
 
-        # DEUS architecture
-        if model_type == "deus":
-            print(f"[ModelLoader] Loading as DEUS architecture")
-            return ModelLoader.load_deus_architecture(
-                model_path=file_path,
-                device=device,
-                torch_dtype=torch_dtype
-            )
-
         # Z-Image Comfy format
         if model_type == "zimage":
             print(f"[ModelLoader] Loading as Z-Image (Comfy safetensors format)")
@@ -1044,7 +972,6 @@ class ModelLoader:
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
             - Dict of components for Z-Image
-            - DeusPipeline for DEUS architecture
         """
         if source_type == "safetensors":
             return ModelLoader.load_from_safetensors(source, device, torch_dtype)
@@ -1059,68 +986,3 @@ class ModelLoader:
             )
         else:
             raise ValueError(f"Unknown source type: {source_type}")
-
-    @staticmethod
-    def load_deus_architecture(
-        model_path: Optional[str] = None,
-        unet_variant: str = "medium",
-        device: str = "cuda",
-        torch_dtype: torch.dtype = torch.float16
-    ):
-        """Load or create DEUS architecture pipeline
-        (Dual-Embeddings U-Net Structure)
-
-        Args:
-            model_path: Path to unified safetensors checkpoint (if None, create new pipeline)
-            unet_variant: "small", "medium", or "large" (for new pipeline or checkpoint structure)
-            device: Device to load on
-            torch_dtype: Data type
-
-        Returns:
-            DeusPipeline instance
-        """
-        from core.pipelines.pipeline_deus import create_deus_pipeline, load_deus_pipeline_from_checkpoint
-
-        print(f"[ModelLoader] Loading DEUS architecture...")
-
-        if model_path is None:
-            # Create new pipeline with random weights
-            print(f"[ModelLoader] Creating new pipeline (variant: {unet_variant})")
-            pipeline = create_deus_pipeline(
-                unet_variant=unet_variant,
-                dtype=torch_dtype,
-                device=device
-            )
-        else:
-            # Load from unified safetensors checkpoint
-            if not model_path.endswith('.safetensors'):
-                raise ValueError(
-                    f"DEUS architecture requires .safetensors checkpoint. "
-                    f"Got: {model_path}"
-                )
-
-            # Auto-detect variant from checkpoint metadata
-            try:
-                from safetensors import safe_open
-                with safe_open(model_path, framework='pt', device='cpu') as f:
-                    metadata = f.metadata() or {}
-                    # Check for variant in metadata (prefer "unet_variant", fallback to "variant")
-                    detected_variant = metadata.get("unet_variant") or metadata.get("variant")
-                    if detected_variant:
-                        print(f"[ModelLoader] Auto-detected variant from checkpoint: {detected_variant}")
-                        unet_variant = detected_variant
-                    else:
-                        print(f"[ModelLoader] No variant in metadata, using default: {unet_variant}")
-            except Exception as e:
-                print(f"[ModelLoader] Warning: Could not read checkpoint metadata: {e}")
-                print(f"[ModelLoader] Using default variant: {unet_variant}")
-
-            print(f"[ModelLoader] Loading from checkpoint: {model_path}")
-            pipeline = load_deus_pipeline_from_checkpoint(
-                checkpoint_path=model_path,
-                unet_variant=unet_variant,
-                dtype=torch_dtype,
-                device=device
-            )
-
-        return pipeline

@@ -355,16 +355,13 @@ async def generate_txt2img(
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
         is_zimage = pipeline_manager.current_model_info and \
                     pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
             is_sdxl,
-            is_zimage,
-            is_deus=is_deus
+            is_zimage
         )
 
         # Create step callback for LoRA step range if needed
@@ -635,8 +632,6 @@ async def generate_img2img(
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
         is_zimage = pipeline_manager.current_model_info and \
                     pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -644,7 +639,6 @@ async def generate_img2img(
             manager,
             is_sdxl,
             is_zimage,
-            is_deus=is_deus,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps
         )
@@ -943,8 +937,6 @@ async def generate_inpaint(
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
         is_zimage = pipeline_manager.current_model_info and \
                     pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -952,7 +944,6 @@ async def generate_inpaint(
             manager,
             is_sdxl,
             is_zimage,
-            is_deus=is_deus,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps
         )

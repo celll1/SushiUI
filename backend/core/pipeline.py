@@ -867,6 +867,714 @@ class DiffusionPipelineManager:
 
             raise
 
+    def _generate_img2img_deus(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from image using DEUS architecture with VRAM optimization
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            progress_callback: Progress callback (step, total_steps, latents)
+            step_callback: Step callback (not used for DEUS)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.deus_pipeline:
+            raise RuntimeError("DEUS pipeline not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting img2img generation with VRAM optimization")
+
+        # Extract parameters
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        height = params.get("height", 1024)
+        width = params.get("width", 1024)
+        num_inference_steps = params.get("steps", 28)
+        guidance_scale = params.get("cfg_scale", 7.0)
+        denoising_strength = params.get("denoising_strength", 0.75)
+        clip_skip = 0  # SigLIP-2: Use last layer (layer 27) for DEUS (same as training)
+
+        # Seed handling
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        # Quantization and optimization parameters
+        unet_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+        use_torch_compile = params.get("use_torch_compile", False)
+
+        # Convert use_torch_compile to bool if it's a string (from Form data)
+        if isinstance(use_torch_compile, str):
+            use_torch_compile = use_torch_compile.lower() in ("true", "1", "yes", "on")
+        elif not isinstance(use_torch_compile, bool):
+            use_torch_compile = bool(use_torch_compile)
+
+        # Sampler and scheduler settings
+        sampler = params.get("sampler", "euler_a")
+        schedule_type = params.get("schedule_type", "uniform")
+        if sampler:
+            try:
+                from core.inference.schedulers import get_scheduler
+                self.deus_pipeline.scheduler = get_scheduler(self.deus_pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using sampler: {sampler}, schedule: {schedule_type}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
+
+        # Get DEUS components
+        encoder = self.deus_pipeline.encoder
+        unet = self.deus_pipeline.unet
+        vae = self.deus_pipeline.vae
+
+        print(f"[DEUS] Generating {width}x{height} image from input image")
+        print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")
+        print(f"[DEUS] Clip skip: {clip_skip}")
+
+        try:
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_deus_unet_to_gpu,
+                move_deus_unet_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[DEUS] Stage 1: Text Encoding")
+
+            # Move SigLIP-2 text encoder to GPU
+            text_encoder = encoder.text_encoder.text_model
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+
+            log_device_status("Ready for DEUS text encoding (img2img)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Encode prompts (returns separate positive and negative)
+            prompt_embeds, negative_prompt_embeds = self._deus_encode_prompt(
+                encoder, prompt, negative_prompt, guidance_scale, clip_skip
+            )
+
+            # Log text embeddings shape for verification
+            print(f"[DEUS] Positive embeddings shape: {prompt_embeds.shape}")
+            if negative_prompt_embeds is not None:
+                print(f"[DEUS] Negative embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: VAE Encode Input Image
+            # ============================================================
+            print("[DEUS] Stage 2: VAE Encode Input Image")
+
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for DEUS VAE encode (img2img)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Resize input image if needed
+            if init_image.size != (width, height):
+                print(f"[DEUS] Resizing input image from {init_image.size} to {width}x{height}")
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Prepare image tensor
+            import numpy as np
+            image_array = np.array(init_image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Encode to latent space using SDXL VAE
+            with torch.no_grad():
+                # DEUS uses SDXL VAE (SDXLVAEWrapper)
+                init_latents = vae.encode(image_tensor)
+
+                # Latent shape should be [B, 4, H/8, W/8]
+                print(f"[DEUS] Encoded input image to latents: {init_latents.shape}")
+
+            # Offload VAE to CPU after encoding
+            move_zimage_vae_to_cpu(vae)
+
+            # ============================================================
+            # Stage 3: Denoising Loop
+            # ============================================================
+            print("[DEUS] Stage 3: Denoising Loop")
+
+            # Pre-load TAESD-XL for preview generation
+            import time
+            taesd_preload_start = time.time()
+            from core.utils.taesd import taesd_manager
+            taesd_manager.load_taesd(is_deus=True)
+            taesd_preload_time = (time.time() - taesd_preload_start) * 1000
+            if taesd_preload_time > 10:
+                print(f"[DEUS] TAESD-XL pre-loaded: {taesd_preload_time:.2f}ms")
+
+            # Move DEUS U-Net to GPU (with optional torch.compile)
+            unet = move_deus_unet_to_gpu(unet, unet_quantization, use_torch_compile=use_torch_compile)
+
+            log_device_status("Ready for DEUS denoising loop", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Prepare random generator for initial noise
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+
+            # Prepare ancestral generator for scheduler step (Euler Ancestral, etc.)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for ancestral sampling
+                import random
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device="cuda").manual_seed(actual_ancestral_seed)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                ancestral_generator = torch.Generator(device="cuda").manual_seed(ancestral_seed)
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            # ============================================================
+            # DEUS img2img denoising loop (direct implementation)
+            # ============================================================
+            scheduler = self.deus_pipeline.scheduler
+
+            # Set scheduler timesteps
+            scheduler.set_timesteps(num_inference_steps, device=self.device)
+
+            # Calculate starting step based on denoising_strength
+            # strength=1.0 -> start from step 0 (full denoise)
+            # strength=0.5 -> start from step num_steps/2 (half denoise)
+            init_timestep = int(num_inference_steps * denoising_strength)
+            init_timestep = min(init_timestep, num_inference_steps)
+            t_start = max(num_inference_steps - init_timestep, 0)
+
+            # Get timesteps starting from t_start
+            timesteps = scheduler.timesteps[t_start:]
+            num_actual_steps = len(timesteps)
+
+            print(f"[DEUS] img2img: strength={denoising_strength}, starting from step {t_start}, {num_actual_steps} steps")
+
+            # Add noise to init_latents
+            # Note: torch.randn_like doesn't support generator, use torch.randn instead
+            noise = torch.randn(
+                init_latents.shape,
+                generator=generator,
+                device=init_latents.device,
+                dtype=init_latents.dtype
+            )
+            if t_start < len(scheduler.timesteps):
+                start_timestep = scheduler.timesteps[t_start]
+                latents = scheduler.add_noise(init_latents, noise, start_timestep.unsqueeze(0))
+            else:
+                latents = init_latents  # No denoising needed
+
+            # Move embeddings to device
+            device = self.device
+            dtype = next(unet.parameters()).dtype
+            if dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                dtype = torch.float16  # Use float16 for latents
+
+            prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=dtype)
+            latents = latents.to(device=device, dtype=dtype)
+
+            # Denoising loop (with torch.no_grad() to prevent gradient tracking and VRAM explosion)
+            from tqdm import tqdm
+            with torch.no_grad():
+                for i, t in enumerate(tqdm(timesteps, desc="DEUS img2img")):
+                    # DEUS uses 2-pass CFG (different sequence lengths for pos/neg)
+                    if guidance_scale > 1.0 and negative_prompt_embeds is not None:
+                        # First pass: unconditional (negative prompt)
+                        noise_pred_uncond = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=negative_prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred_uncond, 'sample'):
+                            noise_pred_uncond = noise_pred_uncond.sample
+
+                        # Second pass: conditional (positive prompt)
+                        noise_pred_text = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred_text, 'sample'):
+                            noise_pred_text = noise_pred_text.sample
+
+                        # CFG combination
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    else:
+                        # No CFG
+                        noise_pred = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred, 'sample'):
+                            noise_pred = noise_pred.sample
+
+                    # Scheduler step (use ancestral_generator for stochastic samplers like Euler Ancestral)
+                    latents = scheduler.step(noise_pred, t, latents, generator=ancestral_generator).prev_sample
+
+                    # Progress callback
+                    if progress_callback is not None:
+                        progress_callback(i + 1, num_actual_steps, latents)
+
+            # ============================================================
+            # Stage 4: VAE Decode
+            # ============================================================
+            print("[DEUS] Stage 4: VAE Decode")
+
+            # Offload U-Net to CPU
+            move_deus_unet_to_cpu(unet)
+
+            # Move VAE to GPU for decoding
+            move_zimage_vae_to_gpu(vae)
+
+            log_device_status("Ready for DEUS VAE decode (img2img)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Decode latents to image
+            with torch.no_grad():
+                image_tensor = vae.decode(latents)
+
+            # Convert to PIL
+            from core.pipelines.pipeline_deus import DeusPipeline
+            image = DeusPipeline.tensor_to_pil(image_tensor)[0]
+
+            # Offload VAE to CPU
+            move_zimage_vae_to_cpu(vae)
+
+            log_device_status("DEUS img2img complete, all components on CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            print("[DEUS] img2img generation complete!")
+            return image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] ERROR during img2img generation: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Emergency cleanup: offload all components to CPU
+            try:
+                from core.vram_optimization import (
+                    move_zimage_text_encoder_to_cpu,
+                    move_deus_unet_to_cpu,
+                    move_zimage_vae_to_cpu
+                )
+                move_zimage_text_encoder_to_cpu(encoder.text_encoder.text_model)
+                move_deus_unet_to_cpu(unet)
+                move_zimage_vae_to_cpu(vae)
+            except:
+                pass
+
+            raise
+
+    def _generate_inpaint_deus(self, params: Dict[str, Any], init_image: Image.Image, mask_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate inpainted image using DEUS architecture with VRAM optimization
+
+        Inpaint = img2img + mask blending
+        - Encode init_image to latents
+        - Add noise based on denoising_strength
+        - Denoise with mask blending at each step
+        - Decode back to image
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            mask_image: PIL Image (white = inpaint, black = keep)
+            progress_callback: Progress callback (step, total_steps, latents)
+            step_callback: Step callback (not used for DEUS)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.deus_pipeline:
+            raise RuntimeError("DEUS pipeline not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting inpaint generation with VRAM optimization")
+
+        # Extract parameters
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        height = params.get("height", 1024)
+        width = params.get("width", 1024)
+        num_inference_steps = params.get("steps", 28)
+        guidance_scale = params.get("cfg_scale", 7.0)
+        denoising_strength = params.get("denoising_strength", 0.75)
+        mask_blur = params.get("mask_blur", 0)
+        clip_skip = 0  # SigLIP-2: Use last layer (layer 27) for DEUS (same as training)
+
+        # Seed handling
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        # Quantization and optimization parameters
+        unet_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+        use_torch_compile = params.get("use_torch_compile", False)
+
+        # Convert use_torch_compile to bool if it's a string (from Form data)
+        if isinstance(use_torch_compile, str):
+            use_torch_compile = use_torch_compile.lower() in ("true", "1", "yes", "on")
+        elif not isinstance(use_torch_compile, bool):
+            use_torch_compile = bool(use_torch_compile)
+
+        # Sampler and scheduler settings
+        sampler = params.get("sampler", "euler_a")
+        schedule_type = params.get("schedule_type", "uniform")
+        if sampler:
+            try:
+                from core.inference.schedulers import get_scheduler
+                self.deus_pipeline.scheduler = get_scheduler(self.deus_pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using sampler: {sampler}, schedule: {schedule_type}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
+
+        # Get DEUS components
+        encoder = self.deus_pipeline.encoder
+        unet = self.deus_pipeline.unet
+        vae = self.deus_pipeline.vae
+
+        print(f"[DEUS] Generating {width}x{height} inpainted image from input image")
+        print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")
+        print(f"[DEUS] Mask blur: {mask_blur}, Clip skip: {clip_skip}")
+
+        try:
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_deus_unet_to_gpu,
+                move_deus_unet_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[DEUS] Stage 1: Text Encoding")
+
+            # Move SigLIP-2 text encoder to GPU
+            text_encoder = encoder.text_encoder.text_model
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+
+            log_device_status("Ready for DEUS text encoding (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Encode prompts (returns separate positive and negative)
+            prompt_embeds, negative_prompt_embeds = self._deus_encode_prompt(
+                encoder, prompt, negative_prompt, guidance_scale, clip_skip
+            )
+
+            # Log text embeddings shape for verification
+            print(f"[DEUS] Positive embeddings shape: {prompt_embeds.shape}")
+            if negative_prompt_embeds is not None:
+                print(f"[DEUS] Negative embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: VAE Encode Input Image and Mask
+            # ============================================================
+            print("[DEUS] Stage 2: VAE Encode Input Image and Mask")
+
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for DEUS VAE encode (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Resize input image and mask if needed
+            if init_image.size != (width, height):
+                print(f"[DEUS] Resizing input image from {init_image.size} to {width}x{height}")
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            if mask_image.size != (width, height):
+                print(f"[DEUS] Resizing mask from {mask_image.size} to {width}x{height}")
+                mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Apply mask blur if requested
+            if mask_blur > 0:
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+                print(f"[DEUS] Applied Gaussian blur to mask (radius={mask_blur})")
+
+            # Prepare image tensor
+            import numpy as np
+            image_array = np.array(init_image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Prepare mask tensor (white = 1 = inpaint, black = 0 = keep)
+            mask_array = np.array(mask_image.convert('L')).astype(np.float32) / 255.0  # Grayscale
+            mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)  # 1CHW
+            mask_tensor = mask_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Encode input image to latent space using SDXL VAE
+            with torch.no_grad():
+                init_latents = vae.encode(image_tensor)
+
+                # Store original latents for mask blending
+                original_latents = init_latents.clone()
+
+                print(f"[DEUS] Encoded input image to latents: {init_latents.shape}")
+
+            # Resize mask to latent dimensions (downsample by VAE scale factor = 8)
+            latent_height = init_latents.shape[2]
+            latent_width = init_latents.shape[3]
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor, size=(latent_height, latent_width), mode='nearest'
+            )
+
+            print(f"[DEUS] Mask latent shape: {mask_latent.shape}")
+
+            # Offload VAE to CPU after encoding
+            move_zimage_vae_to_cpu(vae)
+
+            # ============================================================
+            # Stage 3: Denoising Loop with Mask Blending
+            # ============================================================
+            print("[DEUS] Stage 3: Denoising Loop with Mask Blending")
+
+            # Pre-load TAESD-XL for preview generation
+            import time
+            taesd_preload_start = time.time()
+            from core.utils.taesd import taesd_manager
+            taesd_manager.load_taesd(is_deus=True)
+            taesd_preload_time = (time.time() - taesd_preload_start) * 1000
+            if taesd_preload_time > 10:
+                print(f"[DEUS] TAESD-XL pre-loaded: {taesd_preload_time:.2f}ms")
+
+            # Move DEUS U-Net to GPU (with optional torch.compile)
+            unet = move_deus_unet_to_gpu(unet, unet_quantization, use_torch_compile=use_torch_compile)
+
+            log_device_status("Ready for DEUS denoising loop (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Prepare random generator for initial noise
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+
+            # Prepare ancestral generator for scheduler step (Euler Ancestral, etc.)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for ancestral sampling
+                import random
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device="cuda").manual_seed(actual_ancestral_seed)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                ancestral_generator = torch.Generator(device="cuda").manual_seed(ancestral_seed)
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            # ============================================================
+            # DEUS inpaint denoising loop (direct implementation with mask blending)
+            # ============================================================
+            scheduler = self.deus_pipeline.scheduler
+
+            # Set scheduler timesteps
+            scheduler.set_timesteps(num_inference_steps, device=self.device)
+
+            # Calculate starting step based on denoising_strength
+            init_timestep = int(num_inference_steps * denoising_strength)
+            init_timestep = min(init_timestep, num_inference_steps)
+            t_start = max(num_inference_steps - init_timestep, 0)
+
+            # Get timesteps starting from t_start
+            timesteps = scheduler.timesteps[t_start:]
+            num_actual_steps = len(timesteps)
+
+            print(f"[DEUS] inpaint: strength={denoising_strength}, starting from step {t_start}, {num_actual_steps} steps")
+
+            # Add noise to init_latents
+            # Note: torch.randn_like doesn't support generator, use torch.randn instead
+            noise = torch.randn(
+                init_latents.shape,
+                generator=generator,
+                device=init_latents.device,
+                dtype=init_latents.dtype
+            )
+            if t_start < len(scheduler.timesteps):
+                start_timestep = scheduler.timesteps[t_start]
+                latents = scheduler.add_noise(init_latents, noise, start_timestep.unsqueeze(0))
+            else:
+                latents = init_latents  # No denoising needed
+
+            # Move embeddings to device
+            device = self.device
+            dtype = next(unet.parameters()).dtype
+            if dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                dtype = torch.float16  # Use float16 for latents
+
+            prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=dtype)
+            latents = latents.to(device=device, dtype=dtype)
+            original_latents = original_latents.to(device=device, dtype=dtype)
+            mask_latent = mask_latent.to(device=device, dtype=dtype)
+
+            # Denoising loop with mask blending (with torch.no_grad() to prevent gradient tracking and VRAM explosion)
+            from tqdm import tqdm
+            with torch.no_grad():
+                for i, t in enumerate(tqdm(timesteps, desc="DEUS inpaint")):
+                    # DEUS uses 2-pass CFG (different sequence lengths for pos/neg)
+                    if guidance_scale > 1.0 and negative_prompt_embeds is not None:
+                        # First pass: unconditional (negative prompt)
+                        noise_pred_uncond = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=negative_prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred_uncond, 'sample'):
+                            noise_pred_uncond = noise_pred_uncond.sample
+
+                        # Second pass: conditional (positive prompt)
+                        noise_pred_text = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred_text, 'sample'):
+                            noise_pred_text = noise_pred_text.sample
+
+                        # CFG combination
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    else:
+                        # No CFG
+                        noise_pred = unet(
+                            sample=latents,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=prompt_embeds
+                        )
+                        # Extract tensor from UNetOutput if needed
+                        if hasattr(noise_pred, 'sample'):
+                            noise_pred = noise_pred.sample
+
+                    # Scheduler step (use ancestral_generator for stochastic samplers like Euler Ancestral)
+                    latents = scheduler.step(noise_pred, t, latents, generator=ancestral_generator).prev_sample
+
+                    # Mask blending: blend denoised latents with original where mask is 0 (black = keep)
+                    # mask_latent: 1 = inpaint area, 0 = keep original
+                    # At each step, add noise to original for current timestep and blend
+                    if i < num_actual_steps - 1:  # Don't blend on last step
+                        next_t = timesteps[i + 1]
+                        noised_original = scheduler.add_noise(original_latents, noise, next_t.unsqueeze(0))
+                        latents = latents * mask_latent + noised_original * (1 - mask_latent)
+                    else:
+                        # Final step: blend with clean original (no noise)
+                        latents = latents * mask_latent + original_latents * (1 - mask_latent)
+
+                    # Progress callback
+                    if progress_callback is not None:
+                        progress_callback(i + 1, num_actual_steps, latents)
+
+            # ============================================================
+            # Stage 4: VAE Decode
+            # ============================================================
+            print("[DEUS] Stage 4: VAE Decode")
+
+            # Offload U-Net to CPU
+            move_deus_unet_to_cpu(unet)
+
+            # Move VAE to GPU for decoding
+            move_zimage_vae_to_gpu(vae)
+
+            log_device_status("Ready for DEUS VAE decode (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            # Decode latents to image
+            with torch.no_grad():
+                image_tensor = vae.decode(latents)
+
+            # Convert to PIL
+            from core.pipelines.pipeline_deus import DeusPipeline
+            image = DeusPipeline.tensor_to_pil(image_tensor)[0]
+
+            # Offload VAE to CPU
+            move_zimage_vae_to_cpu(vae)
+
+            log_device_status("DEUS inpaint complete, all components on CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": unet,
+                "vae": vae
+            })
+
+            print("[DEUS] inpaint generation complete!")
+            return image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] ERROR during inpaint generation: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Emergency cleanup: offload all components to CPU
+            try:
+                from core.vram_optimization import (
+                    move_zimage_text_encoder_to_cpu,
+                    move_deus_unet_to_cpu,
+                    move_zimage_vae_to_cpu
+                )
+                move_zimage_text_encoder_to_cpu(encoder.text_encoder.text_model)
+                move_deus_unet_to_cpu(unet)
+                move_zimage_vae_to_cpu(vae)
+            except:
+                pass
+
+            raise
+
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
 
@@ -3358,6 +4066,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # DEUS handling
+        if self.is_deus_model:
+            return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
+
         # Z-Image handling
         if self.is_zimage_model:
             return self._generate_img2img_zimage(params, init_image, progress_callback, step_callback)
@@ -3829,6 +4541,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # DEUS inpaint support
+        if self.is_deus_model:
+            return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
+
         # Z-Image inpaint support
         if self.is_zimage_model:
             return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)

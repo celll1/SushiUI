@@ -2203,7 +2203,8 @@ class BaseTrainer(ABC):
         """
         Encode prompt using DEUS's SigLIP-2 text encoder.
 
-        SigLIP-2 supports variable sequence length natively (no chunking needed).
+        SigLIP-2 supports variable sequence length up to max_position_embeddings (512).
+        Longer sequences are truncated with a warning.
         Returns text embeddings of shape (batch, seq_len, 1152).
         No pooled embeddings (unlike SDXL).
         """
@@ -2221,14 +2222,27 @@ class BaseTrainer(ABC):
             else:
                 raise RuntimeError("DEUS: No tokenizer available for prompt encoding")
 
-            # Tokenize prompt (SigLIP-2 supports variable length)
+            # Get max_position_embeddings from text encoder config (default 512 for SigLIP-2)
+            max_length = 512
+            if hasattr(self.text_encoder, 'config'):
+                max_length = getattr(self.text_encoder.config, 'max_position_embeddings', 512)
+            elif hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'config'):
+                max_length = getattr(self.text_encoder.text_model.config, 'max_position_embeddings', 512)
+
+            # Tokenize prompt with truncation to max_position_embeddings
             text_inputs = tokenizer(
                 prompt,
                 return_tensors="pt",
                 padding=False,  # No padding for single prompt
+                truncation=True,
+                max_length=max_length,
             )
             input_ids = text_inputs.input_ids.to(self.device)
             attention_mask = text_inputs.attention_mask.to(self.device) if "attention_mask" in text_inputs else None
+
+            # Log warning if prompt was truncated
+            if input_ids.shape[1] >= max_length:
+                log_verbose(f"{self.log_prefix} [DEUS] Prompt truncated to {max_length} tokens (original may have been longer)")
 
             # Encode using SigLIP-2 text model
             # SigLIP structure: text_encoder.text_model.encoder.layers

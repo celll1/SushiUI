@@ -465,6 +465,11 @@ def custom_sampling_loop(
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
     print(f"[CustomSampling] Prompt embeds shape: {prompt_embeds.shape}")
 
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
+
     # Get sigma_max for dynamic CFG scheduling
     sigma_max = 0.0
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
@@ -936,6 +941,8 @@ def custom_img2img_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    width: Optional[int] = None,  # Target width (resizes init_image if specified)
+    height: Optional[int] = None,  # Target height (resizes init_image if specified)
     cfg_schedule_type: str = "constant",
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
@@ -1018,6 +1025,12 @@ def custom_img2img_sampling_loop(
     unet = pipeline.unet
     scheduler = pipeline.scheduler
 
+    # Resize init_image if width/height are specified
+    if width is not None and height is not None:
+        if init_image.size != (width, height):
+            print(f"[CustomSampling] Resizing init_image from {init_image.size} to ({width}, {height})")
+            init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size
 
@@ -1089,11 +1102,15 @@ def custom_img2img_sampling_loop(
         init_image = init_image.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
         init_image = init_image * 2.0 - 1.0  # Normalize to [-1, 1]
 
+    # Use VAE's dtype for encoding (VAE may be FP32 even if U-Net is FP16)
+    vae_dtype = next(pipeline.vae.parameters()).dtype
     with torch.no_grad():
         init_latents = pipeline.vae.encode(
-            init_image.to(device=device, dtype=dtype)
+            init_image.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
         init_latents = init_latents * pipeline.vae.config.scaling_factor
+        # Convert latents back to U-Net dtype for denoising
+        init_latents = init_latents.to(dtype=dtype)
 
     # Move VAE back to CPU after initial encoding
     print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
@@ -1139,6 +1156,11 @@ def custom_img2img_sampling_loop(
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
     first_iteration_debug = True
+
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -1594,6 +1616,8 @@ def custom_inpaint_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    width: Optional[int] = None,  # Target width (resizes init_image and mask if specified)
+    height: Optional[int] = None,  # Target height (resizes init_image and mask if specified)
     inpaint_fill_mode: str = "original",
     inpaint_fill_strength: float = 1.0,
     inpaint_blur_strength: float = 1.0,
@@ -1655,6 +1679,15 @@ def custom_inpaint_sampling_loop(
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Resize init_image and mask_image if width/height are specified
+    if width is not None and height is not None:
+        if init_image.size != (width, height):
+            print(f"[CustomSampling] Resizing init_image from {init_image.size} to ({width}, {height})")
+            init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+        if mask_image.size != (width, height):
+            print(f"[CustomSampling] Resizing mask_image from {mask_image.size} to ({width}, {height})")
+            mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
 
     # Check if this is an inpaint-specific UNet (9 channels) or regular UNet (4 channels)
     # Regular UNets cannot accept concatenated mask+image, so we'll use img2img-style masking
@@ -1734,11 +1767,15 @@ def custom_inpaint_sampling_loop(
     else:
         mask_tensor = mask_image
 
+    # Use VAE's dtype for encoding (VAE may be FP32 even if U-Net is FP16)
+    vae_dtype = next(pipeline.vae.parameters()).dtype
     with torch.no_grad():
         init_latents = pipeline.vae.encode(
-            init_image_tensor.to(device=device, dtype=dtype)
+            init_image_tensor.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
         init_latents = init_latents * pipeline.vae.config.scaling_factor
+        # Convert latents back to U-Net dtype for denoising
+        init_latents = init_latents.to(dtype=dtype)
 
     mask_latent = torch.nn.functional.interpolate(
         mask_tensor.to(device=device, dtype=dtype),
@@ -1772,7 +1809,7 @@ def custom_inpaint_sampling_loop(
             # Apply separable 2D gaussian blur
             # Number of iterations based on blur strength (1-5 iterations)
             blur_iterations = max(1, min(5, int(3 * inpaint_blur_strength)))
-            blurred = init_image_tensor.to(device=device, dtype=dtype)
+            blurred = init_image_tensor.to(device=device, dtype=vae_dtype)
             for _ in range(blur_iterations):
                 blurred = F.conv2d(blurred, kernel_1d.unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(0, kernel_size // 2), groups=3)
                 blurred = F.conv2d(blurred, kernel_1d.t().unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(kernel_size // 2, 0), groups=3)
@@ -1782,6 +1819,7 @@ def custom_inpaint_sampling_loop(
             with torch.no_grad():
                 blurred_latents = pipeline.vae.encode(blurred).latent_dist.sample(generator)
                 blurred_latents = blurred_latents * pipeline.vae.config.scaling_factor
+                blurred_latents = blurred_latents.to(dtype=dtype)
 
             # Mix blurred latents into masked region (mask=1 is inpaint area)
             # Formula: original * (1-mask) + fill * mask * strength + original * mask * (1-strength)
@@ -1844,6 +1882,11 @@ def custom_inpaint_sampling_loop(
 
     # Debug flag for first iteration logging (used throughout the loop)
     first_iteration_debug = True
+
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
     for i, t in enumerate(timesteps):
         # Check for cancellation (only in inference context, not training)

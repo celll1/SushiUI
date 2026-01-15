@@ -72,6 +72,7 @@ def create_progress_callback_factory(
     websocket_manager,
     is_sdxl: bool,
     is_zimage: bool = False,
+    is_deus: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None
 ) -> Callable:
@@ -85,6 +86,7 @@ def create_progress_callback_factory(
         websocket_manager: WebSocketマネージャー
         is_sdxl: SDXLモデルかどうか
         is_zimage: Z-Imageモデルかどうか
+        is_deus: DEUSモデルかどうか
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
 
@@ -98,30 +100,39 @@ def create_progress_callback_factory(
         else:
             display_total = total_steps
 
-        # Generate preview image from latent (every 5 steps to reduce overhead)
+        # Generate preview image from latent (every step for debugging)
         preview_image = None
         send_metrics = None
 
-        if step % 5 == 0 or step == total_steps - 1:
-            try:
-                # Debug: Log model type being used for preview
-                if step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}")
-                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage)
-                if preview_pil:
-                    buffered = BytesIO()
-                    preview_pil.save(buffered, format="JPEG", quality=85)
-                    preview_image = base64.b64encode(buffered.getvalue()).decode()
-            except Exception as e:
-                print(f"Preview generation error: {e}")
-            # Only send CFG metrics when preview is generated
-            send_metrics = cfg_metrics
+        # Always generate preview (every step)
+        try:
+            # Debug: Log model type being used for preview
+            if step == -1 or step == 0:
+                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}")
+            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus)
+            if preview_pil:
+                buffered = BytesIO()
+                preview_pil.save(buffered, format="JPEG", quality=85)
+                preview_image = base64.b64encode(buffered.getvalue()).decode()
+        except Exception as e:
+            print(f"Preview generation error: {e}")
+        # Always send CFG metrics with preview
+        send_metrics = cfg_metrics
+
+        # Handle step=-1 (initial noise) display
+        if step == -1:
+            # Initial noise: display as step 0
+            display_step = 0
+            status_text = f"Step 0/{display_total} (Initial Noise)"
+        else:
+            display_step = step + 1
+            status_text = f"Step {display_step}/{display_total}"
 
         # Send synchronously from callback thread
         websocket_manager.send_progress_sync(
-            step + 1,
+            display_step,
             display_total,
-            f"Step {step + 1}/{display_total}",
+            status_text,
             preview_image=preview_image,
             cfg_metrics=send_metrics
         )

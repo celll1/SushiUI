@@ -839,6 +839,336 @@ class DiffusionPipelineManager:
             torch.cuda.empty_cache()
             print("[DEUS] All components offloaded to CPU")
 
+    def _generate_img2img_deus(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from image using DEUS (img2img)
+
+        DEUS img2img uses the same architecture as txt2img but with:
+        - Initial latents from the input image (VAE encoded)
+        - Denoising strength to control how much of the original image to preserve
+
+        Args:
+            params: Generation parameters
+            init_image: Input image to transform
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting img2img generation (using custom_img2img_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+            denoising_strength = params.get("denoising_strength", 0.75)
+
+            # Get image dimensions from input image or params
+            width = params.get("width", init_image.width)
+            height = params.get("height", init_image.height)
+
+            print(f"[DEUS] Generating {width}x{height} image (denoising_strength={denoising_strength})")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_img2img_sampling_loop with is_deus=True for 2-Pass CFG
+            from core.inference.custom_sampling import custom_img2img_sampling_loop
+            image = custom_img2img_sampling_loop(
+                pipeline=pipeline,
+                init_image=init_image,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                prompt_embeds_callback=None,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                width=width,
+                height=height,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] img2img generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] img2img generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
+
+    def _generate_inpaint_deus(self, params: Dict[str, Any], init_image: Image.Image, mask_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate inpainted image using DEUS
+
+        DEUS inpaint uses the same architecture as img2img but with:
+        - Mask blending during denoising
+        - Denoising strength to control how much of the original image to preserve
+
+        Args:
+            params: Generation parameters
+            init_image: Input image to inpaint
+            mask_image: Mask indicating areas to inpaint (white = inpaint)
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting inpaint generation (using custom_inpaint_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+            denoising_strength = params.get("denoising_strength", 0.75)
+            mask_blur = params.get("mask_blur", 4)
+
+            # Get image dimensions from input image or params
+            width = params.get("width", init_image.width)
+            height = params.get("height", init_image.height)
+
+            print(f"[DEUS] Generating {width}x{height} inpainted image (denoising_strength={denoising_strength})")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_inpaint_sampling_loop with is_deus=True for 2-Pass CFG
+            from core.inference.custom_sampling import custom_inpaint_sampling_loop
+            image = custom_inpaint_sampling_loop(
+                pipeline=pipeline,
+                init_image=init_image,
+                mask_image=mask_image,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                width=width,
+                height=height,
+                inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
+                inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
+                inpaint_blur_strength=float(mask_blur),
+                prompt_embeds_callback=None,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] inpaint generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] inpaint generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
+
     def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from text using Z-Image
 
@@ -3242,6 +3572,10 @@ class DiffusionPipelineManager:
         if self.is_zimage_model:
             return self._generate_img2img_zimage(params, init_image, progress_callback, step_callback)
 
+        # DEUS handling
+        if self.deus_components:
+            return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
+
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
             if not self.txt2img_pipeline:
@@ -3712,6 +4046,10 @@ class DiffusionPipelineManager:
         # Z-Image inpaint support
         if self.is_zimage_model:
             return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)
+
+        # DEUS inpaint support
+        if self.deus_components:
+            return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:

@@ -564,6 +564,12 @@ class BaseTrainer(ABC):
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
 
+            # Pre-detect model type for GradScaler init_scale adjustment
+            # (is_deus is set later in _load_model_components, but we need it here)
+            from core.model_loader import ModelLoader
+            _pre_model_type = ModelLoader.detect_model_type(self.model_path)
+            _is_deus_model = (_pre_model_type == "deus")
+
             # Use higher init_scale for FP16 to prevent gradient underflow
             # Problem: Initial gradients in LoRA training are very small (1e-7 ~ 1e-8)
             # FP16 smallest normal: ~6e-5, so gradients < 6e-5 underflow to 0
@@ -571,10 +577,16 @@ class BaseTrainer(ABC):
             # - 1e-7 × 2^20 = 0.105 (representable in FP16)
             # - 1e-8 × 2^20 = 0.01 (representable in FP16)
             # BF16 has same exponent range as FP32, so default scale (2^16) is sufficient
+            #
+            # Exception: DEUS models tend to produce larger gradients, so use lower init_scale
+            # to prevent overflow (inf) during backward pass
             if self.training_dtype == torch.float16:
-                init_scale = 2**20  # 1048576
+                if _is_deus_model:
+                    init_scale = 2**16  # 65536 (lower scale for DEUS to prevent overflow)
+                else:
+                    init_scale = 2**20  # 1048576 (higher scale for SD/SDXL)
             else:
-                init_scale = 2**16  # 65536 (default)
+                init_scale = 2**16  # 65536 (default for BF16)
 
             self.grad_scaler = GradScaler(
                 init_scale=init_scale,
@@ -584,6 +596,8 @@ class BaseTrainer(ABC):
             )
             print(f"[Trainer] GradScaler enabled for {training_dtype} training")
             print(f"[Trainer]   Init scale: {init_scale} (2^{init_scale.bit_length()-1})")
+            if _is_deus_model:
+                print(f"[Trainer]   DEUS model detected: using lower init_scale to prevent overflow")
             print(f"[Trainer]   Weight dtype: {weight_dtype}")
             print(f"[Trainer]   Training dtype: {training_dtype}")
             if hasattr(self, 'lora_dtype'):
@@ -923,6 +937,19 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
 
+        # Debug: Check for inf/nan in U-Net parameters
+        unet_has_inf = False
+        unet_has_nan = False
+        for name, param in self.unet.named_parameters():
+            if torch.isinf(param).any():
+                print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains inf!")
+                unet_has_inf = True
+            if torch.isnan(param).any():
+                print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains nan!")
+                unet_has_nan = True
+        if not unet_has_inf and not unet_has_nan:
+            print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
+
     def _load_checkpoint_as_base(self, checkpoint_path: str):
         """
         Load checkpoint directly as base model (for resume training).
@@ -938,7 +965,6 @@ class BaseTrainer(ABC):
             checkpoint_path: Path to checkpoint file (.safetensors)
         """
         from core.model_loader import ModelLoader
-        from core.models.checkpoint_utils import load_unified_checkpoint
         from diffusers import DDPMScheduler, EulerAncestralDiscreteScheduler
 
         # Detect model type from checkpoint
@@ -2919,6 +2945,14 @@ class BaseTrainer(ABC):
 
         if profile_vram:
             print_vram_usage("[train_step] After UNet forward")
+
+        # Debug: Check for inf/nan in model prediction (only on first step or if issue detected)
+        if self.is_deus and (torch.isinf(model_pred).any() or torch.isnan(model_pred).any()):
+            print(f"[train_step] WARNING: DEUS model_pred contains inf/nan!")
+            print(f"  - model_pred stats: min={model_pred.min():.4f}, max={model_pred.max():.4f}")
+            print(f"  - noisy_latents stats: min={noisy_latents.min():.4f}, max={noisy_latents.max():.4f}")
+            print(f"  - text_embeddings stats: min={text_embeddings.min():.4f}, max={text_embeddings.max():.4f}")
+            print(f"  - timesteps: {timesteps}")
 
         # Get target based on unified framework
         prediction_target = getattr(self, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility

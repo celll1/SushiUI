@@ -99,6 +99,7 @@ class Flux2BlockSwapWrapper(nn.Module):
             )
 
         # === Custom forward with block swap ===
+        # Based on diffusers Flux2Transformer2DModel.forward()
         transformer = self.transformer
         offloader = self._block_offloader
 
@@ -109,36 +110,39 @@ class Flux2BlockSwapWrapper(nn.Module):
         else:
             lora_scale = 1.0
 
-        # Embeddings
-        hidden_states = transformer.x_embedder(hidden_states)
+        num_txt_tokens = encoder_hidden_states.shape[1]
 
+        # 1. Calculate timestep embedding and modulation parameters
         timestep = timestep.to(hidden_states.dtype) * 1000
         if guidance is not None:
             guidance = guidance.to(hidden_states.dtype) * 1000
 
-        temb = (
-            transformer.time_text_embed(timestep, pooled_projections)
-            if guidance is None
-            else transformer.time_text_embed(timestep, guidance, pooled_projections)
-        )
+        # FLUX.2 uses time_guidance_embed (not time_text_embed)
+        temb = transformer.time_guidance_embed(timestep, guidance)
+
+        # Get modulation parameters
+        double_stream_mod_img = transformer.double_stream_modulation_img(temb)
+        double_stream_mod_txt = transformer.double_stream_modulation_txt(temb)
+        single_stream_mod = transformer.single_stream_modulation(temb)[0]
+
+        # 2. Input projection for image and text
+        hidden_states = transformer.x_embedder(hidden_states)
         encoder_hidden_states = transformer.context_embedder(encoder_hidden_states)
 
-        # Handle deprecated 3D ids
-        if txt_ids.ndim == 3:
-            txt_ids = txt_ids[0]
+        # 3. Calculate RoPE embeddings
         if img_ids.ndim == 3:
             img_ids = img_ids[0]
+        if txt_ids.ndim == 3:
+            txt_ids = txt_ids[0]
 
-        ids = torch.cat((txt_ids, img_ids), dim=0)
-        image_rotary_emb = transformer.pos_embed(ids)
+        image_rotary_emb = transformer.pos_embed(img_ids)
+        text_rotary_emb = transformer.pos_embed(txt_ids)
+        concat_rotary_emb = (
+            torch.cat([text_rotary_emb[0], image_rotary_emb[0]], dim=0),
+            torch.cat([text_rotary_emb[1], image_rotary_emb[1]], dim=0),
+        )
 
-        # Handle IP-Adapter
-        if joint_attention_kwargs is not None and "ip_adapter_image_embeds" in joint_attention_kwargs:
-            ip_adapter_image_embeds = joint_attention_kwargs.pop("ip_adapter_image_embeds")
-            ip_hidden_states = transformer.encoder_hid_proj(ip_adapter_image_embeds)
-            joint_attention_kwargs.update({"ip_hidden_states": ip_hidden_states})
-
-        # === Dual stream blocks (transformer_blocks) with block swap ===
+        # === 4. Dual stream blocks (transformer_blocks) with block swap ===
         num_dual_blocks = offloader.num_dual_blocks
         for index_block, block in enumerate(transformer.transformer_blocks):
             # Wait for block transfer before execution
@@ -149,16 +153,18 @@ class Flux2BlockSwapWrapper(nn.Module):
                     block,
                     hidden_states,
                     encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
+                    double_stream_mod_img,
+                    double_stream_mod_txt,
+                    concat_rotary_emb,
                     joint_attention_kwargs,
                 )
             else:
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
+                    temb_mod_params_img=double_stream_mod_img,
+                    temb_mod_params_txt=double_stream_mod_txt,
+                    image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
 
@@ -176,7 +182,10 @@ class Flux2BlockSwapWrapper(nn.Module):
                 else:
                     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
-        # === Single stream blocks (single_transformer_blocks) with block swap ===
+        # Concatenate text and image streams for single-block inference
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+
+        # === 5. Single stream blocks (single_transformer_blocks) with block swap ===
         for index_block, block in enumerate(transformer.single_transformer_blocks):
             # Unified index for block swap
             unified_idx = num_dual_blocks + index_block
@@ -185,20 +194,20 @@ class Flux2BlockSwapWrapper(nn.Module):
             offloader.wait_for_block(unified_idx)
 
             if torch.is_grad_enabled() and transformer.gradient_checkpointing:
-                encoder_hidden_states, hidden_states = transformer._gradient_checkpointing_func(
+                hidden_states = transformer._gradient_checkpointing_func(
                     block,
                     hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
+                    None,
+                    single_stream_mod,
+                    concat_rotary_emb,
                     joint_attention_kwargs,
                 )
             else:
-                encoder_hidden_states, hidden_states = block(
+                hidden_states = block(
                     hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
+                    encoder_hidden_states=None,
+                    temb_mod_params=single_stream_mod,
+                    image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
 
@@ -211,7 +220,10 @@ class Flux2BlockSwapWrapper(nn.Module):
                 interval_control = int(np.ceil(interval_control))
                 hidden_states = hidden_states + controlnet_single_block_samples[index_block // interval_control]
 
-        # Final layers
+        # Remove text tokens from concatenated stream
+        hidden_states = hidden_states[:, num_txt_tokens:, ...]
+
+        # 6. Output layers
         hidden_states = transformer.norm_out(hidden_states, temb)
         output = transformer.proj_out(hidden_states)
 

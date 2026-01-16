@@ -6,10 +6,11 @@ This is a modular implementation using model-specific adapters:
 - SDXLLoRAAdapter: SDXL models
 - ZImageLoRAAdapter: Z-Image models
 - DEUSLoRAAdapter: DEUS models
+- FLUX2LoRAAdapter: FLUX.2 Klein models
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, Z-Image, and DEUS
+- Supports SD1.5, SDXL, Z-Image, DEUS, and FLUX.2
 - Clean separation of concerns
 - Easy to extend with new model types
 
@@ -31,6 +32,7 @@ from .adapters import (
     SDXLLoRAAdapter,
     ZImageLoRAAdapter,
     DEUSLoRAAdapter,
+    FLUX2LoRAAdapter,
 )
 
 
@@ -102,6 +104,9 @@ class LoRATrainer(BaseTrainer):
         elif self.is_deus:
             self.adapter = DEUSLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using DEUSLoRAAdapter")
+        elif self.is_flux2:
+            self.adapter = FLUX2LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
+            print(f"{self.log_prefix} Using FLUX2LoRAAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")

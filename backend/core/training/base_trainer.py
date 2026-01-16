@@ -744,12 +744,15 @@ class BaseTrainer(ABC):
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
         self.is_deus = (model_type == "deus")
+        self.is_flux2 = (model_type == "flux2")
         self.is_sdxl = False
 
         if self.is_zimage:
             self._load_zimage_components()
         elif self.is_deus:
             self._load_deus_components()
+        elif self.is_flux2:
+            self._load_flux2_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -949,6 +952,139 @@ class BaseTrainer(ABC):
                 unet_has_nan = True
         if not unet_has_inf and not unet_has_nan:
             print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
+
+    def _load_flux2_components(self):
+        """Load FLUX.2 Klein model components.
+
+        FLUX.2 Klein architecture:
+        - Qwen3 text encoder (Qwen3ForCausalLM)
+        - Flux2Transformer2DModel (8 dual stream + 48 single stream blocks)
+        - AutoencoderKLFlux2 (32ch latent with BatchNorm)
+        - Flow matching with velocity prediction
+        - 4D position coordinates for RoPE (T, H, W, L)
+
+        Key differences from FLUX.1:
+        - Single stream blocks use parallel attention+MLP (fused projections)
+        - VAE uses BatchNorm for latent normalization
+        - Text encoder extracts hidden states from layers 9, 18, 27
+        """
+        print(f"{self.log_prefix} Detected FLUX.2 Klein model")
+        print(f"{self.log_prefix} Loading FLUX.2 components from {self.model_path}")
+
+        from core.model_loader import ModelLoader
+
+        components = ModelLoader.load_flux2_from_safetensors(
+            file_path=self.model_path,
+            device="cpu",
+            torch_dtype=self.weight_dtype
+        )
+
+        # Store components
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer  # FLUX.2 doesn't need wrapper
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # FLUX.2 specific: no text_encoder_2, no unet
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        # Convert VAE to vae_dtype
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
+        if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+            self.transformer.enable_gradient_checkpointing()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for FLUX.2 Transformer")
+        else:
+            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for FLUX.2 Transformer")
+
+        # Enable gradient checkpointing for Text Encoder (Qwen3)
+        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
+
+        # Freeze all base weights (full parameter training will unfreeze specific layers later)
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        # Setup Block Swap if enabled (before moving to GPU)
+        self.flux2_block_offloader = None  # FLUX.2 specific offloader
+
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
+            print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
+            print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
+
+            # Import FLUX.2 specific block offloader
+            from core.memory_management import create_flux_block_offloader
+
+            # Check if transformer has required attributes
+            if not hasattr(self.transformer, 'transformer_blocks') or not hasattr(self.transformer, 'single_transformer_blocks'):
+                raise ValueError(
+                    f"FLUX.2 Transformer must have 'transformer_blocks' and 'single_transformer_blocks' attributes for Block Swap. "
+                    f"Found: {type(self.transformer)}"
+                )
+
+            # Initialize FLUX.2 Block Offloader
+            self.flux2_block_offloader = create_flux_block_offloader(
+                transformer=self.transformer,
+                blocks_to_swap=self.blocks_to_swap,
+                device=self.device,
+                target_dtype=self.training_dtype,
+                use_pinned_memory=self.use_pinned_memory,
+                supports_backward=True  # Training mode
+            )
+
+            # Prepare block devices (keep some on GPU, offload rest to CPU)
+            self.flux2_block_offloader.prepare_block_devices_before_forward()
+
+            num_dual = len(self.transformer.transformer_blocks)
+            num_single = len(self.transformer.single_transformer_blocks)
+            print(f"{self.log_prefix} FLUX.2 Block Swap initialized:")
+            print(f"{self.log_prefix}   Dual stream blocks: {num_dual}")
+            print(f"{self.log_prefix}   Single stream blocks: {num_single}")
+            print(f"{self.log_prefix}   Total blocks: {num_dual + num_single}")
+            print(f"{self.log_prefix}   Blocks to swap: {self.blocks_to_swap}")
+
+            # Move VAE and Text Encoder to device (Transformer managed by block offloader)
+            print(f"{self.log_prefix} Moving VAE to {self.device}...")
+            self.vae.to(self.device)
+            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+            self.text_encoder.to(self.device)
+        else:
+            # No Block Swap: move everything to GPU
+            print(f"{self.log_prefix} Moving VAE to {self.device}...")
+            self.vae.to(self.device)
+
+            print(f"{self.log_prefix} Moving Transformer to {self.device}...")
+            self.transformer.to(self.device)
+
+            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+            self.text_encoder.to(self.device)
+
+        print(f"{self.log_prefix} FLUX.2 model loaded successfully")
+        print(f"{self.log_prefix} Transformer: {self.transformer.__class__.__name__}")
+        print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
+        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
+
+        # Debug: Check for inf/nan in Transformer parameters
+        transformer_has_inf = False
+        transformer_has_nan = False
+        for name, param in self.transformer.named_parameters():
+            if torch.isinf(param).any():
+                print(f"{self.log_prefix} WARNING: Transformer param '{name}' contains inf!")
+                transformer_has_inf = True
+            if torch.isnan(param).any():
+                print(f"{self.log_prefix} WARNING: Transformer param '{name}' contains nan!")
+                transformer_has_nan = True
+        if not transformer_has_inf and not transformer_has_nan:
+            print(f"{self.log_prefix} Transformer parameters: No inf/nan detected")
 
     def _load_checkpoint_as_base(self, checkpoint_path: str):
         """
@@ -2564,9 +2700,15 @@ class BaseTrainer(ABC):
             - Z-Image: (prompt_embeds, attention_mask)
             - SD1.5: (text_embeddings, None)
             - SDXL: (text_embeddings, pooled_embeddings)
+            - FLUX.2: (prompt_embeds, None) - text_ids computed in train_step
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
+        elif self.is_flux2:
+            # FLUX.2: Use Qwen3 text encoder with hidden state extraction
+            # Note: text_ids are generated dynamically in train_step_flux2, not cached
+            prompt_embeds, _ = self._flux2_encode_prompt(caption)
+            return prompt_embeds, None  # text_ids are computed in train_step
         elif self.is_sdxl:
             text_emb, pooled_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, pooled_emb
@@ -3449,6 +3591,342 @@ class BaseTrainer(ABC):
         del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
         return loss, pred_loss_value, recon_loss_value
+
+    def train_step_flux2(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        img_ids: torch.Tensor,
+        txt_ids: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        guidance: Optional[torch.Tensor] = None,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        profile_vram: bool = False,
+        alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """
+        Perform single training step (FLUX.2 Klein).
+
+        Args:
+            latents: Image latents [B, seq_len, C] (already patchified)
+            prompt_embeds: Prompt embeddings [B, text_seq_len, dim]
+            img_ids: Image position IDs [B, seq_len, 4] for RoPE
+            txt_ids: Text position IDs [B, text_seq_len, 4] for RoPE
+            timesteps: Timesteps for this batch [B]. If None, sampled uniformly from [0, 1]
+            guidance: Guidance values [B]. If None, uses default 3.5
+            debug_save_path: If provided, save latents for debugging
+            debug_captions: Captions for debug output
+            profile_vram: If True, print VRAM usage
+            alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (unused for FLUX.2, included for API consistency)
+
+        Returns:
+            Tuple of (loss tensor, prediction loss value, reconstruction loss value)
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_flux2] Start")
+
+        # FLUX.2 uses Flow Matching with velocity prediction
+        noise_process = getattr(self, 'noise_process', 'flow')  # FLUX.2 default: flow
+        prediction_target = getattr(self, 'prediction_target', 'velocity')  # FLUX.2 default: velocity
+
+        # Move latents to GPU with correct dtype
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        img_ids = img_ids.to(device=self.device, non_blocking=True)
+        txt_ids = txt_ids.to(device=self.device, non_blocking=True)
+        prompt_embeds = prompt_embeds.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
+        # Sample random timesteps from [0, 1] if not provided
+        batch_size = latents.shape[0]
+        if timesteps is None:
+            if self.timestep_sampler is not None:
+                timesteps = self.timestep_sampler.sample(batch_size, self.device)
+            else:
+                timesteps = torch.rand(batch_size, device=self.device)
+
+        # Set default guidance if not provided
+        if guidance is None:
+            guidance = torch.full((batch_size,), 3.5, device=self.device, dtype=self.training_dtype)
+
+        # Sample noise (standard normal distribution)
+        noise = torch.randn_like(latents)
+
+        # Add noise using flow matching: noisy = (1 - t) * latents + t * noise
+        noisy_latents = add_noise_unified(
+            noise_process=noise_process,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        if profile_vram:
+            print_vram_usage("[train_step_flux2] Before Transformer forward")
+
+        # Predict velocity using FLUX.2 Transformer
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                output = self.transformer(
+                    hidden_states=noisy_latents,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timesteps,
+                    img_ids=img_ids,
+                    txt_ids=txt_ids,
+                    guidance=guidance,
+                    return_dict=False,
+                )
+                model_pred = output[0]
+        else:
+            output = self.transformer(
+                hidden_states=noisy_latents,
+                encoder_hidden_states=prompt_embeds,
+                timestep=timesteps,
+                img_ids=img_ids,
+                txt_ids=txt_ids,
+                guidance=guidance,
+                return_dict=False,
+            )
+            model_pred = output[0]
+
+        if profile_vram:
+            print_vram_usage("[train_step_flux2] After Transformer forward")
+
+        # Get target using unified framework
+        target = get_target_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        # Calculate MSE loss (always in fp32)
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        loss_per_sample = loss_per_element.mean([1, 2])  # Mean over seq_len and channels
+
+        # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
+        mse_loss = loss_per_sample.mean()
+
+        # Add regularization if enabled
+        regularization_loss = torch.tensor(0.0, device=self.device)
+
+        # Compute predicted latent once (used by regularization losses and dual loss)
+        predicted_latent_for_reg = None
+        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None or self.reconstruction_loss_weight > 0:
+            predicted_latent_for_reg = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=self.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
+
+        # SNR regularization
+        if self.snr_regularization_loss is not None:
+            snr_reg_loss = self.snr_regularization_loss(
+                predicted_latent_for_reg,
+                latents,
+                timesteps
+            )
+            regularization_loss = regularization_loss + snr_reg_loss
+
+        # Energy regularization
+        if self.energy_regularization_loss is not None:
+            energy_reg_loss = self.energy_regularization_loss(
+                predicted_latent_for_reg,
+                latents,
+                timesteps
+            )
+            regularization_loss = regularization_loss + energy_reg_loss
+
+        # Calculate reconstruction loss
+        if self.reconstruction_loss_weight > 0:
+            if predicted_latent_for_reg is not None:
+                predicted_latent_for_recon = predicted_latent_for_reg
+            else:
+                predicted_latent_for_recon = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=self.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
+            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2])
+            recon_loss = recon_loss_per_sample.mean()
+
+            alpha = 1.0 - self.reconstruction_loss_weight
+            beta = self.reconstruction_loss_weight
+            combined_loss = alpha * mse_loss + beta * recon_loss
+
+            loss = combined_loss + regularization_loss
+        else:
+            with torch.no_grad():
+                if predicted_latent_for_reg is not None:
+                    predicted_latent_for_recon = predicted_latent_for_reg.detach()
+                else:
+                    predicted_latent_for_recon = predict_original_latent_unified(
+                        noise_process=noise_process,
+                        prediction_target=prediction_target,
+                        noise_scheduler=self.noise_scheduler,
+                        noisy_latents=noisy_latents,
+                        model_pred=model_pred,
+                        timesteps=timesteps,
+                    )
+
+                recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+                recon_loss_per_sample = recon_loss_per_element.mean([1, 2])
+                recon_loss = recon_loss_per_sample.mean()
+
+            loss = mse_loss + regularization_loss
+
+        if profile_vram:
+            print_vram_usage("[train_step_flux2] After loss calculation")
+
+        # Return loss tensor and loss values
+        pred_loss_value = mse_loss.item()
+        recon_loss_value = recon_loss.item()
+
+        # Free intermediate tensors
+        del noise, noisy_latents, model_pred, target
+        del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
+
+        return loss, pred_loss_value, recon_loss_value
+
+    # ============================================================
+    # FLUX.2 Position ID Helpers
+    # ============================================================
+
+    def _flux2_prepare_text_ids(self, prompt_embeds: torch.Tensor) -> torch.Tensor:
+        """
+        Prepare 4D position IDs for FLUX.2 text embeddings.
+
+        FLUX.2 uses 4D position coordinates: (T, H, W, L)
+        - T: Time coordinate (0 for text)
+        - H: Height coordinate (0 for text - dummy dimension)
+        - W: Width coordinate (0 for text - dummy dimension)
+        - L: Sequence position (0 to seq_len-1)
+
+        Args:
+            prompt_embeds: Text embeddings [B, seq_len, hidden_dim]
+
+        Returns:
+            text_ids: Position IDs [B, seq_len, 4]
+        """
+        batch_size, seq_len, _ = prompt_embeds.shape
+        out_ids = []
+
+        for _ in range(batch_size):
+            t = torch.arange(1)  # Time: 0
+            h = torch.arange(1)  # Height: 0 (dummy)
+            w = torch.arange(1)  # Width: 0 (dummy)
+            l = torch.arange(seq_len)  # Sequence position
+            coords = torch.cartesian_prod(t, h, w, l)
+            out_ids.append(coords)
+
+        return torch.stack(out_ids)
+
+    def _flux2_prepare_latent_ids(self, latents: torch.Tensor) -> torch.Tensor:
+        """
+        Prepare 4D position IDs for FLUX.2 image latents.
+
+        FLUX.2 uses 4D position coordinates: (T, H, W, L)
+        - T: Time coordinate (0 for single image)
+        - H: Height coordinate (0 to height-1)
+        - W: Width coordinate (0 to width-1)
+        - L: Channel/patch coordinate (0 for unpatchified)
+
+        Args:
+            latents: Image latents [B, C, H, W]
+
+        Returns:
+            img_ids: Position IDs [B, H*W, 4]
+        """
+        batch_size, _, height, width = latents.shape
+
+        t = torch.arange(1)  # Time: 0
+        h = torch.arange(height)  # Height positions
+        w = torch.arange(width)  # Width positions
+        l = torch.arange(1)  # Patch/channel: 0
+
+        latent_ids = torch.cartesian_prod(t, h, w, l)
+        latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+        return latent_ids
+
+    def _flux2_pack_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """
+        Pack latents from (B, C, H, W) to (B, H*W, C) for FLUX.2 transformer.
+
+        Args:
+            latents: Image latents [B, C, H, W]
+
+        Returns:
+            packed_latents: [B, H*W, C]
+        """
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+        return latents
+
+    def _flux2_encode_prompt(
+        self,
+        prompt: str,
+        max_sequence_length: int = 512,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode prompt for FLUX.2 using Qwen3 text encoder.
+
+        FLUX.2 Klein uses Qwen3 with hidden states from layers 9, 18, 27.
+        Output is concatenated: (B, seq_len, 3 * hidden_dim)
+
+        Args:
+            prompt: Text prompt
+            max_sequence_length: Maximum sequence length
+
+        Returns:
+            Tuple of (prompt_embeds, text_ids)
+        """
+        # Tokenize
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        input_ids = text_inputs.input_ids.to(self.device)
+
+        # Forward through text encoder
+        with torch.no_grad():
+            output = self.text_encoder(
+                input_ids,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+        # Extract hidden states from specified layers (9, 18, 27 for Klein 4B)
+        # Layer indices: -3, -2, -1 would be 25, 26, 27 but Klein uses 9, 18, 27
+        # For Klein 4B (24 layers + embed), we use layers 9, 18, 27 (0-indexed: 8, 17, 26)
+        # But with 24 layers, indices would be: early, mid, late
+        hidden_states_layers = [8, 17, 23]  # For 24-layer model (Klein 4B)
+
+        # Stack hidden states
+        out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
+        out = out.to(dtype=self.training_dtype, device=self.device)
+
+        # Reshape: (B, num_layers, seq_len, hidden_dim) -> (B, seq_len, num_layers * hidden_dim)
+        batch_size, num_channels, seq_len, hidden_dim = out.shape
+        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+        # Prepare text IDs
+        text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(self.device)
+
+        return prompt_embeds, text_ids
 
     # ============================================================
     # Sample Generation
@@ -5659,6 +6137,29 @@ class BaseTrainer(ABC):
                                 profile_vram=self.debug_vram,
                                 alphas_cumprod_cached=alphas_cumprod_cached,
                             )
+                        elif self.is_flux2:
+                            # FLUX.2 training with position IDs
+                            # Prepare position IDs from latent dimensions
+                            img_ids = self._flux2_prepare_latent_ids(mnt_latents).to(self.device)
+
+                            # Pack latents: (B, C, H, W) -> (B, H*W, C)
+                            packed_latents = self._flux2_pack_latents(mnt_latents)
+
+                            # Prepare text IDs from embeddings
+                            txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
+
+                            loss, pred_loss, recon_loss = self.train_step_flux2(
+                                latents=packed_latents,
+                                prompt_embeds=mnt_text_embeddings,
+                                img_ids=img_ids,
+                                txt_ids=txt_ids,
+                                timesteps=timesteps,
+                                guidance=None,  # Klein doesn't use guidance embedding
+                                debug_save_path=debug_save_path,
+                                debug_captions=batch_captions if debug_save_path else None,
+                                profile_vram=self.debug_vram,
+                                alphas_cumprod_cached=alphas_cumprod_cached,
+                            )
                         else:
                             loss, pred_loss, recon_loss = self.train_step(
                                 latents=mnt_latents,
@@ -5688,6 +6189,10 @@ class BaseTrainer(ABC):
                         # Clear saved activations immediately after backward to prevent VRAM leaks
                         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
                             self.layer_offload_conductor.clear_activations()
+
+                        # FLUX.2: Clear block swap activations
+                        if hasattr(self, 'flux2_block_offloader') and self.flux2_block_offloader is not None:
+                            self.flux2_block_offloader.clear_activations()
 
                         # Increment global step for each MNT iteration
                         global_step += 1

@@ -1,6 +1,7 @@
 """Memory Management for Transformer Models"""
 
 from .block_offloading import TransformerBlockOffloader
+from .flux_block_offloading import FluxBlockOffloader, create_flux_block_offloader
 from .transformer_registry import create_block_offloader_for_model
 from .ring_buffer_allocator import RingBufferAllocator, TensorAllocator, DynamicActivationAllocator
 from .tensor_utils import (
@@ -18,6 +19,9 @@ __all__ = [
     # Block offloading (existing, production-ready)
     "TransformerBlockOffloader",
     "create_block_offloader_for_model",
+    # FLUX.2 block offloading
+    "FluxBlockOffloader",
+    "create_flux_block_offloader",
     # Ring buffer allocation (new, for advanced training)
     "RingBufferAllocator",
     "TensorAllocator",

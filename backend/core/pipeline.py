@@ -49,6 +49,11 @@ class DiffusionPipelineManager:
         self.deus_components: Optional[Dict[str, Any]] = None
         self.is_deus_model: bool = False
 
+        # FLUX.2 Klein components (MMDiT with Qwen3 text encoder)
+        # Key features: 8 dual + 48 single stream blocks, 32ch VAE with BatchNorm, Flow Matching
+        self.flux2_components: Optional[Dict[str, Any]] = None
+        self.is_flux2_model: bool = False
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -151,6 +156,16 @@ class DiffusionPipelineManager:
                 self.deus_components = None
                 self.is_deus_model = False
 
+            # Clean up FLUX.2 components
+            if self.flux2_components is not None:
+                print("[Pipeline] Cleaning up FLUX.2 components...")
+                for comp_name, comp in self.flux2_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.flux2_components = None
+                self.is_flux2_model = False
+
             # Force garbage collection
             gc.collect()
 
@@ -208,12 +223,16 @@ class DiffusionPipelineManager:
                     model_hash = get_cached_file_hash(source)
                     print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
+                # Get VAE type from loaded components (flux or sdxl)
+                zimage_vae_type = model_result.get("vae_type", "flux")
+
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": model_type,
                     "is_v_prediction": is_v_prediction,
-                    "model_hash": model_hash
+                    "model_hash": model_hash,
+                    "vae_type": zimage_vae_type  # "flux" (16ch) or "sdxl" (4ch)
                 }
 
                 # Save this model as the last loaded model
@@ -273,10 +292,64 @@ class DiffusionPipelineManager:
                 print("[Pipeline] DEUS model loaded successfully")
                 return
 
+            # Check if FLUX.2 (detected by "transformer" key with Flux2Transformer2DModel-specific keys)
+            if isinstance(model_result, dict) and "transformer" in model_result and "scheduler" in model_result:
+                # Check if it's FLUX.2 by looking at config or class name
+                transformer = model_result.get("transformer")
+                is_flux2 = (
+                    transformer is not None and
+                    hasattr(transformer, 'config') and
+                    hasattr(transformer.config, 'num_single_layers')  # FLUX.2-specific config
+                )
+
+                if is_flux2:
+                    print("[Pipeline] FLUX.2 Klein model detected (Flux2Transformer2DModel)")
+                    self.flux2_components = model_result
+                    self.is_flux2_model = True
+                    self.is_zimage_model = False
+                    self.is_deus_model = False
+                    self.current_model = model_id
+                    self.current_attention_type = "normal"  # Reset on model load
+
+                    # Initialize VRAM optimization: Move all components to CPU
+                    print("[VRAM] Initializing sequential loading strategy for FLUX.2...")
+                    if self.flux2_components.get("text_encoder") is not None:
+                        self.flux2_components["text_encoder"].to("cpu")
+                    if self.flux2_components.get("transformer") is not None:
+                        self.flux2_components["transformer"].to("cpu")
+                    if self.flux2_components.get("vae") is not None:
+                        self.flux2_components["vae"].to("cpu")
+                    torch.cuda.empty_cache()
+                    print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
+
+                    # FLUX.2 info
+                    model_type = "flux2"
+                    is_v_prediction = False  # FLUX.2 uses Flow Matching with velocity prediction
+                    model_hash = ""
+                    if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                        print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                    self.current_model_info = {
+                        "source_type": source_type,
+                        "source": source,
+                        "type": model_type,
+                        "is_v_prediction": is_v_prediction,
+                        "model_hash": model_hash
+                    }
+
+                    # Save this model as the last loaded model
+                    self._save_last_model(source_type, source, pipeline_type)
+
+                    print("[Pipeline] FLUX.2 Klein model loaded successfully")
+                    return
+
             # Standard SD1.5/SDXL pipeline
             base_pipeline = model_result
             self.is_zimage_model = False
             self.is_deus_model = False
+            self.is_flux2_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
@@ -1405,6 +1478,1011 @@ class DiffusionPipelineManager:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
+
+    def _generate_txt2img_flux2(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from text using FLUX.2 Klein
+
+        Args:
+            params: Generation parameters
+            progress_callback: Callback for progress (step, total_steps, latent)
+            step_callback: Step callback (not used for FLUX.2)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting txt2img generation")
+
+        try:
+            import numpy as np
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[FLUX.2] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[FLUX.2] Using specified ancestral seed: {ancestral_seed}")
+
+            # FLUX.2 parameters
+            prompt = params.get("prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
+
+            # Check if distilled model (no CFG)
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            print(f"[FLUX.2] Generating {width}x{height} image")
+            print(f"[FLUX.2] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[FLUX.2] CFG enabled: {do_classifier_free_guidance}")
+            print(f"[FLUX.2] Prompt: {prompt[:100]}...")
+
+            # ============================================================
+            # Stage 1: Text Encoding (Qwen3)
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            # Offload text encoder to CPU
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Prepare Latents
+            # ============================================================
+            print("[FLUX.2] Stage 2: Preparing latents...")
+
+            # VAE scale factor (8) * patch size (2) = 16
+            vae_scale_factor = 8
+            patch_size = 2
+
+            # Ensure height/width divisible by vae_scale_factor * patch_size
+            latent_height = 2 * (int(height) // (vae_scale_factor * patch_size))
+            latent_width = 2 * (int(width) // (vae_scale_factor * patch_size))
+
+            # FLUX.2 has 32 latent channels, but patchified to 128
+            num_channels_latents = transformer.config.in_channels // 4  # 32
+
+            # Create random latents
+            latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
+            latents = torch.randn(latent_shape, generator=generator, device=self.device, dtype=prompt_embeds.dtype)
+
+            # Prepare latent position IDs
+            latent_ids = self._flux2_prepare_latent_ids(latents).to(self.device)
+
+            # Pack latents: (B, C, H, W) -> (B, H*W, C)
+            latents = self._flux2_pack_latents(latents)
+
+            print(f"[FLUX.2] Latents shape: {latents.shape}, Latent IDs shape: {latent_ids.shape}")
+
+            # ============================================================
+            # Stage 3: Denoising Loop
+            # ============================================================
+            print("[FLUX.2] Stage 3: Denoising loop...")
+
+            # Block Swap setup
+            blocks_to_swap = params.get("blocks_to_swap", 0)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                # Create block offloader
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+
+                # Prepare block devices
+                block_offloader.prepare_block_devices_before_forward()
+
+                # Wrap transformer
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                # No Block Swap - move transformer to GPU
+                transformer = transformer.to(self.device)
+                transformer_wrapper = transformer
+
+            # Prepare timesteps
+            image_seq_len = latents.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+
+            # Set timesteps with sigmas
+            sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+            scheduler.set_begin_index(0)
+
+            # Denoising loop
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    # Cleanup block offloader if used
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                # Expand timestep
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                latent_model_input = latents.to(transformer.dtype)
+                latent_image_ids = latent_ids
+
+                # Forward pass (conditional) - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,  # Normalize timestep
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_image_ids,
+                        return_dict=False,
+                    )[0]
+
+                # Classifier-free guidance
+                if do_classifier_free_guidance:
+                    with torch.no_grad():
+                        neg_noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
+                            img_ids=latent_image_ids,
+                            return_dict=False,
+                        )[0]
+                    # CFG formula
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+
+                # Scheduler step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                # Progress callback
+                if progress_callback:
+                    try:
+                        progress_callback(i + 1, len(timesteps), latents)
+                    except Exception as e:
+                        print(f"[FLUX.2] Progress callback error: {e}")
+
+                if (i + 1) % 10 == 0 or i == len(timesteps) - 1:
+                    print(f"[FLUX.2] Step {i + 1}/{len(timesteps)}")
+
+            # Cleanup block offloader and offload transformer to CPU
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 4: VAE Decode
+            # ============================================================
+            print("[FLUX.2] Stage 4: VAE decoding...")
+            vae = vae.to(self.device)
+
+            # Unpack latents with IDs
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Apply BatchNorm scaling (FLUX.2-specific)
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            # Unpatchify
+            latents = self._flux2_unpatchify_latents(latents)
+
+            # Decode
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            # Convert to PIL
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            # Offload VAE to CPU
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] Generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 generation failed: {str(e)}")
+
+    def _flux2_encode_prompt(
+        self,
+        text_encoder,
+        tokenizer,
+        prompt: str,
+        max_sequence_length: int = 512,
+        hidden_states_layers: tuple = (9, 18, 27),
+    ):
+        """Encode prompt using Qwen3 text encoder
+
+        FLUX.2 extracts hidden states from layers 9, 18, 27 of Qwen3 and concatenates them.
+        """
+        device = text_encoder.device
+        dtype = text_encoder.dtype
+
+        # Apply chat template
+        messages = [{"role": "user", "content": prompt}]
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
+        # Tokenize
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=max_sequence_length,
+        )
+
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"].to(device)
+
+        # Forward pass
+        with torch.no_grad():
+            output = text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                use_cache=False,
+            )
+
+        # Extract and stack hidden states from specified layers
+        out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
+        out = out.to(dtype=dtype, device=device)
+
+        # Reshape: (B, num_layers, seq_len, hidden_dim) -> (B, seq_len, num_layers * hidden_dim)
+        batch_size, num_channels, seq_len, hidden_dim = out.shape
+        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+        # Prepare text IDs (4D position coordinates)
+        text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(device)
+
+        return prompt_embeds, text_ids
+
+    def _flux2_prepare_text_ids(self, x: torch.Tensor):
+        """Prepare 4D position IDs for text embeddings"""
+        B, L, _ = x.shape
+        out_ids = []
+
+        for i in range(B):
+            t = torch.arange(1)
+            h = torch.arange(1)
+            w = torch.arange(1)
+            l = torch.arange(L)
+            coords = torch.cartesian_prod(t, h, w, l)
+            out_ids.append(coords)
+
+        return torch.stack(out_ids)
+
+    def _flux2_prepare_latent_ids(self, latents: torch.Tensor):
+        """Prepare 4D position IDs for latents"""
+        batch_size, _, height, width = latents.shape
+
+        t = torch.arange(1)
+        h = torch.arange(height)
+        w = torch.arange(width)
+        l = torch.arange(1)
+
+        latent_ids = torch.cartesian_prod(t, h, w, l)
+        latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+        return latent_ids
+
+    def _flux2_pack_latents(self, latents: torch.Tensor):
+        """Pack latents: (B, C, H, W) -> (B, H*W, C)"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+        return latents
+
+    def _flux2_unpack_latents_with_ids(self, x: torch.Tensor, x_ids: torch.Tensor):
+        """Unpack latents using position IDs"""
+        x_list = []
+        for data, pos in zip(x, x_ids):
+            _, ch = data.shape
+            h_ids = pos[:, 1].to(torch.int64)
+            w_ids = pos[:, 2].to(torch.int64)
+
+            h = torch.max(h_ids) + 1
+            w = torch.max(w_ids) + 1
+
+            flat_ids = h_ids * w + w_ids
+
+            out = torch.zeros((h * w, ch), device=data.device, dtype=data.dtype)
+            out.scatter_(0, flat_ids.unsqueeze(1).expand(-1, ch), data)
+
+            out = out.view(h, w, ch).permute(2, 0, 1)
+            x_list.append(out)
+
+        return torch.stack(x_list, dim=0)
+
+    def _flux2_patchify_latents(self, latents: torch.Tensor):
+        """Patchify latents for 2x2 patches"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.view(batch_size, num_channels, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4)
+        latents = latents.reshape(batch_size, num_channels * 4, height // 2, width // 2)
+        return latents
+
+    def _flux2_unpatchify_latents(self, latents: torch.Tensor):
+        """Unpatchify latents from 2x2 patches"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels // 4, 2, 2, height, width)
+        latents = latents.permute(0, 1, 4, 2, 5, 3)
+        latents = latents.reshape(batch_size, num_channels // 4, height * 2, width * 2)
+        return latents
+
+    def _flux2_compute_empirical_mu(self, image_seq_len: int, num_steps: int) -> float:
+        """Compute empirical mu for FLUX.2 scheduler"""
+        a1, b1 = 8.73809524e-05, 1.89833333
+        a2, b2 = 0.00016927, 0.45666666
+
+        if image_seq_len > 4300:
+            mu = a2 * image_seq_len + b2
+            return float(mu)
+
+        m_200 = a2 * image_seq_len + b2
+        m_10 = a1 * image_seq_len + b1
+
+        a = (m_200 - m_10) / 190.0
+        b = m_200 - 200.0 * a
+        mu = a * num_steps + b
+
+        return float(mu)
+
+    def _generate_img2img_flux2(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from image using FLUX.2 Klein
+
+        FLUX.2 supports image conditioning by encoding input images to latents
+        and using them as reference during denoising.
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            progress_callback: Callback for progress
+            step_callback: Step callback (not used)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting img2img generation")
+
+        try:
+            import numpy as np
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+            else:
+                actual_ancestral_seed = ancestral_seed
+
+            # Parameters
+            prompt = params.get("prompt", "")
+            denoising_strength = params.get("denoising_strength", 0.75)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            max_sequence_length = 512
+
+            # Get image dimensions (use input image size)
+            width, height = init_image.size
+
+            # VAE scale factor
+            vae_scale_factor = 8
+            patch_size = 2
+            multiple_of = vae_scale_factor * patch_size
+
+            # Resize if needed
+            width = (width // multiple_of) * multiple_of
+            height = (height // multiple_of) * multiple_of
+            if init_image.size != (width, height):
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            print(f"[FLUX.2] img2img: {width}x{height}, strength: {denoising_strength}")
+
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Encode input image
+            # ============================================================
+            print("[FLUX.2] Stage 2: Encoding input image...")
+            vae = vae.to(self.device)
+
+            # Preprocess image
+            image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+            image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # (1, C, H, W)
+            image_tensor = (image_tensor - 0.5) * 2  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(self.device, dtype=vae.dtype)
+
+            # Encode
+            with torch.no_grad():
+                latent_dist = vae.encode(image_tensor).latent_dist
+                init_latents = latent_dist.mode()  # Use mode for img2img
+
+            # Patchify
+            init_latents = self._flux2_patchify_latents(init_latents)
+
+            # Apply BatchNorm normalization
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
+            init_latents = (init_latents - latents_bn_mean) / latents_bn_std
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 3: Prepare latents with noise
+            # ============================================================
+            print("[FLUX.2] Stage 3: Preparing latents...")
+
+            # Prepare position IDs
+            latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
+
+            # Pack latents
+            init_latents = self._flux2_pack_latents(init_latents)
+
+            # Prepare timesteps
+            image_seq_len = init_latents.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+
+            # Calculate start timestep based on denoising strength
+            t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
+            timesteps = timesteps[t_start:]
+
+            # Add noise at start timestep
+            noise = torch.randn_like(init_latents, generator=generator)
+            latents = scheduler.add_noise(init_latents, noise, timesteps[:1])
+
+            print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps)")
+
+            # ============================================================
+            # Stage 4: Denoising Loop
+            # ============================================================
+            print("[FLUX.2] Stage 4: Denoising loop...")
+
+            # Block Swap setup
+            blocks_to_swap = params.get("blocks_to_swap", 0)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+                block_offloader.prepare_block_devices_before_forward()
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                transformer = transformer.to(self.device)
+                transformer_wrapper = transformer
+
+            scheduler.set_begin_index(t_start)
+
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                latent_model_input = latents.to(transformer.dtype)
+
+                # Forward pass - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_ids,
+                        return_dict=False,
+                    )[0]
+
+                # CFG
+                if do_classifier_free_guidance:
+                    with torch.no_grad():
+                        neg_noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+
+                # Step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                if progress_callback:
+                    try:
+                        progress_callback(i + 1, len(timesteps), latents)
+                    except Exception:
+                        pass
+
+            # Cleanup block offloader and offload transformer to CPU (img2img)
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 5: VAE Decode (img2img)
+            # ============================================================
+            print("[FLUX.2] Stage 5: VAE decoding...")
+            vae = vae.to(self.device)
+
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Denormalize
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            latents = self._flux2_unpatchify_latents(latents)
+
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] img2img generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] img2img error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 img2img failed: {str(e)}")
+
+    def _generate_inpaint_flux2(
+        self,
+        params: Dict[str, Any],
+        init_image: Image.Image,
+        mask_image: Image.Image,
+        progress_callback=None,
+        step_callback=None
+    ) -> tuple[Image.Image, int, int]:
+        """Generate inpainted image using FLUX.2 Klein
+
+        FLUX.2 inpainting works by blending masked regions during denoising.
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            mask_image: Mask PIL image (white = inpaint, black = keep)
+            progress_callback: Callback for progress
+            step_callback: Step callback (not used)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting inpaint generation")
+
+        try:
+            import numpy as np
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+            else:
+                actual_ancestral_seed = ancestral_seed
+
+            # Parameters
+            prompt = params.get("prompt", "")
+            denoising_strength = params.get("denoising_strength", 1.0)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            mask_blur = params.get("mask_blur", 4)
+            max_sequence_length = 512
+
+            # Get dimensions
+            width, height = init_image.size
+
+            vae_scale_factor = 8
+            patch_size = 2
+            multiple_of = vae_scale_factor * patch_size
+
+            # Resize if needed
+            width = (width // multiple_of) * multiple_of
+            height = (height // multiple_of) * multiple_of
+            if init_image.size != (width, height):
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+                mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            print(f"[FLUX.2] inpaint: {width}x{height}, strength: {denoising_strength}")
+
+            # Apply mask blur
+            if mask_blur > 0:
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Encode input image and prepare mask
+            # ============================================================
+            print("[FLUX.2] Stage 2: Encoding input image and mask...")
+            vae = vae.to(self.device)
+
+            # Preprocess image
+            image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+            image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
+            image_tensor = (image_tensor - 0.5) * 2
+            image_tensor = image_tensor.to(self.device, dtype=vae.dtype)
+
+            # Encode
+            with torch.no_grad():
+                latent_dist = vae.encode(image_tensor).latent_dist
+                init_latents = latent_dist.mode()
+
+            # Prepare mask in latent space
+            mask_tensor = torch.from_numpy(np.array(mask_image.convert("L"))).float() / 255.0
+            mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+
+            # Resize mask to latent size
+            latent_h = height // vae_scale_factor
+            latent_w = width // vae_scale_factor
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor, size=(latent_h, latent_w), mode='bilinear', align_corners=False
+            )
+            mask_latent = mask_latent.to(self.device, dtype=init_latents.dtype)
+
+            # Patchify
+            init_latents = self._flux2_patchify_latents(init_latents)
+
+            # Apply BatchNorm normalization
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
+            init_latents_normalized = (init_latents - latents_bn_mean) / latents_bn_std
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 3: Prepare latents
+            # ============================================================
+            print("[FLUX.2] Stage 3: Preparing latents...")
+
+            # Patchify mask (same spatial transform as latents)
+            # Mask for patchified latents needs special handling
+            mask_patchified = torch.nn.functional.interpolate(
+                mask_latent, size=(latent_h // 2, latent_w // 2), mode='bilinear', align_corners=False
+            )
+
+            # Prepare position IDs
+            latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
+
+            # Pack latents
+            init_latents_packed = self._flux2_pack_latents(init_latents_normalized)
+
+            # Pack mask (1, 1, H/2, W/2) -> (1, H*W/4, 1)
+            mask_packed = mask_patchified.reshape(1, 1, -1).permute(0, 2, 1)
+
+            # Prepare timesteps
+            image_seq_len = init_latents_packed.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+
+            # Calculate start timestep
+            t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
+            timesteps = timesteps[t_start:]
+
+            # Add noise
+            noise = torch.randn_like(init_latents_packed, generator=generator)
+            latents = scheduler.add_noise(init_latents_packed, noise, timesteps[:1])
+
+            print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps)")
+
+            # ============================================================
+            # Stage 4: Denoising Loop with mask blending
+            # ============================================================
+            print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
+
+            # Block Swap setup
+            blocks_to_swap = params.get("blocks_to_swap", 0)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+                block_offloader.prepare_block_devices_before_forward()
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                transformer = transformer.to(self.device)
+                transformer_wrapper = transformer
+
+            scheduler.set_begin_index(t_start)
+
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                latent_model_input = latents.to(transformer.dtype)
+
+                # Forward pass - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_ids,
+                        return_dict=False,
+                    )[0]
+
+                # CFG
+                if do_classifier_free_guidance:
+                    with torch.no_grad():
+                        neg_noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+
+                # Step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                # Blend with original in unmasked regions
+                # Noise original latents to current timestep
+                if i < len(timesteps) - 1:
+                    noise_timestep = timesteps[i + 1]
+                    init_latents_noised = scheduler.add_noise(
+                        init_latents_packed, noise, torch.tensor([noise_timestep])
+                    )
+                else:
+                    init_latents_noised = init_latents_packed
+
+                # Blend: mask=1 -> use new latents, mask=0 -> use original
+                latents = mask_packed * latents + (1 - mask_packed) * init_latents_noised
+
+                if progress_callback:
+                    try:
+                        progress_callback(i + 1, len(timesteps), latents)
+                    except Exception:
+                        pass
+
+            # Cleanup block offloader and offload transformer to CPU (inpaint)
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 5: VAE Decode (inpaint)
+            # ============================================================
+            print("[FLUX.2] Stage 5: VAE decoding...")
+            vae = vae.to(self.device)
+
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Denormalize
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            latents = self._flux2_unpatchify_latents(latents)
+
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] inpaint generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] inpaint error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 inpaint failed: {str(e)}")
 
     def _generate_img2img_zimage(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image using Z-Image
@@ -3146,6 +4224,10 @@ class DiffusionPipelineManager:
         if self.is_deus_model:
             return self._generate_txt2img_deus(params, progress_callback, step_callback)
 
+        # FLUX.2 Klein handling (MMDiT with Qwen3 text encoder)
+        if self.is_flux2_model:
+            return self._generate_txt2img_flux2(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -3575,6 +4657,10 @@ class DiffusionPipelineManager:
         # DEUS handling
         if self.deus_components:
             return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
+
+        # FLUX.2 Klein handling
+        if self.is_flux2_model:
+            return self._generate_img2img_flux2(params, init_image, progress_callback, step_callback)
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -4050,6 +5136,10 @@ class DiffusionPipelineManager:
         # DEUS inpaint support
         if self.deus_components:
             return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
+
+        # FLUX.2 Klein inpaint support
+        if self.is_flux2_model:
+            return self._generate_inpaint_flux2(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:

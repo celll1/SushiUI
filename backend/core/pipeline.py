@@ -192,12 +192,58 @@ class DiffusionPipelineManager:
                 **kwargs
             )
 
+            # Check if FLUX.2 (must check before Z-Image since both have "transformer" key)
+            if isinstance(model_result, dict) and model_result.get("model_type") == "flux2":
+                # FLUX.2 component-based model
+                print("[Pipeline] FLUX.2 model detected (component-based dict returned)")
+                self.flux2_components = model_result
+                self.is_flux2_model = True
+                self.is_zimage_model = False
+                self.is_deus_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # Initialize VRAM optimization: Move all components to CPU
+                print("[VRAM] Initializing sequential loading strategy for FLUX.2...")
+                if self.flux2_components.get("text_encoder") is not None:
+                    self.flux2_components["text_encoder"].to("cpu")
+                if self.flux2_components.get("transformer") is not None:
+                    self.flux2_components["transformer"].to("cpu")
+                if self.flux2_components.get("vae") is not None:
+                    self.flux2_components["vae"].to("cpu")
+                torch.cuda.empty_cache()
+                print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
+
+                # FLUX.2 info
+                model_type = "flux2"
+                is_v_prediction = False  # FLUX.2 uses flow matching
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash,
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] FLUX.2 model loaded successfully")
+                return
+
             # Check if Z-Image
             if isinstance(model_result, dict) and "transformer" in model_result:
                 # Z-Image component-based model
                 print("[Pipeline] Z-Image model detected (component-based dict returned)")
                 self.zimage_components = model_result
                 self.is_zimage_model = True
+                self.is_flux2_model = False
                 self.current_model = model_id
                 self.current_attention_type = "normal"  # Reset on model load
 

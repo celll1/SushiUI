@@ -976,6 +976,7 @@ class ModelLoader:
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
                 "config": transformer_config,
+                "model_type": "flux2",  # Distinguish from Z-Image
             }
 
         except Exception as e:

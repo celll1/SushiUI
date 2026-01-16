@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
-ModelType = Literal["sd15", "sdxl", "zimage", "deus"]
+ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -130,6 +130,14 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
+            elif model_type == "flux2":
+                # FLUX.2 uses Flow Matching with velocity prediction
+                print(f"[ModelLoader] Inferred prediction config from FLUX.2 architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
             elif model_type == "deus":
                 # DEUS uses DDPM with epsilon prediction (same as SDXL base)
                 print(f"[ModelLoader] Inferred prediction config from DEUS architecture")
@@ -220,11 +228,12 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, Z-Image, or DEUS based on config or structure
+        """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
 
         Supports:
         - Z-Image diffusers format (directory with transformer/, vae/, etc.)
         - Z-Image Comfy format (single safetensors with transformer weights only)
+        - FLUX.2 Klein (single safetensors with Flux2Transformer2DModel weights)
         - DEUS (SigLIP-2 text encoder with U-Net)
         - SD1.5/SDXL diffusers and safetensors
         """
@@ -264,8 +273,12 @@ class ModelLoader:
                     if "model_type" in metadata:
                         model_type = metadata["model_type"].lower() if isinstance(metadata["model_type"], str) else str(metadata["model_type"]).lower()
 
+                        # FLUX.2 detection
+                        if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
+                            print(f"[ModelLoader] Detected FLUX.2 from metadata (model_type={metadata['model_type']}): {model_path}")
+                            return "flux2"
                         # DEUS detection
-                        if model_type == "deus":
+                        elif model_type == "deus":
                             print(f"[ModelLoader] Detected DEUS from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "deus"
                         # SDXL detection (highest priority - most common)
@@ -281,7 +294,19 @@ class ModelLoader:
                             print(f"[ModelLoader] Detected Z-Image from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "zimage"
 
-                    # Priority 2: DEUS detection by state_dict keys
+                    # Priority 2: FLUX.2 detection by state_dict keys
+                    # FLUX.2 transformer has unique keys: time_guidance_embed, double_stream_modulation_*,
+                    # single_stream_modulation, transformer_blocks, single_transformer_blocks
+                    has_time_guidance_embed = any(k.startswith('time_guidance_embed.') for k in keys)
+                    has_double_stream_modulation = any(k.startswith('double_stream_modulation_') for k in keys)
+                    has_single_stream_modulation = any(k.startswith('single_stream_modulation.') for k in keys)
+                    has_single_transformer_blocks = any(k.startswith('single_transformer_blocks.') for k in keys)
+
+                    if has_time_guidance_embed and has_double_stream_modulation and has_single_stream_modulation:
+                        print(f"[ModelLoader] Detected FLUX.2 model (Flux2Transformer2DModel): {model_path}")
+                        return "flux2"
+
+                    # Priority 3: DEUS detection by state_dict keys
                     # DEUS uses SigLIP-2 text encoder with key prefix "conditioner.embedders.0.model."
                     # AND it has U-Net keys (unlike Z-Image which uses transformer)
                     has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
@@ -543,13 +568,64 @@ class ModelLoader:
                       f"but config specifies {transformer_config['n_layers']} layers.")
                 print(f"[ModelLoader] Using detected layer count: {actual_n_layers}")
 
-            # Step 4: Create transformer model with detected layer count
+            # Step 4: Detect in_channels from actual safetensors file
+            # If the model has x_embedder with 4 input channels, use SDXL VAE
+            # If it has 16 input channels, use FLUX VAE (standard Z-Image)
+            actual_in_channels = transformer_config["in_channels"]  # Default from config (16)
+
+            # Get patch size from config for x_embedder shape calculation
+            # all_patch_size can be [patch_h, patch_w] = [4, 4] or single value [4]
+            all_patch_size = transformer_config["all_patch_size"]
+            if isinstance(all_patch_size, (list, tuple)):
+                if len(all_patch_size) == 2:
+                    patch_h, patch_w = all_patch_size
+                elif len(all_patch_size) == 1:
+                    patch_h = patch_w = all_patch_size[0]
+                else:
+                    patch_h = patch_w = 4  # Default fallback
+            else:
+                patch_h = patch_w = all_patch_size  # Single integer
+            patch_product = patch_h * patch_w  # 16 for standard Z-Image (4x4)
+
+            # Try to detect from state_dict (x_embedder weight shape)
+            # ComfyUI format: x_embedder.weight shape is [dim, in_channels * patch_h * patch_w]
+            # - Standard Z-Image (FLUX VAE): [3840, 16 * 4 * 4] = [3840, 256]
+            # - SDXL VAE version: [3840, 4 * 4 * 4] = [3840, 64]
+            for key in comfy_state_dict.keys():
+                if "x_embedder" in key and "weight" in key:
+                    weight_shape = comfy_state_dict[key].shape
+                    if len(weight_shape) == 2:
+                        # 2D weight: [dim, in_channels * patch_h * patch_w]
+                        flattened_in = weight_shape[1]
+                        detected_in_channels = flattened_in // patch_product
+                        if detected_in_channels != actual_in_channels:
+                            print(f"[ModelLoader] Detected in_channels={detected_in_channels} from x_embedder "
+                                  f"(weight shape {weight_shape}, patch={patch_h}x{patch_w}, "
+                                  f"config has {actual_in_channels})")
+                            actual_in_channels = detected_in_channels
+                    elif len(weight_shape) == 4:
+                        # 4D weight: [dim, in_channels, patch_h, patch_w]
+                        detected_in_channels = weight_shape[1]
+                        if detected_in_channels != actual_in_channels:
+                            print(f"[ModelLoader] Detected in_channels={detected_in_channels} from x_embedder "
+                                  f"(weight shape {weight_shape}, config has {actual_in_channels})")
+                            actual_in_channels = detected_in_channels
+                    break
+
+            # Determine VAE type based on in_channels
+            use_sdxl_vae = (actual_in_channels == 4)
+            if use_sdxl_vae:
+                print(f"[ModelLoader] Z-Image model uses 4-channel latents (SDXL VAE)")
+            else:
+                print(f"[ModelLoader] Z-Image model uses {actual_in_channels}-channel latents (FLUX VAE)")
+
+            # Step 5: Create transformer model with detected layer count and in_channels
             print("[ModelLoader] Creating Z-Image transformer...")
             with torch.device("meta"):
                 transformer = ZImageTransformer2DModel(
                     all_patch_size=tuple(transformer_config["all_patch_size"]),
                     all_f_patch_size=tuple(transformer_config["all_f_patch_size"]),
-                    in_channels=transformer_config["in_channels"],
+                    in_channels=actual_in_channels,
                     dim=transformer_config["dim"],
                     n_layers=actual_n_layers,
                     n_refiner_layers=transformer_config["n_refiner_layers"],
@@ -583,36 +659,55 @@ class ModelLoader:
                 torch.cuda.empty_cache()
             transformer.eval()
 
-            # Step 5: Load other components from base model
-            print("[ModelLoader] Loading VAE...")
-            vae_path = os.path.join(base_model_path, "vae")
-            vae_config_path = os.path.join(vae_path, "config.json")
-            with open(vae_config_path, 'r') as f:
-                vae_config = json.load(f)
+            # Step 6: Load VAE based on in_channels
+            if use_sdxl_vae:
+                # Load SDXL VAE (4-channel latents)
+                print("[ModelLoader] Loading SDXL VAE (4-channel latents)...")
+                sdxl_vae_repo = "madebyollin/sdxl-vae-fp16-fix"
+                from diffusers import AutoencoderKL as DiffusersAutoencoderKL
+                vae = DiffusersAutoencoderKL.from_pretrained(
+                    sdxl_vae_repo,
+                    torch_dtype=torch.float32  # VAE in fp32 for quality
+                )
+                vae.to(device=device)
+                vae.eval()
+                print(f"[ModelLoader] SDXL VAE loaded: latent_channels={vae.config.latent_channels}, "
+                      f"scaling_factor={vae.config.scaling_factor}")
+            else:
+                # Load FLUX VAE from base model (16-channel latents)
+                print("[ModelLoader] Loading FLUX VAE (16-channel latents)...")
+                vae_path = os.path.join(base_model_path, "vae")
+                vae_config_path = os.path.join(vae_path, "config.json")
+                with open(vae_config_path, 'r') as f:
+                    vae_config = json.load(f)
 
-            vae = AutoencoderKL(
-                in_channels=vae_config["in_channels"],
-                out_channels=vae_config["out_channels"],
-                down_block_types=tuple(vae_config["down_block_types"]),
-                up_block_types=tuple(vae_config["up_block_types"]),
-                block_out_channels=tuple(vae_config["block_out_channels"]),
-                layers_per_block=vae_config["layers_per_block"],
-                latent_channels=vae_config["latent_channels"],
-                norm_num_groups=vae_config["norm_num_groups"],
-                scaling_factor=vae_config["scaling_factor"],
-                shift_factor=vae_config.get("shift_factor"),
-                use_quant_conv=vae_config.get("use_quant_conv", True),
-                use_post_quant_conv=vae_config.get("use_post_quant_conv", True),
-                mid_block_add_attention=vae_config.get("mid_block_add_attention", True),
-            )
+                vae = AutoencoderKL(
+                    in_channels=vae_config["in_channels"],
+                    out_channels=vae_config["out_channels"],
+                    down_block_types=tuple(vae_config["down_block_types"]),
+                    up_block_types=tuple(vae_config["up_block_types"]),
+                    block_out_channels=tuple(vae_config["block_out_channels"]),
+                    layers_per_block=vae_config["layers_per_block"],
+                    latent_channels=vae_config["latent_channels"],
+                    norm_num_groups=vae_config["norm_num_groups"],
+                    scaling_factor=vae_config["scaling_factor"],
+                    shift_factor=vae_config.get("shift_factor"),
+                    use_quant_conv=vae_config.get("use_quant_conv", True),
+                    use_post_quant_conv=vae_config.get("use_post_quant_conv", True),
+                    mid_block_add_attention=vae_config.get("mid_block_add_attention", True),
+                )
 
-            vae_weights_path = os.path.join(vae_path, "diffusion_pytorch_model.safetensors")
-            vae_state_dict = load_file(vae_weights_path, device="cpu")
-            vae.load_state_dict(vae_state_dict, strict=False)
-            del vae_state_dict
-            vae.to(device=device, dtype=torch.float32)  # VAE uses fp32
-            vae.eval()
-            torch.cuda.empty_cache()
+                vae_weights_path = os.path.join(vae_path, "diffusion_pytorch_model.safetensors")
+                vae_state_dict = load_file(vae_weights_path, device="cpu")
+                vae.load_state_dict(vae_state_dict, strict=False)
+                del vae_state_dict
+                vae.to(device=device, dtype=torch.float32)  # VAE uses fp32
+                vae.eval()
+                print(f"[ModelLoader] FLUX VAE loaded: latent_channels={vae.config.latent_channels}, "
+                      f"scaling_factor={vae.config.scaling_factor}")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             print(f"[ModelLoader] Loading text encoder...")
             text_encoder_path = os.path.join(base_model_path, "text_encoder")
@@ -649,9 +744,11 @@ class ModelLoader:
                 use_dynamic_shifting=scheduler_config.get("use_dynamic_shifting", False),
             )
 
+            vae_type = "sdxl" if use_sdxl_vae else "flux"
             print("[ModelLoader] Z-Image Comfy format loaded successfully")
-            print(f"  - Transformer: Loaded from {file_path}")
-            print(f"  - VAE, Text Encoder, Tokenizer, Scheduler: Loaded from {base_model_repo}")
+            print(f"  - Transformer: {actual_n_layers} layers, in_channels={actual_in_channels}")
+            print(f"  - VAE: {vae_type.upper()} (latent_channels={vae.config.latent_channels})")
+            print(f"  - Text Encoder, Tokenizer, Scheduler: Loaded from {base_model_repo}")
 
             return {
                 "transformer": transformer,
@@ -659,6 +756,7 @@ class ModelLoader:
                 "text_encoder": text_encoder,
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
+                "vae_type": vae_type,  # "sdxl" or "flux" - for TAESD preview selection
             }
 
         except Exception as e:
@@ -739,6 +837,129 @@ class ModelLoader:
             raise
 
     @staticmethod
+    def load_flux2_from_safetensors(
+        file_path: str,
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.bfloat16,
+        base_model_repo: str = "black-forest-labs/FLUX.2-klein-base-4B"
+    ) -> Dict[str, Any]:
+        """Load FLUX.2 Klein from safetensors file (transformer weights only)
+
+        The safetensors file should contain only transformer weights.
+        VAE, text encoder, tokenizer, and scheduler are downloaded from HuggingFace.
+
+        Args:
+            file_path: Path to FLUX.2 transformer safetensors
+            device: Device to load models on
+            torch_dtype: Data type for model weights (bfloat16 recommended)
+            base_model_repo: HuggingFace repo ID for base components
+
+        Returns:
+            Dict with transformer, vae, text_encoder, tokenizer, scheduler components
+        """
+        try:
+            from diffusers import Flux2Transformer2DModel, AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler
+            from transformers import Qwen3ForCausalLM, Qwen2TokenizerFast
+            from huggingface_hub import snapshot_download
+            import os
+
+            print(f"[ModelLoader] Loading FLUX.2 Klein from safetensors: {file_path}")
+
+            # Step 1: Download base components from HuggingFace
+            print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
+            cache_dir = snapshot_download(
+                base_model_repo,
+                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json"],
+            )
+            print(f"[ModelLoader] Base components downloaded to: {cache_dir}")
+
+            # Step 2: Load transformer config
+            transformer_config_path = os.path.join(cache_dir, "transformer", "config.json")
+            with open(transformer_config_path, 'r') as f:
+                transformer_config = json.load(f)
+            print(f"[ModelLoader] Transformer config loaded:")
+            print(f"  - in_channels: {transformer_config.get('in_channels', 128)}")
+            print(f"  - num_layers: {transformer_config.get('num_layers', 8)} (dual stream)")
+            print(f"  - num_single_layers: {transformer_config.get('num_single_layers', 48)} (single stream)")
+            print(f"  - num_attention_heads: {transformer_config.get('num_attention_heads', 48)}")
+            print(f"  - attention_head_dim: {transformer_config.get('attention_head_dim', 128)}")
+
+            # Step 3: Create transformer and load weights from safetensors
+            print(f"[ModelLoader] Loading FLUX.2 transformer weights from: {file_path}")
+            transformer_state_dict = load_file(file_path)
+            print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
+
+            # Create transformer model
+            print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
+            transformer = Flux2Transformer2DModel(**transformer_config)
+
+            # Load weights
+            missing_keys, unexpected_keys = transformer.load_state_dict(transformer_state_dict, strict=False)
+            if missing_keys:
+                print(f"[ModelLoader] WARNING: Missing keys: {missing_keys[:5]}..." if len(missing_keys) > 5 else f"[ModelLoader] WARNING: Missing keys: {missing_keys}")
+            if unexpected_keys:
+                print(f"[ModelLoader] WARNING: Unexpected keys: {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"[ModelLoader] WARNING: Unexpected keys: {unexpected_keys}")
+
+            transformer = transformer.to(dtype=torch_dtype)
+            print(f"[ModelLoader] Transformer loaded with {sum(p.numel() for p in transformer.parameters()):,} parameters")
+
+            # Step 4: Load VAE
+            print(f"[ModelLoader] Loading FLUX.2 VAE...")
+            vae = AutoencoderKLFlux2.from_pretrained(
+                cache_dir,
+                subfolder="vae",
+                torch_dtype=torch.float32  # VAE in fp32 for quality
+            )
+            print(f"[ModelLoader] VAE loaded: latent_channels={vae.config.latent_channels}")
+
+            # Step 5: Load Text Encoder (Qwen3)
+            print(f"[ModelLoader] Loading Qwen3 text encoder...")
+            text_encoder = Qwen3ForCausalLM.from_pretrained(
+                cache_dir,
+                subfolder="text_encoder",
+                torch_dtype=torch_dtype
+            )
+            print(f"[ModelLoader] Text encoder loaded: Qwen3ForCausalLM")
+
+            # Step 6: Load Tokenizer
+            print(f"[ModelLoader] Loading tokenizer...")
+            tokenizer = Qwen2TokenizerFast.from_pretrained(
+                cache_dir,
+                subfolder="tokenizer"
+            )
+            print(f"[ModelLoader] Tokenizer loaded: Qwen2TokenizerFast")
+
+            # Step 7: Load Scheduler
+            print(f"[ModelLoader] Loading scheduler...")
+            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                cache_dir,
+                subfolder="scheduler"
+            )
+            print(f"[ModelLoader] Scheduler loaded: FlowMatchEulerDiscreteScheduler")
+
+            print(f"[ModelLoader] FLUX.2 Klein loaded successfully")
+            print(f"  - Transformer: {transformer_config.get('num_layers', 8)} dual + {transformer_config.get('num_single_layers', 48)} single layers")
+            print(f"  - VAE: AutoencoderKLFlux2 (latent_channels={vae.config.latent_channels})")
+            print(f"  - Text Encoder: Qwen3ForCausalLM")
+            print(f"  - Tokenizer: Qwen2TokenizerFast (max_length=512)")
+            print(f"  - Scheduler: FlowMatchEulerDiscreteScheduler")
+
+            return {
+                "transformer": transformer,
+                "vae": vae,
+                "text_encoder": text_encoder,
+                "tokenizer": tokenizer,
+                "scheduler": scheduler,
+                "config": transformer_config,
+            }
+
+        except Exception as e:
+            print(f"[ModelLoader] Error loading FLUX.2 model: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    @staticmethod
     def load_from_safetensors(
         file_path: str,
         device: str = "cuda",
@@ -755,6 +976,11 @@ class ModelLoader:
 
         model_type = ModelLoader.detect_model_type(file_path)
         print(f"[ModelLoader] Detected model type: {model_type}")
+
+        # FLUX.2 format
+        if model_type == "flux2":
+            print(f"[ModelLoader] Loading as FLUX.2 Klein (Flux2Transformer2DModel)")
+            return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
 
         # DEUS format
         if model_type == "deus":

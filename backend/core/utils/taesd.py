@@ -15,16 +15,22 @@ class TAESDManager:
         self.taef1 = None  # For Z-Image (FLUX-based)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False):
+    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False):
         """Load appropriate TAESD model
 
         Args:
             is_sdxl: True for SDXL models
-            is_zimage: True for Z-Image models (uses TAEF1)
+            is_zimage: True for Z-Image models (uses TAEF1 for 16ch FLUX VAE)
             is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
+            is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch, uses TAESD-XL)
         """
         # DEUS uses SDXL VAE (same scaling factor 0.13025), so use TAESD-XL
         if is_deus:
+            is_sdxl = True
+
+        # Z-Image with SDXL VAE (4ch) uses TAESD-XL instead of TAEF1
+        if is_zimage_sdxl_vae:
+            is_zimage = False
             is_sdxl = True
 
         if is_zimage:
@@ -64,20 +70,26 @@ class TAESDManager:
                     print(f"Failed to load TAESD: {e}")
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
             latent: Latent tensor to decode
             is_sdxl: True for SDXL models
-            is_zimage: True for Z-Image models
+            is_zimage: True for Z-Image models (16ch FLUX VAE)
             is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
+            is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch)
         """
         import time
         decode_start_time = time.time()
 
         # DEUS uses SDXL VAE (same scaling factor 0.13025), so use TAESD-XL
         if is_deus:
+            is_sdxl = True
+
+        # Z-Image with SDXL VAE (4ch) uses TAESD-XL and SDXL scaling factor
+        if is_zimage_sdxl_vae:
+            is_zimage = False
             is_sdxl = True
 
         try:

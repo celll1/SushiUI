@@ -6,7 +6,7 @@ Auto-detect transformer architecture and create appropriate block offloader.
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import Optional, Union
 
 from .block_offloading import TransformerBlockOffloader
 
@@ -19,8 +19,16 @@ def detect_transformer_architecture(transformer: nn.Module) -> str:
         transformer: Transformer model
 
     Returns:
-        Architecture name: "zimage", "flux", "sd3", "unknown"
+        Architecture name: "zimage", "flux2", "flux", "sd3", "unknown"
     """
+    # FLUX.2: has both transformer_blocks and single_transformer_blocks (diffusers style)
+    if hasattr(transformer, 'transformer_blocks') and hasattr(transformer, 'single_transformer_blocks'):
+        # Check first block class name
+        if len(transformer.transformer_blocks) > 0:
+            block_class = transformer.transformer_blocks[0].__class__.__name__
+            if "Flux" in block_class:
+                return "flux2"
+
     # Z-Image: has layers attribute with ZImageTransformerBlock
     if hasattr(transformer, 'layers'):
         first_layer = transformer.layers[0] if len(transformer.layers) > 0 else None
@@ -43,7 +51,7 @@ def create_block_offloader_for_model(
     target_dtype: Optional[torch.dtype] = None,
     use_pinned_memory: bool = False,
     supports_backward: bool = False
-) -> TransformerBlockOffloader:
+) -> Union[TransformerBlockOffloader, "FluxBlockOffloader"]:
     """
     Create block offloader for transformer model (auto-detect architecture)
 
@@ -56,12 +64,24 @@ def create_block_offloader_for_model(
         supports_backward: Enable backward pass support (for training)
 
     Returns:
-        TransformerBlockOffloader instance
+        TransformerBlockOffloader or FluxBlockOffloader instance
     """
     architecture = detect_transformer_architecture(transformer)
     print(f"[TransformerRegistry] Detected architecture: {architecture}")
 
-    # Get blocks
+    # FLUX.2: Use specialized FluxBlockOffloader
+    if architecture == "flux2":
+        from .flux_block_offloading import create_flux_block_offloader
+        return create_flux_block_offloader(
+            transformer=transformer,
+            blocks_to_swap=blocks_to_swap,
+            device=device,
+            target_dtype=target_dtype,
+            use_pinned_memory=use_pinned_memory,
+            supports_backward=supports_backward
+        )
+
+    # Z-Image and other single-list architectures
     if hasattr(transformer, 'layers'):
         blocks = transformer.layers
     else:

@@ -295,15 +295,28 @@ class ModelLoader:
                             return "zimage"
 
                     # Priority 2: FLUX.2 detection by state_dict keys
-                    # FLUX.2 transformer has unique keys: time_guidance_embed, double_stream_modulation_*,
-                    # single_stream_modulation, transformer_blocks, single_transformer_blocks
+                    # FLUX.2 has two key formats:
+                    # - Diffusers format: time_guidance_embed, double_stream_modulation_*, single_stream_modulation
+                    # - BFL/Comfy format: double_blocks.*.img_attn, single_blocks.*, guidance_in
+
+                    # Diffusers format detection
                     has_time_guidance_embed = any(k.startswith('time_guidance_embed.') for k in keys)
                     has_double_stream_modulation = any(k.startswith('double_stream_modulation_') for k in keys)
                     has_single_stream_modulation = any(k.startswith('single_stream_modulation.') for k in keys)
                     has_single_transformer_blocks = any(k.startswith('single_transformer_blocks.') for k in keys)
 
                     if has_time_guidance_embed and has_double_stream_modulation and has_single_stream_modulation:
-                        print(f"[ModelLoader] Detected FLUX.2 model (Flux2Transformer2DModel): {model_path}")
+                        print(f"[ModelLoader] Detected FLUX.2 model (diffusers format): {model_path}")
+                        return "flux2"
+
+                    # BFL/Comfy format detection (double_blocks.*.img_attn, single_blocks.*)
+                    has_double_blocks = any(k.startswith('double_blocks.') for k in keys)
+                    has_single_blocks = any(k.startswith('single_blocks.') for k in keys)
+                    has_img_attn = any('.img_attn.' in k for k in keys)
+                    has_guidance_in = any(k.startswith('guidance_in.') for k in keys)
+
+                    if has_double_blocks and has_single_blocks and has_img_attn:
+                        print(f"[ModelLoader] Detected FLUX.2 model (BFL/Comfy format): {model_path}")
                         return "flux2"
 
                     # Priority 3: DEUS detection by state_dict keys
@@ -841,7 +854,7 @@ class ModelLoader:
         file_path: str,
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.bfloat16,
-        base_model_repo: str = "black-forest-labs/FLUX.2-klein-base-4B"
+        base_model_repo: str = "black-forest-labs/FLUX.2-Klein-4B"
     ) -> Dict[str, Any]:
         """Load FLUX.2 Klein from safetensors file (transformer weights only)
 
@@ -888,6 +901,18 @@ class ModelLoader:
             print(f"[ModelLoader] Loading FLUX.2 transformer weights from: {file_path}")
             transformer_state_dict = load_file(file_path)
             print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
+
+            # Detect state_dict format and convert if needed
+            sample_keys = list(transformer_state_dict.keys())[:5]
+            is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())
+
+            if is_bfl_format:
+                print(f"[ModelLoader] Detected BFL/Comfy format state_dict, converting to diffusers format...")
+                from diffusers.loaders.single_file_utils import convert_flux2_transformer_checkpoint_to_diffusers
+                transformer_state_dict = convert_flux2_transformer_checkpoint_to_diffusers(transformer_state_dict)
+                print(f"[ModelLoader] Converted to diffusers format ({len(transformer_state_dict)} tensors)")
+            else:
+                print(f"[ModelLoader] State dict is already in diffusers format")
 
             # Create transformer model
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")

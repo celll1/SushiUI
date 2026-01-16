@@ -1642,11 +1642,12 @@ class DiffusionPipelineManager:
             print("[FLUX.2] Stage 3: Denoising loop...")
 
             # Block Swap setup
-            blocks_to_swap = params.get("blocks_to_swap", 0)
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            if blocks_to_swap > 0:
+            if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
@@ -2092,11 +2093,12 @@ class DiffusionPipelineManager:
             print("[FLUX.2] Stage 4: Denoising loop...")
 
             # Block Swap setup
-            blocks_to_swap = params.get("blocks_to_swap", 0)
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            if blocks_to_swap > 0:
+            if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
@@ -2399,11 +2401,12 @@ class DiffusionPipelineManager:
             print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
 
             # Block Swap setup
-            blocks_to_swap = params.get("blocks_to_swap", 0)
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            if blocks_to_swap > 0:
+            if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper

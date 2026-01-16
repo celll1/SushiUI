@@ -74,6 +74,7 @@ def create_progress_callback_factory(
     is_zimage: bool = False,
     is_deus: bool = False,
     is_zimage_sdxl_vae: bool = False,
+    is_flux2: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None
 ) -> Callable:
@@ -89,6 +90,7 @@ def create_progress_callback_factory(
         is_zimage: Z-Imageモデルかどうか
         is_deus: DEUSモデルかどうか
         is_zimage_sdxl_vae: Z-ImageでSDXL VAE（4ch）を使用しているかどうか
+        is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
 
@@ -110,8 +112,8 @@ def create_progress_callback_factory(
         try:
             # Debug: Log model type being used for preview
             if step == -1 or step == 0:
-                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}")
-            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae)
+                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}")
+            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2)
             if preview_pil:
                 buffered = BytesIO()
                 preview_pil.save(buffered, format="JPEG", quality=85)

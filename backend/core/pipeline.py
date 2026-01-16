@@ -1767,7 +1767,8 @@ class DiffusionPipelineManager:
             # Unpatchify
             latents = self._flux2_unpatchify_latents(latents)
 
-            # Decode
+            # Decode - convert latents to VAE dtype (bfloat16 -> float32)
+            latents = latents.to(dtype=vae.dtype)
             with torch.no_grad():
                 image = vae.decode(latents, return_dict=False)[0]
 

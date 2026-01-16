@@ -6,10 +6,11 @@ This is a modular implementation using model-specific adapters:
 - SDXLFullParameterAdapter: SDXL models
 - ZImageFullParameterAdapter: Z-Image models
 - DEUSFullParameterAdapter: DEUS models
+- FLUX2FullParameterAdapter: FLUX.2 Klein models
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, Z-Image, and DEUS
+- Supports SD1.5, SDXL, Z-Image, DEUS, and FLUX.2
 - Clean separation of concerns
 - Easy to extend with new model types
 
@@ -31,6 +32,7 @@ from .adapters import (
     SDXLFullParameterAdapter,
     ZImageFullParameterAdapter,
     DEUSFullParameterAdapter,
+    FLUX2FullParameterAdapter,
 )
 
 
@@ -86,6 +88,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_deus:
             self.adapter = DEUSFullParameterAdapter(self)
             print(f"{self.log_prefix} Using DEUSFullParameterAdapter")
+        elif self.is_flux2:
+            self.adapter = FLUX2FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using FLUX2FullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

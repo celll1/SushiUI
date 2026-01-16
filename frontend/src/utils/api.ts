@@ -109,7 +109,7 @@ const loadControlNetImages = async (
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage";
+  type: "sd15" | "sdxl" | "zimage" | "deus" | "flux2";
   is_v_prediction: boolean;
   model_hash: string;
 }

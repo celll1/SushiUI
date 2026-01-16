@@ -2360,13 +2360,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </div>
             </div>
 
-            {/* Quantization: Z-Image uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
-            {currentModelInfo?.model_info?.type === "zimage" ? (
+            {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2") ? (
               <>
-                {/* Z-Image: 2-column layout */}
+                {/* Z-Image/FLUX.2: 2-column layout */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Select
-                    label="Transformer Quantization (Z-Image)"
+                    label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
                     value={params.unet_quantization || "none"}
                     onChange={(e) => setParams({
                       ...params,
@@ -2381,7 +2381,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     ]}
                   />
                   <Select
-                    label="Text Encoder Quantization (Z-Image)"
+                    label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
                     value={params.text_encoder_quantization || "none"}
                     onChange={(e) => setParams({
                       ...params,
@@ -2399,7 +2399,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
                   <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
                     <p className="text-xs text-blue-200">
-                      💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
+                      💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
                     </p>
                   </div>
                 ) : null}

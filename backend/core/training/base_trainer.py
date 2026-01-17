@@ -4626,6 +4626,362 @@ class BaseTrainer(ABC):
         return Image.fromarray(image)
 
     # ============================================================
+    # FLUX.2 Sample Generation
+    # ============================================================
+
+    def _generate_sample_flux2(
+        self,
+        prompt: str,
+        height: int = 1024,
+        width: int = 1024,
+        num_inference_steps: int = 20,
+        guidance_scale: float = 5.0,
+        seed: int = -1,
+    ) -> Image.Image:
+        """
+        Generate sample image during training (FLUX.2 Klein).
+
+        Args:
+            prompt: Text prompt
+            height: Image height
+            width: Image width
+            num_inference_steps: Number of denoising steps
+            guidance_scale: CFG scale
+            seed: Random seed (-1 for random)
+
+        Returns:
+            PIL Image
+        """
+        import random
+        import numpy as np
+
+        print(f"{self.log_prefix} Generating FLUX.2 sample: {prompt[:50]}...")
+
+        # Set models to eval mode for inference
+        self.transformer.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+
+        # Store original devices for restoration
+        text_encoder_device = next(self.text_encoder.parameters()).device
+        vae_device = next(self.vae.parameters()).device
+        transformer_device = next(self.transformer.parameters()).device
+
+        try:
+            # ============================================================
+            # Stage 0: Offload Transformer AND Optimizer State to CPU
+            # ============================================================
+            log_verbose(f"{self.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
+
+            # Move Transformer to CPU
+            self.transformer.to("cpu")
+
+            # CRITICAL: Move Optimizer state (gradients, momentum) to CPU
+            optimizer_state_dict = self.optimizer.state_dict()
+            for param_id, state in optimizer_state_dict['state'].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == 'cuda':
+                        state[key] = value.cpu()
+            self.optimizer.load_state_dict(optimizer_state_dict)
+
+            torch.cuda.empty_cache()
+            log_verbose(f"{self.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
+
+            # ============================================================
+            # Stage 1: Text Encoding (Qwen3)
+            # ============================================================
+            if text_encoder_device != self.device:
+                log_verbose(f"{self.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
+                self.text_encoder.to(self.device)
+
+            # Encode prompt using FLUX.2's Qwen3 text encoder
+            prompt_embeds, text_ids = self._flux2_encode_prompt_for_sample(prompt)
+
+            # Encode unconditional prompt only if CFG is enabled
+            if guidance_scale > 1.0:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt_for_sample("")
+            else:
+                negative_prompt_embeds, negative_text_ids = None, None
+
+            # Move Text Encoder back to CPU to free VRAM
+            if text_encoder_device != self.device:
+                log_verbose(f"{self.log_prefix} [Sample] Moving Text Encoder back to CPU")
+                self.text_encoder.to(text_encoder_device)
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 1.5: Move Transformer back to GPU for denoising
+            # ============================================================
+            log_verbose(f"{self.log_prefix} [Sample] Moving Transformer to GPU for denoising")
+            self.transformer.to(transformer_device)
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Prepare Latents
+            # ============================================================
+            vae_scale_factor = 8
+            patch_size = 2
+
+            # Ensure height/width divisible by vae_scale_factor * patch_size
+            latent_height = 2 * (int(height) // (vae_scale_factor * patch_size))
+            latent_width = 2 * (int(width) // (vae_scale_factor * patch_size))
+
+            # FLUX.2 has 32 latent channels, but patchified to 128
+            num_channels_latents = self.transformer.config.in_channels // 4  # 32
+
+            # Create random latents with seed
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+
+            latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
+            latents = torch.randn(latent_shape, generator=generator, device=self.device, dtype=prompt_embeds.dtype)
+
+            # Prepare latent position IDs
+            latent_ids = self._flux2_prepare_latent_ids_for_sample(latents).to(self.device)
+
+            # Pack latents: (B, C, H, W) -> (B, H*W, C)
+            latents = self._flux2_pack_latents_for_sample(latents)
+
+            # ============================================================
+            # Stage 3: Denoising Loop
+            # ============================================================
+            log_verbose(f"{self.log_prefix} [Sample] Running denoising loop")
+
+            # Prepare timesteps
+            image_seq_len = latents.shape[1]
+            mu = self._flux2_compute_empirical_mu_for_sample(image_seq_len, num_inference_steps)
+
+            # Set timesteps with sigmas
+            sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+            self.scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = self.scheduler.timesteps
+            self.scheduler.set_begin_index(0)
+
+            # Check if distilled model (no CFG)
+            is_distilled = getattr(self.transformer.config, "is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            with torch.no_grad():
+                for i, t in enumerate(tqdm(timesteps, desc="Generating")):
+                    # Expand timestep
+                    timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                    latent_model_input = latents.to(self.transformer.dtype)
+
+                    # Forward pass (conditional)
+                    noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,  # Normalize timestep
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_ids,
+                        return_dict=False,
+                    )[0]
+
+                    # Classifier-free guidance
+                    if do_classifier_free_guidance:
+                        neg_noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+                        # CFG formula
+                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+
+                    # Scheduler step
+                    latents_dtype = latents.dtype
+                    latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                    if latents.dtype != latents_dtype:
+                        latents = latents.to(latents_dtype)
+
+            # Free prompt embeddings
+            del prompt_embeds, text_ids
+            if negative_prompt_embeds is not None:
+                del negative_prompt_embeds, negative_text_ids
+
+            # ============================================================
+            # Stage 4: Offload Transformer to CPU, move VAE to GPU
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Moving Transformer to CPU to free VRAM")
+            self.transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # Move VAE to GPU for decoding
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving VAE to GPU for decoding")
+                self.vae.to(device=self.device, dtype=self.vae_dtype)
+
+            # Decode latents
+            image = self._decode_flux2_latents(latents, latent_ids, latent_height, latent_width)
+
+            # Move VAE back to CPU
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Sample] Moving VAE back to CPU")
+                self.vae.to(device=vae_device, dtype=self.vae_dtype)
+
+            # Free latents
+            del latents, latent_ids
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 5: Restore Transformer and Optimizer State to GPU
+            # ============================================================
+            print(f"{self.log_prefix} [Sample] Restoring Transformer and Optimizer state to GPU")
+
+            # Move Transformer back to GPU
+            self.transformer.to(transformer_device)
+
+            # CRITICAL: Move Optimizer state back to GPU
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+            if not isinstance(self.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+                optimizer_state_dict = self.optimizer.state_dict()
+                for param_id, state in optimizer_state_dict['state'].items():
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
+                            state[key] = value.to(transformer_device)
+                self.optimizer.load_state_dict(optimizer_state_dict)
+                print(f"{self.log_prefix} [Sample] Optimizer state restored to GPU")
+            else:
+                print(f"{self.log_prefix} [Sample] Optimizer state kept on CPU (Ring Buffer)")
+
+            torch.cuda.empty_cache()
+            print(f"{self.log_prefix} [Sample] Transformer restored to GPU")
+
+            return image
+
+        finally:
+            # Restore models to train mode
+            self.transformer.train()
+
+    def _flux2_encode_prompt_for_sample(self, prompt: str):
+        """Encode prompt using Qwen3 text encoder for FLUX.2 sample generation."""
+        max_sequence_length = 512
+        hidden_states_layers = (9, 18, 27)
+
+        device = self.text_encoder.device
+        dtype = self.text_encoder.dtype
+
+        # Apply chat template
+        messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # Tokenize
+        text_inputs = self.tokenizer(
+            text,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="pt"
+        )
+        input_ids = text_inputs.input_ids.to(device)
+
+        # Forward pass with hidden states
+        with torch.no_grad():
+            outputs = self.text_encoder(
+                input_ids=input_ids,
+                output_hidden_states=True,
+                return_dict=True
+            )
+
+        # Extract and concatenate hidden states from specified layers
+        hidden_states_list = []
+        for layer_idx in hidden_states_layers:
+            hidden_states_list.append(outputs.hidden_states[layer_idx])
+        prompt_embeds = torch.cat(hidden_states_list, dim=-1)
+        prompt_embeds = prompt_embeds.to(dtype=dtype)
+
+        # Generate text IDs for RoPE
+        batch_size, seq_len = prompt_embeds.shape[:2]
+        text_ids = torch.zeros(batch_size, seq_len, 4, device=device, dtype=torch.long)
+        text_ids[..., 0] = 0  # T dimension
+        text_ids[..., 3] = torch.arange(seq_len, device=device)  # L dimension
+
+        return prompt_embeds, text_ids
+
+    def _flux2_prepare_latent_ids_for_sample(self, latents: torch.Tensor) -> torch.Tensor:
+        """Prepare latent position IDs for FLUX.2 sample generation."""
+        batch_size, channels, height, width = latents.shape
+
+        # Create position IDs for each latent position
+        latent_ids = torch.zeros(batch_size, height * width, 4, device=latents.device)
+
+        # T=0, H, W, L coordinates
+        h_coords = torch.arange(height, device=latents.device).repeat_interleave(width)
+        w_coords = torch.arange(width, device=latents.device).repeat(height)
+        l_coords = torch.arange(height * width, device=latents.device)
+
+        latent_ids[:, :, 0] = 1  # T dimension (different from text)
+        latent_ids[:, :, 1] = h_coords
+        latent_ids[:, :, 2] = w_coords
+        latent_ids[:, :, 3] = l_coords
+
+        return latent_ids
+
+    def _flux2_pack_latents_for_sample(self, latents: torch.Tensor) -> torch.Tensor:
+        """Pack latents from (B, C, H, W) to (B, H*W, C) for FLUX.2."""
+        batch_size, channels, height, width = latents.shape
+        latents = latents.permute(0, 2, 3, 1)  # (B, H, W, C)
+        latents = latents.reshape(batch_size, height * width, channels)  # (B, H*W, C)
+        return latents
+
+    def _flux2_compute_empirical_mu_for_sample(self, image_seq_len: int, num_steps: int) -> float:
+        """Compute empirical mu for FLUX.2 timestep scheduling."""
+        # From diffusers FLUX implementation
+        return 0.5 * (math.log(1 + image_seq_len) - math.log(num_steps))
+
+    def _decode_flux2_latents(
+        self,
+        latents: torch.Tensor,
+        latent_ids: torch.Tensor,
+        latent_height: int,
+        latent_width: int
+    ) -> Image.Image:
+        """Decode FLUX.2 latents to PIL image."""
+        import numpy as np
+
+        # Unpack latents with IDs: (B, H*W, C) -> (B, C, H, W)
+        batch_size, seq_len, channels = latents.shape
+        latents = latents.reshape(batch_size, latent_height // 2, latent_width // 2, channels)
+        latents = latents.permute(0, 3, 1, 2)  # (B, C, H, W)
+
+        # Apply BatchNorm scaling (FLUX.2-specific)
+        latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+        latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps).to(
+            latents.device, latents.dtype
+        )
+        latents = latents * latents_bn_std + latents_bn_mean
+
+        # Unpatchify: (B, 32, H/2, W/2) -> (B, 32, H, W)
+        # FLUX.2 uses 2x2 patches
+        batch_size, channels, patch_h, patch_w = latents.shape
+        latents = latents.reshape(batch_size, 32, patch_h, patch_w)
+
+        # Convert latents to VAE dtype (bfloat16 -> float32)
+        latents = latents.to(dtype=self.vae.dtype)
+
+        # Decode
+        with torch.no_grad():
+            image = self.vae.decode(latents, return_dict=False)[0]
+
+        # Convert to PIL
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = (image[0] * 255).astype(np.uint8)
+
+        return Image.fromarray(image)
+
+    # ============================================================
     # Latent Cache Management (to be added in continuation)
     # ============================================================
 
@@ -5275,8 +5631,14 @@ class BaseTrainer(ABC):
 
         # Cache alphas_cumprod on GPU to avoid repeated .to(device) calls in compute_snr()
         # This is called thousands of times during training, so caching saves significant overhead
-        alphas_cumprod_cached = self.noise_scheduler.alphas_cumprod.to(device=self.device)
-        print(f"{self.log_prefix} Cached alphas_cumprod on GPU ({alphas_cumprod_cached.shape[0]} steps)")
+        # Note: Flow Matching schedulers (FLUX.2) don't have alphas_cumprod
+        if hasattr(self.noise_scheduler, 'alphas_cumprod'):
+            alphas_cumprod_cached = self.noise_scheduler.alphas_cumprod.to(device=self.device)
+            print(f"{self.log_prefix} Cached alphas_cumprod on GPU ({alphas_cumprod_cached.shape[0]} steps)")
+        else:
+            # FLUX.2 uses Flow Matching (no alphas_cumprod, SNR weighting not applicable)
+            alphas_cumprod_cached = None
+            print(f"{self.log_prefix} Flow Matching scheduler detected (no alphas_cumprod)")
 
         if multi_noise_timesteps > 1:
             print(f"{self.log_prefix} MNT enabled: Each batch will be processed {multi_noise_timesteps} times with different timesteps")
@@ -5579,7 +5941,16 @@ class BaseTrainer(ABC):
         if sample_every_n_steps > 0 and global_step == 0:
             print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
             print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-            if self.is_zimage:
+            if self.is_flux2:
+                sample = self._generate_sample_flux2(
+                    prompt=sample_prompt,
+                    width=sample_width,
+                    height=sample_height,
+                    num_inference_steps=sample_steps,
+                    guidance_scale=sample_guidance_scale,
+                    seed=sample_seed
+                )
+            elif self.is_zimage:
                 sample = self._generate_sample_zimage(
                     prompt=sample_prompt,
                     width=sample_width,
@@ -6469,7 +6840,16 @@ class BaseTrainer(ABC):
                     )
                     if should_generate_sample:
                         print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-                        if self.is_zimage:
+                        if self.is_flux2:
+                            sample = self._generate_sample_flux2(
+                                prompt=sample_prompt,
+                                width=sample_width,
+                                height=sample_height,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed
+                            )
+                        elif self.is_zimage:
                             sample = self._generate_sample_zimage(
                                 prompt=sample_prompt,
                                 width=sample_width,

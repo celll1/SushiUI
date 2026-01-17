@@ -78,10 +78,14 @@ class FluxBlockOffloader:
         self.cuda_available = device.type == "cuda"
         self.stream = torch.cuda.Stream(device=device) if self.cuda_available else None
 
-        # Staging buffers for weight swapping
-        self.staging_buffer_a = None
-        self.staging_buffer_b = None
-        self.pinned_buffer = None
+        # Staging buffers for weight swapping (separate for dual and single blocks)
+        # FLUX.2 has different block structures, so we need separate buffers
+        self.staging_buffer_dual_a = None
+        self.staging_buffer_dual_b = None
+        self.staging_buffer_single_a = None
+        self.staging_buffer_single_b = None
+        self.pinned_buffer_dual = None
+        self.pinned_buffer_single = None
 
         # Backward hook handles (for training)
         self.backward_hook_handles = []
@@ -158,9 +162,13 @@ class FluxBlockOffloader:
         """
         Move FLUX.2 auxiliary modules to GPU
 
-        FLUX.2 has these auxiliary modules:
+        FLUX.2 (Klein) has these auxiliary modules:
         - pos_embed (FluxPosEmbed)
-        - time_text_embed (CombinedTimestepTextProjEmbeddings)
+        - time_guidance_embed (Flux2CombinedTimestepGuidanceEmbedding) - FLUX.2 specific
+        - time_text_embed (CombinedTimestepTextProjEmbeddings) - FLUX.1 compatibility
+        - double_stream_modulation_img (Flux2ModulationOut) - FLUX.2 specific
+        - double_stream_modulation_txt (Flux2ModulationOut) - FLUX.2 specific
+        - single_stream_modulation (Flux2ModulationOut) - FLUX.2 specific
         - context_embedder (Linear)
         - x_embedder (Linear)
         - norm_out (AdaLayerNormContinuous)
@@ -173,7 +181,11 @@ class FluxBlockOffloader:
 
         auxiliary_module_names = [
             "pos_embed",
-            "time_text_embed",
+            "time_guidance_embed",  # FLUX.2 uses this instead of time_text_embed
+            "time_text_embed",  # FLUX.1 compatibility
+            "double_stream_modulation_img",  # FLUX.2 specific
+            "double_stream_modulation_txt",  # FLUX.2 specific
+            "single_stream_modulation",  # FLUX.2 specific
             "context_embedder",
             "x_embedder",
             "norm_out",
@@ -290,52 +302,145 @@ class FluxBlockOffloader:
             move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_gpu, block_to_gpu
         )
 
+    def _is_dual_block(self, block: nn.Module) -> bool:
+        """Check if block is a dual stream block (has different structure than single)"""
+        # Dual blocks have attn (FluxAttention) with separate to_q, to_k, to_v
+        # Single blocks have attn with combined qkv_proj
+        # Use class name check as primary indicator
+        class_name = block.__class__.__name__
+        return "Single" not in class_name
+
+    def _get_or_create_staging_buffers(self, weight_swap_jobs, is_dual: bool):
+        """Get or create staging buffers for the specified block type"""
+        if is_dual:
+            # Check if dual buffers exist and match
+            if self.staging_buffer_dual_a is not None:
+                if len(self.staging_buffer_dual_a) == len(weight_swap_jobs):
+                    # Check if shapes match
+                    shapes_match = all(
+                        buf.shape == job[2].shape
+                        for buf, job in zip(self.staging_buffer_dual_a, weight_swap_jobs)
+                    )
+                    if shapes_match:
+                        return self.staging_buffer_dual_a, self.staging_buffer_dual_b
+
+            # Create new dual buffers
+            self.staging_buffer_dual_a = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            self.staging_buffer_dual_b = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            return self.staging_buffer_dual_a, self.staging_buffer_dual_b
+        else:
+            # Check if single buffers exist and match
+            if self.staging_buffer_single_a is not None:
+                if len(self.staging_buffer_single_a) == len(weight_swap_jobs):
+                    # Check if shapes match
+                    shapes_match = all(
+                        buf.shape == job[2].shape
+                        for buf, job in zip(self.staging_buffer_single_a, weight_swap_jobs)
+                    )
+                    if shapes_match:
+                        return self.staging_buffer_single_a, self.staging_buffer_single_b
+
+            # Create new single buffers
+            self.staging_buffer_single_a = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            self.staging_buffer_single_b = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            return self.staging_buffer_single_a, self.staging_buffer_single_b
+
+    def _get_or_create_pinned_buffer(self, weight_swap_jobs, is_dual: bool):
+        """Get or create pinned buffer for the specified block type"""
+        if is_dual:
+            if self.pinned_buffer_dual is not None:
+                if len(self.pinned_buffer_dual) == len(weight_swap_jobs):
+                    shapes_match = all(
+                        buf.shape == job[2].shape
+                        for buf, job in zip(self.pinned_buffer_dual, weight_swap_jobs)
+                    )
+                    if shapes_match:
+                        return self.pinned_buffer_dual
+
+            # Create new dual pinned buffer
+            self.pinned_buffer_dual = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            return self.pinned_buffer_dual
+        else:
+            if self.pinned_buffer_single is not None:
+                if len(self.pinned_buffer_single) == len(weight_swap_jobs):
+                    shapes_match = all(
+                        buf.shape == job[2].shape
+                        for buf, job in zip(self.pinned_buffer_single, weight_swap_jobs)
+                    )
+                    if shapes_match:
+                        return self.pinned_buffer_single
+
+            # Create new single pinned buffer
+            self.pinned_buffer_single = [
+                torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
+                for _, _, cuda_data_view, _ in weight_swap_jobs
+            ]
+            return self.pinned_buffer_single
+
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         """
         Swap weights between two blocks
 
         Note: FLUX.2 has FluxTransformerBlock (dual) and FluxSingleTransformerBlock (single)
-        which have different structures. We only swap weights from Linear modules.
+        which have different structures. We use separate staging buffer pools for each type.
         """
         weight_swap_jobs = []
+
+        # Determine block type for buffer selection
+        is_dual = self._is_dual_block(block_to_cuda)
 
         # Find Linear modules to swap
         modules_to_cpu = {k: v for k, v in block_to_cpu.named_modules()}
         for module_to_cuda_name, module_to_cuda in block_to_cuda.named_modules():
-            if (
-                hasattr(module_to_cuda, "weight")
-                and module_to_cuda.weight is not None
-                and module_to_cuda.__class__.__name__.endswith("Linear")
-            ):
-                module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
-                if module_to_cpu is not None and module_to_cpu.weight.shape == module_to_cuda.weight.shape:
-                    weight_swap_jobs.append(
-                        (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
-                    )
-                else:
-                    if module_to_cuda.weight.data.device.type != self.device.type:
-                        module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+            # Skip non-Linear modules (ModuleList, Sequential, etc.)
+            if not module_to_cuda.__class__.__name__.endswith("Linear"):
+                continue
+            if not hasattr(module_to_cuda, "weight") or module_to_cuda.weight is None:
+                continue
+
+            module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
+            if module_to_cpu is None:
+                continue
+            # Check module_to_cpu also has weight attribute
+            if not hasattr(module_to_cpu, "weight") or module_to_cpu.weight is None:
+                continue
+
+            if module_to_cpu.weight.shape == module_to_cuda.weight.shape:
+                weight_swap_jobs.append(
+                    (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
+                )
+            else:
+                if module_to_cuda.weight.data.device.type != self.device.type:
+                    module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
 
         # Synchronize before swap
         torch.cuda.current_stream().synchronize()
 
         if not self.use_pinned_memory:
             # Strategy 1: Use staging buffers (less pinned memory)
+            # Get or create cached buffers for this block type
             stream = self.stream
-            with torch.cuda.stream(stream):
-                if self.staging_buffer_a is None:
-                    self.staging_buffer_a = [
-                        torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
-                    ]
-                    self.staging_buffer_b = [
-                        torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
-                    ]
+            staging_buffer_a, staging_buffer_b = self._get_or_create_staging_buffers(weight_swap_jobs, is_dual)
 
+            with torch.cuda.stream(stream):
                 event_b = None
                 for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                    self.staging_buffer_a, self.staging_buffer_b, weight_swap_jobs
+                    staging_buffer_a, staging_buffer_b, weight_swap_jobs
                 ):
                     # CUDA to staging buffer A
                     event_a = torch.cuda.Event()
@@ -362,7 +467,7 @@ class FluxBlockOffloader:
 
             # Update references
             for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                self.staging_buffer_a, self.staging_buffer_b, weight_swap_jobs
+                staging_buffer_a, staging_buffer_b, weight_swap_jobs
             ):
                 module_to_cuda.weight.data = cuda_data_view
                 module_to_cpu.weight.data = cpu_data_view
@@ -371,20 +476,14 @@ class FluxBlockOffloader:
 
         else:
             # Strategy 2: Use full pinned memory (faster but more memory)
-            if self.pinned_buffer is None:
-                with torch.cuda.stream(self.stream):
-                    self.pinned_buffer = [
-                        torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
-                    ]
-                self.stream.synchronize()
-            released_pinned_buffer = []
+            # Get or create cached pinned buffer for this block type
+            pinned_buffer = self._get_or_create_pinned_buffer(weight_swap_jobs, is_dual)
 
             events = [torch.cuda.Event() for _ in weight_swap_jobs]
 
             # Copy weights to CPU
             for event, module_pin_buf, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                events, self.pinned_buffer, weight_swap_jobs
+                events, pinned_buffer, weight_swap_jobs
             ):
                 with torch.cuda.stream(self.stream):
                     module_pin_buf.copy_(cuda_data_view, non_blocking=True)
@@ -398,20 +497,10 @@ class FluxBlockOffloader:
 
             # Update references
             for module_pin_buf, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                self.pinned_buffer, weight_swap_jobs
+                pinned_buffer, weight_swap_jobs
             ):
                 module_to_cuda.weight.data = cuda_data_view
                 module_to_cpu.weight.data = module_pin_buf
-                released_pinned_buffer.append(cpu_data_view)
-
-            # Reuse released pinned buffers
-            if not released_pinned_buffer[0].is_pinned():
-                with torch.cuda.stream(self.stream):
-                    released_pinned_buffer = [
-                        torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
-                    ]
-            self.pinned_buffer = released_pinned_buffer
 
             sync_event = self.stream.record_event()
 
@@ -527,9 +616,16 @@ class FluxBlockOffloader:
         self.remove_backward_hooks()
         self.thread_pool.shutdown(wait=True)
 
-        self.staging_buffer_a = None
-        self.staging_buffer_b = None
-        self.pinned_buffer = None
+        # Clear dual block buffers
+        self.staging_buffer_dual_a = None
+        self.staging_buffer_dual_b = None
+        self.pinned_buffer_dual = None
+
+        # Clear single block buffers
+        self.staging_buffer_single_a = None
+        self.staging_buffer_single_b = None
+        self.pinned_buffer_single = None
+
         self.futures.clear()
 
         print(f"[FluxBlockOffloader] Cleanup complete")

@@ -5133,17 +5133,33 @@ async def visualize_debug_latent(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load latent file: {str(e)}")
 
-    def latent_to_image(latent_tensor):
+    def flux2_unpatchify(latent_tensor):
+        """Unpatchify FLUX.2 latents: (C=128, H/2, W/2) -> (C=32, H, W)"""
+        # latent_tensor shape: [128, H/2, W/2]
+        num_channels, height, width = latent_tensor.shape
+        # Reshape: [128, H/2, W/2] -> [32, 2, 2, H/2, W/2]
+        latent_tensor = latent_tensor.view(num_channels // 4, 2, 2, height, width)
+        # Permute: [32, 2, 2, H/2, W/2] -> [32, H/2, 2, W/2, 2]
+        latent_tensor = latent_tensor.permute(0, 3, 1, 4, 2)
+        # Reshape: [32, H/2, 2, W/2, 2] -> [32, H, W]
+        latent_tensor = latent_tensor.reshape(num_channels // 4, height * 2, width * 2)
+        return latent_tensor
+
+    def latent_to_image(latent_tensor, is_flux2=False):
         """Convert latent tensor to PIL Image (without VAE decoding)"""
         # latent_tensor shape: [1, C, H, W] or [C, H, W]
         if latent_tensor.dim() == 4:
             latent_tensor = latent_tensor[0]  # Remove batch dimension
 
         # latent_tensor shape: [C, H, W]
-        # For SDXL latents: C=4, we'll map first 3 channels to RGB
         # Convert to float32 first (NumPy doesn't support bfloat16)
         if latent_tensor.dtype == torch.bfloat16:
             latent_tensor = latent_tensor.to(torch.float32)
+
+        # FLUX.2: unpatchify 128ch -> 32ch before visualization
+        if is_flux2 and latent_tensor.shape[0] == 128:
+            latent_tensor = flux2_unpatchify(latent_tensor)
+
         latent_np = latent_tensor.numpy()  # [C, H, W]
 
         # Take first 3 channels (or repeat if less than 3)
@@ -5184,12 +5200,16 @@ async def visualize_debug_latent(
         buffer.seek(0)
         return base64.b64encode(buffer.read()).decode('utf-8')
 
+    # Detect model type from saved data
+    is_flux2 = data.get("model_type") == "flux2"
+
     # Convert each latent type to image
     result = {
         "step": step,
         "timestep": data.get("timestep", 0),
         "loss": data.get("loss", 0.0),
         "recon_loss": data.get("recon_loss", 0.0),
+        "model_type": data.get("model_type", "unknown"),
     }
 
     # Add caption if available
@@ -5197,19 +5217,24 @@ async def visualize_debug_latent(
         result["caption"] = data["caption"]
 
     if "latents" in data:
-        img = latent_to_image(data["latents"])
+        img = latent_to_image(data["latents"], is_flux2=is_flux2)
         result["latents_image"] = image_to_base64(img)
 
     if "noisy_latents" in data:
-        img = latent_to_image(data["noisy_latents"])
+        img = latent_to_image(data["noisy_latents"], is_flux2=is_flux2)
         result["noisy_latents_image"] = image_to_base64(img)
 
+    # predicted_noise (SD/SDXL) or predicted_velocity (Z-Image/FLUX.2)
     if "predicted_noise" in data:
-        img = latent_to_image(data["predicted_noise"])
+        img = latent_to_image(data["predicted_noise"], is_flux2=is_flux2)
         result["predicted_noise_image"] = image_to_base64(img)
 
+    if "predicted_velocity" in data:
+        img = latent_to_image(data["predicted_velocity"], is_flux2=is_flux2)
+        result["predicted_velocity_image"] = image_to_base64(img)
+
     if "predicted_latent" in data:
-        img = latent_to_image(data["predicted_latent"])
+        img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
 
     return result

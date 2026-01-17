@@ -1107,6 +1107,7 @@ class BaseTrainer(ABC):
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
         self.is_deus = (model_type == "deus")
+        self.is_flux2 = (model_type == "flux2")
         self.is_sdxl = False
 
         if self.is_deus:
@@ -1165,6 +1166,110 @@ class BaseTrainer(ABC):
             self.text_encoder.to(self.device)
 
             print(f"{self.log_prefix} DEUS checkpoint loaded successfully as base model")
+            return
+
+        elif self.is_flux2:
+            print(f"{self.log_prefix} Loading FLUX.2 checkpoint as base model")
+
+            # FLUX.2 checkpoints from training are loaded via ModelLoader
+            from core.model_loader import ModelLoader
+
+            components = ModelLoader.load_flux2_from_safetensors(
+                file_path=checkpoint_path,
+                device="cpu",
+                torch_dtype=self.weight_dtype
+            )
+
+            # Store components
+            self.transformer = components["transformer"]
+            self.transformer_original = self.transformer  # FLUX.2 doesn't need wrapper
+            self.vae = components["vae"]
+            self.text_encoder = components["text_encoder"]
+            self.tokenizer = components["tokenizer"]
+            self.scheduler = components["scheduler"]
+
+            # FLUX.2 specific: no text_encoder_2, no unet
+            self.text_encoder_2 = None
+            self.tokenizer_2 = None
+            self.unet = None
+            self.noise_scheduler = self.scheduler
+
+            # Convert VAE to vae_dtype
+            self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
+            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+                self.transformer.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for FLUX.2 Transformer")
+            else:
+                print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for FLUX.2 Transformer")
+
+            # Enable gradient checkpointing for Text Encoder (Qwen3)
+            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+                self.text_encoder.gradient_checkpointing_enable()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
+
+            # Freeze all base weights (full parameter training will unfreeze specific layers later)
+            self.vae.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)
+            self.transformer.requires_grad_(False)
+
+            # Setup Block Swap if enabled (before moving to GPU)
+            self.flux2_block_offloader = None  # FLUX.2 specific offloader
+
+            if self.blocks_to_swap > 0:
+                print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
+                print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
+                print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
+
+                # Import FLUX.2 specific block offloader
+                from core.memory_management import create_flux_block_offloader
+
+                # Check if transformer has required attributes
+                if not hasattr(self.transformer, 'transformer_blocks') or not hasattr(self.transformer, 'single_transformer_blocks'):
+                    raise ValueError(
+                        f"FLUX.2 Transformer must have 'transformer_blocks' and 'single_transformer_blocks' attributes for Block Swap. "
+                        f"Found: {type(self.transformer)}"
+                    )
+
+                # Initialize FLUX.2 Block Offloader
+                self.flux2_block_offloader = create_flux_block_offloader(
+                    transformer=self.transformer,
+                    blocks_to_swap=self.blocks_to_swap,
+                    device=self.device,
+                    target_dtype=self.training_dtype,
+                    use_pinned_memory=self.use_pinned_memory,
+                    supports_backward=True  # Training mode
+                )
+
+                # Prepare block devices (keep some on GPU, offload rest to CPU)
+                self.flux2_block_offloader.prepare_block_devices_before_forward()
+
+                num_dual = len(self.transformer.transformer_blocks)
+                num_single = len(self.transformer.single_transformer_blocks)
+                print(f"{self.log_prefix}   FLUX.2 Block Swap initialized:")
+                print(f"{self.log_prefix}   Dual stream blocks: {num_dual}")
+                print(f"{self.log_prefix}   Single stream blocks: {num_single}")
+                print(f"{self.log_prefix}   Total blocks: {num_dual + num_single}")
+                print(f"{self.log_prefix}   Blocks to swap: {self.blocks_to_swap}")
+
+                # Move VAE and Text Encoder to device (Transformer managed by block offloader)
+                print(f"{self.log_prefix} Moving VAE to {self.device}...")
+                self.vae.to(self.device)
+                print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+                self.text_encoder.to(self.device)
+            else:
+                # No Block Swap: move everything to GPU
+                print(f"{self.log_prefix} Moving VAE to {self.device}...")
+                self.vae.to(self.device)
+
+                print(f"{self.log_prefix} Moving Transformer to {self.device}...")
+                self.transformer.to(self.device)
+
+                print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+                self.text_encoder.to(self.device)
+
+            print(f"{self.log_prefix} FLUX.2 checkpoint loaded successfully as base model")
             return
 
         elif self.is_zimage:

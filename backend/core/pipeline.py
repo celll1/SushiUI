@@ -1669,8 +1669,15 @@ class DiffusionPipelineManager:
                 transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
                 print("[FLUX.2] Using Block Swap wrapper for denoising")
             else:
-                # No Block Swap - move transformer to GPU
+                # No Block Swap - ensure ALL weights are on GPU
+                # This is important when switching from Block Swap ON to OFF
+                from core.memory_management.block_offloading import weighs_to_device
                 transformer = transformer.to(self.device)
+                # Move all block weights to GPU (in case they were on CPU from previous Block Swap)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
             # Prepare timesteps
@@ -2116,7 +2123,13 @@ class DiffusionPipelineManager:
                 transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
                 print("[FLUX.2] Using Block Swap wrapper for denoising")
             else:
+                # No Block Swap - ensure ALL weights are on GPU
+                from core.memory_management.block_offloading import weighs_to_device
                 transformer = transformer.to(self.device)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
             scheduler.set_begin_index(t_start)
@@ -2424,7 +2437,13 @@ class DiffusionPipelineManager:
                 transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
                 print("[FLUX.2] Using Block Swap wrapper for denoising")
             else:
+                # No Block Swap - ensure ALL weights are on GPU
+                from core.memory_management.block_offloading import weighs_to_device
                 transformer = transformer.to(self.device)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
             scheduler.set_begin_index(t_start)

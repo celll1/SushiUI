@@ -554,12 +554,18 @@ class BaseTrainer(ABC):
 
         # Initialize GradScaler for mixed precision training
         # GradScaler is needed when:
-        # - training_dtype is fp16/bf16 (autocast is used)
+        # - training_dtype is fp16 (autocast is used)
         # - This includes cases where LoRA weights (fp32) are autocast to training dtype
-        # GradScaler prevents gradient underflow during fp16/bf16 backward pass
+        # GradScaler prevents gradient underflow during fp16 backward pass
+        #
+        # NOTE: BFloat16 does NOT need GradScaler because:
+        # - BF16 has the same exponent range as FP32 (8 bits), so it doesn't suffer from
+        #   the same overflow/underflow issues as FP16 (5 bit exponent)
+        # - PyTorch's _amp_foreach_non_finite_check_and_unscale_cuda is not implemented for BF16
+        # - Most modern training (FLUX.2, etc.) uses BF16 without GradScaler
         self.use_grad_scaler = (
             self.mixed_precision and
-            self.training_dtype in [torch.float16, torch.bfloat16]
+            self.training_dtype == torch.float16  # Only FP16, not BF16
         )
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
@@ -576,17 +582,13 @@ class BaseTrainer(ABC):
             # Solution: Use higher init_scale for FP16 (2^20 = 1048576)
             # - 1e-7 × 2^20 = 0.105 (representable in FP16)
             # - 1e-8 × 2^20 = 0.01 (representable in FP16)
-            # BF16 has same exponent range as FP32, so default scale (2^16) is sufficient
             #
             # Exception: DEUS models tend to produce larger gradients, so use lower init_scale
             # to prevent overflow (inf) during backward pass
-            if self.training_dtype == torch.float16:
-                if _is_deus_model:
-                    init_scale = 2**16  # 65536 (lower scale for DEUS to prevent overflow)
-                else:
-                    init_scale = 2**20  # 1048576 (higher scale for SD/SDXL)
+            if _is_deus_model:
+                init_scale = 2**16  # 65536 (lower scale for DEUS to prevent overflow)
             else:
-                init_scale = 2**16  # 65536 (default for BF16)
+                init_scale = 2**20  # 1048576 (higher scale for SD/SDXL)
 
             self.grad_scaler = GradScaler(
                 init_scale=init_scale,
@@ -604,7 +606,10 @@ class BaseTrainer(ABC):
                 print(f"[Trainer]   LoRA dtype: {self.lora_dtype}")
         else:
             self.grad_scaler = None
-            print(f"[Trainer] GradScaler disabled (training_dtype={training_dtype}, not fp16/bf16)")
+            if self.training_dtype == torch.bfloat16:
+                print(f"[Trainer] GradScaler disabled (BF16 has FP32-equivalent exponent range, no scaling needed)")
+            else:
+                print(f"[Trainer] GradScaler disabled (training_dtype={training_dtype})")
 
         # Prompt chunking settings (SD/SDXL only)
         self.prompt_chunking_mode = prompt_chunking_mode

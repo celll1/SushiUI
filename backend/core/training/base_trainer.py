@@ -4950,22 +4950,18 @@ class BaseTrainer(ABC):
         """Decode FLUX.2 latents to PIL image."""
         import numpy as np
 
-        # Unpack latents with IDs: (B, H*W, C) -> (B, C, H, W)
-        batch_size, seq_len, channels = latents.shape
-        latents = latents.reshape(batch_size, latent_height // 2, latent_width // 2, channels)
-        latents = latents.permute(0, 3, 1, 2)  # (B, C, H, W)
+        # Step 1: Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)
+        latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-        # Apply BatchNorm scaling (FLUX.2-specific)
+        # Step 2: Apply BatchNorm scaling (FLUX.2-specific)
         latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
         latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps).to(
             latents.device, latents.dtype
         )
         latents = latents * latents_bn_std + latents_bn_mean
 
-        # Unpatchify: (B, 32, H/2, W/2) -> (B, 32, H, W)
-        # FLUX.2 uses 2x2 patches
-        batch_size, channels, patch_h, patch_w = latents.shape
-        latents = latents.reshape(batch_size, 32, patch_h, patch_w)
+        # Step 3: Unpatchify: (B, 128, H/2, W/2) -> (B, 32, H, W)
+        latents = self._flux2_unpatchify_latents(latents)
 
         # Convert latents to VAE dtype (bfloat16 -> float32)
         latents = latents.to(dtype=self.vae.dtype)
@@ -4980,6 +4976,35 @@ class BaseTrainer(ABC):
         image = (image[0] * 255).astype(np.uint8)
 
         return Image.fromarray(image)
+
+    def _flux2_unpack_latents_with_ids(self, x: torch.Tensor, x_ids: torch.Tensor) -> torch.Tensor:
+        """Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)"""
+        x_list = []
+        for data, pos in zip(x, x_ids):
+            _, ch = data.shape
+            h_ids = pos[:, 1].to(torch.int64)
+            w_ids = pos[:, 2].to(torch.int64)
+
+            h = torch.max(h_ids) + 1
+            w = torch.max(w_ids) + 1
+
+            flat_ids = h_ids * w + w_ids
+
+            out = torch.zeros((h * w, ch), device=data.device, dtype=data.dtype)
+            out.scatter_(0, flat_ids.unsqueeze(1).expand(-1, ch), data)
+
+            out = out.view(h, w, ch).permute(2, 0, 1)
+            x_list.append(out)
+
+        return torch.stack(x_list, dim=0)
+
+    def _flux2_unpatchify_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """Unpatchify latents from 2x2 patches: (B, 128, H/2, W/2) -> (B, 32, H, W)"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels // 4, 2, 2, height, width)
+        latents = latents.permute(0, 1, 4, 2, 5, 3)
+        latents = latents.reshape(batch_size, num_channels // 4, height * 2, width * 2)
+        return latents
 
     # ============================================================
     # Latent Cache Management (to be added in continuation)

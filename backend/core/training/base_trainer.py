@@ -3267,11 +3267,12 @@ class BaseTrainer(ABC):
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
-        # Apply Min-SNR gamma weighting
+        # Apply Min-SNR gamma weighting (only for epsilon prediction)
+        # Min-SNR was designed for epsilon prediction; applying it to v-prediction is theoretically unsound
         # When dual loss is enabled (reconstruction_loss_weight > 0), also return weights
         # to compensate for lost prediction weight by boosting reconstruction weight
         min_snr_weights = None
-        if self.min_snr_gamma > 0:
+        if self.min_snr_gamma > 0 and prediction_target == "epsilon":
             if self.reconstruction_loss_weight > 0:
                 # Return weights for dual loss compensation
                 loss_per_sample_weighted, min_snr_weights = apply_snr_weight(

@@ -1516,6 +1516,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           const modelInfo = await getCurrentModel();
           setCurrentModelInfo(modelInfo);
           console.log("[Img2Img] Model changed, updated currentModelInfo:", modelInfo);
+
+          // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
+          const modelType = modelInfo?.model_info?.type;
+          if (modelType === "zimage" || modelType === "flux2") {
+            // Flow Matching models: use Euler with flow schedule
+            setParams(prev => ({
+              ...prev,
+              sampler: "euler",
+              schedule_type: "flow"
+            }));
+            console.log("[Img2Img] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
+          }
         }} />
 
         <Card

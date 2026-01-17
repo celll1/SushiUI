@@ -4081,10 +4081,9 @@ class BaseTrainer(ABC):
             )
 
         # Extract hidden states from specified layers (9, 18, 27 for Klein 4B)
-        # Layer indices: -3, -2, -1 would be 25, 26, 27 but Klein uses 9, 18, 27
-        # For Klein 4B (24 layers + embed), we use layers 9, 18, 27 (0-indexed: 8, 17, 26)
-        # But with 24 layers, indices would be: early, mid, late
-        hidden_states_layers = [8, 17, 23]  # For 24-layer model (Klein 4B)
+        # FLUX.2 Klein uses layers 9, 18, 27 (1-indexed), which are indices 9, 18, 27 in hidden_states array
+        # This must match inference code in pipeline.py:_flux2_encode_prompt()
+        hidden_states_layers = (9, 18, 27)  # Same as inference
 
         # Stack hidden states
         out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)

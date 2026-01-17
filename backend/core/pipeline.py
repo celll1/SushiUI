@@ -745,6 +745,318 @@ class DiffusionPipelineManager:
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
         print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
+    def _load_lora_flux2(self, lora_configs: List[Dict]):
+        """Load LoRAs for FLUX.2 Transformer
+
+        Args:
+            lora_configs: List of LoRA configurations
+
+        Note:
+            FLUX.2 uses component-based architecture (not pipeline-based).
+            LoRAs wrap original linear layers (forward-time addition, not weight merging).
+            This allows LoRAs to be unloaded by restoring original modules.
+            Based on training implementation in flux2_adapter.py
+
+            FLUX.2 has two block types:
+            1. Dual stream blocks: Flux2Attention (to_q, to_k, to_v, to_out[0], add_q_proj, add_k_proj, add_v_proj, to_add_out)
+            2. Single stream blocks: Flux2ParallelSelfAttention (to_qkv_mlp_proj, to_out)
+        """
+        if not lora_configs:
+            return
+
+        if not self.flux2_components:
+            print("[FLUX.2 LoRA] WARNING: FLUX.2 components not loaded")
+            return
+
+        transformer = self.flux2_components["transformer"]
+
+        # Store original modules for unloading (first time only)
+        if not hasattr(self, '_flux2_lora_original_modules'):
+            self._flux2_lora_original_modules = {}
+            self._flux2_lora_wrapped_modules = set()
+
+        # Use global lora_manager instance (has user-configured additional_dirs)
+        from core.extensions.lora_manager import lora_manager
+
+        print(f"[FLUX.2 LoRA] Loading {len(lora_configs)} LoRA(s)...")
+
+        for i, lora_config in enumerate(lora_configs):
+            lora_path = lora_config.get("path", "")
+            lora_strength = lora_config.get("strength", 1.0)
+
+            # Resolve path using LoRAManager
+            resolved_path = lora_manager._resolve_lora_path(lora_path)
+
+            if resolved_path is None:
+                print(f"[FLUX.2 LoRA] WARNING: LoRA file not found: {lora_path}")
+                print(f"[FLUX.2 LoRA]   Searched in: {lora_manager.lora_dir}")
+                print(f"[FLUX.2 LoRA]   Additional dirs: {lora_manager.additional_dirs}")
+                continue
+
+            print(f"[FLUX.2 LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+
+            # Load LoRA weights
+            from safetensors import safe_open
+
+            try:
+                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
+
+                print(f"[FLUX.2 LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+
+                # Apply LoRA to transformer modules
+                applied_count = 0
+
+                for name, module in transformer.named_modules():
+                    # Flux2Attention (dual stream blocks)
+                    if module.__class__.__name__ == "Flux2Attention":
+                        # Standard QKV projections
+                        for attr_name in ["to_q", "to_k", "to_v"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    # Build LoRA key using training adapter's naming convention
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                        # to_out (ModuleList)
+                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
+                            if len(module.to_out) > 0 and isinstance(module.to_out[0], torch.nn.Linear):
+                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
+                                lora_down_key = f"{lora_name}.lora_down.weight"
+                                lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+                                    lora_alpha_key = f"{lora_name}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                    module_key = f"{name}.to_out.0"
+                                    wrapped = self._wrap_with_lora_flux2(
+                                        module.to_out, 0, module.to_out[0],
+                                        lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                    )
+                                    if wrapped:
+                                        applied_count += 1
+
+                        # Additional projections for encoder cross attention
+                        for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                    # Flux2ParallelSelfAttention (single stream blocks)
+                    elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
+                        # Fused QKV + MLP projection
+                        if hasattr(module, "to_qkv_mlp_proj"):
+                            original_linear = module.to_qkv_mlp_proj
+                            if isinstance(original_linear, torch.nn.Linear):
+                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
+                                lora_down_key = f"{lora_name}.lora_down.weight"
+                                lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+                                    lora_alpha_key = f"{lora_name}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                    module_key = f"{name}.to_qkv_mlp_proj"
+                                    wrapped = self._wrap_with_lora_flux2(
+                                        module, "to_qkv_mlp_proj", original_linear,
+                                        lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                    )
+                                    if wrapped:
+                                        applied_count += 1
+
+                        # Output projection (fused attention + MLP)
+                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.Linear):
+                            lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
+                            lora_down_key = f"{lora_name}.lora_down.weight"
+                            lora_up_key = f"{lora_name}.lora_up.weight"
+
+                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                lora_down_weight = lora_state_dict[lora_down_key]
+                                lora_up_weight = lora_state_dict[lora_up_key]
+                                lora_alpha_key = f"{lora_name}.alpha"
+                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                module_key = f"{name}.to_out"
+                                wrapped = self._wrap_with_lora_flux2(
+                                    module, "to_out", module.to_out,
+                                    lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                )
+                                if wrapped:
+                                    applied_count += 1
+
+                    # Flux2FeedForward (dual stream blocks)
+                    elif module.__class__.__name__ == "Flux2FeedForward":
+                        for attr_name in ["linear_in", "linear_out"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                print(f"[FLUX.2 LoRA] Applied LoRA to {applied_count} modules")
+
+            except Exception as e:
+                print(f"[FLUX.2 LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _wrap_with_lora_flux2(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
+        """Wrap a linear layer with LoRA for FLUX.2
+
+        Args:
+            parent_module: Parent module containing the linear layer
+            attr_name: Attribute name or index (for ModuleList)
+            original_linear: Original linear layer
+            lora_down_weight: LoRA down projection weight
+            lora_up_weight: LoRA up projection weight
+            strength: LoRA strength multiplier
+            alpha: LoRA alpha parameter
+            module_key: Unique key for tracking
+
+        Returns:
+            True if wrapped successfully, False otherwise
+        """
+        from core.training.lora_trainer import LoRALinearLayer
+
+        # Handle already wrapped modules
+        if isinstance(original_linear, LoRALinearLayer):
+            true_original = original_linear.original_module
+        else:
+            true_original = original_linear
+
+        # Save original module (first time only)
+        if module_key not in self._flux2_lora_original_modules:
+            self._flux2_lora_original_modules[module_key] = true_original
+
+        # Compute rank and alpha value
+        rank = lora_down_weight.shape[0]
+        alpha_value = alpha.item() if alpha is not None else rank
+
+        # Create LoRA wrapper
+        lora_wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value)
+
+        # Load pretrained weights
+        device = true_original.weight.device
+        dtype = true_original.weight.dtype
+
+        with torch.no_grad():
+            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
+
+        # Apply strength
+        lora_wrapper.scaling = (alpha_value / rank) * strength
+
+        # Replace in parent module
+        if isinstance(attr_name, int):
+            parent_module[attr_name] = lora_wrapper
+        else:
+            setattr(parent_module, attr_name, lora_wrapper)
+
+        self._flux2_lora_wrapped_modules.add(module_key)
+        return True
+
+    def _unload_lora_flux2(self):
+        """Unload LoRAs from FLUX.2 Transformer"""
+        if not hasattr(self, '_flux2_lora_original_modules'):
+            print("[FLUX.2 LoRA] No LoRAs loaded")
+            return
+
+        if not self.flux2_components:
+            print("[FLUX.2 LoRA] WARNING: FLUX.2 components not loaded")
+            return
+
+        transformer = self.flux2_components["transformer"]
+        unloaded_count = 0
+
+        print(f"[FLUX.2 LoRA] Unloading LoRAs ({len(self._flux2_lora_wrapped_modules)} modules)...")
+
+        for name, module in transformer.named_modules():
+            # Flux2Attention
+            if module.__class__.__name__ == "Flux2Attention":
+                for attr_name in ["to_q", "to_k", "to_v", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+                # to_out (ModuleList)
+                module_key = f"{name}.to_out.0"
+                if module_key in self._flux2_lora_original_modules and hasattr(module, "to_out"):
+                    module.to_out[0] = self._flux2_lora_original_modules[module_key]
+                    unloaded_count += 1
+
+            # Flux2ParallelSelfAttention
+            elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
+                for attr_name in ["to_qkv_mlp_proj", "to_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+            # Flux2FeedForward
+            elif module.__class__.__name__ == "Flux2FeedForward":
+                for attr_name in ["linear_in", "linear_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+        self._flux2_lora_wrapped_modules.clear()
+        print(f"[FLUX.2 LoRA] Unloaded {unloaded_count} LoRA modules")
+
     def _get_zimage_scheduler(self, sampler: str):
         """
         Get appropriate Flow Match scheduler for Z-Image based on sampler selection
@@ -1544,6 +1856,12 @@ class DiffusionPipelineManager:
         try:
             import numpy as np
 
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
+
             # Extract components
             transformer = self.flux2_components["transformer"]
             vae = self.flux2_components["vae"]
@@ -1969,6 +2287,12 @@ class DiffusionPipelineManager:
         try:
             import numpy as np
 
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
+
             # Extract components
             transformer = self.flux2_components["transformer"]
             vae = self.flux2_components["vae"]
@@ -2256,6 +2580,12 @@ class DiffusionPipelineManager:
 
         try:
             import numpy as np
+
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
 
             # Extract components
             transformer = self.flux2_components["transformer"]

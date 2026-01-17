@@ -1739,10 +1739,10 @@ class DiffusionPipelineManager:
                 if latents.dtype != latents_dtype:
                     latents = latents.to(latents_dtype)
 
-                # Progress callback
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
                 if progress_callback:
                     try:
-                        progress_callback(i + 1, len(timesteps), latents)
+                        progress_callback(i, len(timesteps), latents)
                     except Exception as e:
                         print(f"[FLUX.2] Progress callback error: {e}")
 
@@ -2177,9 +2177,10 @@ class DiffusionPipelineManager:
                 if latents.dtype != latents_dtype:
                     latents = latents.to(latents_dtype)
 
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
                 if progress_callback:
                     try:
-                        progress_callback(i + 1, len(timesteps), latents)
+                        progress_callback(i, len(timesteps), latents)
                     except Exception:
                         pass
 
@@ -2504,9 +2505,10 @@ class DiffusionPipelineManager:
                 # Blend: mask=1 -> use new latents, mask=0 -> use original
                 latents = mask_packed * latents + (1 - mask_packed) * init_latents_noised
 
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
                 if progress_callback:
                     try:
-                        progress_callback(i + 1, len(timesteps), latents)
+                        progress_callback(i, len(timesteps), latents)
                     except Exception:
                         pass
 

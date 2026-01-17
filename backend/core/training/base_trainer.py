@@ -2982,7 +2982,36 @@ class BaseTrainer(ABC):
 
         # Encode to latents
         with torch.no_grad():
-            if self.is_zimage:
+            if self.is_flux2:
+                # FLUX.2 VAE encoding with BatchNorm normalization
+                latent_dist = self.vae.encode(image_tensor).latent_dist
+                latents = latent_dist.sample()
+
+                # DEBUG: Log raw latents
+                if debug_preprocessing:
+                    print(f"[encode_image DEBUG] FLUX.2 raw latents:")
+                    print(f"  Shape: {latents.shape}")
+                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+
+                # Patchify: (B, 32, H, W) -> (B, 128, H/2, W/2)
+                latents = self._flux2_patchify_latents_for_training(latents)
+
+                # Apply BatchNorm normalization (like pipeline.py)
+                latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+                latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps).to(
+                    latents.device, latents.dtype
+                )
+                latents = (latents - latents_bn_mean) / latents_bn_std
+
+                # DEBUG: Log normalized latents
+                if debug_preprocessing:
+                    print(f"[encode_image DEBUG] FLUX.2 normalized latents:")
+                    print(f"  Shape: {latents.shape}")
+                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+
+                del latent_dist
+
+            elif self.is_zimage:
                 # Z-Image VAE
                 h = self.vae.encoder(image_tensor)
                 if self.vae.quant_conv is not None:
@@ -4997,6 +5026,14 @@ class BaseTrainer(ABC):
             x_list.append(out)
 
         return torch.stack(x_list, dim=0)
+
+    def _flux2_patchify_latents_for_training(self, latents: torch.Tensor) -> torch.Tensor:
+        """Patchify latents for 2x2 patches: (B, 32, H, W) -> (B, 128, H/2, W/2)"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.view(batch_size, num_channels, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4)
+        latents = latents.reshape(batch_size, num_channels * 4, height // 2, width // 2)
+        return latents
 
     def _flux2_unpatchify_latents(self, latents: torch.Tensor) -> torch.Tensor:
         """Unpatchify latents from 2x2 patches: (B, 128, H/2, W/2) -> (B, 32, H, W)"""

@@ -256,13 +256,15 @@ def add_noise_unified(
         return noise_scheduler.add_noise(latents, noise, timesteps)
 
     elif noise_process == "flow":
-        # Flow Matching: x_t = (1 - t) * noise + t * x_0
+        # Flow Matching: x_t = (1 - t) * x_0 + t * noise
+        # At t=0: x_t = x_0 (clean latents)
+        # At t=1: x_t = noise (pure noise)
         # timesteps are continuous [0, 1]
         t = timesteps.float()
         while t.dim() < latents.dim():
             t = t.unsqueeze(-1)
 
-        noisy_latents = (1.0 - t) * noise + t * latents
+        noisy_latents = (1.0 - t) * latents + t * noise
         return noisy_latents
 
     else:
@@ -325,8 +327,9 @@ def get_target_unified(
             return noise
 
         elif prediction_target == "velocity":
-            # Predict velocity: v = x_0 - noise (constant direction in flow matching)
-            return latents - noise
+            # Predict velocity: v = noise - x_0 (direction from x_0 to noise)
+            # This matches diffusers: target = noise - model_input
+            return noise - latents
 
         elif prediction_target == "sample":
             # Predict original sample
@@ -388,22 +391,21 @@ def predict_original_latent_unified(
             raise ValueError(f"Unknown prediction_target: {prediction_target}")
 
     elif noise_process == "flow":
-        # Flow Matching: x_t = (1 - t) * noise + t * x_0
+        # Flow Matching: x_t = (1 - t) * x_0 + t * noise
+        # At t=0: x_t = x_0, At t=1: x_t = noise
         t = timesteps.float()
         while t.dim() < noisy_latents.dim():
             t = t.unsqueeze(-1)
 
         if prediction_target == "epsilon":
-            # model_pred = noise, solve for x_0: x_0 = (x_t - (1 - t) * noise) / t
-            # Avoid division by zero at t=0
+            # model_pred = noise, solve for x_0: x_0 = (x_t - t * noise) / (1 - t)
+            # Avoid division by zero at t=1
             epsilon = 1e-8
-            predicted_latent = (noisy_latents - (1.0 - t) * model_pred) / (t + epsilon)
+            predicted_latent = (noisy_latents - t * model_pred) / (1.0 - t + epsilon)
         elif prediction_target == "velocity":
-            # model_pred = v = x_0 - noise
-            # x_t = (1 - t) * noise + t * x_0
-            # Let noise = x_0 - v, then x_t = (1 - t) * (x_0 - v) + t * x_0 = x_0 - (1 - t) * v
-            # Solve for x_0: x_0 = x_t + (1 - t) * v
-            predicted_latent = noisy_latents + (1.0 - t) * model_pred
+            # model_pred = v = noise - x_0
+            # From diffusers: x_0 = x_t - t * v (line 459: x0 = sample - current_sigma * model_output)
+            predicted_latent = noisy_latents - t * model_pred
         elif prediction_target == "sample":
             # model_pred = x_0 directly
             predicted_latent = model_pred
@@ -3573,15 +3575,11 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_zimage] After Transformer forward")
 
-        # Get target using unified framework
-        target = get_target_unified(
-            noise_process=noise_process,
-            prediction_target=prediction_target,
-            noise_scheduler=self.noise_scheduler,
-            latents=latents,
-            noise=noise,
-            timesteps=timesteps,
-        )
+        # Z-Image uses INVERTED velocity convention: v = latents - noise
+        # This is opposite from standard Flow Matching (v = noise - latents)
+        # diffusers Z-Image pipeline inverts the sign during inference: noise_pred = -model_output
+        # So we train with target = latents - noise to match this convention
+        target = latents - noise
 
         # Calculate MSE loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
@@ -3594,17 +3592,14 @@ class BaseTrainer(ABC):
         regularization_loss = torch.tensor(0.0, device=self.device)
 
         # Compute predicted latent once (used by regularization losses and dual loss)
+        # Z-Image inverse velocity: v = latents - noise, so x_0 = x_t + t * v
         predicted_latent_for_reg = None
         if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None or self.reconstruction_loss_weight > 0:
-            # Compute predicted latent using unified framework
-            predicted_latent_for_reg = predict_original_latent_unified(
-                noise_process=noise_process,
-                prediction_target=prediction_target,
-                noise_scheduler=self.noise_scheduler,
-                noisy_latents=noisy_latents,
-                model_pred=model_pred,
-                timesteps=timesteps,
-            )
+            # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
+            t = timesteps.float()
+            while t.dim() < noisy_latents.dim():
+                t = t.unsqueeze(-1)
+            predicted_latent_for_reg = noisy_latents + t * model_pred
 
         # SNR regularization (周波数領域の過剰デノイズ抑制)
         if self.snr_regularization_loss is not None:
@@ -3634,14 +3629,11 @@ class BaseTrainer(ABC):
             if predicted_latent_for_reg is not None:
                 predicted_latent_for_recon = predicted_latent_for_reg
             else:
-                predicted_latent_for_recon = predict_original_latent_unified(
-                    noise_process=noise_process,
-                    prediction_target=prediction_target,
-                    noise_scheduler=self.noise_scheduler,
-                    noisy_latents=noisy_latents,
-                    model_pred=model_pred,
-                    timesteps=timesteps,
-                )
+                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
+                t = timesteps.float()
+                while t.dim() < noisy_latents.dim():
+                    t = t.unsqueeze(-1)
+                predicted_latent_for_recon = noisy_latents + t * model_pred
 
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
@@ -3662,14 +3654,11 @@ class BaseTrainer(ABC):
                 if predicted_latent_for_reg is not None:
                     predicted_latent_for_recon = predicted_latent_for_reg.detach()
                 else:
-                    predicted_latent_for_recon = predict_original_latent_unified(
-                        noise_process=noise_process,
-                        prediction_target=prediction_target,
-                        noise_scheduler=self.noise_scheduler,
-                        noisy_latents=noisy_latents,
-                        model_pred=model_pred,
-                        timesteps=timesteps,
-                    )
+                    # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
+                    t = timesteps.float()
+                    while t.dim() < noisy_latents.dim():
+                        t = t.unsqueeze(-1)
+                    predicted_latent_for_recon = noisy_latents + t * model_pred
 
                 recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
                 recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
@@ -3687,14 +3676,11 @@ class BaseTrainer(ABC):
             timestep_value = timesteps[0].item()
 
             with torch.no_grad():
-                predicted_latent = predict_original_latent_unified(
-                    noise_process=noise_process,
-                    prediction_target=prediction_target,
-                    noise_scheduler=self.noise_scheduler,
-                    noisy_latents=noisy_latents,
-                    model_pred=model_pred,
-                    timesteps=timesteps,
-                )
+                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
+                t = timesteps.float()
+                while t.dim() < noisy_latents.dim():
+                    t = t.unsqueeze(-1)
+                predicted_latent = noisy_latents + t * model_pred
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
@@ -3925,6 +3911,52 @@ class BaseTrainer(ABC):
 
         if profile_vram:
             print_vram_usage("[train_step_flux2] After loss calculation")
+
+        # Debug save if requested
+        if debug_save_path is not None:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            timestep_value = timesteps[0].item()
+
+            with torch.no_grad():
+                # FLUX.2 uses standard Flow Matching: x_0 = x_t - t * v
+                t = timesteps.float()
+                while t.dim() < noisy_latents.dim():
+                    t = t.unsqueeze(-1)
+                predicted_latent = noisy_latents - t * model_pred
+
+                # Convert packed latents (B, seq_len, C) to (B, C, H, W) for visualization
+                # This makes debug output consistent with other models (SD/SDXL/Z-Image)
+                latents_4d = self._flux2_unpack_latents_with_ids(latents[0:1], img_ids[0:1])
+                noisy_latents_4d = self._flux2_unpack_latents_with_ids(noisy_latents[0:1], img_ids[0:1])
+                predicted_velocity_4d = self._flux2_unpack_latents_with_ids(model_pred[0:1], img_ids[0:1])
+                actual_velocity_4d = self._flux2_unpack_latents_with_ids(target[0:1], img_ids[0:1])
+                predicted_latent_4d = self._flux2_unpack_latents_with_ids(predicted_latent[0:1], img_ids[0:1])
+
+            debug_data = {
+                'latents': latents_4d.detach().cpu(),
+                'noisy_latents': noisy_latents_4d.detach().cpu(),
+                'predicted_velocity': predicted_velocity_4d.detach().cpu(),
+                'actual_velocity': actual_velocity_4d.detach().cpu(),
+                'predicted_latent': predicted_latent_4d.detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss_per_sample[0].item(),
+                'loss_batch_mean': loss.item(),
+                'recon_loss': recon_loss_per_sample[0].item(),
+                'recon_loss_batch_mean': recon_loss.item(),
+                'batch_size': batch_size,
+                'scheduler_type': 'FlowMatching',
+                'model_type': 'flux2',
+                'img_ids_shape': list(img_ids.shape),
+                'txt_ids_shape': list(txt_ids.shape),
+                'latent_shape_4d': list(latents_4d.shape),  # Store 4D shape for reference
+            }
+
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                debug_data['all_captions'] = debug_captions
+
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+            del predicted_latent, latents_4d, noisy_latents_4d, predicted_velocity_4d, actual_velocity_4d, predicted_latent_4d
 
         # Return loss tensor and loss values
         pred_loss_value = mse_loss.item()

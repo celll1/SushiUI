@@ -371,7 +371,9 @@ async def generate_txt2img(
             is_zimage,
             is_deus,
             is_zimage_sdxl_vae,
-            is_flux2
+            is_flux2,
+            image_width=params.get("width"),
+            image_height=params.get("height")
         )
 
         # Create step callback for LoRA step range if needed
@@ -660,7 +662,9 @@ async def generate_img2img(
             is_zimage_sdxl_vae,
             is_flux2,
             img2img_fix_steps=img2img_fix_steps,
-            steps=steps
+            steps=steps,
+            image_width=width,
+            image_height=height
         )
 
         # Create step callback for LoRA step range if needed
@@ -975,7 +979,9 @@ async def generate_inpaint(
             is_zimage_sdxl_vae,
             is_flux2,
             img2img_fix_steps=img2img_fix_steps,
-            steps=steps
+            steps=steps,
+            image_width=width,
+            image_height=height
         )
 
         # Create step callback for LoRA step range if needed

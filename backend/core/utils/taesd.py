@@ -75,7 +75,7 @@ class TAESDManager:
                     print(f"Failed to load TAESD: {e}")
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -84,10 +84,16 @@ class TAESDManager:
             is_zimage: True for Z-Image models (16ch FLUX VAE)
             is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
             is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch)
-            is_flux2: True for FLUX.2 models (32ch latent, no preview available)
+            is_flux2: True for FLUX.2 models (32ch latent, uses first 3 channels as RGB)
+            image_width: Target image width (for FLUX.2 preview aspect ratio calculation)
+            image_height: Target image height (for FLUX.2 preview aspect ratio calculation)
         """
         import time
         decode_start_time = time.time()
+
+        # FLUX.2: Use first 3 channels of 32ch latent as RGB preview (no TAESD available)
+        if is_flux2:
+            return self._decode_flux2_latent_preview(latent, image_width, image_height)
 
         # DEUS uses SDXL VAE (same scaling factor 0.13025), so use TAESD-XL
         if is_deus:
@@ -103,7 +109,7 @@ class TAESDManager:
             load_start_time = time.time()
             decoder = self.load_taesd(is_sdxl, is_zimage, is_deus, is_zimage_sdxl_vae, is_flux2)
             load_time = (time.time() - load_start_time) * 1000
-            
+
             if decoder is None:
                 return None
             
@@ -160,6 +166,137 @@ class TAESDManager:
         except Exception as e:
             print(f"Failed to decode latent: {e}")
             return None
+
+    def _decode_flux2_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+        """
+        Decode FLUX.2 32-channel latent to preview image using first 3 channels.
+
+        Since no compatible TAESD exists for FLUX.2's 32ch latent space,
+        we visualize the first 3 channels as RGB (similar to debug_latent output).
+
+        FLUX.2 latents come in multiple formats during generation:
+        1. Sequence format: [B, N, 128] where N = H*W (flattened spatial)
+        2. Patchified spatial: [B, 128, H/2, W/2]
+        3. Raw spatial: [B, 32, H, W]
+
+        Args:
+            latent: FLUX.2 latent tensor in any of the above formats
+            image_width: Target image width (if known)
+            image_height: Target image height (if known)
+
+        Returns:
+            PIL Image preview
+        """
+        try:
+            with torch.no_grad():
+                # Move to CPU and float32 for processing
+                latent = latent.cpu().to(torch.float32)
+
+                # Handle different latent formats
+                if latent.ndim == 3:
+                    # Sequence format: [B, N, 128] -> need to reshape to spatial
+                    batch_size, num_tokens, channels = latent.shape
+
+                    # Calculate H/W from known image dimensions (preferred)
+                    # FLUX.2: latent_h = image_height // 16, latent_w = image_width // 16
+                    if image_width is not None and image_height is not None:
+                        h = image_height // 16
+                        w = image_width // 16
+                        expected_tokens = h * w
+                        if expected_tokens != num_tokens:
+                            print(f"[TAESD] Warning: token mismatch. Expected {expected_tokens} ({h}x{w}), got {num_tokens}. Using heuristic.")
+                            h, w = self._find_best_factors(num_tokens)
+                    else:
+                        # Fallback: use heuristic factor selection
+                        h, w = self._find_best_factors(num_tokens)
+
+                    # Reshape to spatial: [B, N, 128] -> [B, 128, H, W]
+                    latent = latent.permute(0, 2, 1).reshape(batch_size, channels, h, w)
+
+                # Now latent is [B, C, H, W] format
+                batch_size, num_channels, height, width = latent.shape
+
+                # Handle patchified format (128ch -> 32ch)
+                if num_channels >= 128:
+                    # Unpatchify: (B, 128, H/2, W/2) -> (B, 32, H, W)
+                    unpatchified = latent.reshape(batch_size, num_channels // 4, 2, 2, height, width)
+                    unpatchified = unpatchified.permute(0, 1, 4, 2, 5, 3)
+                    unpatchified = unpatchified.reshape(batch_size, num_channels // 4, height * 2, width * 2)
+                    latent = unpatchified
+
+                # Take first 3 channels for RGB visualization
+                rgb_latent = latent[0, :3, :, :]  # [3, H, W]
+
+                # Normalize to [0, 1] range
+                # Use robust normalization (per-channel min-max)
+                for c in range(3):
+                    channel = rgb_latent[c]
+                    c_min = channel.min()
+                    c_max = channel.max()
+                    if c_max > c_min:
+                        rgb_latent[c] = (channel - c_min) / (c_max - c_min)
+                    else:
+                        rgb_latent[c] = torch.zeros_like(channel)
+
+                # Convert to numpy and PIL
+                rgb_np = (rgb_latent.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                preview = Image.fromarray(rgb_np, mode='RGB')
+
+                # Upscale to original image size (latent is 1/8 of image size)
+                # FLUX.2 VAE has 8x downsampling factor
+                target_width = preview.width * 8
+                target_height = preview.height * 8
+                preview = preview.resize((target_width, target_height), Image.Resampling.NEAREST)
+
+                return preview
+
+        except Exception as e:
+            print(f"[TAESD] Failed to decode FLUX.2 latent preview: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+
+    def _find_best_factors(self, num_tokens: int) -> tuple:
+        """
+        Find best H/W factors for num_tokens using heuristic.
+        Used as fallback when image dimensions are not provided.
+
+        Args:
+            num_tokens: Total number of tokens (H * W)
+
+        Returns:
+            Tuple of (height, width) in latent space
+        """
+        import math
+
+        # Find all factor pairs
+        factors = []
+        for i in range(1, int(math.sqrt(num_tokens)) + 1):
+            if num_tokens % i == 0:
+                factors.append((i, num_tokens // i))
+
+        # Choose the factor pair with aspect ratio closest to common ratios
+        best_h, best_w = factors[-1]  # Start with most square-ish
+        best_ratio_diff = float('inf')
+
+        for h_candidate, w_candidate in factors:
+            # Ensure w >= h (landscape orientation)
+            if w_candidate < h_candidate:
+                h_candidate, w_candidate = w_candidate, h_candidate
+
+            ratio = w_candidate / h_candidate
+            # Prefer ratios between 1.0 and 2.0 (common image ratios)
+            if 1.0 <= ratio <= 2.5:
+                # Prefer ratios closer to common ones: 1.33 (4:3), 1.5 (3:2), 1.78 (16:9)
+                common_ratios = [1.0, 1.33, 1.5, 1.78, 2.0]
+                min_diff = min(abs(ratio - cr) for cr in common_ratios)
+                if min_diff < best_ratio_diff:
+                    best_ratio_diff = min_diff
+                    best_h, best_w = h_candidate, w_candidate
+
+        return best_h, best_w
+
 
 # Global instance
 taesd_manager = TAESDManager()

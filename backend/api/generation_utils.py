@@ -76,7 +76,9 @@ def create_progress_callback_factory(
     is_zimage_sdxl_vae: bool = False,
     is_flux2: bool = False,
     img2img_fix_steps: Optional[bool] = None,
-    steps: Optional[int] = None
+    steps: Optional[int] = None,
+    image_width: Optional[int] = None,
+    image_height: Optional[int] = None
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -93,6 +95,8 @@ def create_progress_callback_factory(
         is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
+        image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
+        image_height: 生成画像の高さ（FLUX.2プレビューのアスペクト比計算用）
 
     Returns:
         プログレスコールバック関数
@@ -112,8 +116,8 @@ def create_progress_callback_factory(
         try:
             # Debug: Log model type being used for preview
             if step == -1 or step == 0:
-                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}")
-            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2)
+                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}")
+            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2, image_width=image_width, image_height=image_height)
             if preview_pil:
                 buffered = BytesIO()
                 preview_pil.save(buffered, format="JPEG", quality=85)

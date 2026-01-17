@@ -649,12 +649,12 @@ class DiffusionPipelineManager:
         Returns:
             Wrapped LoRA module or None if failed
         """
-        # Import LoRALinearLayer from training code
-        from core.training.lora_trainer import LoRALinearLayer
+        # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
         import numpy as np
 
         # Get true original module (unwrap if it's already a LoRA wrapper)
-        from core.training.lora_trainer import LoRALinearLayer as LoRALinearLayerClass
+        LoRALinearLayerClass = LoRALinearLayer  # Same class, just alias for clarity
 
         if isinstance(original_linear, LoRALinearLayerClass):
             # Already wrapped - extract the original module
@@ -672,7 +672,10 @@ class DiffusionPipelineManager:
         alpha_value = alpha.item() if alpha is not None else rank
 
         # Create LoRA wrapper using the true original module
-        lora_wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value)
+        # lora_name is required parameter, use module_key for identification
+        lora_wrapper = LoRALinearLayer(
+            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        )
 
         # Load pretrained LoRA weights
         device = true_original.weight.device
@@ -682,8 +685,8 @@ class DiffusionPipelineManager:
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
             lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
 
-        # Apply strength by adjusting scaling
-        lora_wrapper.scaling = (alpha_value / rank) * strength
+        # Apply strength by adjusting scaling (override the default scale)
+        lora_wrapper.scale = (alpha_value / rank) * strength
 
         # Replace in parent module
         if isinstance(attr_name, int):
@@ -969,7 +972,8 @@ class DiffusionPipelineManager:
         Returns:
             True if wrapped successfully, False otherwise
         """
-        from core.training.lora_trainer import LoRALinearLayer
+        # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
 
         # Handle already wrapped modules
         if isinstance(original_linear, LoRALinearLayer):
@@ -986,7 +990,10 @@ class DiffusionPipelineManager:
         alpha_value = alpha.item() if alpha is not None else rank
 
         # Create LoRA wrapper
-        lora_wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value)
+        # lora_name is required parameter, use module_key for identification
+        lora_wrapper = LoRALinearLayer(
+            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        )
 
         # Load pretrained weights
         device = true_original.weight.device
@@ -996,8 +1003,8 @@ class DiffusionPipelineManager:
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
             lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
 
-        # Apply strength
-        lora_wrapper.scaling = (alpha_value / rank) * strength
+        # Apply strength (override the default scale)
+        lora_wrapper.scale = (alpha_value / rank) * strength
 
         # Replace in parent module
         if isinstance(attr_name, int):

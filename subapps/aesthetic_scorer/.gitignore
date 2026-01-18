@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.db-journal
+
+# Data
+data/latents/*.pt
+data/images/*.png
+data/images/*.jpg
+
+# Models
+models/*.safetensors
+models/*.json
+
+# Node
+node_modules/
+.next/
+out/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep directory structure
+!data/latents/.gitkeep
+!data/images/.gitkeep
+!models/.gitkeep

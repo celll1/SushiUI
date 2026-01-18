@@ -1,312 +1,246 @@
 """
-Full Parameter Trainer for Stable Diffusion Models
+Full Parameter Trainer for Stable Diffusion models.
 
-Trains all U-Net parameters (full fine-tuning) instead of LoRA adapters.
-Based on LoRATrainer but removes LoRA-specific logic.
+This is a modular implementation using model-specific adapters:
+- SD15FullParameterAdapter: SD1.5 models
+- SDXLFullParameterAdapter: SDXL models
+- ZImageFullParameterAdapter: Z-Image models
+- DEUSFullParameterAdapter: DEUS models
+- FLUX2FullParameterAdapter: FLUX.2 Klein models
+
+Key improvements:
+- Model-specific logic separated into adapters
+- Supports SD1.5, SDXL, Z-Image, DEUS, and FLUX.2
+- Clean separation of concerns
+- Easy to extend with new model types
+
+References:
+- sd-scripts (Apache-2 license) by kohya-ss
+- ai-toolkit (MIT license) by ostris
+- musubi-tuner (Apache-2 license) by kohya-ss (Z-Image support)
+
+Author: Claude (2026-01-04)
 """
 
 from pathlib import Path
-from typing import Optional, Callable, List, Dict
+from typing import Dict, List
 import torch
-from core.training.lora_trainer import LoRATrainer
+
+from .base_trainer import BaseTrainer
+from .adapters import (
+    SD15FullParameterAdapter,
+    SDXLFullParameterAdapter,
+    ZImageFullParameterAdapter,
+    DEUSFullParameterAdapter,
+    FLUX2FullParameterAdapter,
+)
 
 
-class FullParameterTrainer(LoRATrainer):
+class FullParameterTrainer(BaseTrainer):
     """
-    Full parameter fine-tuning trainer.
-    Inherits from LoRATrainer but trains all U-Net parameters instead of LoRA adapters.
+    Full Parameter Trainer for SD/SDXL/Z-Image models.
+
+    Uses model-specific adapters for parameter preparation, collection,
+    and checkpoint saving.
     """
 
     def __init__(
         self,
-        model_path: str,
-        output_dir: str,
-        learning_rate: float = 1e-4,
-        weight_dtype: str = "fp16",
-        training_dtype: str = "fp16",
-        output_dtype: str = "fp32",
-        vae_dtype: str = "fp16",
-        mixed_precision: bool = True,
-        debug_vram: bool = False,
-        use_flash_attention: bool = False,
-        min_snr_gamma: float = 5.0,
+        train_unet: bool = True,
+        train_text_encoder: bool = False,
+        train_image_encoder: bool = False,  # Image Encoder (future support)
+        **kwargs
     ):
         """
-        Initialize full parameter trainer.
+        Initialize Full Parameter Trainer.
 
         Args:
-            model_path: Path to base model
-            output_dir: Output directory for checkpoints
-            learning_rate: Learning rate
-            weight_dtype: Weight dtype (fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2)
-            training_dtype: Training dtype (activation dtype, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
-            output_dtype: Output latent dtype (fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2)
-            vae_dtype: VAE-specific dtype (fp16 recommended for SDXL VAE)
-            mixed_precision: Enable mixed precision training
-            debug_vram: Enable VRAM profiling
-            use_flash_attention: Enable Flash Attention
-            min_snr_gamma: Min-SNR gamma weighting (0 to disable)
+            train_unet: Whether to train U-Net/Transformer
+            train_text_encoder: Whether to train Text Encoder(s)
+            train_image_encoder: Whether to train Image Encoder (future support)
+            **kwargs: Additional arguments passed to BaseTrainer
         """
-        # Call parent __init__ with dummy lora_rank/lora_alpha (won't be used)
-        super().__init__(
-            model_path=model_path,
-            output_dir=output_dir,
-            lora_rank=1,  # Dummy value, not used
-            lora_alpha=1,  # Dummy value, not used
-            learning_rate=learning_rate,
-            weight_dtype=weight_dtype,
-            training_dtype=training_dtype,
-            output_dtype=output_dtype,
-            vae_dtype=vae_dtype,
-            mixed_precision=mixed_precision,
-            debug_vram=debug_vram,
-            use_flash_attention=use_flash_attention,
-            min_snr_gamma=min_snr_gamma,
-        )
+        # Full fine-tune settings (set before super().__init__)
+        self.train_unet = train_unet
+        self.train_text_encoder = train_text_encoder
+        self.train_image_encoder = train_image_encoder
 
-        # Full parameter training settings
-        self.train_unet = True  # Always train U-Net in full parameter mode
-        self.train_text_encoder = False  # Default: don't train text encoders (can be overridden)
-        self.unet_lr = None  # Use default learning_rate
-        self.text_encoder_lr = None
-        self.text_encoder_1_lr = None
-        self.text_encoder_2_lr = None
+        # Initialize base trainer (loads model components)
+        super().__init__(**kwargs)
 
-        print("[FullParameterTrainer] Initialized for full parameter fine-tuning")
-        print(f"[FullParameterTrainer] Trainable parameters: {sum(p.numel() for p in self.unet.parameters() if p.requires_grad):,}")
+        # Override log prefix
+        self.log_prefix = "[Full Parameter Trainer]"
 
-    def _apply_lora(self):
-        """Override: No LoRA application for full parameter training."""
-        print("[FullParameterTrainer] Skipping LoRA application (full parameter mode)")
+        # Create model-specific adapter
+        self._create_adapter()
 
-        # Enable gradients for all U-Net parameters
-        for param in self.unet.parameters():
-            param.requires_grad = True
+        # Prepare models for training using adapter
+        self._prepare_models()
 
-        trainable_count = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
-        print(f"[FullParameterTrainer] Enabled gradients for {trainable_count:,} U-Net parameters")
+        print(f"{self.log_prefix} Initialized")
+        print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")
 
-    def setup_lora(self):
-        """Override: No LoRA setup needed for full parameter training."""
-        pass  # Do nothing - we train all U-Net parameters directly
-
-    def setup_optimizer(self, optimizer_type: str = "adamw8bit", lr_scheduler_type: str = "constant"):
-        """
-        Setup optimizer for U-Net parameters.
-
-        Args:
-            optimizer_type: Optimizer type ("adamw8bit", "adamw", "sgd", "adafactor")
-            lr_scheduler_type: LR scheduler type ("constant", "cosine", "polynomial")
-        """
-        print(f"[FullParameterTrainer] Setting up optimizer: {optimizer_type}, scheduler: {lr_scheduler_type}")
-
-        # Collect all trainable parameters from U-Net (and optionally text encoders)
-        trainable_params = []
-
-        # U-Net parameters (always trained in full parameter mode)
-        if self.train_unet:
-            unet_params = [p for p in self.unet.parameters() if p.requires_grad]
-            trainable_params.append({
-                "params": unet_params,
-                "lr": self.unet_lr if self.unet_lr is not None else self.learning_rate
-            })
-            print(f"[FullParameterTrainer] U-Net trainable parameters: {sum(p.numel() for p in unet_params):,}")
-
-        # Text encoder parameters (optional)
-        if self.train_text_encoder:
-            if self.is_sdxl:
-                # SDXL: Two text encoders
-                if self.text_encoder:
-                    te1_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
-                    te1_lr = self.text_encoder_1_lr if self.text_encoder_1_lr is not None else (
-                        self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
-                    )
-                    trainable_params.append({"params": te1_params, "lr": te1_lr})
-                    print(f"[FullParameterTrainer] Text Encoder 1 trainable parameters: {sum(p.numel() for p in te1_params):,}")
-
-                if self.text_encoder_2:
-                    te2_params = [p for p in self.text_encoder_2.parameters() if p.requires_grad]
-                    te2_lr = self.text_encoder_2_lr if self.text_encoder_2_lr is not None else (
-                        self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
-                    )
-                    trainable_params.append({"params": te2_params, "lr": te2_lr})
-                    print(f"[FullParameterTrainer] Text Encoder 2 trainable parameters: {sum(p.numel() for p in te2_params):,}")
-            else:
-                # SD1.5: Single text encoder
-                if self.text_encoder:
-                    te_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
-                    te_lr = self.text_encoder_lr if self.text_encoder_lr is not None else self.learning_rate
-                    trainable_params.append({"params": te_params, "lr": te_lr})
-                    print(f"[FullParameterTrainer] Text Encoder trainable parameters: {sum(p.numel() for p in te_params):,}")
-
-        if len(trainable_params) == 0:
-            raise ValueError("No trainable parameters found. Enable train_unet or train_text_encoder.")
-
-        # Setup optimizer
-        if optimizer_type == "adamw8bit":
-            try:
-                import bitsandbytes as bnb
-                self.optimizer = bnb.optim.AdamW8bit(
-                    trainable_params,
-                    lr=self.learning_rate,
-                    betas=(0.9, 0.999),
-                    weight_decay=0.01,
-                    eps=1e-8,
-                )
-                print("[FullParameterTrainer] Using AdamW8bit optimizer")
-            except ImportError:
-                print("[FullParameterTrainer] bitsandbytes not available, falling back to AdamW")
-                self.optimizer = torch.optim.AdamW(
-                    trainable_params,
-                    lr=self.learning_rate,
-                    betas=(0.9, 0.999),
-                    weight_decay=0.01,
-                    eps=1e-8,
-                )
-        elif optimizer_type == "adamw":
-            self.optimizer = torch.optim.AdamW(
-                trainable_params,
-                lr=self.learning_rate,
-                betas=(0.9, 0.999),
-                weight_decay=0.01,
-                eps=1e-8,
-            )
+    def _create_adapter(self):
+        """Create model-specific Full Parameter adapter based on detected model type."""
+        if self.is_zimage:
+            self.adapter = ZImageFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using ZImageFullParameterAdapter")
+        elif self.is_deus:
+            self.adapter = DEUSFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using DEUSFullParameterAdapter")
+        elif self.is_flux2:
+            self.adapter = FLUX2FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using FLUX2FullParameterAdapter")
+        elif self.is_sdxl:
+            self.adapter = SDXLFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using SDXLFullParameterAdapter")
         else:
-            raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
+            self.adapter = SD15FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using SD15FullParameterAdapter")
 
-        # Setup LR scheduler (placeholder total_steps, will be updated in train())
-        from diffusers.optimization import get_scheduler as get_diffusers_scheduler
-        self.lr_scheduler = get_diffusers_scheduler(
-            lr_scheduler_type,
-            optimizer=self.optimizer,
-            num_warmup_steps=0,
-            num_training_steps=1000,  # Placeholder, will be updated in train()
-        )
+    def _prepare_models(self):
+        """Prepare models for full parameter training using adapter."""
+        self.adapter.prepare_models_for_training()
 
-        print(f"[FullParameterTrainer] Optimizer setup complete: {optimizer_type}, scheduler: {lr_scheduler_type}")
-
-    def save_checkpoint(self, step: int, save_path: Optional[str] = None, save_optimizer: bool = True, max_to_keep: Optional[int] = None, save_every: int = 100):
+    def setup_trainable_parameters(self) -> List[Dict]:
         """
-        Save full model checkpoint.
+        Collect trainable parameters with per-component learning rates.
+
+        Uses adapter to handle model-specific parameter grouping.
+
+        Returns:
+            List of parameter groups for optimizer
+        """
+        return self.adapter.setup_trainable_parameters()
+
+    def save_checkpoint(self, step: int, epoch: int):
+        """
+        Save full parameter checkpoint.
+
+        Uses adapter to handle model-specific checkpoint format.
 
         Args:
             step: Current training step
-            save_path: Path to save checkpoint (default: output_dir/full_step_{step}.safetensors)
-            save_optimizer: Whether to save optimizer state
-            max_to_keep: Maximum number of checkpoints to keep (None = keep all)
-            save_every: Save interval (used for checkpoint cleanup)
+            epoch: Current training epoch
         """
-        if save_path is None:
-            save_path = self.output_dir / f"full_step_{step}.safetensors"
+        checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}"
+        self.adapter.save_checkpoint(step, epoch, checkpoint_path)
+
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """
+        Load full parameter checkpoint for resuming training.
+
+        Args:
+            checkpoint_path: Path to checkpoint file (.safetensors) or directory (diffusers format)
+
+        Returns:
+            Step number from checkpoint
+        """
+        import json
+        import re
+        from safetensors.torch import load_file
+
+        print(f"{self.log_prefix} Loading checkpoint: {checkpoint_path}")
+
+        checkpoint_path_obj = Path(checkpoint_path)
+
+        # Detect checkpoint format: safetensors file vs diffusers directory
+        if checkpoint_path_obj.is_file() and checkpoint_path_obj.suffix == ".safetensors":
+            # Single safetensors file format (Z-Image training)
+            if not checkpoint_path_obj.exists():
+                raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+
+            # Extract step number from filename: *_step_NNNNNN.safetensors
+            step = 0
+            match = re.search(r'_step_(\d+)\.safetensors$', checkpoint_path_obj.name)
+            if match:
+                step = int(match.group(1))
+
+            # Load checkpoint using checkpoint_utils
+            from core.models.checkpoint_utils import load_unified_checkpoint
+            loaded_components = load_unified_checkpoint(str(checkpoint_path_obj), device='cpu')
+
+            # Delete old models to free VRAM before loading checkpoint
+            import gc
+            if self.train_unet and loaded_components.get('unet') is not None:
+                if self.unet is not None:
+                    del self.unet
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                self.unet = loaded_components['unet']
+                # Move to GPU (same as new training initialization)
+                self.unet.to(self.device)
+                print(f"{self.log_prefix} Loaded U-Net from checkpoint")
+
+            # Load Text Encoders
+            if self.train_text_encoder:
+                if loaded_components.get('text_encoder') is not None:
+                    if self.text_encoder is not None:
+                        del self.text_encoder
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                    self.text_encoder = loaded_components['text_encoder']
+                    print(f"{self.log_prefix} Loaded Text Encoder from checkpoint")
+
+                if self.is_sdxl and loaded_components.get('text_encoder_2') is not None:
+                    if self.text_encoder_2 is not None:
+                        del self.text_encoder_2
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                    self.text_encoder_2 = loaded_components['text_encoder_2']
+                    print(f"{self.log_prefix} Loaded Text Encoder 2 from checkpoint")
+
+            # Load Image Encoder (if present)
+            if loaded_components.get('image_encoder') is not None:
+                if hasattr(self, 'image_encoder') and self.image_encoder is not None:
+                    del self.image_encoder
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                self.image_encoder = loaded_components['image_encoder']
+                print(f"{self.log_prefix} Loaded Image Encoder from checkpoint")
+
+            print(f"{self.log_prefix} Loaded checkpoint from step {step}")
+            return step
+
         else:
-            save_path = Path(save_path)
+            # Diffusers directory format (legacy, for backward compatibility)
+            checkpoint_dir = checkpoint_path_obj
+            if not checkpoint_dir.exists():
+                raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
 
-        print(f"[FullParameterTrainer] Saving checkpoint to {save_path}")
+            # Load metadata to get step number
+            metadata_path = checkpoint_dir / "metadata.json"
+            step = 0
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    step = metadata.get('step', 0)
 
-        # Flatten U-Net state dict (safetensors requires flat dict of tensors)
-        checkpoint_data = {}
-        for key, value in self.unet.state_dict().items():
-            checkpoint_data[f"unet.{key}"] = value
+            # Load U-Net
+            if self.train_unet:
+                unet_path = checkpoint_dir / "unet"
+                if unet_path.exists() and self.unet is not None:
+                    from diffusers import UNet2DConditionModel
+                    loaded_unet = UNet2DConditionModel.from_pretrained(unet_path)
+                    self.unet.load_state_dict(loaded_unet.state_dict())
+                    print(f"{self.log_prefix} Loaded U-Net from {unet_path}")
 
-        # Optionally save text encoder states
-        if self.train_text_encoder:
-            if self.text_encoder:
-                for key, value in self.text_encoder.state_dict().items():
-                    checkpoint_data[f"text_encoder.{key}"] = value
-            if self.is_sdxl and self.text_encoder_2:
-                for key, value in self.text_encoder_2.state_dict().items():
-                    checkpoint_data[f"text_encoder_2.{key}"] = value
+            # Load Text Encoders
+            if self.train_text_encoder:
+                te1_path = checkpoint_dir / "text_encoder"
+                if te1_path.exists() and self.text_encoder is not None:
+                    from transformers import CLIPTextModel
+                    loaded_te1 = CLIPTextModel.from_pretrained(te1_path)
+                    self.text_encoder.load_state_dict(loaded_te1.state_dict())
+                    print(f"{self.log_prefix} Loaded Text Encoder 1 from {te1_path}")
 
-        # Save as safetensors
-        from safetensors.torch import save_file
-        save_file(checkpoint_data, str(save_path))
+                if self.is_sdxl:
+                    te2_path = checkpoint_dir / "text_encoder_2"
+                    if te2_path.exists() and self.text_encoder_2 is not None:
+                        from transformers import CLIPTextModelWithProjection
+                        loaded_te2 = CLIPTextModelWithProjection.from_pretrained(te2_path)
+                        self.text_encoder_2.load_state_dict(loaded_te2.state_dict())
+                        print(f"{self.log_prefix} Loaded Text Encoder 2 from {te2_path}")
 
-        # Save optimizer state separately (as .pt file)
-        if save_optimizer and self.optimizer is not None:
-            optimizer_path = save_path.with_suffix(".pt")
-            torch.save({
-                "optimizer": self.optimizer.state_dict(),
-                "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
-                "step": step,
-            }, optimizer_path)
-            print(f"[FullParameterTrainer] Optimizer state saved: {optimizer_path}")
-
-        print(f"[FullParameterTrainer] Checkpoint saved: {save_path}")
-
-        # Cleanup old checkpoints if max_to_keep is set
-        if max_to_keep is not None and max_to_keep > 0:
-            self._cleanup_old_checkpoints(step, max_to_keep, save_every)
-
-    def _cleanup_old_checkpoints(self, current_step: int, max_to_keep: int, save_every: int):
-        """
-        Remove old checkpoints to keep only the latest N checkpoints.
-
-        Args:
-            current_step: Current training step
-            max_to_keep: Maximum number of checkpoints to keep
-            save_every: Save interval (used to calculate which checkpoint to delete)
-        """
-        # Calculate which step to remove
-        remove_step = current_step - (save_every * max_to_keep)
-
-        if remove_step < save_every:
-            # No checkpoint to remove yet
-            return
-
-        # Remove checkpoint at remove_step
-        checkpoint_path = self.output_dir / f"full_step_{remove_step}.safetensors"
-        optimizer_path = self.output_dir / f"full_step_{remove_step}.pt"
-
-        if checkpoint_path.exists():
-            try:
-                checkpoint_path.unlink()
-                print(f"[FullParameterTrainer] Removed old checkpoint: {checkpoint_path}")
-            except Exception as e:
-                print(f"[FullParameterTrainer] WARNING: Failed to remove old checkpoint {checkpoint_path}: {e}")
-
-        if optimizer_path.exists():
-            try:
-                optimizer_path.unlink()
-                print(f"[FullParameterTrainer] Removed old optimizer state: {optimizer_path}")
-            except Exception as e:
-                print(f"[FullParameterTrainer] WARNING: Failed to remove old optimizer state {optimizer_path}: {e}")
-
-    def merge_and_save(self, output_path: str):
-        """
-        Override: For full parameter training, just save the U-Net directly.
-
-        Args:
-            output_path: Output safetensors path
-        """
-        print(f"[FullParameterTrainer] Saving full model to {output_path}")
-
-        # Convert to float32 for saving (compatibility)
-        original_dtype = next(self.unet.parameters()).dtype
-        self.unet.to(dtype=torch.float32)
-
-        checkpoint_data = {
-            "unet": self.unet.state_dict(),
-        }
-
-        # Optionally include text encoders
-        if self.train_text_encoder:
-            if self.text_encoder:
-                self.text_encoder.to(dtype=torch.float32)
-                checkpoint_data["text_encoder"] = self.text_encoder.state_dict()
-            if self.is_sdxl and self.text_encoder_2:
-                self.text_encoder_2.to(dtype=torch.float32)
-                checkpoint_data["text_encoder_2"] = self.text_encoder_2.state_dict()
-
-        # Save as safetensors
-        from safetensors.torch import save_file
-        save_file(checkpoint_data, output_path)
-
-        # Restore original dtype
-        self.unet.to(dtype=original_dtype)
-        if self.train_text_encoder:
-            if self.text_encoder:
-                self.text_encoder.to(dtype=original_dtype)
-            if self.is_sdxl and self.text_encoder_2:
-                self.text_encoder_2.to(dtype=original_dtype)
-
-        print(f"[FullParameterTrainer] Full model saved: {output_path}")
+            print(f"{self.log_prefix} Loaded checkpoint from step {step}")
+            return step

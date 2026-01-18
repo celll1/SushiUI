@@ -33,7 +33,7 @@ class OptimizerFactory:
         Returns:
             List of optimizer names
         """
-        optimizers = ["adamw", "adamw8bit", "adafactor", "lion8bit"]
+        optimizers = ["adamw", "adamw8bit", "adamw8bit_ringbuffer", "adafactor", "lion8bit", "lion8bit_ringbuffer"]
 
         # Check if bitsandbytes is available for paged optimizers
         try:
@@ -121,6 +121,98 @@ class OptimizerFactory:
                 )
                 print(f"[OptimizerFactory] Created Adafactor optimizer (PyTorch native)")
                 return optimizer
+
+        # AdamW8bit Ring Buffer (custom implementation)
+        elif optimizer_type == "adamw8bit_ringbuffer":
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+
+            # Ring Buffer allocator will be provided by trainer
+            get_state_buffer = kwargs.get("get_state_buffer", None)
+            cautious = kwargs.get("cautious", False)
+
+            # Schedule-Free options
+            schedule_free = kwargs.get("schedule_free", False)
+            warmup_steps = kwargs.get("warmup_steps", 0)
+            r = kwargs.get("r", 0.0)
+            weight_lr_power = kwargs.get("weight_lr_power", 2.0)
+            use_radam = kwargs.get("use_radam", False)
+            stochastic_rounding = kwargs.get("stochastic_rounding", False)
+
+            optimizer = AdamW8bit_RingBuffer(
+                params,
+                lr=learning_rate,
+                betas=betas,
+                weight_decay=weight_decay,
+                eps=eps,
+                use_8bit=True,
+                cautious=cautious,
+                schedule_free=schedule_free,
+                warmup_steps=warmup_steps,
+                r=r,
+                weight_lr_power=weight_lr_power,
+                use_radam=use_radam,
+                stochastic_rounding=stochastic_rounding,
+                get_state_buffer=get_state_buffer,
+            )
+            options_str = []
+            if cautious:
+                options_str.append("cautious")
+            if schedule_free:
+                if use_radam:
+                    options_str.append("schedule-free (RAdam)")
+                else:
+                    options_str.append("schedule-free")
+            options_desc = f" ({', '.join(options_str)})" if options_str else ""
+            print(f"[OptimizerFactory] Created AdamW8bit_RingBuffer optimizer{options_desc}")
+            return optimizer
+
+        # Lion8bit Ring Buffer (custom implementation)
+        elif optimizer_type == "lion8bit_ringbuffer":
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+
+            # Ring Buffer allocator will be provided by trainer
+            get_state_buffer = kwargs.get("get_state_buffer", None)
+            cautious = kwargs.get("cautious", False)
+
+            # Lion uses different default betas
+            lion_betas = kwargs.get("lion_betas", (0.9, 0.99))
+
+            # Schedule-Free parameters
+            schedule_free = kwargs.get("schedule_free", False)
+            warmup_steps = kwargs.get("warmup_steps", 0)
+            r = kwargs.get("r", 0.0)
+            weight_lr_power = kwargs.get("weight_lr_power", 2.0)
+            use_radam = kwargs.get("use_radam", False)
+            stochastic_rounding = kwargs.get("stochastic_rounding", False)
+
+            optimizer = Lion8bit_RingBuffer(
+                params,
+                lr=learning_rate,
+                betas=lion_betas,
+                weight_decay=weight_decay,
+                use_8bit=True,
+                cautious=cautious,
+                schedule_free=schedule_free,
+                warmup_steps=warmup_steps,
+                r=r,
+                weight_lr_power=weight_lr_power,
+                use_radam=use_radam,
+                stochastic_rounding=stochastic_rounding,
+                get_state_buffer=get_state_buffer,
+            )
+
+            # Build description string
+            options_str = []
+            if cautious:
+                options_str.append("cautious")
+            if schedule_free:
+                if use_radam:
+                    options_str.append("schedule-free (RAdam)")
+                else:
+                    options_str.append("schedule-free")
+            options_desc = f" ({', '.join(options_str)})" if options_str else ""
+            print(f"[OptimizerFactory] Created Lion8bit_RingBuffer optimizer{options_desc}")
+            return optimizer
 
         # bitsandbytes optimizers
         elif optimizer_type in ["adamw8bit", "paged_adamw", "paged_adamw8bit", "lion8bit", "paged_lion8bit"]:
@@ -222,6 +314,12 @@ class OptimizerFactory:
                 "name": "AdamW 8bit",
                 "description": "bitsandbytes AdamW optimizer (8-bit quantization)",
                 "requires_bitsandbytes": True,
+                "supports_paging": False,
+            },
+            "adamw8bit_ringbuffer": {
+                "name": "AdamW 8bit (Ring Buffer)",
+                "description": "AdamW 8-bit with Ring Buffer (CPU state allocation, bitsandbytes quantization algorithm)",
+                "requires_bitsandbytes": False,
                 "supports_paging": False,
             },
             "paged_adamw": {

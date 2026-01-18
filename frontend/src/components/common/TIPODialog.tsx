@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getTIPOStatus, loadTIPOModel, unloadTIPOModel } from "@/utils/api";
 import { getCategoryOrder } from "./CategoryOrderPanel";
 
 interface TIPODialogProps {
@@ -30,11 +29,6 @@ export interface TIPOSettings {
 
 export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange }: TIPODialogProps) {
   const [localSettings, setLocalSettings] = useState<TIPOSettings>(settings);
-  const [modelStatus, setModelStatus] = useState<{ loaded: boolean; model_name: string | null }>({
-    loaded: false,
-    model_name: null
-  });
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -48,45 +42,8 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
           enabled: cat.enabled,
         })),
       });
-      loadStatus();
     }
   }, [isOpen, settings]);
-
-  const loadStatus = async () => {
-    try {
-      const status = await getTIPOStatus();
-      setModelStatus({ loaded: status.loaded, model_name: status.model_name });
-    } catch (error) {
-      console.error("[TIPO] Failed to load status:", error);
-    }
-  };
-
-  const handleLoadModel = async () => {
-    setLoading(true);
-    try {
-      await loadTIPOModel(localSettings.model_name);
-      await loadStatus();
-      alert("TIPO model loaded successfully!");
-    } catch (error) {
-      console.error("[TIPO] Failed to load model:", error);
-      alert("Failed to load TIPO model. Check console for details.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUnloadModel = async () => {
-    setLoading(true);
-    try {
-      await unloadTIPOModel();
-      await loadStatus();
-      alert("TIPO model unloaded!");
-    } catch (error) {
-      console.error("[TIPO] Failed to unload model:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSave = () => {
     // Save TIPO settings to localStorage
@@ -130,36 +87,11 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
       <div className="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-bold text-white mb-4">TIPO Settings</h2>
 
-        {/* Model Status */}
-        <div className="mb-4 p-3 bg-gray-700 rounded">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-300">Model Status:</p>
-              <p className="text-sm font-medium text-white">
-                {modelStatus.loaded ? (
-                  <span className="text-green-400">✓ Loaded: {modelStatus.model_name}</span>
-                ) : (
-                  <span className="text-yellow-400">⚠ Not Loaded</span>
-                )}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleLoadModel}
-                disabled={loading || modelStatus.loaded}
-                className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? "Loading..." : "Load Model"}
-              </button>
-              <button
-                onClick={handleUnloadModel}
-                disabled={loading || !modelStatus.loaded}
-                className="px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Unload
-              </button>
-            </div>
-          </div>
+        {/* Auto-load Info */}
+        <div className="mb-4 p-3 bg-blue-900 bg-opacity-30 border border-blue-700 rounded">
+          <p className="text-sm text-blue-200">
+            ℹ️ TIPO model is automatically loaded during generation and unloaded after to save VRAM.
+          </p>
         </div>
 
         {/* Model Selection */}

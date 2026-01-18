@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getDatasetCaptionTypes, CaptionTypeInfo, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
 
 interface TrainingConfigProps {
   onClose: () => void;
   onRunCreated: (run: TrainingRun) => void;
+  editRunId?: number | null;
+  onRunUpdated?: (run: TrainingRun) => void;
 }
 
 interface DatasetConfig {
@@ -15,10 +17,69 @@ interface DatasetConfig {
   filters: Record<string, any>;
 }
 
-export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfigProps) {
+interface ModelInfo {
+  name: string;
+  path: string;
+  type: string;
+  architecture: string;
+  size_gb?: number;
+  source_dir: string;
+}
+
+// Optimizer configuration: defines available options and defaults for each optimizer
+const OPTIMIZER_CONFIGS: Record<string, {
+  label: string;
+  supportsPaged?: boolean;
+  supportsCautious?: boolean;
+  defaults: {
+    beta1?: string;
+    beta2?: string;
+    epsilon?: string;
+    weight_decay?: string;
+  };
+}> = {
+  "adamw": {
+    label: "AdamW",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "adamw8bit": {
+    label: "AdamW 8-bit",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "adamw8bit_ringbuffer": {
+    label: "AdamW 8-bit Ring Buffer",
+    supportsCautious: true,
+    defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
+  },
+  "lion8bit": {
+    label: "Lion 8-bit",
+    supportsPaged: true,
+    defaults: { beta1: "0.9", beta2: "0.99", weight_decay: "0.01" }  // Lion uses different beta2
+  },
+  "lion8bit_ringbuffer": {
+    label: "Lion 8-bit Ring Buffer",
+    supportsCautious: true,
+    defaults: { beta1: "0.9", beta2: "0.99", weight_decay: "0.01" }
+  },
+  "adafactor": {
+    label: "Adafactor",
+    defaults: { weight_decay: "0.01" }  // Adafactor has adaptive beta1/beta2
+  }
+};
+
+export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRunUpdated }: TrainingConfigProps) {
+  console.log(`[TrainingConfig] Component mounted/re-rendered, editRunId=${editRunId}`);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
+
+  // Model architecture filters
+  const [showSD15, setShowSD15] = useState(true);
+  const [showSDXL, setShowSDXL] = useState(true);
+  const [showZImage, setShowZImage] = useState(true);
+  const [showDEUS, setShowDEUS] = useState(true);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -26,7 +87,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   ]);
 
   // Available caption types for each dataset
-  const [datasetCaptionTypes, setDatasetCaptionTypes] = useState<Record<number, CaptionTypeInfo[]>>({});
+  // Caption types selection moved to Dataset Management > Caption Processing page
 
   const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
@@ -38,11 +99,26 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [batchSize, setBatchSize] = useState(4);
   const [learningRate, setLearningRate] = useState<string>("1e-5");
   const [lrScheduler, setLrScheduler] = useState("constant");
+  const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   const [optimizer, setOptimizer] = useState("adamw8bit");
+
+  // Optimizer-specific options
+  const [optimizerIsPaged, setOptimizerIsPaged] = useState(false);
+  const [optimizerCautious, setOptimizerCautious] = useState(false);
+  const [optimizerBeta1, setOptimizerBeta1] = useState<string>("0.9");
+  const [optimizerBeta2, setOptimizerBeta2] = useState<string>("0.999");
+  const [optimizerEpsilon, setOptimizerEpsilon] = useState<string>("1e-8");
+  const [optimizerWeightDecay, setOptimizerWeightDecay] = useState<string>("0.01");
+  const [optimizerScheduleFree, setOptimizerScheduleFree] = useState(false);
+  const [optimizerScheduleFreeR, setOptimizerScheduleFreeR] = useState<string>("0.0");
+  const [optimizerScheduleFreeWeightLrPower, setOptimizerScheduleFreeWeightLrPower] = useState<string>("2.0");
+  const [optimizerUseRadam, setOptimizerUseRadam] = useState(false);
+  const [optimizerStochasticRounding, setOptimizerStochasticRounding] = useState(false);
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
   const [loraAlpha, setLoraAlpha] = useState(16);
+  const [loraDtype, setLoraDtype] = useState<"fp32" | "fp16" | "bf16">("fp32");
 
   // Advanced
   const [saveEvery, setSaveEvery] = useState(100);
@@ -78,19 +154,58 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
   const [trainTextEncoder, setTrainTextEncoder] = useState(true);
+  const [trainImageEncoder, setTrainImageEncoder] = useState(false);  // DEUS Image Encoder (future T2I)
   const [unetLr, setUnetLr] = useState<string>("1e-5");
   const [textEncoderLr, setTextEncoderLr] = useState<string>("1e-6");
   const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
   const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
+  const [imageEncoderLr, setImageEncoderLr] = useState<string>("");  // DEUS Image Encoder LR
 
   // Precision and dtype settings (VRAM optimization)
-  const [weightDtype, setWeightDtype] = useState<string>("fp16");
+  const [weightDtype, setWeightDtype] = useState<string>("fp32");
   const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
   const [outputDtype, setOutputDtype] = useState<string>("fp32");
-  const [vaeDtype, setVaeDtype] = useState<string>("fp16");
+  const [vaeDtype, setVaeDtype] = useState<string>("fp32");
   const [mixedPrecision, setMixedPrecision] = useState(true);
   const [useFlashAttention, setUseFlashAttention] = useState(false);
   const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
+  const [reconstructionLossWeight, setReconstructionLossWeight] = useState<number>(0.0);
+
+  // Text encoding mode
+  const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
+  const [textEncodingSwapInterval, setTextEncodingSwapInterval] = useState<number>(256);
+
+  // Latent encoding mode
+  const [latentEncodingMode, setLatentEncodingMode] = useState<string>("swap_onthefly");
+  const [latentEncodingSwapInterval, setLatentEncodingSwapInterval] = useState<number>(256);
+
+  // Block Swap settings (training VRAM optimization)
+  const [blocksToSwap, setBlocksToSwap] = useState<number>(0);
+  const [usePinnedMemory, setUsePinnedMemory] = useState<boolean>(false);
+  const [numOptimizerGroups, setNumOptimizerGroups] = useState<number>(0);
+
+  // Multi Noise-Timestep (MNT) settings
+  const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
+  const [multiNoiseMode, setMultiNoiseMode] = useState<string>("independent");
+  const [trajectoryBlendAlpha, setTrajectoryBlendAlpha] = useState<number>(0.7);
+  const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
+  const [timestepMin, setTimestepMin] = useState<number>(0.0);
+  const [timestepMax, setTimestepMax] = useState<number>(1.0);
+
+  // Regularization settings (prevent overbaking)
+  const [regularizationType, setRegularizationType] = useState<string>("none");  // Deprecated, kept for API compatibility
+  const [snrRegularizationWeight, setSnrRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
+  const [snrTimestepAdaptive, setSnrTimestepAdaptive] = useState<boolean>(true);
+  const [snrPenaltyMode, setSnrPenaltyMode] = useState<string>("relu");
+  const [energyRegularizationWeight, setEnergyRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
+  const [energyTimestepAdaptive, setEnergyTimestepAdaptive] = useState<boolean>(true);
+  const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("under");  // Changed from "abs" to "under" (recommended)
+  const [energyNormalizeByPixels, setEnergyNormalizeByPixels] = useState<boolean>(true);
+
+  // Unified Training Framework settings
+  const [noiseProcess, setNoiseProcess] = useState<string>("auto");  // "auto", "ddpm", "flow"
+  const [predictionTarget, setPredictionTarget] = useState<string>("auto");  // "auto", "epsilon", "velocity", "sample"
+  const [strictValidation, setStrictValidation] = useState<boolean>(false);  // Abort on mismatch
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,24 +221,256 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
+  // Helper: Detect if model is Z-Image (architecture-based)
+  const isZImageModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "zimage";
+  };
+
+  const isDEUSModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "deus";
+  };
+
+  // Filter models by architecture
+  const filteredModels = availableModels.filter((model) => {
+    if (model.architecture === "sd15" && !showSD15) return false;
+    if (model.architecture === "sdxl" && !showSDXL) return false;
+    if (model.architecture === "zimage" && !showZImage) return false;
+    if (model.architecture === "deus" && !showDEUS) return false;
+    return true;
+  });
+
+  // Load training run parameters for edit mode
+  const loadTrainingRunParams = useCallback(async (runId: number) => {
+    const startTime = performance.now();
+    console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
+    try {
+      const apiStartTime = performance.now();
+      const params = await getTrainingRunParams(runId);
+      console.log(`[TrainingConfig] API call took ${performance.now() - apiStartTime}ms`);
+      console.log(`[TrainingConfig] Received parameters:`, params);
+
+      // Populate all form fields from loaded parameters
+      setRunName(params.run_name || "");
+      setBaseModelPath(params.base_model_path || "");
+      setTrainingMethod(params.training_method || "lora");
+
+      // Dataset configs
+      if (params.dataset_configs) {
+        setDatasetConfigs(params.dataset_configs);
+      }
+
+      // LoRA rank & alpha & dtype
+      if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
+      if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
+      if (params.lora_dtype !== undefined) setLoraDtype(params.lora_dtype as "fp32" | "fp16" | "bf16");
+
+      // Training parameters
+      if (params.total_steps !== undefined && params.total_steps !== null) {
+        setTotalSteps(params.total_steps);
+        setUseEpochs(false);
+      }
+      if (params.epochs !== undefined && params.epochs !== null) {
+        setEpochs(params.epochs);
+        setUseEpochs(true);
+      }
+      if (params.batch_size !== undefined) setBatchSize(params.batch_size);
+      if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
+      if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
+      if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
+      if (params.optimizer !== undefined) setOptimizer(params.optimizer);
+
+      // Optimizer parameters
+      if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
+      if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) setOptimizerBeta2(params.optimizer_beta2.toString());
+      if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) setOptimizerEpsilon(params.optimizer_epsilon.toString());
+      if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
+      if (params.optimizer_is_paged !== undefined) setOptimizerIsPaged(params.optimizer_is_paged);
+      if (params.optimizer_cautious !== undefined) setOptimizerCautious(params.optimizer_cautious);
+      if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);
+      if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r);
+      if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power);
+      if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
+      if (params.optimizer_stochastic_rounding !== undefined) setOptimizerStochasticRounding(params.optimizer_stochastic_rounding);
+
+      // Save & Sample intervals
+      if (params.save_every !== undefined) setSaveEvery(params.save_every);
+      if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
+      if (params.resume_from_checkpoint !== undefined) setResumeFromCheckpoint(params.resume_from_checkpoint);
+
+      // Component-specific training
+      if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
+      if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
+      if (params.train_image_encoder !== undefined) setTrainImageEncoder(params.train_image_encoder);
+      if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
+      if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
+      if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
+      if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
+      if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) setImageEncoderLr(params.image_encoder_lr.toString());
+
+      // Precision settings
+      if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
+      if (params.training_dtype !== undefined) setTrainingDtype(params.training_dtype);
+      if (params.output_dtype !== undefined) setOutputDtype(params.output_dtype);
+      if (params.vae_dtype !== undefined) setVaeDtype(params.vae_dtype);
+      if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
+      if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
+      if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
+      if (params.reconstruction_loss_weight !== undefined) setReconstructionLossWeight(params.reconstruction_loss_weight);
+
+      // Memory optimization
+      if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
+      if (params.text_encoding_swap_interval !== undefined) setTextEncodingSwapInterval(params.text_encoding_swap_interval);
+      if (params.latent_encoding_mode !== undefined) setLatentEncodingMode(params.latent_encoding_mode);
+      if (params.latent_encoding_swap_interval !== undefined) setLatentEncodingSwapInterval(params.latent_encoding_swap_interval);
+      if (params.blocks_to_swap !== undefined) setBlocksToSwap(params.blocks_to_swap);
+      if (params.use_pinned_memory !== undefined) setUsePinnedMemory(params.use_pinned_memory);
+      if (params.num_optimizer_groups !== undefined) setNumOptimizerGroups(params.num_optimizer_groups);
+
+      // MNT settings
+      if (params.multi_noise_timesteps !== undefined) setMultiNoiseTimesteps(params.multi_noise_timesteps);
+      if (params.multi_noise_mode !== undefined) setMultiNoiseMode(params.multi_noise_mode);
+      if (params.trajectory_blend_alpha !== undefined) setTrajectoryBlendAlpha(params.trajectory_blend_alpha);
+      if (params.timestep_sampling) {
+        if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
+        if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
+        if (params.timestep_sampling.max_timestep !== undefined) setTimestepMax(params.timestep_sampling.max_timestep);
+      }
+
+      // Regularization
+      if (params.regularization_type !== undefined) setRegularizationType(params.regularization_type);
+      if (params.snr_regularization_weight !== undefined) setSnrRegularizationWeight(params.snr_regularization_weight);
+      if (params.snr_timestep_adaptive !== undefined) setSnrTimestepAdaptive(params.snr_timestep_adaptive);
+      if (params.snr_penalty_mode !== undefined) setSnrPenaltyMode(params.snr_penalty_mode);
+      if (params.energy_regularization_weight !== undefined) setEnergyRegularizationWeight(params.energy_regularization_weight);
+      if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
+      if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
+      if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
+
+      // Unified Training Framework
+      if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
+      if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
+      if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
+
+      // Sample Generation
+      if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
+      if (params.sample_prompts && params.sample_prompts.length > 0) {
+        setSamplePrompts(params.sample_prompts);
+      }
+      if (params.sample_width !== undefined) setSampleWidth(params.sample_width);
+      if (params.sample_height !== undefined) setSampleHeight(params.sample_height);
+      if (params.sample_steps !== undefined) setSampleSteps(params.sample_steps);
+      if (params.sample_cfg_scale !== undefined) setSampleCfgScale(params.sample_cfg_scale);
+      if (params.sample_sampler !== undefined) setSampleSampler(params.sample_sampler);
+      if (params.sample_schedule_type !== undefined) setSampleScheduleType(params.sample_schedule_type);
+      if (params.sample_seed !== undefined) setSampleSeed(params.sample_seed);
+
+      // Debug Latents
+      if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
+      if (params.debug_latents_every !== undefined) setDebugLatentsEvery(params.debug_latents_every);
+
+      // Bucketing
+      if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
+      if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
+        setBaseResolutions(params.base_resolutions);
+      } else if (params.base_resolutions === null) {
+        // Old configs might have null, use default
+        setBaseResolutions([1024]);
+      }
+      if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
+      if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
+
+      // Cache
+      if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
+      if (params.force_recache !== undefined) setForceRecache(params.force_recache);
+
+      console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
+      console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
+      console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);
+      console.log(`[TrainingConfig] Total loadTrainingRunParams time: ${performance.now() - startTime}ms`);
+    } catch (err: any) {
+      console.error("[TrainingConfig] Failed to load training run parameters:", err);
+      console.error("[TrainingConfig] Error details:", err.response?.data);
+      console.error("[TrainingConfig] Error message:", err.message);
+      setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
+    }
+  }, []);
+
   useEffect(() => {
+    console.log("[TrainingConfig] Initial useEffect running...");
+    const startTime = performance.now();
+
+    // If in edit mode, load YAML parameters first (fast)
+    if (editRunId) {
+      console.log(`[TrainingConfig] Edit mode detected, loading YAML parameters first...`);
+      loadTrainingRunParams(editRunId);
+    }
+
+    // Then load datasets/models/etc (slow, 数分)
     loadDatasets();
     loadModels();
     loadSamplers();
     loadScheduleTypes();
     loadPresets();
-  }, []);
+    console.log(`[TrainingConfig] All load functions called in ${performance.now() - startTime}ms`);
+  }, [editRunId, loadTrainingRunParams]);
+
+  // Auto-configure precision settings when model changes
+  useEffect(() => {
+    if (!baseModelPath) return;
+
+    const isZImage = isZImageModel(baseModelPath);
+
+    if (isZImage) {
+      // Z-Image defaults: bf16 for weights/training/output, fp32 for VAE
+      setWeightDtype("bf16");
+      setTrainingDtype("bf16");
+      setOutputDtype("bf16");
+      setVaeDtype("fp32");
+      // Z-Image: Cannot train text encoder (frozen)
+      setTrainTextEncoder(false);
+    } else {
+      // SD/SDXL defaults: fp16 for all
+      setWeightDtype("fp16");
+      setTrainingDtype("fp16");
+      setOutputDtype("fp16");
+      setVaeDtype("fp16");
+    }
+  }, [baseModelPath]);
+
+  // Reset optimizer hyperparameters when optimizer changes
+  useEffect(() => {
+    const config = OPTIMIZER_CONFIGS[optimizer];
+    if (!config) return;
+
+    const { beta1, beta2, epsilon, weight_decay } = config.defaults;
+    if (beta1 !== undefined) setOptimizerBeta1(beta1);
+    if (beta2 !== undefined) setOptimizerBeta2(beta2);
+    if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
+    if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+
+    // Reset options that are not supported by the new optimizer
+    if (!config.supportsPaged) setOptimizerIsPaged(false);
+    if (!config.supportsCautious) setOptimizerCautious(false);
+  }, [optimizer]);
 
   const loadDatasets = async () => {
+    const startTime = performance.now();
+    console.log("[TrainingConfig] loadDatasets starting...");
     try {
       const response = await listDatasets();
+      console.log(`[TrainingConfig] loadDatasets API took ${performance.now() - startTime}ms`);
       setDatasets(response.datasets);
-      if (response.datasets.length > 0) {
+
+      // Only auto-select first dataset if NOT in edit mode
+      // (edit mode will have already loaded datasetConfigs from YAML)
+      if (!editRunId && response.datasets.length > 0) {
         const firstDatasetId = response.datasets[0].id;
-        // Initialize first dataset config with first available dataset
+        console.log(`[TrainingConfig] New run mode: auto-selecting first dataset ${firstDatasetId}`);
         setDatasetConfigs([{ dataset_id: firstDatasetId, caption_types: [], filters: {} }]);
-        // Load caption types for the first dataset
-        loadCaptionTypes(firstDatasetId);
+      } else if (editRunId) {
+        console.log(`[TrainingConfig] Edit mode: keeping existing datasetConfigs from YAML`);
       }
     } catch (err) {
       console.error("Failed to load datasets:", err);
@@ -131,14 +478,21 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
   };
 
   const loadModels = async () => {
+    const startTime = performance.now();
+    console.log("[TrainingConfig] loadModels starting...");
     try {
       const response = await getModels();
+      console.log(`[TrainingConfig] loadModels API took ${performance.now() - startTime}ms`);
       const models = response.models || [];
-      // Extract paths from model objects
-      const modelPaths = models.map((m: any) => m.path);
-      setAvailableModels(modelPaths);
-      if (modelPaths.length > 0) {
-        setBaseModelPath(modelPaths[0]);
+      setAvailableModels(models);
+
+      // Only auto-select first model if NOT in edit mode
+      // (edit mode will have already loaded baseModelPath from YAML)
+      if (!editRunId && models.length > 0) {
+        console.log(`[TrainingConfig] New run mode: auto-selecting first model ${models[0].path}`);
+        setBaseModelPath(models[0].path);
+      } else if (editRunId) {
+        console.log(`[TrainingConfig] Edit mode: keeping existing baseModelPath from YAML`);
       }
     } catch (err) {
       console.error("Failed to load models:", err);
@@ -172,21 +526,6 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       setPresets(response.presets);
     } catch (error) {
       console.error("Failed to load presets:", error);
-    }
-  };
-
-  // Helper function: Load caption types for a dataset
-  const loadCaptionTypes = async (datasetId: number) => {
-    if (datasetId === 0) return;
-
-    try {
-      const response = await getDatasetCaptionTypes(datasetId);
-      setDatasetCaptionTypes(prev => ({
-        ...prev,
-        [datasetId]: response.caption_types
-      }));
-    } catch (err) {
-      console.error("Failed to load caption types:", err);
     }
   };
 
@@ -250,6 +589,15 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       learningRate,
       lrScheduler,
       optimizer,
+      optimizerIsPaged,
+      optimizerCautious,
+      optimizerBeta1,
+      optimizerBeta2,
+      optimizerEpsilon,
+      optimizerWeightDecay,
+      optimizerScheduleFree,
+      optimizerScheduleFreeR,
+      optimizerScheduleFreeWeightLrPower,
       loraRank,
       loraAlpha,
       saveEvery,
@@ -285,6 +633,18 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       mixedPrecision,
       useFlashAttention,
       minSnrGamma,
+      reconstructionLossWeight,
+      textEncodingMode,
+      textEncodingSwapInterval,
+      latentEncodingMode,
+      latentEncodingSwapInterval,
+      blocksToSwap,
+      usePinnedMemory,
+      numOptimizerGroups,
+      multiNoiseTimesteps,
+      timestepDistribution,
+      timestepMin,
+      timestepMax,
     };
   };
 
@@ -325,6 +685,15 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.learningRate !== undefined) setLearningRate(config.learningRate);
     if (config.lrScheduler !== undefined) setLrScheduler(config.lrScheduler);
     if (config.optimizer !== undefined) setOptimizer(config.optimizer);
+    if (config.optimizerIsPaged !== undefined) setOptimizerIsPaged(config.optimizerIsPaged);
+    if (config.optimizerCautious !== undefined) setOptimizerCautious(config.optimizerCautious);
+    if (config.optimizerBeta1 !== undefined) setOptimizerBeta1(config.optimizerBeta1);
+    if (config.optimizerBeta2 !== undefined) setOptimizerBeta2(config.optimizerBeta2);
+    if (config.optimizerEpsilon !== undefined) setOptimizerEpsilon(config.optimizerEpsilon);
+    if (config.optimizerWeightDecay !== undefined) setOptimizerWeightDecay(config.optimizerWeightDecay);
+    if (config.optimizerScheduleFree !== undefined) setOptimizerScheduleFree(config.optimizerScheduleFree);
+    if (config.optimizerScheduleFreeR !== undefined) setOptimizerScheduleFreeR(config.optimizerScheduleFreeR);
+    if (config.optimizerScheduleFreeWeightLrPower !== undefined) setOptimizerScheduleFreeWeightLrPower(config.optimizerScheduleFreeWeightLrPower);
     if (config.loraRank !== undefined) setLoraRank(config.loraRank);
     if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
     if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
@@ -360,6 +729,18 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     if (config.mixedPrecision !== undefined) setMixedPrecision(config.mixedPrecision);
     if (config.useFlashAttention !== undefined) setUseFlashAttention(config.useFlashAttention);
     if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
+    if (config.reconstructionLossWeight !== undefined) setReconstructionLossWeight(config.reconstructionLossWeight);
+    if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
+    if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
+    if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
+    if (config.latentEncodingSwapInterval !== undefined) setLatentEncodingSwapInterval(config.latentEncodingSwapInterval);
+    if (config.blocksToSwap !== undefined) setBlocksToSwap(config.blocksToSwap);
+    if (config.usePinnedMemory !== undefined) setUsePinnedMemory(config.usePinnedMemory);
+    if (config.numOptimizerGroups !== undefined) setNumOptimizerGroups(config.numOptimizerGroups);
+    if (config.multiNoiseTimesteps !== undefined) setMultiNoiseTimesteps(config.multiNoiseTimesteps);
+    if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
+    if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
+    if (config.timestepMax !== undefined) setTimestepMax(config.timestepMax);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -419,12 +800,24 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       learning_rate: parseFloat(learningRate),
       lr_scheduler: lrScheduler,
       optimizer: optimizer,
+      optimizer_is_paged: optimizerIsPaged,
+      optimizer_cautious: optimizerCautious,
+      optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
+      optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
+      optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
+      optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
+      optimizer_schedule_free: optimizerScheduleFree,
+      optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
+      optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
+      optimizer_use_radam: optimizerUseRadam,
+      optimizer_stochastic_rounding: optimizerStochasticRounding,
       lora_rank: trainingMethod === "lora" ? loraRank : undefined,
       lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
+      lora_dtype: trainingMethod === "lora" ? loraDtype : undefined,
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
-      sample_prompts: samplePrompts.filter(p => p.positive.trim() !== ""),
+      sample_prompts: samplePrompts,  // Allow empty prompts (SD/SDXL/Z-Image can generate with empty prompts)
       sample_width: sampleWidth,
       sample_height: sampleHeight,
       sample_steps: sampleSteps,
@@ -443,10 +836,12 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       force_recache: forceRecache,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
+      train_image_encoder: trainImageEncoder,
       unet_lr: unetLr ? parseFloat(unetLr) : null,
       text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
       text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
       text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
+      image_encoder_lr: imageEncoderLr ? parseFloat(imageEncoderLr) : null,
       weight_dtype: weightDtype,
       training_dtype: trainingDtype,
       output_dtype: outputDtype,
@@ -454,6 +849,35 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
       mixed_precision: mixedPrecision,
       use_flash_attention: useFlashAttention,
       min_snr_gamma: minSnrGamma,
+      reconstruction_loss_weight: reconstructionLossWeight,
+      text_encoding_mode: textEncodingMode,
+      text_encoding_swap_interval: textEncodingSwapInterval,
+      latent_encoding_mode: latentEncodingMode,
+      latent_encoding_swap_interval: latentEncodingSwapInterval,
+      blocks_to_swap: blocksToSwap,
+      use_pinned_memory: usePinnedMemory,
+      num_optimizer_groups: numOptimizerGroups,
+      multi_noise_timesteps: multiNoiseTimesteps,
+      multi_noise_mode: multiNoiseMode,
+      trajectory_blend_alpha: trajectoryBlendAlpha,
+      timestep_sampling: {
+        distribution: timestepDistribution,
+        min_timestep: timestepMin,
+        max_timestep: timestepMax,
+      },
+      // Regularization settings
+      regularization_type: regularizationType !== "none" ? regularizationType : null,
+      snr_regularization_weight: snrRegularizationWeight,
+      snr_timestep_adaptive: snrTimestepAdaptive,
+      snr_penalty_mode: snrPenaltyMode,
+      energy_regularization_weight: energyRegularizationWeight,
+      energy_timestep_adaptive: energyTimestepAdaptive,
+      energy_penalty_mode: energyPenaltyMode,
+      energy_normalize_by_pixels: energyNormalizeByPixels,
+      // Unified Training Framework settings
+      noise_process: noiseProcess,
+      prediction_target: predictionTarget,
+      strict_validation: strictValidation,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -466,14 +890,24 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
     });
 
     try {
-      const newRun = await createTrainingRun(requestData);
-      console.log("[TrainingConfig] Training run created:", newRun);
-      onRunCreated(newRun);
+      if (editRunId) {
+        // Update existing run
+        const updatedRun = await updateTrainingRun(editRunId, requestData);
+        console.log("[TrainingConfig] Training run updated:", updatedRun);
+        if (onRunUpdated) {
+          onRunUpdated(updatedRun);
+        }
+      } else {
+        // Create new run
+        const newRun = await createTrainingRun(requestData);
+        console.log("[TrainingConfig] Training run created:", newRun);
+        onRunCreated(newRun);
+      }
     } catch (err: any) {
       console.error("[TrainingConfig] Error details:", err);
       console.error("[TrainingConfig] Error response:", err.response);
       console.error("[TrainingConfig] Error data:", err.response?.data);
-      const errorMessage = err.response?.data?.detail || err.response?.data?.message || err.message || "Failed to create training run";
+      const errorMessage = err.response?.data?.detail || err.response?.data?.message || err.message || (editRunId ? "Failed to update training run" : "Failed to create training run");
       setError(errorMessage);
     } finally {
       setLoading(false);
@@ -482,24 +916,40 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
-        <h2 className="text-lg font-semibold">New Training Run</h2>
-        <div className="flex items-center gap-2">
+      <div className="p-3 sm:p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 sticky top-0 z-10">
+        <h2 className="text-base sm:text-lg font-semibold truncate mr-2">{editRunId ? "Edit Training Run" : "New Training Run"}</h2>
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           <button
             type="button"
             onClick={() => setShowLoadPresetDialog(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors"
+            className="hidden sm:flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors"
           >
-            <FolderOpen className="h-4 w-4" />
+            <FolderOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             Load Preset
           </button>
           <button
             type="button"
+            onClick={() => setShowLoadPresetDialog(true)}
+            className="sm:hidden p-1.5 bg-blue-600 hover:bg-blue-500 rounded transition-colors"
+            title="Load Preset"
+          >
+            <FolderOpen className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => setShowPresetDialog(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+            className="hidden sm:flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs sm:text-sm transition-colors"
+          >
+            <Save className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            Save Preset
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPresetDialog(true)}
+            className="sm:hidden p-1.5 bg-green-600 hover:bg-green-500 rounded transition-colors"
+            title="Save Preset"
           >
             <Save className="h-4 w-4" />
-            Save Preset
           </button>
           <button
             onClick={onClose}
@@ -510,29 +960,30 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="p-4 space-y-4 max-w-2xl">
+      <form onSubmit={handleSubmit} className="p-3 sm:p-4">
         {error && (
-          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-3 text-sm">
+          <div className="bg-red-900/20 border border-red-500 text-red-400 rounded p-2.5 sm:p-3 text-xs sm:text-sm mb-3 sm:mb-4">
             {error}
           </div>
         )}
 
+        <div className="columns-1 lg:columns-2 gap-3 sm:gap-4 space-y-3 sm:space-y-4">
         {/* Run Name */}
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            Run Name <span className="text-gray-500 text-xs font-normal">(optional, auto-generated if empty)</span>
+        <div className="break-inside-avoid">
+          <label className="block text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
+            Run Name <span className="text-gray-500 text-xxs sm:text-xs font-normal">(optional, auto-generated if empty)</span>
           </label>
           <input
             type="text"
             value={runName}
             onChange={(e) => setRunName(e.target.value)}
             placeholder="Leave empty for auto-generated name (e.g., 20251130_174523_a1b2c3d4)"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+            className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
           />
         </div>
 
         {/* Datasets */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <div className="flex justify-between items-center">
             <label className="block text-sm font-medium">
               Datasets <span className="text-red-400">*</span>
@@ -570,8 +1021,6 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   updated[index].dataset_id = newDatasetId;
                   updated[index].caption_types = []; // Reset caption types when dataset changes
                   setDatasetConfigs(updated);
-                  // Load caption types for the new dataset
-                  loadCaptionTypes(newDatasetId);
                 }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
@@ -583,51 +1032,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 ))}
               </select>
 
-              {/* Caption Types */}
-              {config.dataset_id !== 0 && datasetCaptionTypes[config.dataset_id] && (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1.5">
-                    Caption Types (select which to use for training)
-                  </label>
-                  <div className="bg-gray-900 border border-gray-700 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
-                    {datasetCaptionTypes[config.dataset_id].length === 0 ? (
-                      <p className="text-xs text-gray-500">No captions found in this dataset</p>
-                    ) : (
-                      datasetCaptionTypes[config.dataset_id].map((captionType) => (
-                        <label key={captionType.caption_type} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-800 p-1 rounded">
-                          <input
-                            type="checkbox"
-                            checked={config.caption_types.includes(captionType.caption_type)}
-                            onChange={(e) => {
-                              const updated = [...datasetConfigs];
-                              if (e.target.checked) {
-                                updated[index].caption_types = [...updated[index].caption_types, captionType.caption_type];
-                              } else {
-                                updated[index].caption_types = updated[index].caption_types.filter(t => t !== captionType.caption_type);
-                              }
-                              setDatasetConfigs(updated);
-                            }}
-                            className="rounded"
-                          />
-                          <span className="text-xs flex-1">
-                            {captionType.caption_type}
-                            <span className="text-gray-500 ml-1">({captionType.total_count} items)</span>
-                          </span>
-                        </label>
-                      ))
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Leave unchecked to use all caption types
-                  </p>
-                </div>
-              )}
+              {/* Caption Types: Moved to Dataset Management > Caption Processing */}
+              {/* Configure caption types in Dataset Management page for each dataset */}
             </div>
           ))}
         </div>
 
         {/* Training Method */}
-        <div>
+        <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">Training Method</label>
           <div className="flex space-x-4">
             <label className="flex items-center space-x-2 cursor-pointer">
@@ -656,10 +1068,52 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
         </div>
 
         {/* Base Model */}
-        <div>
+        <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">
             Base Model <span className="text-red-400">*</span>
           </label>
+
+          {/* Model Architecture Filter */}
+          <div className="flex items-center gap-4 mb-2 text-xs">
+            <span className="text-gray-400">Filter:</span>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSD15}
+                onChange={(e) => setShowSD15(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">SD 1.5</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSDXL}
+                onChange={(e) => setShowSDXL(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">SDXL</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showZImage}
+                onChange={(e) => setShowZImage(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">Z-Image</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showDEUS}
+                onChange={(e) => setShowDEUS(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">DEUS</span>
+            </label>
+          </div>
+
           <select
             value={baseModelPath}
             onChange={(e) => setBaseModelPath(e.target.value)}
@@ -667,20 +1121,23 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             required
           >
             <option value="">Select a model...</option>
-            {availableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
+            {filteredModels.map((model) => (
+              <option key={model.path} value={model.path}>
+                {model.name} ({model.architecture.toUpperCase()})
               </option>
             ))}
           </select>
           {availableModels.length === 0 && (
             <p className="text-xs text-gray-500 mt-1">No models available. Please add models to the models directory.</p>
           )}
+          {filteredModels.length === 0 && availableModels.length > 0 && (
+            <p className="text-xs text-gray-500 mt-1">No models match the selected filters.</p>
+          )}
         </div>
 
         {/* LoRA Settings */}
         {trainingMethod === "lora" && (
-          <div className="bg-gray-800/50 rounded-lg p-3 space-y-3">
+          <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
             <h3 className="text-sm font-semibold">LoRA Settings</h3>
 
             <div className="grid grid-cols-2 gap-3">
@@ -689,7 +1146,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <input
                   type="number"
                   value={loraRank}
-                  onChange={(e) => setLoraRank(parseInt(e.target.value))}
+                  onChange={(e) => setLoraRank(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraRank(16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -701,18 +1158,31 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <input
                   type="number"
                   value={loraAlpha}
-                  onChange={(e) => setLoraAlpha(parseInt(e.target.value))}
+                  onChange={(e) => setLoraAlpha(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraAlpha(16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
             </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">LoRA Weight Dtype</label>
+              <select
+                value={loraDtype}
+                onChange={(e) => setLoraDtype(e.target.value as "fp32" | "fp16" | "bf16")}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="fp32">FP32 (Full Precision)</option>
+                <option value="bf16">BF16 (Brain Float 16)</option>
+                <option value="fp16">FP16 (Half Precision)</option>
+              </select>
+            </div>
           </div>
         )}
 
         {/* Training Parameters */}
-        <div className="bg-gray-800/50 rounded-lg p-3 space-y-3">
+        <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
           <h3 className="text-sm font-semibold">Training Parameters</h3>
 
           {/* Steps/Epochs Toggle */}
@@ -744,8 +1214,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <input
                   type="number"
                   value={totalSteps}
-                  onChange={(e) => setTotalSteps(parseInt(e.target.value))}
-                  min="100"
+                  onChange={(e) => setTotalSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTotalSteps(1000); }}
+                  min="1"
                   max="50000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -756,7 +1226,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 <input
                   type="number"
                   value={epochs}
-                  onChange={(e) => setEpochs(parseInt(e.target.value))}
+                  onChange={(e) => setEpochs(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setEpochs(10); }}
                   min="1"
                   max="1000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -769,11 +1239,357 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               <input
                 type="number"
                 value={batchSize}
-                onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                onChange={(e) => setBatchSize(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBatchSize(4); }}
                 min="1"
                 max="16"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Multi Noise-Timesteps (MNT)
+              </label>
+              <input
+                type="number"
+                value={multiNoiseTimesteps}
+                onChange={(e) => setMultiNoiseTimesteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setMultiNoiseTimesteps(1); }}
+                min="1"
+                max="10"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Process each batch with multiple different timesteps (default: 1)
+              </p>
+            </div>
+
+            {/* MNT Mode */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                MNT Mode
+              </label>
+              <select
+                value={multiNoiseMode}
+                onChange={(e) => setMultiNoiseMode(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="independent">Independent (Different noise)</option>
+                <option value="shared">Shared (Same noise)</option>
+                <option value="trajectory">Trajectory (Sequential learning)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                {multiNoiseMode === "independent" && "Each MNT iteration uses different noise (default)"}
+                {multiNoiseMode === "shared" && "All MNT iterations use same noise (trajectory consistency)"}
+                {multiNoiseMode === "trajectory" && "Sequential trajectory learning with blending"}
+              </p>
+            </div>
+
+            {/* Trajectory Blend Alpha (only for trajectory mode) */}
+            {multiNoiseMode === "trajectory" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Trajectory Blend Alpha
+                </label>
+                <input
+                  type="number"
+                  value={trajectoryBlendAlpha}
+                  onChange={(e) => setTrajectoryBlendAlpha(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTrajectoryBlendAlpha(0.7); }}
+                  min="0.0"
+                  max="1.0"
+                  step="0.1"
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Blending coefficient: 0.0=ideal only, 1.0=stepped only (default: 0.7)
+                </p>
+              </div>
+            )}
+
+            {/* Timestep Sampling */}
+            <div className="col-span-2 border-t border-gray-700 pt-4">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3">Timestep Sampling</h3>
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Distribution</label>
+                  <select
+                    value={timestepDistribution}
+                    onChange={(e) => setTimestepDistribution(e.target.value)}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="uniform">Uniform (Default)</option>
+                    <option value="normal">Normal (Gaussian)</option>
+                    <option value="lognormal">Log-Normal</option>
+                    <option value="beta">Beta Distribution</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Probability distribution for sampling timesteps during training
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Min Timestep</label>
+                    <input
+                      type="number"
+                      value={timestepMin}
+                      onChange={(e) => setTimestepMin(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMin(0.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Max Timestep</label>
+                    <input
+                      type="number"
+                      value={timestepMax}
+                      onChange={(e) => setTimestepMax(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMax(1.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Timestep range for sampling (0.0 = clean, 1.0 = fully noised)
+                </p>
+              </div>
+            </div>
+
+            {/* Regularization Settings */}
+            <div className="space-y-4 p-3 bg-gray-900/50 rounded border border-gray-700/50">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1 font-semibold">
+                  Regularization (Prevent Overbaking)
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Both SNR and Energy regularization can be enabled simultaneously for comprehensive overbaking prevention.
+                </p>
+              </div>
+
+              {/* SNR Regularization */}
+              <div className="space-y-3 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs text-gray-300 font-semibold">
+                    SNR Regularization (Frequency Domain)
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="enable-snr-reg"
+                      checked={snrRegularizationWeight > 0}
+                      onChange={(e) => setSnrRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="enable-snr-reg" className="text-xs text-gray-400 cursor-pointer">
+                      Enable
+                    </label>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Penalizes high SNR in predicted latents (prevents over-denoising in frequency domain)
+                </p>
+
+              {snrRegularizationWeight > 0 && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      SNR Weight
+                    </label>
+                    <input
+                      type="number"
+                      value={snrRegularizationWeight}
+                      onChange={(e) => setSnrRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSnrRegularizationWeight(0.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="snr-timestep-adaptive"
+                      checked={snrTimestepAdaptive}
+                      onChange={(e) => setSnrTimestepAdaptive(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="snr-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
+                      Timestep Adaptive (stronger penalty at low timesteps)
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Penalty Mode
+                    </label>
+                    <select
+                      value={snrPenaltyMode}
+                      onChange={(e) => setSnrPenaltyMode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="relu">ReLU (one-sided, penalize only over-denoising)</option>
+                      <option value="abs">Absolute (two-sided, penalize any deviation)</option>
+                    </select>
+                  </div>
+                </>
+              )}
+              </div>
+
+              {/* Energy Regularization */}
+              <div className="space-y-3 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs text-gray-300 font-semibold">
+                    Energy Regularization (Spatial Domain)
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="enable-energy-reg"
+                      checked={energyRegularizationWeight > 0}
+                      onChange={(e) => setEnergyRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="enable-energy-reg" className="text-xs text-gray-400 cursor-pointer">
+                      Enable
+                    </label>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Penalizes energy deviation in predicted latents (prevents detail loss in spatial domain)
+                </p>
+
+              {energyRegularizationWeight > 0 && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Energy Weight
+                    </label>
+                    <input
+                      type="number"
+                      value={energyRegularizationWeight}
+                      onChange={(e) => setEnergyRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setEnergyRegularizationWeight(0.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="energy-timestep-adaptive"
+                      checked={energyTimestepAdaptive}
+                      onChange={(e) => setEnergyTimestepAdaptive(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="energy-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
+                      Timestep Adaptive (stronger penalty at low timesteps)
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Penalty Mode
+                    </label>
+                    <select
+                      value={energyPenaltyMode}
+                      onChange={(e) => setEnergyPenaltyMode(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="under">Under (one-sided, penalize only energy loss - recommended)</option>
+                      <option value="abs">Absolute (two-sided, penalize any deviation)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="energy-normalize-by-pixels"
+                      checked={energyNormalizeByPixels}
+                      onChange={(e) => setEnergyNormalizeByPixels(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="energy-normalize-by-pixels" className="text-xs text-gray-300 cursor-pointer">
+                      Normalize by Pixels (resolution-independent)
+                    </label>
+                  </div>
+                </>
+              )}
+              </div>
+            </div>
+
+            {/* Unified Training Framework Settings */}
+            <div className="bg-gray-800 p-3 rounded space-y-3">
+              <div>
+                <label className="block text-xs text-gray-300 font-semibold mb-2">
+                  Unified Training Framework
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Configure noise process and prediction target for training
+                </p>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Noise Process
+                    </label>
+                    <select
+                      value={noiseProcess}
+                      onChange={(e) => setNoiseProcess(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="auto">Auto (detect from model)</option>
+                      <option value="ddpm">DDPM (Scheduled, for SDXL/SD1.5)</option>
+                      <option value="flow">Flow Matching (Linear, for Z-Image)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      How noise is added during training. Auto-detect uses model&apos;s original configuration.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Prediction Target
+                    </label>
+                    <select
+                      value={predictionTarget}
+                      onChange={(e) => setPredictionTarget(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="auto">Auto (detect from model)</option>
+                      <option value="epsilon">Epsilon (predict noise)</option>
+                      <option value="velocity">Velocity (predict direction)</option>
+                      <option value="sample">Sample (predict x₀)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      What the model predicts during training. Auto-detect uses model&apos;s original configuration.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="strict-validation"
+                      checked={strictValidation}
+                      onChange={(e) => setStrictValidation(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="strict-validation" className="text-xs text-gray-300 cursor-pointer">
+                      Strict Validation (abort training if mismatch detected)
+                    </label>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    When enabled, training aborts if noise_process/prediction_target doesn&apos;t match model&apos;s config. When disabled, shows warning and continues.
+                  </p>
+                </div>
+              </div>
             </div>
 
             <div>
@@ -800,34 +1616,220 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               </select>
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Optimizer</label>
-              <select
-                value={optimizer}
-                onChange={(e) => setOptimizer(e.target.value)}
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              >
-                <optgroup label="Standard">
-                  <option value="adamw">AdamW (32-bit)</option>
+            {/* Optimizer Selection */}
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Optimizer</label>
+                <select
+                  value={optimizer}
+                  onChange={(e) => setOptimizer(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="adamw">AdamW</option>
                   <option value="adamw8bit">AdamW 8-bit</option>
-                  <option value="adafactor">Adafactor</option>
-                </optgroup>
-                <optgroup label="Paged (CPU Offload)">
-                  <option value="paged_adamw">Paged AdamW</option>
-                  <option value="paged_adamw8bit">Paged AdamW 8-bit</option>
-                </optgroup>
-                <optgroup label="Lion">
+                  <option value="adamw8bit_ringbuffer">AdamW 8-bit Ring Buffer</option>
                   <option value="lion8bit">Lion 8-bit</option>
-                  <option value="paged_lion8bit">Paged Lion 8-bit</option>
-                </optgroup>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                {optimizer === "adafactor" && "Adaptive learning rate, no momentum"}
-                {optimizer === "lion8bit" && "Sign-based momentum"}
-                {optimizer.startsWith("paged_") && "CPU offloading when GPU memory is full"}
-                {optimizer === "adamw8bit" && "8-bit quantization"}
-                {optimizer === "adamw" && "32-bit full precision"}
-              </p>
+                  <option value="lion8bit_ringbuffer">Lion 8-bit Ring Buffer</option>
+                  <option value="adafactor">Adafactor</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {optimizer === "adafactor" && "Adaptive learning rate"}
+                  {optimizer === "lion8bit" && "Sign-based momentum, 8-bit quantization"}
+                  {optimizer === "lion8bit_ringbuffer" && "Sign-based momentum, 8-bit quantization, CPU state allocation"}
+                  {optimizer === "adamw8bit_ringbuffer" && "8-bit quantization, CPU state allocation"}
+                  {optimizer === "adamw8bit" && "8-bit quantization"}
+                  {optimizer === "adamw" && "Full precision"}
+                </p>
+              </div>
+
+              {/* Optimizer Options */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* is_paged option (AdamW, AdamW8bit, Lion8bit) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsPaged && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="optimizer-is-paged"
+                      checked={optimizerIsPaged}
+                      onChange={(e) => setOptimizerIsPaged(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="optimizer-is-paged" className="text-xs text-gray-300 cursor-pointer">
+                      Paged (CPU offload)
+                    </label>
+                  </div>
+                )}
+
+                {/* cautious option (Ring Buffer optimizers only) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsCautious && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="optimizer-cautious"
+                      checked={optimizerCautious}
+                      onChange={(e) => setOptimizerCautious(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="optimizer-cautious" className="text-xs text-gray-300 cursor-pointer">
+                      Cautious (sign mask)
+                    </label>
+                  </div>
+                )}
+
+                {/* schedule-free option (Ring Buffer optimizers only) */}
+                {OPTIMIZER_CONFIGS[optimizer]?.supportsCautious && (
+                  <div className="space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="optimizer-schedule-free"
+                        checked={optimizerScheduleFree}
+                        onChange={(e) => setOptimizerScheduleFree(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="optimizer-schedule-free" className="text-xs text-gray-300 cursor-pointer">
+                        Schedule-Free (learning rate scheduling)
+                      </label>
+                    </div>
+
+                    {optimizerScheduleFree && (
+                      <div className="ml-6 space-y-2 border-l-2 border-gray-600 pl-3">
+                        {/* RAdam toggle */}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="optimizer-use-radam"
+                            checked={optimizerUseRadam}
+                            onChange={(e) => setOptimizerUseRadam(e.target.checked)}
+                            className="w-4 h-4"
+                          />
+                          <label htmlFor="optimizer-use-radam" className="text-xs text-gray-300 cursor-pointer">
+                            Use RAdam (Rectified Adam)
+                          </label>
+                        </div>
+
+                        {/* Stochastic Rounding (BF16 only, AdamW8bit/Lion8bit only) */}
+                        {trainingDtype === "bf16" && (optimizer === "adamw8bit_ringbuffer" || optimizer === "lion8bit_ringbuffer") && (
+                          <div>
+                            <label className="flex items-center text-xs text-gray-300">
+                              <input
+                                type="checkbox"
+                                checked={optimizerStochasticRounding}
+                                onChange={(e) => setOptimizerStochasticRounding(e.target.checked)}
+                                className="mr-2"
+                              />
+                              Stochastic Rounding (BF16)
+                            </label>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Reduces quantization bias for BF16 training. Only affects AdamW8bit/Lion8bit with BF16.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Schedule-Free r (hidden when RAdam is enabled) */}
+                        {!optimizerUseRadam && (
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">r (warmup parameter)</label>
+                            <input
+                              type="text"
+                              value={optimizerScheduleFreeR}
+                              onChange={(e) => setOptimizerScheduleFreeR(e.target.value)}
+                              className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Default: 0.0 (no warmup)</p>
+                          </div>
+                        )}
+
+                        {/* Schedule-Free weight_lr_power */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Weight LR Power</label>
+                          <input
+                            type="text"
+                            value={optimizerScheduleFreeWeightLrPower}
+                            onChange={(e) => setOptimizerScheduleFreeWeightLrPower(e.target.value)}
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">Default: 2.0</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Optimizer Hyperparameters */}
+              <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-gray-400">Hyperparameters</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const config = OPTIMIZER_CONFIGS[optimizer];
+                      if (!config) return;
+                      const { beta1, beta2, epsilon, weight_decay } = config.defaults;
+                      if (beta1 !== undefined) setOptimizerBeta1(beta1);
+                      if (beta2 !== undefined) setOptimizerBeta2(beta2);
+                      if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
+                      if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+                    }}
+                    className="text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Reset to Defaults
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Beta1 (not for Adafactor) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.beta1 !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beta1</label>
+                      <input
+                        type="text"
+                        value={optimizerBeta1}
+                        onChange={(e) => setOptimizerBeta1(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Beta2 (not for Adafactor) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.beta2 !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beta2</label>
+                      <input
+                        type="text"
+                        value={optimizerBeta2}
+                        onChange={(e) => setOptimizerBeta2(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Epsilon (not for Lion) */}
+                  {OPTIMIZER_CONFIGS[optimizer]?.defaults.epsilon !== undefined && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Epsilon</label>
+                      <input
+                        type="text"
+                        value={optimizerEpsilon}
+                        onChange={(e) => setOptimizerEpsilon(e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Weight Decay (all optimizers) */}
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Weight Decay</label>
+                    <input
+                      type="text"
+                      value={optimizerWeightDecay}
+                      onChange={(e) => setOptimizerWeightDecay(e.target.value)}
+                      className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -858,12 +1860,30 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                  className="w-4 h-4"
+                  disabled={isZImageModel(baseModelPath)}
+                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
-                  Train Text Encoder
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                  Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                 </label>
               </div>
+
+              {/* Train Image Encoder (DEUS only, grayed out) */}
+              {isDEUSModel(baseModelPath) && (
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="train-image-encoder"
+                    checked={trainImageEncoder}
+                    onChange={(e) => setTrainImageEncoder(e.target.checked)}
+                    disabled={true}
+                    className="w-4 h-4 opacity-50 cursor-not-allowed"
+                  />
+                  <label htmlFor="train-image-encoder" className="text-xs text-gray-500 cursor-not-allowed">
+                    Train Image Encoder (T2I, Not Implemented)
+                  </label>
+                </div>
+              )}
             </div>
 
             {/* U-Net Learning Rate */}
@@ -934,11 +1954,28 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 </div>
               </div>
             )}
+
+            {/* Image Encoder Learning Rate (DEUS only, grayed out) */}
+            {trainImageEncoder && isDEUSModel(baseModelPath) && (
+              <div className="mb-3">
+                <label className="block text-xs text-gray-400 mb-1 opacity-50">
+                  Image Encoder LR <span className="text-xs text-gray-500">(T2I, Not Implemented)</span>
+                </label>
+                <input
+                  type="text"
+                  value={imageEncoderLr}
+                  onChange={(e) => setImageEncoderLr(e.target.value)}
+                  placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
+                  disabled={true}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm opacity-50 cursor-not-allowed"
+                />
+              </div>
+            )}
           </div>
         </div>
 
         {/* Precision Settings (VRAM Optimization) */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Precision Settings (VRAM Optimization)</h3>
 
           <div className="grid grid-cols-2 gap-3">
@@ -950,11 +1987,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setWeightDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default)</option>
-                <option value="fp32">FP32 (Higher precision)</option>
-                <option value="bf16">BF16 (Balanced)</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN (~50% VRAM)</option>
-                <option value="fp8_e5m2">FP8 E5M2 (~50% VRAM)</option>
+                <option value="fp32">FP32 (推奨)</option>
+                <option value="bf16">BF16</option>
+                <option value="fp16">FP16 (非推奨)</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (非推奨)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (非推奨)</option>
               </select>
             </div>
 
@@ -966,10 +2003,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setTrainingDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default)</option>
+                <option value="fp32">FP32</option>
+                <option value="fp16">FP16</option>
                 <option value="bf16">BF16</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
-                <option value="fp8_e5m2">FP8 E5M2</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (動作保証対象外)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
           </div>
@@ -983,11 +2021,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setOutputDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp32">FP32 (Default, highest precision)</option>
+                <option value="fp32">FP32</option>
                 <option value="fp16">FP16</option>
                 <option value="bf16">BF16</option>
-                <option value="fp8_e4m3fn">FP8 E4M3FN</option>
-                <option value="fp8_e5m2">FP8 E5M2</option>
               </select>
             </div>
 
@@ -999,9 +2035,11 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 onChange={(e) => setVaeDtype(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="fp16">FP16 (Default, SDXL VAE works fine)</option>
-                <option value="fp32">FP32 (Higher precision)</option>
-                <option value="bf16">BF16 (Balanced)</option>
+                <option value="fp32">FP32 (推奨)</option>
+                <option value="fp16">FP16 (SDXL madebyollin VAEのみ許容)</option>
+                <option value="bf16">BF16 (非推奨)</option>
+                <option value="fp8_e4m3fn">FP8 E4M3FN (動作保証対象外)</option>
+                <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
           </div>
@@ -1044,7 +2082,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 id="min-snr-gamma"
                 value={minSnrGamma}
-                onChange={(e) => setMinSnrGamma(parseFloat(e.target.value) || 0)}
+                onChange={(e) => setMinSnrGamma(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setMinSnrGamma(5.0); }}
                 step={0.5}
                 min={0}
                 max={20}
@@ -1054,15 +2093,204 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 Default: 5.0. Set to 0 to disable. Prevents overfitting to high-noise timesteps.
               </p>
             </div>
+
+            {/* Reconstruction Loss Weight */}
+            <div>
+              <label htmlFor="reconstruction-loss-weight" className="block text-xs font-medium text-gray-400 mb-1">
+                Reconstruction Loss Weight
+              </label>
+              <input
+                type="number"
+                id="reconstruction-loss-weight"
+                value={reconstructionLossWeight}
+                onChange={(e) => setReconstructionLossWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setReconstructionLossWeight(0.0); }}
+                step={0.05}
+                min={0}
+                max={1.0}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500">
+                Default: 0.0 (prediction loss only). Dual loss: loss = (1-β)*pred_loss + β*recon_loss. Try 0.1 for faster learning in noisy timesteps.
+              </p>
+            </div>
           </div>
 
           <p className="text-xs text-gray-500">
-            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps.
+            Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps. Reconstruction loss weight enables dual loss training (direct image quality optimization).
           </p>
         </div>
 
-        {/* Advanced Settings */}
+        {/* Block Swap Settings (VRAM Optimization) */}
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Block Swap (Training VRAM Optimization)</h3>
+
+          <div className="space-y-3">
+            {/* Blocks to Swap */}
+            <div>
+              <label htmlFor="blocks-to-swap" className="block text-xs text-gray-300 mb-1">
+                Blocks to Swap (0 to disable)
+              </label>
+              <input
+                type="number"
+                id="blocks-to-swap"
+                value={blocksToSwap}
+                onChange={(e) => setBlocksToSwap(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBlocksToSwap(0); }}
+                min={0}
+                max={29}
+                step={1}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Number of transformer blocks to swap between GPU and CPU during training. Higher values reduce VRAM usage but may slow training. Default: 0 (disabled). Recommended: 10-20 for large models.
+              </p>
+              {blocksToSwap > 0 && (
+                <p className="text-xs text-blue-400 mt-1">
+                  Estimated VRAM saving: ~{Math.round((blocksToSwap / 30) * 100)}% of transformer parameters
+                </p>
+              )}
+            </div>
+
+            {/* Use Pinned Memory */}
+            {blocksToSwap > 0 && (
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="use-pinned-memory"
+                  checked={usePinnedMemory}
+                  onChange={(e) => setUsePinnedMemory(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="use-pinned-memory" className="text-xs text-gray-300 cursor-pointer">
+                  Use Pinned Memory (faster CPU-GPU transfer)
+                </label>
+              </div>
+            )}
+
+            {/* Fused Optimizer Groups */}
+            {blocksToSwap > 0 && (
+              <div>
+                <label htmlFor="num-optimizer-groups" className="block text-xs text-gray-300 mb-1">
+                  Fused Optimizer Groups (0 to disable, recommended 4-10)
+                </label>
+                <input
+                  type="number"
+                  id="num-optimizer-groups"
+                  value={numOptimizerGroups}
+                  onChange={(e) => setNumOptimizerGroups(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setNumOptimizerGroups(0); }}
+                  min={0}
+                  max={20}
+                  step={1}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Divides parameters into N groups with separate optimizers. Updates each group immediately after gradients are computed. Works with ANY optimizer (AdamW, AdamW8bit, Lion8bit, etc.). Set to 0 to use Fused Backward Pass (Adafactor only).
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-gray-500 space-y-1">
+            <p><strong>Block Swap:</strong> Offloads transformer blocks to CPU during training, reducing VRAM usage. Only active during forward and backward passes.</p>
+            <p><strong>Pinned Memory:</strong> Uses CUDA pinned memory for faster transfer between CPU and GPU. Recommended if you have sufficient system RAM.</p>
+            <p><strong>Fused Optimizer Groups:</strong> Enables ANY optimizer to work with Block Swap by dividing parameters into groups. Recommended: 4-10 groups for large models.</p>
+            <p className="text-blue-500"><strong>Optimizer Compatibility:</strong> If "Fused Optimizer Groups" is 0, only Adafactor works with Block Swap (uses per-parameter updates). If Fused Optimizer Groups &gt; 0, ANY optimizer works (AdamW, AdamW8bit, Lion8bit, etc.).</p>
+            <p className="text-yellow-500"><strong>Note:</strong> Only supported for Full Fine-tuning (not LoRA). Training speed may decrease with higher block swap counts. Requires PyTorch 2.1+ for fused backward/optimizer.</p>
+          </div>
+        </div>
+
+        {/* Text Encoding Mode */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Text Encoding Mode</h3>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+            <select
+              value={textEncodingMode}
+              onChange={(e) => setTextEncodingMode(e.target.value)}
+              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
+              <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+              <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+            </select>
+          </div>
+
+          {textEncodingMode === "swap_onthefly" && (
+            <div>
+              <label htmlFor="text-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                Swap Interval (steps)
+              </label>
+              <input
+                type="number"
+                id="text-encoding-swap-interval"
+                value={textEncodingSwapInterval}
+                onChange={(e) => setTextEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTextEncodingSwapInterval(256); }}
+                min={1}
+                max={1024}
+                step={1}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Memory usage: ~{Math.ceil(textEncodingSwapInterval * 2 / 1024)}MB DRAM (swap_interval × 2MB)
+              </p>
+            </div>
+          )}
+
+          <div className="text-xs text-gray-500 space-y-1">
+            <p><strong>Swap On-the-Fly:</strong> Text Encoder swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer. Recommended for large datasets.</p>
+            <p><strong>Pre-Encoded Cache:</strong> Pre-encode all captions to disk cache. Not recommended if cache size exceeds disk capacity.</p>
+            <p><strong>On-the-Fly GPU:</strong> Encode captions on GPU without cache. Slower, uses more VRAM.</p>
+          </div>
+        </div>
+
+        {/* Latent Encoding Mode */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+            <select
+              value={latentEncodingMode}
+              onChange={(e) => setLatentEncodingMode(e.target.value)}
+              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
+              <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+              <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+            </select>
+          </div>
+
+          {latentEncodingMode === "swap_onthefly" && (
+            <div>
+              <label htmlFor="latent-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                Swap Interval (steps)
+              </label>
+              <input
+                type="number"
+                id="latent-encoding-swap-interval"
+                value={latentEncodingSwapInterval}
+                onChange={(e) => setLatentEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLatentEncodingSwapInterval(256); }}
+                min={1}
+                max={1024}
+                step={1}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Memory usage: ~{Math.ceil(latentEncodingSwapInterval * 0.25)}MB DRAM (swap_interval × 256KB)
+              </p>
+            </div>
+          )}
+
+          <div className="text-xs text-gray-500 space-y-1">
+            <p><strong>Swap On-the-Fly:</strong> VAE swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer (~64MB for 256 steps). Recommended for VRAM efficiency.</p>
+            <p><strong>Pre-Encoded Cache:</strong> Pre-encode all images to latents and cache to disk. Uses more disk space but no VRAM for VAE during training.</p>
+            <p><strong>On-the-Fly GPU:</strong> Encode images on GPU without cache. VAE stays on GPU, uses more VRAM.</p>
+          </div>
+        </div>
+
+        {/* Advanced Settings */}
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Advanced Settings</h3>
 
           {/* Save Checkpoint Every */}
@@ -1092,7 +2320,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               type="number"
               min="1"
               value={saveEvery}
-              onChange={(e) => setSaveEvery(parseInt(e.target.value))}
+              onChange={(e) => setSaveEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSaveEvery(100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
@@ -1100,13 +2328,14 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
           {/* Resume from Checkpoint */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint (Optional)</label>
+            <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint</label>
             <select
               value={resumeFromCheckpoint || ""}
               onChange={(e) => setResumeFromCheckpoint(e.target.value || null)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
             >
-              <option value="">Latest (Auto-detect)</option>
+              <option value="">Start from Beginning</option>
+              <option value="latest">Resume from Latest (Auto-detect)</option>
               {availableCheckpoints.map((ckpt) => (
                 <option key={ckpt.filename} value={ckpt.filename}>
                   Step {ckpt.step} - {ckpt.filename}
@@ -1114,13 +2343,13 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Note: Checkpoints will be available after first training session
+              Latest checkpoint will be auto-detected from the output directory
             </p>
           </div>
         </div>
 
         {/* Sample Generation */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
+        <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Sample Generation (Optional)</h3>
 
           {/* Sample Every */}
@@ -1130,7 +2359,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
               type="number"
               min="0"
               value={sampleEvery}
-              onChange={(e) => setSampleEvery(parseInt(e.target.value))}
+              onChange={(e) => setSampleEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleEvery(100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="e.g., 100 (0 to disable)"
             />
@@ -1226,9 +2455,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 min="512"
                 max="2048"
-                step="64"
+                step="8"
                 value={sampleWidth}
-                onChange={(e) => setSampleWidth(parseInt(e.target.value))}
+                onChange={(e) => setSampleWidth(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleWidth(1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1238,9 +2467,9 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 min="512"
                 max="2048"
-                step="64"
+                step="8"
                 value={sampleHeight}
-                onChange={(e) => setSampleHeight(parseInt(e.target.value))}
+                onChange={(e) => setSampleHeight(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleHeight(1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1251,7 +2480,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => setSampleSteps(parseInt(e.target.value))}
+                onChange={(e) => setSampleSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSteps(28); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1263,7 +2492,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 max="30"
                 step="0.5"
                 value={sampleCfgScale}
-                onChange={(e) => setSampleCfgScale(parseFloat(e.target.value))}
+                onChange={(e) => setSampleCfgScale(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSampleCfgScale(7.0); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1303,7 +2532,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             <input
               type="number"
               value={sampleSeed}
-              onChange={(e) => setSampleSeed(parseInt(e.target.value))}
+              onChange={(e) => setSampleSeed(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSeed(42); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="-1 for random"
             />
@@ -1339,7 +2568,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
                 type="number"
                 min="1"
                 value={debugLatentsEvery}
-                onChange={(e) => setDebugLatentsEvery(parseInt(e.target.value))}
+                onChange={(e) => setDebugLatentsEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setDebugLatentsEvery(50); }}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 placeholder="e.g., 50"
               />
@@ -1466,7 +2695,7 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             </label>
           </div>
           <p className="text-xs text-gray-500">
-            Pre-encode images and text to disk cache. Significantly reduces VRAM during training (VAE/Text Encoders stay on CPU).
+            Pre-encode images to latents and cache to disk. Significantly reduces VRAM during training (VAE stays on CPU). Text encoding cache is configured separately via "Text Encoding Mode".
           </p>
         </div>
 
@@ -1488,65 +2717,66 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
             Force regenerate latent cache even if valid cache exists. Use this if you switched to a different VAE or if cache validation fails.
           </p>
         </div>
+        </div>
 
-        {/* Buttons */}
-        <div className="flex justify-end space-x-3 pt-4">
+        {/* Buttons - Outside grid */}
+        <div className="flex flex-col sm:flex-row justify-end gap-2 sm:gap-3 pt-3 sm:pt-4 mt-3 sm:mt-4">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm transition-colors"
             disabled={loading}
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading}
           >
-            {loading ? "Creating..." : "Create Training Run"}
+            {loading ? (editRunId ? "Updating..." : "Creating...") : (editRunId ? "Update Training Run" : "Create Training Run")}
           </button>
         </div>
       </form>
 
       {/* Save Preset Dialog */}
       {showPresetDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Save Training Preset</h3>
-            <div className="space-y-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 sm:p-6 w-full max-w-md">
+            <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">Save Training Preset</h3>
+            <div className="space-y-3 sm:space-y-4">
               <div>
-                <label className="block text-sm text-gray-300 mb-1">Preset Name *</label>
+                <label className="block text-xs sm:text-sm text-gray-300 mb-1">Preset Name *</label>
                 <input
                   type="text"
                   value={presetName}
                   onChange={(e) => setPresetName(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-700 border border-gray-600 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
                   placeholder="e.g., SDXL LoRA Quick"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-300 mb-1">Description (Optional)</label>
+                <label className="block text-xs sm:text-sm text-gray-300 mb-1">Description (Optional)</label>
                 <textarea
                   value={presetDescription}
                   onChange={(e) => setPresetDescription(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                  className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-700 border border-gray-600 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
                   rows={3}
                   placeholder="Describe this preset..."
                 />
               </div>
-              <div className="flex gap-2 justify-end">
+              <div className="flex flex-col sm:flex-row gap-2 justify-end">
                 <button
                   type="button"
                   onClick={() => setShowPresetDialog(false)}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSavePreset}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors"
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-green-600 hover:bg-green-500 rounded text-xs sm:text-sm transition-colors"
                 >
                   Save
                 </button>
@@ -1558,8 +2788,8 @@ export default function TrainingConfig({ onClose, onRunCreated }: TrainingConfig
 
       {/* Load Preset Dialog */}
       {showLoadPresetDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 sm:p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">Load Training Preset</h3>
             {presets.length === 0 ? (
               <p className="text-gray-400 text-sm">No presets saved yet</p>

@@ -35,13 +35,49 @@ class ConnectionManager:
             "type": "progress",
             "step": step,
             "total_steps": total_steps,
-            "progress": (step / total_steps) * 100,
+            "progress": (step / total_steps) * 100 if total_steps > 0 else 0,
             "message": message
         }
         if preview_image:
             data["preview_image"] = preview_image
         if cfg_metrics:
             data["cfg_metrics"] = cfg_metrics
+        # Put message in queue (thread-safe)
+        self.message_queue.put(data)
+
+    def send_training_metrics(
+        self,
+        run_id: int,
+        step: int,
+        loss: float,
+        recon_loss: float = None,
+        learning_rate: float = None,
+        grad_norm: float = None,
+        grad_norm_text_encoder: float = None,
+        grad_norm_unet: float = None
+    ):
+        """Send training metrics (loss, recon_loss, lr, grad_norm) to all connected clients.
+
+        Called from training loop (base_trainer.py) after each step.
+        Thread-safe: uses message queue.
+        """
+        data = {
+            "type": "training_metrics",
+            "run_id": run_id,
+            "step": step,
+            "loss": loss,
+        }
+        if recon_loss is not None:
+            data["recon_loss"] = recon_loss
+        if learning_rate is not None:
+            data["learning_rate"] = learning_rate
+        if grad_norm is not None:
+            data["grad_norm"] = grad_norm
+        if grad_norm_text_encoder is not None:
+            data["grad_norm_text_encoder"] = grad_norm_text_encoder
+        if grad_norm_unet is not None:
+            data["grad_norm_unet"] = grad_norm_unet
+
         # Put message in queue (thread-safe)
         self.message_queue.put(data)
 

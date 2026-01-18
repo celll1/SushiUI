@@ -60,6 +60,14 @@ router = APIRouter()
 # Thread pool for running blocking operations
 executor = ThreadPoolExecutor(max_workers=1)
 
+# Cache for model list (to avoid re-scanning on every API call)
+_models_cache: Optional[Dict[str, Any]] = None
+_models_cache_timestamp: float = 0
+
+# Cache for TensorBoard EventAccumulators to avoid re-reading event files on every request
+# Key: (run_id, event_file_path), Value: (EventAccumulator, last_modified_time)
+_event_accumulator_cache: Dict[tuple, tuple] = {}
+
 # Pydantic models for requests
 class LoginRequest(BaseModel):
     username: str
@@ -91,6 +99,11 @@ class ControlNetConfig(BaseModel):
     is_lllite: bool = False
     preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
     enable_preprocessor: bool = True  # Whether to apply preprocessing
+
+class AddTagRequest(BaseModel):
+    tag: str
+    category: str
+    count: int = 1
 
 class GenerationParams(BaseModel):
     prompt: str
@@ -129,6 +142,8 @@ class GenerationParams(BaseModel):
     attention_type: str = "normal"  # "normal", "sage", "flash"
     # U-Net Quantization
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
+    # Text Encoder Quantization (Z-Image only)
+    text_encoder_quantization: Optional[str] = None  # None, "fp8_e4m3fn", "fp8_e5m2", "uint8", "uint4"
     # torch.compile optimization
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
     # TIPO (prompt upsampling)
@@ -174,10 +189,15 @@ async def generate_txt2img(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
+    attention_type: str = Form("normal"),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(20),
+    use_pinned_memory: bool = Form(False),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -216,7 +236,8 @@ async def generate_txt2img(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -265,6 +286,7 @@ async def generate_txt2img(
             "width": width,
             "height": height,
             "batch_size": batch_size,
+            "loras": lora_configs,  # Add LoRA configs
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,
@@ -279,8 +301,13 @@ async def generate_txt2img(
             "nag_alpha": nag_alpha,
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
+            "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
 
         # Log params without large base64 data
@@ -323,15 +350,30 @@ async def generate_txt2img(
         params["controlnet_images"] = processed_controlnet_images
         params["controlnets"] = controlnet_configs
 
-        # Detect if SDXL
+        # Detect model type
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
                   "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
+        is_deus = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "deus"
+        is_flux2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "flux2"
+        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
+        is_zimage_sdxl_vae = is_zimage and \
+                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl
+            is_sdxl,
+            is_zimage,
+            is_deus,
+            is_zimage_sdxl_vae,
+            is_flux2,
+            image_width=params.get("width"),
+            image_height=params.get("height")
         )
 
         # Create step callback for LoRA step range if needed
@@ -345,13 +387,14 @@ async def generate_txt2img(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        image, actual_seed = await loop.run_in_executor(
+        image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -447,8 +490,13 @@ async def generate_img2img(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
+    attention_type: str = Form("normal"),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(22),
+    use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
@@ -498,7 +546,8 @@ async def generate_img2img(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -550,6 +599,7 @@ async def generate_img2img(
             "height": height,
             "resize_mode": resize_mode,
             "resampling_method": resampling_method,
+            "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
@@ -565,8 +615,13 @@ async def generate_img2img(
             "nag_alpha": nag_alpha,
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
+            "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
@@ -588,14 +643,29 @@ async def generate_img2img(
         # Detect if SDXL
         is_sdxl = pipeline_manager.img2img_pipeline is not None and \
                   "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
+        is_deus = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "deus"
+        is_flux2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "flux2"
+        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
+        is_zimage_sdxl_vae = is_zimage and \
+                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
             is_sdxl,
-            img2img_fix_steps,
-            steps
+            is_zimage,
+            is_deus,
+            is_zimage_sdxl_vae,
+            is_flux2,
+            img2img_fix_steps=img2img_fix_steps,
+            steps=steps,
+            image_width=width,
+            image_height=height
         )
 
         # Create step callback for LoRA step range if needed
@@ -611,13 +681,14 @@ async def generate_img2img(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        result_image, actual_seed = await loop.run_in_executor(
+        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -718,8 +789,13 @@ async def generate_inpaint(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
+    attention_type: str = Form("normal"),
     unet_quantization: Optional[str] = Form(None),
+    text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    enable_block_swap: bool = Form(False),
+    blocks_to_swap: int = Form(22),
+    use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
@@ -784,7 +860,8 @@ async def generate_inpaint(
                     top_k=tipo_config_dict.get("top_k", 50),
                     max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
                     category_order=tipo_config_dict.get("category_order", []),
-                    enabled_categories=tipo_config_dict.get("enabled_categories", {})
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
                 )
 
                 # If result is dict (tipo-kgen mode), format it to string
@@ -840,6 +917,7 @@ async def generate_inpaint(
             "inpaint_fill_mode": inpaint_fill_mode,
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
+            "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
@@ -855,8 +933,13 @@ async def generate_inpaint(
             "nag_alpha": nag_alpha,
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
+            "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 
@@ -878,14 +961,29 @@ async def generate_inpaint(
         # Detect if SDXL
         is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
                   "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
+        is_deus = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "deus"
+        is_flux2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "flux2"
+        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
+        is_zimage_sdxl_vae = is_zimage and \
+                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
             is_sdxl,
-            img2img_fix_steps,
-            steps
+            is_zimage,
+            is_deus,
+            is_zimage_sdxl_vae,
+            is_flux2,
+            img2img_fix_steps=img2img_fix_steps,
+            steps=steps,
+            image_width=width,
+            image_height=height
         )
 
         # Create step callback for LoRA step range if needed
@@ -901,13 +999,14 @@ async def generate_inpaint(
 
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
-        result_image, actual_seed = await loop.run_in_executor(
+        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
             executor,
             lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
         )
 
-        # Update params with actual seed
+        # Update params with actual seeds
         params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1065,8 +1164,30 @@ async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
     return {"success": True}
 
 @router.get("/models")
-async def get_models(db: Session = Depends(get_gallery_db)):
-    """Get list of available models from default and user-configured directories"""
+async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
+    """
+    Get list of available models from default and user-configured directories.
+
+    Uses cache to avoid expensive scanning on every API call.
+
+    Args:
+        force_rescan: Force re-scanning (ignores cache)
+
+    Returns:
+        Dictionary with "models" key containing list of model info
+    """
+    import time
+    global _models_cache, _models_cache_timestamp
+
+    # Return cached result if available and not forcing rescan
+    if not force_rescan and _models_cache is not None:
+        return _models_cache
+
+    print(f"[Models] Scanning model directories...")
+    scan_start = time.time()
+
+    from core.model_loader import ModelLoader
+
     models = []
 
     # Get user-configured directories
@@ -1084,6 +1205,10 @@ async def get_models(db: Session = Depends(get_gallery_db)):
         print(f"[Models] Scanning directory: {models_dir}")
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
+
+            # Detect model architecture (sd15, sdxl, zimage)
+            architecture = ModelLoader.detect_model_type(item_path)
+
             if os.path.isdir(item_path):
                 # Diffusers format directory
                 models.append({
@@ -1091,7 +1216,8 @@ async def get_models(db: Session = Depends(get_gallery_db)):
                     "path": item_path,
                     "type": "diffusers",
                     "source_type": "diffusers",
-                    "source_dir": models_dir
+                    "source_dir": models_dir,
+                    "architecture": architecture
                 })
             elif item.endswith('.safetensors'):
                 # Safetensors file
@@ -1102,11 +1228,21 @@ async def get_models(db: Session = Depends(get_gallery_db)):
                     "type": "safetensors",
                     "source_type": "safetensors",
                     "size_gb": round(file_size, 2),
-                    "source_dir": models_dir
+                    "source_dir": models_dir,
+                    "architecture": architecture
                 })
 
+    result = {"models": models}
+    scan_duration = time.time() - scan_start
+
     print(f"[Models] Found {len(models)} models total")
-    return {"models": models}
+    print(f"[Models] Scan completed in {scan_duration:.2f}s")
+
+    # Cache result
+    _models_cache = result
+    _models_cache_timestamp = time.time()
+
+    return result
 
 @router.post("/models/load")
 async def load_model(
@@ -1175,15 +1311,31 @@ async def get_current_model():
 
 @router.get("/samplers")
 async def get_samplers():
-    """Get available samplers (static list, doesn't require model)"""
+    """Get available samplers (depends on current model type: SD/SDXL vs Z-Image)"""
     try:
-        samplers = get_available_samplers()
-        display_names = get_sampler_display_names()
-        return {
-            "samplers": [
+        # Check if current model is Z-Image
+        is_zimage = pipeline_manager.is_zimage_model
+
+        if is_zimage:
+            # Z-Image (Flow Matching) samplers
+            # Only Euler and Heun are truly different; other names map to Euler
+            samplers_list = [
+                {"id": "euler", "name": "Euler (Flow Match)"},
+                {"id": "euler_a", "name": "Euler a (Flow Match + Stochastic)"},
+                {"id": "heun", "name": "Heun (Flow Match)"},
+            ]
+        else:
+            # SD/SDXL samplers (standard diffusion)
+            samplers = get_available_samplers()
+            display_names = get_sampler_display_names()
+            samplers_list = [
                 {"id": sampler_id, "name": display_names.get(sampler_id, sampler_id)}
                 for sampler_id in samplers
             ]
+
+        return {
+            "samplers": samplers_list,
+            "is_zimage": is_zimage
         }
     except Exception as e:
         print(f"[ERROR] Failed to get samplers: {e}")
@@ -1343,7 +1495,9 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
             settings_record = UserSettings(
                 model_dirs=[],
                 lora_dirs=[],
-                controlnet_dirs=[]
+                controlnet_dirs=[],
+                cache_dir=None,
+                training_dir=None
             )
             db.add(settings_record)
             db.commit()
@@ -1356,12 +1510,16 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
 
 @router.post("/settings/directories")
 async def save_directory_settings(
-    model_dirs: List[str] = [],
-    lora_dirs: List[str] = [],
-    controlnet_dirs: List[str] = [],
+    settings_data: dict,
     db: Session = Depends(get_gallery_db)
 ):
-    """Save user-configured model directories"""
+    """Save user-configured model directories, cache directory, and training directory"""
+    # Extract from request body
+    model_dirs = settings_data.get("model_dirs", [])
+    lora_dirs = settings_data.get("lora_dirs", [])
+    controlnet_dirs = settings_data.get("controlnet_dirs", [])
+    cache_dir = settings_data.get("cache_dir")
+    training_dir = settings_data.get("training_dir")
     try:
         # Get or create settings record
         settings_record = db.query(UserSettings).first()
@@ -1373,6 +1531,8 @@ async def save_directory_settings(
         settings_record.model_dirs = [d.strip() for d in model_dirs if d.strip()]
         settings_record.lora_dirs = [d.strip() for d in lora_dirs if d.strip()]
         settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
+        settings_record.cache_dir = cache_dir.strip() if cache_dir and cache_dir.strip() else None
+        settings_record.training_dir = training_dir.strip() if training_dir and training_dir.strip() else None
         settings_record.updated_at = datetime.utcnow()
 
         db.commit()
@@ -1382,6 +1542,8 @@ async def save_directory_settings(
         print(f"  Model dirs: {settings_record.model_dirs}")
         print(f"  LoRA dirs: {settings_record.lora_dirs}")
         print(f"  ControlNet dirs: {settings_record.controlnet_dirs}")
+        print(f"  Cache dir: {settings_record.cache_dir}")
+        print(f"  Training dir: {settings_record.training_dir}")
 
         # Update managers with new directories
         lora_manager.set_additional_dirs(settings_record.lora_dirs)
@@ -1556,31 +1718,17 @@ async def cleanup_temp_images(max_age_hours: int = 24):
 @router.get("/taglist/timestamps")
 async def get_taglist_timestamps():
     """
-    Get modification timestamps for all tag files to check if cache is stale
-    Returns Unix timestamps in milliseconds
+    Get modification timestamps for all tag files to check if cache is stale.
+
+    MIGRATED: Uses TaglistCache for taglist files (Phase 4).
+
+    Returns Unix timestamps in milliseconds.
     """
     try:
-        category_map = {
-            "general": "General",
-            "character": "Character",
-            "artist": "Artist",
-            "copyright": "Copyright",
-            "meta": "Meta",
-            "model": "Model"
-        }
+        # Use TaglistCache for taglist timestamps
+        timestamps = taglist_cache.get_all_timestamps()
 
-        timestamps = {}
-
-        # Get taglist file timestamps
-        for category_key, filename in category_map.items():
-            taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
-            if os.path.exists(taglist_path):
-                mtime = os.path.getmtime(taglist_path)
-                timestamps[category_key] = int(mtime * 1000)  # Convert to ms
-            else:
-                timestamps[category_key] = 0  # File doesn't exist
-
-        # Get tag_other_names timestamp
+        # Get tag_other_names timestamp (not in taglist, keep manual check)
         tagother_path = os.path.join(settings.root_dir, "tagother", "tag_other_names.json")
         if os.path.exists(tagother_path):
             mtime = os.path.getmtime(tagother_path)
@@ -1590,44 +1738,143 @@ async def get_taglist_timestamps():
 
         return timestamps
     except Exception as e:
-        print(f"Error getting tag file timestamps: {e}")
+        print(f"[Taglist API] Error getting tag file timestamps: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tag-category/add")
+async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_datasets_db)):
+    """Add a tag to a category's taglist JSON file and update all datasets' tag statistics
+
+    Args:
+        request: AddTagRequest containing tag, category, and count
+        db: Database session
+
+    Returns:
+        Status message
+    """
+    import json
+    import os
+
+    # Validate category
+    valid_categories = ["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"]
+    if request.category not in valid_categories:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+
+    # Taglist file path
+    taglist_file = os.path.join(settings.root_dir, "taglist", f"{request.category}.json")
+
+    if not os.path.exists(taglist_file):
+        raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_file}")
+
+    try:
+        # Load existing taglist
+        with open(taglist_file, 'r', encoding='utf-8') as f:
+            taglist = json.load(f)
+
+        # Check if tag already exists in this category
+        tag_already_exists = request.tag in taglist
+        json_updated = False
+
+        if not tag_already_exists:
+            # Add tag to taglist JSON
+            taglist[request.tag] = request.count
+
+            # Sort by count (descending) and write back
+            sorted_taglist = dict(sorted(taglist.items(), key=lambda x: int(x[1]), reverse=True))
+
+            with open(taglist_file, 'w', encoding='utf-8') as f:
+                json.dump(sorted_taglist, f, ensure_ascii=False, indent=2)
+
+            json_updated = True
+            print(f"[TagCategory] Added tag '{request.tag}' to {request.category}.json")
+
+            # Invalidate TaglistCache to ensure cache consistency
+            taglist_cache.invalidate_category(request.category)
+
+            # Record user addition in a separate log file (project root, not in taglist/)
+            user_additions_file = os.path.join(settings.root_dir, "user_tag_additions.json")
+            user_additions = []
+
+            if os.path.exists(user_additions_file):
+                try:
+                    with open(user_additions_file, 'r', encoding='utf-8') as f:
+                        user_additions = json.load(f)
+                except:
+                    user_additions = []
+
+            # Add new entry with timestamp
+            from datetime import datetime
+            user_additions.append({
+                "tag": request.tag,
+                "category": request.category,
+                "count": request.count,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # Write user additions log (keep last 1000 entries)
+            with open(user_additions_file, 'w', encoding='utf-8') as f:
+                json.dump(user_additions[-1000:], f, ensure_ascii=False, indent=2)
+        else:
+            print(f"[TagCategory] Tag '{request.tag}' already exists in {request.category}.json, skipping JSON update")
+
+        # Update tag category in all datasets' tag_statistics
+        datasets = db.query(Dataset).all()
+        updated_datasets = 0
+        for dataset in datasets:
+            if dataset.tag_statistics and request.tag in dataset.tag_statistics:
+                # Update category for this tag
+                dataset.tag_statistics[request.tag]["category"] = request.category
+                updated_datasets += 1
+
+        # Commit database changes
+        if updated_datasets > 0:
+            db.commit()
+            print(f"[TagCategory] Updated category for tag '{request.tag}' in {updated_datasets} datasets")
+
+        # Build response message
+        if tag_already_exists:
+            message = f"Tag '{request.tag}' already exists in {request.category} category. Updated {updated_datasets} dataset(s)."
+        else:
+            message = f"Tag '{request.tag}' added to {request.category} category. Updated {updated_datasets} dataset(s)."
+
+        return {
+            "status": "success",
+            "message": message,
+            "tag": request.tag,
+            "category": request.category,
+            "count": request.count,
+            "json_updated": json_updated,
+            "updated_datasets": updated_datasets
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update taglist: {str(e)}")
 
 @router.get("/taglist/{category}")
 async def get_taglist(category: str):
     """
-    Get tag list for a specific category from taglist directory
+    Get tag list for a specific category using TaglistCache.
+
+    MIGRATED: Uses server-side cache instead of direct file read (Phase 4).
+
     Categories: general, character, artist, copyright, meta, model
     """
     try:
-        # Map category names to file names (capitalize first letter)
-        category_map = {
-            "general": "General",
-            "character": "Character",
-            "artist": "Artist",
-            "copyright": "Copyright",
-            "meta": "Meta",
-            "model": "Model"
-        }
-
-        if category.lower() not in category_map:
+        # Validate category
+        valid_categories = ["general", "character", "artist", "copyright", "meta", "model"]
+        if category.lower() not in valid_categories:
             raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
 
-        filename = category_map[category.lower()]
-        taglist_path = os.path.join(settings.root_dir, "taglist", f"{filename}.json")
+        # Use TaglistCache for O(1) lookup with automatic mtime-based invalidation
+        tags = taglist_cache.get_category_tags(category.lower())
 
-        if not os.path.exists(taglist_path):
-            raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_path}")
-
-        import json
-        with open(taglist_path, "r", encoding="utf-8") as f:
-            tags = json.load(f)
+        if not tags:
+            raise HTTPException(status_code=404, detail=f"No tags found for category: {category}")
 
         return tags
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error loading taglist: {e}")
+        print(f"[Taglist API] Error loading taglist for category '{category}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/tagother/tag_other_names")
@@ -1795,6 +2042,7 @@ class TIPOGenerateRequest(BaseModel):
     # Output formatting options
     category_order: Optional[List[str]] = None  # Order of categories in output
     enabled_categories: Optional[Dict[str, bool]] = None  # Which categories to include
+    treat_as_nl: bool = False  # Treat input as natural language instead of tags
 
 class TIPOLoadModelRequest(BaseModel):
     model_name: str = "KBlueLeaf/TIPO-500M"
@@ -1850,7 +2098,8 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             top_p=request.top_p,
             top_k=request.top_k,
             max_new_tokens=request.max_new_tokens,
-            ban_tags=request.ban_tags
+            ban_tags=request.ban_tags,
+            treat_as_nl=request.treat_as_nl
         )
 
         # Check if using tipo-kgen (returns dict)
@@ -2390,6 +2639,7 @@ async def update_caption_processing(
     dataset.caption_processing = request.caption_processing
     db.commit()
     db.refresh(dataset)
+
     return dataset.to_dict()
 
 
@@ -2529,46 +2779,104 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     total_tags = db.query(func.count(TagDictionary.id)).scalar()
     return {"total_tags": total_tags or 0}
 
-async def compute_tag_statistics(dataset_id: int, db: Session) -> dict:
+async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_steps: int = 0, current_step: int = 0) -> dict:
     """
-    Compute tag statistics for a dataset: tag counts only (no categories)
-    Returns: {"tag": {"count": N}, ...}
+    Compute tag statistics for a dataset with categories.
+    Returns: {"tag": {"count": N, "category": "..."}, ...}
 
-    Note: Categories are determined by frontend (tagSuggestions.ts) to maintain consistency.
-    Backend only counts tag occurrences.
+    Categories are extracted from tag_data (pre-categorized tags from migration).
+    If tag_data is not available, category defaults to "Unknown".
+
+    Optimized for large datasets (streaming processing, no full data load).
     """
     print(f"[Dataset] Computing tag statistics for dataset {dataset_id}...")
 
-    # Get all items in dataset
-    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
-    if not items:
+    # Count total items
+    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
+    if total_items == 0:
         print(f"[Dataset] No items found, returning empty statistics")
         return {}
 
-    # Get all tag captions
-    item_ids = [item.id for item in items]
-    tag_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(item_ids),
-        DatasetCaption.caption_type == "tags"
-    ).all()
-
-    # Count tag occurrences
+    # Stream captions in batches to avoid loading all into memory
     tag_counts: dict[str, int] = {}
-    for caption in tag_captions:
-        if caption.content:
-            tags = caption.content.split(",")
-            for tag in tags:
-                tag = tag.strip()
-                if tag:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    tag_categories: dict[str, str] = {}  # tag -> category
+    batch_size = 1000
+    offset = 0
+    processed = 0
 
-    print(f"[Dataset] Found {len(tag_counts)} unique tags")
+    while True:
+        # Get batch of captions via JOIN (efficient query)
+        batch = db.query(DatasetCaption).join(
+            DatasetItem, DatasetCaption.item_id == DatasetItem.id
+        ).filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetCaption.caption_type == "tags"
+        ).offset(offset).limit(batch_size).all()
 
-    # Build final statistics (count only, categories added by frontend)
+        if not batch:
+            break
+
+        # Process batch
+        for caption in batch:
+            # Extract categories from tag_data if available
+            if caption.tag_data:
+                import json
+                try:
+                    tag_data = json.loads(caption.tag_data)
+                    for item in tag_data:
+                        tag = item.get("tag", "").strip()
+                        category = item.get("category", "Unknown")
+                        if tag:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                            # Store category (first occurrence wins)
+                            if tag not in tag_categories:
+                                tag_categories[tag] = category
+                except:
+                    # Fallback: parse from content (no category info)
+                    if caption.content:
+                        tags = caption.content.split(",")
+                        for tag in tags:
+                            tag = tag.strip()
+                            if tag:
+                                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                                if tag not in tag_categories:
+                                    tag_categories[tag] = "Unknown"
+            else:
+                # No tag_data: parse from content (no category info)
+                if caption.content:
+                    tags = caption.content.split(",")
+                    for tag in tags:
+                        tag = tag.strip()
+                        if tag:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                            if tag not in tag_categories:
+                                tag_categories[tag] = "Unknown"
+
+        processed += len(batch)
+        offset += batch_size
+
+        # Log progress every 10k captions
+        if processed % 10000 == 0:
+            print(f"[Dataset] Tag statistics: processed {processed} captions, {len(tag_counts)} unique tags so far")
+            if send_progress and total_steps > 0:
+                # Interpolate progress from current_step (90%) to total_steps (100%)
+                # Example: current_step=540000 (90%), total_steps=600000 (100%)
+                # After processing 50% of captions: step = 540000 + 0.5 * (600000 - 540000) = 570000 (95%)
+                estimated_progress = current_step
+                manager.send_progress_sync(
+                    estimated_progress,
+                    total_steps,
+                    f"Computing tag statistics: {processed} captions, {len(tag_counts)} unique tags"
+                )
+
+    print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
+
+    # Build final statistics with categories
     statistics = {}
     for tag, count in tag_counts.items():
         statistics[tag] = {
-            "count": count
+            "count": count,
+            "category": tag_categories.get(tag, "Unknown")
         }
 
     print(f"[Dataset] Tag statistics computed: {len(statistics)} tags")
@@ -2583,6 +2891,10 @@ async def scan_dataset(
     import os
     from PIL import Image
     import hashlib
+    import warnings
+
+    # Suppress PIL warnings for corrupt EXIF data
+    warnings.filterwarnings('ignore', category=UserWarning, module='PIL')
 
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
@@ -2593,14 +2905,56 @@ async def scan_dataset(
 
     # Supported image extensions
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    caption_exts = {".txt"}
+    caption_exts = {".txt", ".json"}
+
+    # Load taglist for caption format detection (once at start)
+    from utils.taglist_loader import load_all_tags
+    from utils.caption_detector import classify_field, scan_json_fields
+    print(f"[Dataset Scan] Loading taglist for format detection...")
+    taglist = load_all_tags(settings.root_dir)
+    print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
 
     # Scan directory
     items_found = 0
     captions_found = 0
+    files_processed = 0
+    total_images = 0
+
+    # First pass: count total images for progress
+    def count_images(dir_path, current_depth=0):
+        nonlocal total_images
+        try:
+            entries = os.listdir(dir_path)
+        except PermissionError:
+            return
+
+        for entry in entries:
+            entry_path = os.path.join(dir_path, entry)
+            if os.path.isfile(entry_path):
+                _, ext = os.path.splitext(entry)
+                if ext.lower() in image_exts:
+                    total_images += 1
+            elif os.path.isdir(entry_path) and dataset.recursive:
+                max_depth = dataset.max_depth if dataset.max_depth else float('inf')
+                if current_depth < max_depth:
+                    count_images(entry_path, current_depth + 1)
+
+    print(f"[Dataset Scan] Counting images in {dataset.path}...")
+    count_images(dataset.path)
+    print(f"[Dataset Scan] Found {total_images} total images to process")
+
+    # Progress tracking: Phase 1 (File scan): 0-90%, Phase 2 (Tag stats): 90-100%
+    # We'll use a unified total_steps = total_images * 1.1 (rounded)
+    # This way: file scan uses steps 0 to total_images (90.9%), tag stats uses remaining (9.1%)
+    total_steps = int(total_images * 1.1) if total_images > 0 else 100
+
+    # Send initial progress
+    print(f"[Dataset Scan] Sending initial progress to frontend...")
+    manager.send_progress_sync(0, total_steps, f"Starting scan: 0/{total_images} images to process")
+    print(f"[Dataset Scan] Starting directory scan...")
 
     def scan_directory(dir_path, current_depth=0):
-        nonlocal items_found, captions_found
+        nonlocal items_found, captions_found, files_processed
 
         try:
             entries = os.listdir(dir_path)
@@ -2608,9 +2962,16 @@ async def scan_dataset(
             print(f"[Dataset Scan] Permission denied: {dir_path}")
             return
 
+        print(f"[Dataset Scan] Scanning directory: {dir_path} ({len(entries)} entries)")
+
         # Group files by base name
         file_groups = {}
+        entries_processed = 0
         for entry in entries:
+            entries_processed += 1
+            # Log progress every 10k entries
+            if entries_processed % 10000 == 0:
+                print(f"[Dataset Scan] Grouped {entries_processed}/{len(entries)} entries in {dir_path}")
             entry_path = os.path.join(dir_path, entry)
 
             if os.path.isfile(entry_path):
@@ -2631,8 +2992,15 @@ async def scan_dataset(
                 if current_depth < max_depth:
                     scan_directory(entry_path, current_depth + 1)
 
+        print(f"[Dataset Scan] Grouped {len(file_groups)} file groups in {dir_path}, starting processing...")
+
         # Process file groups
+        groups_processed = 0
         for base_name, files in file_groups.items():
+            groups_processed += 1
+            # Log progress every 1k groups
+            if groups_processed % 1000 == 0:
+                print(f"[Dataset Scan] Processed {groups_processed}/{len(file_groups)} file groups in {dir_path}")
             if not files["images"]:
                 continue
 
@@ -2640,55 +3008,162 @@ async def scan_dataset(
             image_path = files["images"][0]
 
             try:
-                # Read image metadata
-                with Image.open(image_path) as img:
-                    width, height = img.size
-                    file_size = os.path.getsize(image_path)
+                # Read image metadata (with warning suppression for corrupt EXIF)
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        with Image.open(image_path) as img:
+                            width, height = img.size
+                except Exception as img_error:
+                    # Skip images that can't be opened (corrupt, unsupported format, etc.)
+                    print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
+                    files_processed += 1
+                    if files_processed % 10 == 0 or total_images < 100:
+                        manager.send_progress_sync(
+                            files_processed,
+                            total_steps,
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                        )
+                    continue
 
-                    # Calculate image hash
-                    with open(image_path, 'rb') as f:
-                        image_hash = hashlib.sha256(f.read()).hexdigest()
+                file_size = os.path.getsize(image_path)
 
-                    # Check if item already exists
-                    existing_item = db.query(DatasetItem).filter(
-                        DatasetItem.dataset_id == dataset_id,
-                        DatasetItem.image_hash == image_hash
-                    ).first()
+                # Calculate image hash
+                with open(image_path, 'rb') as f:
+                    image_hash = hashlib.sha256(f.read()).hexdigest()
 
-                    if existing_item:
-                        continue  # Skip duplicate
+                # Check if item already exists
+                existing_item = db.query(DatasetItem).filter(
+                    DatasetItem.dataset_id == dataset_id,
+                    DatasetItem.image_hash == image_hash
+                ).first()
 
-                    # Create dataset item
-                    item = DatasetItem(
-                        dataset_id=dataset_id,
-                        item_type="single",
-                        base_name=base_name,
-                        image_path=image_path,
-                        width=width,
-                        height=height,
-                        file_size=file_size,
-                        image_hash=image_hash
+                if existing_item:
+                    files_processed += 1
+                    # Send progress update for skipped items too
+                    if files_processed % 10 == 0 or total_images < 100:
+                        manager.send_progress_sync(
+                            files_processed,
+                            total_steps,
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                        )
+                    continue  # Skip duplicate
+
+                # Create dataset item
+                item = DatasetItem(
+                    dataset_id=dataset_id,
+                    item_type="single",
+                    base_name=base_name,
+                    image_path=image_path,
+                    width=width,
+                    height=height,
+                    file_size=file_size,
+                    image_hash=image_hash
+                )
+                db.add(item)
+                db.flush()  # Get item.id
+                items_found += 1
+                files_processed += 1
+
+                # Send progress update every 10 images or immediately if total < 100
+                if files_processed % 10 == 0 or total_images < 100:
+                    manager.send_progress_sync(
+                        files_processed,
+                        total_steps,
+                        f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
                     )
-                    db.add(item)
-                    db.flush()  # Get item.id
-                    items_found += 1
 
-                    # Process captions
-                    for caption_path in files["captions"]:
-                        try:
+                # Process captions (TXT/JSON files)
+                for caption_path in files["captions"]:
+                    try:
+                        _, ext = os.path.splitext(caption_path)
+                        ext_lower = ext.lower()
+
+                        if ext_lower == '.txt':
+                            # TXT file: Read content and detect format
                             with open(caption_path, 'r', encoding='utf-8') as f:
                                 content = f.read().strip()
                                 if content:
-                                    caption = DatasetCaption(
-                                        item_id=item.id,
-                                        caption_type="tags",
-                                        content=content,
-                                        source="file"
-                                    )
-                                    db.add(caption)
-                                    captions_found += 1
-                        except Exception as e:
-                            print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
+                                    # Detect format
+                                    field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
+
+                                    # Check if tags caption already exists (single tags field per item)
+                                    existing_tags = db.query(DatasetCaption).filter(
+                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.caption_type == "tags"
+                                    ).first()
+
+                                    if existing_tags:
+                                        # Update existing
+                                        existing_tags.content = content
+                                        existing_tags.field_category = field_category
+                                        existing_tags.is_tags_format = is_tags_format
+                                        existing_tags.tag_match_rate = match_rate
+                                        existing_tags.source = "file"
+                                        existing_tags.source_field = "tags"
+                                        existing_tags.updated_at = datetime.utcnow()
+                                    else:
+                                        # Create new
+                                        caption = DatasetCaption(
+                                            item_id=item.id,
+                                            caption_type="tags",
+                                            content=content,
+                                            field_category=field_category,
+                                            is_tags_format=is_tags_format,
+                                            tag_match_rate=match_rate,
+                                            source="file",
+                                            source_field="tags"
+                                        )
+                                        db.add(caption)
+                                        captions_found += 1
+
+                        elif ext_lower == '.json':
+                            # JSON file: Recursively scan all fields
+                            import json
+
+                            with open(caption_path, 'r', encoding='utf-8') as f:
+                                json_data = json.load(f)
+
+                            # Scan all fields
+                            caption_results = scan_json_fields(json_data, taglist)
+
+                            for result in caption_results:
+                                caption_type = result["caption_type"]
+
+                                # Enforce single tags field per item
+                                if caption_type == "tags":
+                                    existing_tags = db.query(DatasetCaption).filter(
+                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.caption_type == "tags"
+                                    ).first()
+
+                                    if existing_tags:
+                                        # Update existing tags field
+                                        existing_tags.content = result["content"]
+                                        existing_tags.field_category = result["field_category"]
+                                        existing_tags.is_tags_format = result["is_tags_format"]
+                                        existing_tags.tag_match_rate = result["tag_match_rate"]
+                                        existing_tags.source = "file"
+                                        existing_tags.source_field = result["source_field"]
+                                        existing_tags.updated_at = datetime.utcnow()
+                                        continue  # Skip adding new caption
+
+                                # Create new caption (for non-tags fields or first tags field)
+                                caption = DatasetCaption(
+                                    item_id=item.id,
+                                    caption_type=caption_type,
+                                    content=result["content"],
+                                    field_category=result["field_category"],
+                                    is_tags_format=result["is_tags_format"],
+                                    tag_match_rate=result["tag_match_rate"],
+                                    source="file",
+                                    source_field=result["source_field"]
+                                )
+                                db.add(caption)
+                                captions_found += 1
+
+                    except Exception as e:
+                        print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
@@ -2696,8 +3171,23 @@ async def scan_dataset(
     # Start scanning
     scan_directory(dataset.path)
 
-    # Compute tag statistics
-    tag_statistics = await compute_tag_statistics(dataset_id, db)
+    # File scan complete - progress is now at ~90%
+    manager.send_progress_sync(
+        total_images,
+        total_steps,
+        f"File scan complete: {files_processed} images processed | Starting tag statistics..."
+    )
+
+    # Compute tag statistics with progress updates (remaining 10%)
+    print(f"[Dataset Scan] Computing tag statistics...")
+    tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
+
+    # Send final completion progress
+    manager.send_progress_sync(
+        total_steps,
+        total_steps,
+        f"Scan complete: {items_found} items, {captions_found} captions, {len(tag_statistics)} unique tags"
+    )
 
     # Update dataset statistics
     dataset.total_items = items_found
@@ -2762,6 +3252,48 @@ async def list_dataset_items(
         "total": total,
         "page": page,
         "page_size": page_size
+    }
+
+@router.get("/datasets/{dataset_id}/items/ids")
+async def get_all_dataset_item_ids(
+    dataset_id: int,
+    search: Optional[str] = None,
+    tags: Optional[str] = None,
+    db: Session = Depends(get_datasets_db)
+):
+    """Get all item IDs in dataset (with optional filters)
+
+    Args:
+        dataset_id: Dataset ID
+        search: Text search in filename (base_name)
+        tags: Comma-separated tags to filter by
+
+    Returns:
+        List of all matching item IDs
+    """
+    query = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+
+    # Filename search
+    if search:
+        query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
+
+    # Tag filter
+    if tags:
+        tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
+        if tag_list:
+            query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
+            query = query.filter(DatasetCaption.caption_type == "tags")
+            for tag in tag_list:
+                query = query.filter(
+                    func.lower(DatasetCaption.content).like(f"%{tag}%")
+                )
+
+    # Get all IDs
+    item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
+
+    return {
+        "item_ids": item_ids,
+        "total": len(item_ids)
     }
 
 @router.get("/datasets/{dataset_id}/tags")
@@ -2840,50 +3372,53 @@ async def get_dataset_caption_types(
     dataset_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Get available caption types in the dataset with counts and subtypes"""
+    """Get available caption types with format detection info"""
     # Check dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Query caption types with counts
-    # Group by caption_type and caption_subtype
+    # Query caption types with aggregated format info
     from sqlalchemy import func
 
     results = db.query(
         DatasetCaption.caption_type,
-        DatasetCaption.caption_subtype,
-        func.count(DatasetCaption.id).label('count')
+        DatasetCaption.field_category,
+        DatasetCaption.is_tags_format,
+        DatasetCaption.source_field,
+        func.count(DatasetCaption.id).label('count'),
+        func.avg(DatasetCaption.tag_match_rate).label('avg_match_rate')
     ).join(DatasetItem).filter(
         DatasetItem.dataset_id == dataset_id
     ).group_by(
         DatasetCaption.caption_type,
-        DatasetCaption.caption_subtype
+        DatasetCaption.field_category,
+        DatasetCaption.is_tags_format,
+        DatasetCaption.source_field
     ).all()
 
     # Organize results by caption_type
     caption_types_dict = {}
-    for caption_type, caption_subtype, count in results:
+    for caption_type, field_category, is_tags_format, source_field, count, avg_match_rate in results:
         if caption_type not in caption_types_dict:
             caption_types_dict[caption_type] = {
                 "caption_type": caption_type,
                 "total_count": 0,
+                "field_category": field_category or "training",
+                "is_tags_format": is_tags_format or False,
+                "avg_match_rate": 0.0,
+                "source_field": source_field,
                 "subtypes": []
             }
 
         caption_types_dict[caption_type]["total_count"] += count
+        # Average of averages (weighted by count would be better, but this is simpler)
+        caption_types_dict[caption_type]["avg_match_rate"] = avg_match_rate or 0.0
 
-        if caption_subtype:
-            caption_types_dict[caption_type]["subtypes"].append({
-                "subtype": caption_subtype,
-                "count": count
-            })
-
-    # Convert to list and sort by count
+    # Convert to list and sort: training first, then by count
     caption_types_list = sorted(
         caption_types_dict.values(),
-        key=lambda x: x["total_count"],
-        reverse=True
+        key=lambda x: (x["field_category"] != "training", -x["total_count"])
     )
 
     return {
@@ -2935,6 +3470,7 @@ async def get_random_caption(
 class CaptionUpdateRequest(BaseModel):
     caption_type: str = "tags"
     content: str
+    tag_data: Optional[List[Dict[str, str]]] = None  # [{"tag": "1girl", "category": "General"}, ...]
 
 @router.patch("/datasets/items/{item_id}/captions")
 async def update_item_caption(
@@ -2959,13 +3495,23 @@ async def update_item_caption(
         old_content = caption.content
         # Update existing caption
         caption.content = request.content
+        # Update tag_data if provided
+        if request.tag_data is not None:
+            import json
+            caption.tag_data = json.dumps(request.tag_data)
         caption.updated_at = datetime.utcnow()
     else:
         # Create new caption
+        tag_data_json = None
+        if request.tag_data is not None:
+            import json
+            tag_data_json = json.dumps(request.tag_data)
+
         caption = DatasetCaption(
             item_id=item_id,
             caption_type=request.caption_type,
             content=request.content,
+            tag_data=tag_data_json,
             source="manual"
         )
         db.add(caption)
@@ -3002,9 +3548,16 @@ async def update_item_caption(
                 if tag in tag_statistics:
                     tag_statistics[tag]["count"] += 1
                 else:
-                    # New tag - no category determination (frontend handles it)
+                    # New tag - get category from tag_data if available
+                    category = "Unknown"
+                    if request.tag_data:
+                        for item in request.tag_data:
+                            if item.get("tag") == tag:
+                                category = item.get("category", "Unknown")
+                                break
                     tag_statistics[tag] = {
-                        "count": 1
+                        "count": 1,
+                        "category": category
                     }
 
             # Save updated statistics
@@ -3018,8 +3571,9 @@ async def save_item_caption_to_txt(
     item_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Save caption from DB to TXT file"""
+    """Save caption from DB to TXT/JSON file (auto-detect based on existing file)"""
     import os
+    import json
 
     # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
@@ -3033,22 +3587,58 @@ async def save_item_caption_to_txt(
     ).first()
 
     if not caption:
-        raise HTTPException(status_code=404, detail="No tags caption found for this item")
+        # No caption to save, return success (nothing to do)
+        return {"success": True, "message": "No tags caption found, nothing to save"}
 
-    # Determine TXT file path
+    # Determine file paths
     image_path = item.image_path
-    txt_path = os.path.splitext(image_path)[0] + ".txt"
+    base_path = os.path.splitext(image_path)[0]
+    txt_path = base_path + ".txt"
+    json_path = base_path + ".json"
+
+    saved_files = []
 
     try:
-        # Write to TXT file
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(caption.content)
+        # Check if TXT file exists and save to it
+        if os.path.exists(txt_path):
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption.content)
+            saved_files.append(txt_path)
+            print(f"[Dataset] Saved caption to TXT: {txt_path}")
 
-        print(f"[Dataset] Saved caption to TXT: {txt_path}")
-        return {"status": "success", "txt_path": txt_path}
+        # Check if JSON file exists and save to it
+        if os.path.exists(json_path):
+            try:
+                # Read existing JSON
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+
+                # Update caption field (tags)
+                json_data['caption'] = caption.content
+
+                # Write back
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+                saved_files.append(json_path)
+                print(f"[Dataset] Saved caption to JSON: {json_path}")
+            except Exception as json_err:
+                print(f"[Dataset] Failed to update JSON file {json_path}: {json_err}")
+
+        # If neither file exists, create a TXT file
+        if not saved_files:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption.content)
+            saved_files.append(txt_path)
+            print(f"[Dataset] Created new TXT file: {txt_path}")
+
+        return {
+            "success": True,
+            "message": f"Saved to {len(saved_files)} file(s): {', '.join(saved_files)}"
+        }
     except Exception as e:
-        print(f"[Dataset] Failed to save caption to TXT: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to write TXT file: {str(e)}")
+        print(f"[Dataset] Failed to save caption: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
 
 @router.post("/datasets/{dataset_id}/save-all-to-txt")
 async def save_all_captions_to_txt(
@@ -3158,6 +3748,83 @@ async def restore_item_caption_from_txt(
 # Tag Dictionary Search API was removed - frontend uses tagSuggestions.ts (JSON files) instead
 
 # ============================================================
+# Unified Taglist API (Phase 2: High-performance tag operations)
+# ============================================================
+
+from utils.taglist_cache import taglist_cache
+
+# Initialize taglist cache on module load
+taglist_cache.initialize(settings.root_dir)
+
+class TagSearchRequest(BaseModel):
+    q: str  # Search query (prefix)
+    category: Optional[str] = None  # Category filter (general, character, artist, etc.)
+    limit: int = 20  # Maximum results
+
+class TagCategorizeRequest(BaseModel):
+    tags: List[str]  # List of tags to categorize
+
+@router.get("/tags/search")
+async def search_tags(
+    q: str,
+    category: Optional[str] = None,
+    limit: int = 20
+):
+    """
+    High-speed tag autocomplete with prefix search.
+
+    Uses server-side prefix index for O(1) lookup.
+    Performance: <10ms for 1.5M tags
+
+    Args:
+        q: Search prefix (minimum 2 characters)
+        category: Category filter (general, character, artist, copyright, meta, model)
+        limit: Maximum results (default: 20)
+
+    Returns:
+        List of {tag, count, category} objects, sorted by count descending
+    """
+    if len(q) < 2:
+        return {"results": []}
+
+    results = taglist_cache.search_prefix(q, category=category, limit=limit)
+
+    return {
+        "results": [
+            {"tag": tag, "count": count, "category": cat}
+            for tag, count, cat in results
+        ]
+    }
+
+@router.post("/tags/categorize")
+async def categorize_tags(request: TagCategorizeRequest):
+    """
+    Batch tag categorization.
+
+    Replaces frontend's 50MB taglist fetch with server-side O(1) lookup.
+    Performance: <50ms for 100 tags
+
+    Args:
+        tags: List of tag strings
+
+    Returns:
+        Dict mapping tag -> category
+    """
+    categories = taglist_cache.get_categories_batch(request.tags)
+    return {"categories": categories}
+
+@router.get("/tags/stats")
+async def get_tag_stats():
+    """
+    Get tag statistics summary.
+
+    Returns:
+        Dict of category -> tag count
+    """
+    stats = taglist_cache.get_stats()
+    return {"stats": stats}
+
+# ============================================================
 # Training API Endpoints
 # ============================================================
 
@@ -3182,10 +3849,22 @@ class TrainingRunCreateRequest(BaseModel):
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
     optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
+    optimizer_is_paged: bool = False
+    optimizer_cautious: bool = False
+    optimizer_beta1: Optional[float] = None
+    optimizer_beta2: Optional[float] = None
+    optimizer_epsilon: Optional[float] = None
+    optimizer_weight_decay: Optional[float] = None
+    optimizer_schedule_free: bool = False  # Enable Schedule-Free optimizer (adamw8bit_ringbuffer, lion8bit_ringbuffer)
+    optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
+    optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
+    optimizer_use_radam: bool = False  # Use RAdam (Rectified Adam) with Schedule-Free (adamw8bit_ringbuffer, lion8bit_ringbuffer)
+    optimizer_stochastic_rounding: bool = False  # Enable stochastic rounding for optimizers
 
     # LoRA specific
     lora_rank: Optional[int] = 16
     lora_alpha: Optional[int] = 16
+    lora_dtype: Optional[str] = "fp32"  # fp32, fp16, bf16 (LoRA weight dtype, independent of main model)
     network_type: Optional[str] = "lora"
 
     # Advanced
@@ -3223,6 +3902,33 @@ class TrainingRunCreateRequest(BaseModel):
     use_flash_attention: bool = False  # Enable Flash Attention for training (faster, lower memory)
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
+    # Text encoding settings
+    text_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
+    text_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
+
+    # Latent encoding settings
+    latent_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
+    latent_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
+
+    # Block Swap settings (training VRAM optimization)
+    blocks_to_swap: int = 0  # Number of transformer blocks to swap (0 to disable)
+    use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
+    num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)
+
+    # Multi Noise-Timestep (MNT) settings
+    multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
+    timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
+
+    # Regularization settings (prevent overbaking)
+    regularization_type: Optional[str] = None  # "snr", "energy", or None
+    snr_regularization_weight: float = 0.1
+    snr_timestep_adaptive: bool = True
+    snr_penalty_mode: str = "relu"
+    energy_regularization_weight: float = 0.05
+    energy_timestep_adaptive: bool = True
+    energy_penalty_mode: str = "abs"
+    energy_normalize_by_pixels: bool = True
+
     # Sample generation parameters
     sample_width: int = 1024
     sample_height: int = 1024
@@ -3231,6 +3937,11 @@ class TrainingRunCreateRequest(BaseModel):
     sample_sampler: str = "euler"
     sample_schedule_type: str = "sgm_uniform"
     sample_seed: int = -1  # -1 for random
+
+    # Unified Training Framework (Phase 2)
+    noise_process: str = "auto"  # "auto", "ddpm", "flow"
+    prediction_target: str = "auto"  # "auto", "epsilon", "velocity", "sample"
+    strict_validation: bool = False  # Abort training if mismatch detected
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -3274,15 +3985,19 @@ async def create_training_run(
         else:
             raise HTTPException(status_code=400, detail="Either dataset_id or dataset_configs must be provided")
 
-        # Build dataset_configs_for_yaml (with path and caption_processing)
+        # Build dataset_configs_for_yaml (with path, caption_processing, and caption_types)
         dataset_configs_for_yaml = []
         for config in dataset_configs:
             dataset = datasets_db.query(Dataset).filter(Dataset.id == config["dataset_id"]).first()
             if dataset:
-                dataset_configs_for_yaml.append({
+                yaml_config = {
                     "path": dataset.path,
                     "caption_processing": dataset.caption_processing or {}
-                })
+                }
+                # Add caption_types if specified
+                if config.get("caption_types"):
+                    yaml_config["caption_types"] = config["caption_types"]
+                dataset_configs_for_yaml.append(yaml_config)
 
         # Generate run_id and auto-generate run_name if not provided
         import uuid
@@ -3306,11 +4021,21 @@ async def create_training_run(
         if not os.path.exists(request.base_model_path):
             raise HTTPException(status_code=400, detail=f"Base model not found: {request.base_model_path}")
 
-        # Create output directory (use absolute path from project root)
-        project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
-        output_dir = project_root / "training" / run_name
+        # Create output directory (use training base dir from user settings or default)
+        from core.training.training_utils import get_training_base_dir
+        training_base_dir = Path(get_training_base_dir())
+
+        # If relative path, resolve from project root
+        if not training_base_dir.is_absolute():
+            project_root = Path(__file__).parent.parent.parent  # backend/api/routes.py -> project root
+            training_base_dir = project_root / training_base_dir
+
+        output_dir = training_base_dir / run_name
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
+
+        # Get resume setting from request
+        resume_from_checkpoint = request.resume_from_checkpoint
 
         # Generate YAML config
         config_generator = TrainingConfigGenerator()
@@ -3328,8 +4053,20 @@ async def create_training_run(
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
                 optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 lora_rank=request.lora_rank or 16,
                 lora_alpha=request.lora_alpha or 16,
+                lora_dtype=request.lora_dtype or "fp32",
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
@@ -3354,13 +4091,35 @@ async def create_training_run(
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
                 min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -3375,6 +4134,17 @@ async def create_training_run(
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
                 optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
@@ -3399,13 +4169,35 @@ async def create_training_run(
                 mixed_precision=request.mixed_precision,
                 use_flash_attention=request.use_flash_attention,
                 min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
                 sample_width=request.sample_width,
                 sample_height=request.sample_height,
                 sample_steps=request.sample_steps,
                 sample_cfg_scale=request.sample_cfg_scale,
                 sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
                 sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,  # Pass resume setting
                 caption_processing=primary_dataset.caption_processing,  # Pass caption processing config
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
             )
 
         # Save config file
@@ -3481,6 +4273,401 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
         raise HTTPException(status_code=404, detail="Training run not found")
     return run.to_dict()
 
+@router.get("/training/runs/{run_id}/params")
+async def get_training_run_params(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db)
+):
+    """Get training run parameters in TrainingRunCreateRequest format for editing"""
+    import time
+    start_time = time.time()
+    print(f"[get_training_run_params] Starting for run_id={run_id}")
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    print(f"[get_training_run_params] DB query took {time.time() - start_time:.3f}s")
+
+    # Parse YAML config to extract parameters
+    import yaml
+    yaml_start = time.time()
+    try:
+        config = yaml.safe_load(run.config_yaml)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse config YAML: {str(e)}")
+    print(f"[get_training_run_params] YAML parsing took {time.time() - yaml_start:.3f}s")
+
+    # Extract job config (first job in config)
+    job = config.get("config", {}).get("job", config.get("job", "lora"))
+    process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
+
+    # Detect training method from network.type (more reliable than job)
+    network_config = process_config.get("network", {})
+    if network_config.get("type") == "lora":
+        job = "lora"
+    elif not network_config:  # No network section means full fine-tune
+        job = "full_finetune"
+    # Otherwise keep job from config.job
+    datasets_config = process_config.get("datasets", [])
+
+    # Build dataset_configs from YAML
+    dataset_start = time.time()
+    dataset_configs = []
+    cache_latents_to_disk = False  # Default
+    for ds_config in datasets_config:
+        # Try to find dataset by path
+        dataset_path = ds_config.get("folder_path", ds_config.get("path", ""))
+        print(f"[get_training_run_params] Looking for dataset with path: {dataset_path}")
+        dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
+        if dataset:
+            print(f"[get_training_run_params] Found dataset: id={dataset.id}, name={dataset.name}")
+            dataset_configs.append({
+                "dataset_id": dataset.id,
+                "caption_types": ds_config.get("caption_types", []),
+                "filters": {}
+            })
+        else:
+            print(f"[get_training_run_params] Dataset not found in database for path: {dataset_path}")
+        # Extract cache_latents_to_disk from first dataset
+        if ds_config.get("cache_latents_to_disk") is not None:
+            cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
+    print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s, found {len(dataset_configs)} datasets")
+
+    # Extract training parameters
+    training_params = process_config.get("train", {})
+    # network_config already extracted above for training method detection
+    sample_config = process_config.get("sample", {})
+    save_config = process_config.get("save", {})
+
+    # Build response in TrainingRunCreateRequest format
+    params = {
+        "run_id": run.id,  # Add run_id for edit mode
+        "dataset_configs": dataset_configs if dataset_configs else None,
+        "run_name": run.run_name,
+        "training_method": "lora" if job == "lora" else "full_finetune",
+        "base_model_path": process_config.get("model", {}).get("name_or_path", run.base_model_path),
+        "total_steps": training_params.get("steps"),
+        "epochs": training_params.get("epochs"),
+        "batch_size": training_params.get("batch_size", 1),
+        "learning_rate": float(training_params.get("lr", 1e-4)),
+        "lr_scheduler": training_params.get("lr_scheduler", "constant"),
+        "lr_warmup_steps": training_params.get("lr_warmup_steps", 0),
+        "optimizer": training_params.get("optimizer", "adamw8bit"),
+        "optimizer_is_paged": training_params.get("optimizer_is_paged", False),
+        "optimizer_cautious": training_params.get("optimizer_cautious", False),
+        "optimizer_beta1": training_params.get("optimizer_beta1"),
+        "optimizer_beta2": training_params.get("optimizer_beta2"),
+        "optimizer_epsilon": training_params.get("optimizer_epsilon"),
+        "optimizer_weight_decay": training_params.get("optimizer_weight_decay"),
+        "optimizer_schedule_free": training_params.get("optimizer_schedule_free", False),
+        "optimizer_schedule_free_r": training_params.get("optimizer_schedule_free_r", 0.0),
+        "optimizer_schedule_free_weight_lr_power": training_params.get("optimizer_schedule_free_weight_lr_power", 2.0),
+        "optimizer_use_radam": training_params.get("optimizer_use_radam", False),
+        "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
+        "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
+        "lora_dtype": network_config.get("lora_dtype", "fp32") if job == "lora" else None,
+        "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
+        "save_every_unit": save_config.get("save_every_unit", training_params.get("save_every_unit", "steps")),
+        "resume_from_checkpoint": training_params.get("resume_from_checkpoint"),
+        "sample_every": sample_config.get("sample_every", training_params.get("sample_every", 100)),
+        "sample_prompts": sample_config.get("prompts", []),
+        "sample_width": sample_config.get("width", 1024),
+        "sample_height": sample_config.get("height", 1024),
+        "sample_steps": sample_config.get("sample_steps", sample_config.get("steps", 28)),
+        "sample_cfg_scale": sample_config.get("guidance_scale", sample_config.get("cfg_scale", 7.0)),
+        "sample_sampler": sample_config.get("sampler", "euler"),
+        "sample_schedule_type": sample_config.get("schedule_type", "sgm_uniform"),
+        "sample_seed": sample_config.get("seed", -1),
+        "debug_latents": training_params.get("debug_latents", False),
+        "debug_latents_every": training_params.get("debug_latents_every", 50),
+        "enable_bucketing": training_params.get("enable_bucketing", False),
+        "base_resolutions": training_params.get("base_resolutions"),
+        "bucket_strategy": training_params.get("bucket_strategy", "resize"),
+        "multi_resolution_mode": training_params.get("multi_resolution_mode", "max"),
+        "cache_latents_to_disk": cache_latents_to_disk,
+        "train_unet": training_params.get("train_unet", True),
+        "train_text_encoder": training_params.get("train_text_encoder", False),
+        "unet_lr": training_params.get("unet_lr"),
+        "text_encoder_lr": training_params.get("text_encoder_lr"),
+        "text_encoder_1_lr": training_params.get("text_encoder_1_lr"),
+        "text_encoder_2_lr": training_params.get("text_encoder_2_lr"),
+        # Parse dtype config (YAML structure: dtype.weight, dtype.training, dtype.save, dtype.vae)
+        "weight_dtype": training_params.get("dtype", {}).get("weight", "fp16") if isinstance(training_params.get("dtype"), dict) else training_params.get("weight_dtype", "fp16"),
+        "training_dtype": training_params.get("dtype", {}).get("training", "fp16") if isinstance(training_params.get("dtype"), dict) else training_params.get("training_dtype", "fp16"),
+        "output_dtype": training_params.get("dtype", {}).get("save", "fp32") if isinstance(training_params.get("dtype"), dict) else training_params.get("output_dtype", "fp32"),
+        "vae_dtype": training_params.get("dtype", {}).get("vae", "fp16") if isinstance(training_params.get("dtype"), dict) else process_config.get("model", {}).get("vae_dtype", "fp16"),
+        "mixed_precision": training_params.get("mixed_precision", True),
+        "use_flash_attention": training_params.get("use_flash_attention", False),
+        "min_snr_gamma": training_params.get("min_snr_gamma", 5.0),
+        "text_encoding_mode": training_params.get("text_encoding_mode", "swap_onthefly"),
+        "text_encoding_swap_interval": training_params.get("text_encoding_swap_interval", 256),
+        "latent_encoding_mode": training_params.get("latent_encoding_mode", "swap_onthefly"),
+        "latent_encoding_swap_interval": training_params.get("latent_encoding_swap_interval", 256),
+        "blocks_to_swap": training_params.get("blocks_to_swap", 0),
+        "use_pinned_memory": training_params.get("use_pinned_memory", False),
+        "num_optimizer_groups": training_params.get("num_optimizer_groups", 0),
+        "multi_noise_timesteps": training_params.get("multi_noise_timesteps", 1),
+        "multi_noise_mode": training_params.get("multi_noise_mode", "independent"),
+        "trajectory_blend_alpha": training_params.get("trajectory_blend_alpha", 0.7),
+        "timestep_sampling": training_params.get("timestep_sampling"),
+        "regularization_type": training_params.get("regularization_type"),
+        "snr_regularization_weight": training_params.get("snr_regularization_weight", 0.0),
+        "snr_timestep_adaptive": training_params.get("snr_timestep_adaptive", True),
+        "snr_penalty_mode": training_params.get("snr_penalty_mode", "relu"),
+        "energy_regularization_weight": training_params.get("energy_regularization_weight", 0.0),
+        "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
+        "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
+        "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
+    }
+
+    print(f"[get_training_run_params] Total time: {time.time() - start_time:.3f}s")
+    return params
+
+@router.put("/training/runs/{run_id}")
+async def update_training_run(
+    run_id: int,
+    request: TrainingRunCreateRequest,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db)
+):
+    """Update training run configuration by regenerating YAML from parameters"""
+    print(f"[Training] Updating training run {run_id}")
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail="Cannot update config while training is running")
+
+    try:
+        # Get dataset configs
+        dataset_configs = []
+        dataset_configs_for_yaml = []
+        if request.dataset_configs:
+            for config in request.dataset_configs:
+                # Store dict format for total_steps calculation
+                dataset_configs.append({
+                    "dataset_id": config.dataset_id,
+                    "caption_types": config.caption_types,
+                    "filters": {}
+                })
+                # Build YAML format
+                dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
+                if dataset:
+                    yaml_config = {
+                        "path": dataset.path,
+                        "caption_processing": dataset.caption_processing or {}
+                    }
+                    if config.caption_types:
+                        yaml_config["caption_types"] = config.caption_types
+                    dataset_configs_for_yaml.append(yaml_config)
+
+        # Get primary dataset
+        primary_dataset_id = request.dataset_configs[0].dataset_id if request.dataset_configs else None
+        primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first() if primary_dataset_id else None
+
+        # Generate YAML config (same as create)
+        config_generator = TrainingConfigGenerator()
+
+        if request.training_method == "lora":
+            config_yaml = config_generator.generate_lora_config(
+                run_name=run.run_name,
+                dataset_path=primary_dataset.path if primary_dataset else "",
+                base_model_path=request.base_model_path,
+                output_dir=run.output_dir,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
+                lora_rank=request.lora_rank or 16,
+                lora_alpha=request.lora_alpha or 16,
+                lora_dtype=request.lora_dtype or "fp32",
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=request.resume_from_checkpoint,
+                caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
+            )
+        else:  # full_finetune
+            config_yaml = config_generator.generate_full_finetune_config(
+                run_name=run.run_name,
+                dataset_path=primary_dataset.path if primary_dataset else "",
+                base_model_path=request.base_model_path,
+                output_dir=run.output_dir,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=request.resume_from_checkpoint,
+                caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                noise_process=request.noise_process,  # Unified Training Framework
+                prediction_target=request.prediction_target,  # Unified Training Framework
+                strict_validation=request.strict_validation,  # Unified Training Framework
+            )
+
+        # Update config_yaml and base_model_path in database
+        run.config_yaml = config_yaml
+        run.base_model_path = request.base_model_path
+
+        # Calculate total_steps for database (required by NOT NULL constraint)
+        if request.total_steps:
+            run.total_steps = request.total_steps
+            run.epochs = None
+        elif request.epochs:
+            # Calculate total_steps from epochs (same logic as create)
+            total_dataset_size = 0
+            for config in dataset_configs:
+                query = datasets_db.query(DatasetItem).filter(DatasetItem.dataset_id == config["dataset_id"])
+                dataset_size = query.count()
+                total_dataset_size += dataset_size
+
+            if total_dataset_size == 0:
+                raise HTTPException(status_code=400, detail="No items in configured datasets")
+            run.total_steps = (total_dataset_size // request.batch_size) * request.epochs
+            run.epochs = request.epochs
+
+        # Save config file
+        config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
+        config_generator.save_config(config_yaml, config_path)
+
+        db.commit()
+
+        print(f"[Training] Updated run {run_id}: {run.run_name}")
+        return run.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"[Training] Error updating run: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/training/runs/{run_id}")
 async def delete_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Delete a training run"""
@@ -3526,7 +4713,18 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # Update status to "starting" immediately
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
-        run.started_at = datetime.utcnow()
+
+        # Set started_at on first start, last_resumed_at and resumed_from_step on resume
+        current_time = datetime.utcnow()
+        if run.started_at is None:
+            run.started_at = current_time
+            run.resumed_from_step = None  # Not a resume
+            print(f"[API] First start: started_at set")
+        else:
+            run.last_resumed_at = current_time
+            run.resumed_from_step = run.current_step  # Record step at resume
+            print(f"[API] Resuming: last_resumed_at set, resumed_from_step={run.current_step}")
+
         db.commit()
         print(f"[API] Status updated and committed")
 
@@ -3610,16 +4808,21 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    if run.status != "running":
-        raise HTTPException(status_code=400, detail="Training run is not running")
+    # Allow stopping if status is "running" or "starting" (in case of early failure)
+    if run.status not in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail=f"Cannot stop training with status '{run.status}'")
 
     try:
         # Get training process
         process = training_process_manager.get_process(run_id)
 
         if process:
+            print(f"[API] Stopping training process for run {run_id}")
             await process.stop()
             await training_process_manager.remove_process(run_id)
+        else:
+            # Process doesn't exist (likely crashed during startup)
+            print(f"[API] No active process found for run {run_id}, updating status only")
 
         # Update run status
         run.status = "stopped"
@@ -3649,18 +4852,19 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
         if not config_yaml:
             raise HTTPException(status_code=400, detail="config_yaml is required")
 
-        # Update config_yaml
+        # Update config_yaml in database
         run.config_yaml = config_yaml
 
-        # Also update the YAML file on disk if it exists
+        # Update the original config file on disk ({run_name}_config.yaml)
         import yaml
         from pathlib import Path
 
-        config_path = Path(run.output_dir) / "config.yaml"
+        config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
         if config_path.parent.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, 'w', encoding='utf-8') as f:
                 f.write(config_yaml)
+            print(f"[Training] Updated config file: {config_path}")
 
         db.commit()
 
@@ -3669,6 +4873,42 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
+@router.post("/training/runs/{run_id}/config/reload")
+async def reload_training_config(run_id: int, db: Session = Depends(get_training_db)):
+    """Reload training configuration from disk (for external YAML edits)"""
+    print(f"[Training] Reloading config from disk for run_id={run_id}")
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        print(f"[Training] ERROR: Run ID {run_id} not found in database")
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if run.status in ["running", "starting"]:
+        raise HTTPException(status_code=400, detail="Cannot reload config while training is running")
+
+    try:
+        from pathlib import Path
+
+        # Read config from disk
+        config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail=f"Config file not found: {config_path}")
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_yaml = f.read()
+
+        # Update database with disk content
+        run.config_yaml = config_yaml
+        db.commit()
+
+        print(f"[Training] Reloaded config from disk: {config_path}")
+        return {"message": "Configuration reloaded from disk", "run": run.to_dict()}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reload config: {str(e)}")
 
 @router.get("/training/runs/{run_id}/status")
 async def get_training_status(run_id: int, db: Session = Depends(get_training_db)):
@@ -3691,6 +4931,9 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
         "total_steps": run.total_steps,
         "loss": run.loss,
         "learning_rate": run.learning_rate,
+        "phase": run.phase,
+        "phase_progress": run.phase_progress,
+        "phase_detail": run.phase_detail,
         "process_status": process_status
     }
 
@@ -3828,10 +5071,11 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
             latent_files = sorted(step_dir.glob("latents_t*.pt"))
 
             for latent_file in latent_files:
-                # Extract timestep from filename (latents_tXXXX.pt)
+                # Extract timestep from filename (latents_tXXXX.pt or latents_t0.XXXX.pt)
                 timestep_str = latent_file.stem.replace("latents_t", "")
                 try:
-                    timestep = int(timestep_str)
+                    # Try float first (Z-Image), then int (SD/SDXL)
+                    timestep = float(timestep_str)
                     debug_latents.append({
                         "step": step,
                         "timestep": timestep,
@@ -3878,9 +5122,13 @@ async def visualize_debug_latent(
 
     # Find the latent file (use timestep if provided, otherwise use first one)
     if timestep is not None:
-        latent_file = debug_dir / f"latents_t{timestep:04d}.pt"
+        # Try both float format (Z-Image) and int format (SD/SDXL)
+        latent_file = debug_dir / f"latents_t{timestep}.pt"
         if not latent_file.exists():
-            raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
+            # Try integer format as fallback
+            latent_file = debug_dir / f"latents_t{int(timestep):04d}.pt"
+            if not latent_file.exists():
+                raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
     else:
         latent_files = sorted(debug_dir.glob("latents_t*.pt"))
         if not latent_files:
@@ -3893,14 +5141,33 @@ async def visualize_debug_latent(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load latent file: {str(e)}")
 
-    def latent_to_image(latent_tensor):
+    def flux2_unpatchify(latent_tensor):
+        """Unpatchify FLUX.2 latents: (C=128, H/2, W/2) -> (C=32, H, W)"""
+        # latent_tensor shape: [128, H/2, W/2]
+        num_channels, height, width = latent_tensor.shape
+        # Reshape: [128, H/2, W/2] -> [32, 2, 2, H/2, W/2]
+        latent_tensor = latent_tensor.view(num_channels // 4, 2, 2, height, width)
+        # Permute: [32, 2, 2, H/2, W/2] -> [32, H/2, 2, W/2, 2]
+        latent_tensor = latent_tensor.permute(0, 3, 1, 4, 2)
+        # Reshape: [32, H/2, 2, W/2, 2] -> [32, H, W]
+        latent_tensor = latent_tensor.reshape(num_channels // 4, height * 2, width * 2)
+        return latent_tensor
+
+    def latent_to_image(latent_tensor, is_flux2=False):
         """Convert latent tensor to PIL Image (without VAE decoding)"""
         # latent_tensor shape: [1, C, H, W] or [C, H, W]
         if latent_tensor.dim() == 4:
             latent_tensor = latent_tensor[0]  # Remove batch dimension
 
         # latent_tensor shape: [C, H, W]
-        # For SDXL latents: C=4, we'll map first 3 channels to RGB
+        # Convert to float32 first (NumPy doesn't support bfloat16)
+        if latent_tensor.dtype == torch.bfloat16:
+            latent_tensor = latent_tensor.to(torch.float32)
+
+        # FLUX.2: unpatchify 128ch -> 32ch before visualization
+        if is_flux2 and latent_tensor.shape[0] == 128:
+            latent_tensor = flux2_unpatchify(latent_tensor)
+
         latent_np = latent_tensor.numpy()  # [C, H, W]
 
         # Take first 3 channels (or repeat if less than 3)
@@ -3941,11 +5208,16 @@ async def visualize_debug_latent(
         buffer.seek(0)
         return base64.b64encode(buffer.read()).decode('utf-8')
 
+    # Detect model type from saved data
+    is_flux2 = data.get("model_type") == "flux2"
+
     # Convert each latent type to image
     result = {
         "step": step,
         "timestep": data.get("timestep", 0),
         "loss": data.get("loss", 0.0),
+        "recon_loss": data.get("recon_loss", 0.0),
+        "model_type": data.get("model_type", "unknown"),
     }
 
     # Add caption if available
@@ -3953,19 +5225,24 @@ async def visualize_debug_latent(
         result["caption"] = data["caption"]
 
     if "latents" in data:
-        img = latent_to_image(data["latents"])
+        img = latent_to_image(data["latents"], is_flux2=is_flux2)
         result["latents_image"] = image_to_base64(img)
 
     if "noisy_latents" in data:
-        img = latent_to_image(data["noisy_latents"])
+        img = latent_to_image(data["noisy_latents"], is_flux2=is_flux2)
         result["noisy_latents_image"] = image_to_base64(img)
 
+    # predicted_noise (SD/SDXL) or predicted_velocity (Z-Image/FLUX.2)
     if "predicted_noise" in data:
-        img = latent_to_image(data["predicted_noise"])
+        img = latent_to_image(data["predicted_noise"], is_flux2=is_flux2)
         result["predicted_noise_image"] = image_to_base64(img)
 
+    if "predicted_velocity" in data:
+        img = latent_to_image(data["predicted_velocity"], is_flux2=is_flux2)
+        result["predicted_velocity_image"] = image_to_base64(img)
+
     if "predicted_latent" in data:
-        img = latent_to_image(data["predicted_latent"])
+        img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
 
     return result
@@ -3996,7 +5273,7 @@ async def get_training_metrics(
     tensorboard_dir = output_dir / "tensorboard"
 
     if not tensorboard_dir.exists():
-        return {"loss": [], "learning_rate": []}
+        return {"loss": [], "recon_loss": [], "learning_rate": []}
 
     try:
         from tensorboard.backend.event_processing import event_accumulator
@@ -4008,15 +5285,41 @@ async def get_training_metrics(
                 event_files.extend(glob.glob(str(subdir / "events.out.tfevents.*")))
 
         if not event_files:
-            return {"loss": [], "learning_rate": []}
+            return {"loss": [], "recon_loss": [], "learning_rate": []}
+
+        # Optimization: If since_step is provided, only read the most recent event file
+        # (since older files won't have data after since_step)
+        if since_step is not None and len(event_files) > 1:
+            # Sort by modification time, use only the most recent
+            event_files_sorted = sorted(event_files, key=lambda f: Path(f).stat().st_mtime)
+            event_files = [event_files_sorted[-1]]  # Only most recent
 
         # Use the most recent event file or merge all
         all_loss = []
+        all_recon_loss = []
         all_lr = []
 
         for event_file in event_files:
-            ea = event_accumulator.EventAccumulator(event_file)
-            ea.Reload()
+            # Check cache first (keyed by run_id and event_file path)
+            cache_key = (run_id, event_file)
+            event_file_path = Path(event_file)
+            current_mtime = event_file_path.stat().st_mtime
+
+            # If cached and file hasn't changed, use cached EventAccumulator
+            if cache_key in _event_accumulator_cache:
+                cached_ea, cached_mtime = _event_accumulator_cache[cache_key]
+                if cached_mtime == current_mtime:
+                    ea = cached_ea
+                else:
+                    # File changed, reload
+                    ea = event_accumulator.EventAccumulator(event_file)
+                    ea.Reload()
+                    _event_accumulator_cache[cache_key] = (ea, current_mtime)
+            else:
+                # Not cached, create new
+                ea = event_accumulator.EventAccumulator(event_file)
+                ea.Reload()
+                _event_accumulator_cache[cache_key] = (ea, current_mtime)
 
             # Get scalar tags
             if 'train/loss' in ea.Tags()['scalars']:
@@ -4024,6 +5327,13 @@ async def get_training_metrics(
                 all_loss.extend([
                     {"step": int(e.step), "value": float(e.value), "wall_time": float(e.wall_time)}
                     for e in loss_events
+                ])
+
+            if 'train/recon_loss' in ea.Tags()['scalars']:
+                recon_loss_events = ea.Scalars('train/recon_loss')
+                all_recon_loss.extend([
+                    {"step": int(e.step), "value": float(e.value), "wall_time": float(e.wall_time)}
+                    for e in recon_loss_events
                 ])
 
             if 'train/learning_rate' in ea.Tags()['scalars']:
@@ -4035,11 +5345,32 @@ async def get_training_metrics(
 
         # Sort by step
         all_loss.sort(key=lambda x: x["step"])
+        all_recon_loss.sort(key=lambda x: x["step"])
         all_lr.sort(key=lambda x: x["step"])
+
+        # Deduplicate: If the same step appears multiple times (resume scenario),
+        # keep only the one with the latest wall_time (most recent training run)
+        def deduplicate_by_latest_wall_time(data):
+            if not data:
+                return []
+
+            step_to_latest = {}
+            for point in data:
+                step = point["step"]
+                if step not in step_to_latest or point["wall_time"] > step_to_latest[step]["wall_time"]:
+                    step_to_latest[step] = point
+
+            # Return sorted by step
+            return sorted(step_to_latest.values(), key=lambda x: x["step"])
+
+        all_loss = deduplicate_by_latest_wall_time(all_loss)
+        all_recon_loss = deduplicate_by_latest_wall_time(all_recon_loss)
+        all_lr = deduplicate_by_latest_wall_time(all_lr)
 
         # Filter by since_step if provided
         if since_step is not None:
             all_loss = [d for d in all_loss if d["step"] > since_step]
+            all_recon_loss = [d for d in all_recon_loss if d["step"] > since_step]
             all_lr = [d for d in all_lr if d["step"] > since_step]
 
         # Decimate data if too many points (simple nth-point sampling)
@@ -4050,10 +5381,12 @@ async def get_training_metrics(
             return [data[i] for i in range(0, len(data), step_size)][:max_points]
 
         all_loss = decimate(all_loss, max_points)
+        all_recon_loss = decimate(all_recon_loss, max_points)
         all_lr = decimate(all_lr, max_points)
 
         return {
             "loss": all_loss,
+            "recon_loss": all_recon_loss,
             "learning_rate": all_lr
         }
 
@@ -4063,6 +5396,143 @@ async def get_training_metrics(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to read metrics: {str(e)}")
+
+
+@router.get("/training/runs/{run_id}/metrics_db")
+async def get_training_metrics_db(
+    run_id: int,
+    max_points: int = 1000,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Get training metrics from database with uniform step sampling.
+
+    This endpoint reads metrics from SQLAlchemy DB and returns uniformly sampled
+    data points to ensure consistent chart density across updates.
+
+    Features:
+    - Uniform sampling: Returns evenly distributed steps from 0 to max_step
+    - Consistent density: Same points returned on every fetch (no jumping)
+    - Indexed queries: Fast filtering by (run_id, step)
+    - UPSERT-safe: Metrics with same (run_id, step) are overwritten (training restart support)
+
+    Args:
+        run_id: Training run ID
+        max_points: Maximum number of data points to return (default: 1000)
+
+    Returns:
+        {
+            "loss": [{"step": int, "value": float, "timestamp": str}, ...],
+            "recon_loss": [{"step": int, "value": float, "timestamp": str}, ...],
+            "learning_rate": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm_text_encoder": [{"step": int, "value": float, "timestamp": str}, ...],
+            "grad_norm_unet": [{"step": int, "value": float, "timestamp": str}, ...]
+        }
+    """
+    from database.models import TrainingMetrics
+
+    # Check if run exists
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    try:
+        # Get min and max steps for this run
+        result = db.query(
+            func.min(TrainingMetrics.step),
+            func.max(TrainingMetrics.step)
+        ).filter(TrainingMetrics.run_id == run_id).first()
+
+        min_step, max_step = result
+        if min_step is None or max_step is None:
+            # No metrics yet
+            return {
+                "loss": [],
+                "recon_loss": [],
+                "learning_rate": [],
+                "grad_norm": [],
+                "grad_norm_text_encoder": [],
+                "grad_norm_unet": []
+            }
+
+        # Calculate uniform sample steps
+        total_steps = max_step - min_step + 1
+        if total_steps <= max_points:
+            # Fetch all steps
+            sample_steps = list(range(min_step, max_step + 1))
+        else:
+            # Uniform sampling: divide range into max_points intervals
+            step_interval = total_steps / max_points
+            sample_steps = [
+                int(min_step + i * step_interval)
+                for i in range(max_points)
+            ]
+            # Always include the last step
+            if max_step not in sample_steps:
+                sample_steps.append(max_step)
+
+        # Fetch metrics for sampled steps
+        query = db.query(TrainingMetrics).filter(
+            TrainingMetrics.run_id == run_id,
+            TrainingMetrics.step.in_(sample_steps)
+        ).order_by(TrainingMetrics.step.asc())
+
+        metrics = query.all()
+
+        # Convert to response format
+        loss_data = []
+        recon_loss_data = []
+        lr_data = []
+        grad_norm_data = []
+        grad_norm_te_data = []
+        grad_norm_unet_data = []
+
+        import math
+
+        def is_valid_float(v):
+            """Check if value is a valid JSON-serializable float (not inf/nan)."""
+            if v is None:
+                return False
+            return not (math.isinf(v) or math.isnan(v))
+
+        for m in metrics:
+            point = {
+                "step": m.step,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None
+            }
+
+            if is_valid_float(m.loss):
+                loss_data.append({**point, "value": m.loss})
+
+            if is_valid_float(m.recon_loss):
+                recon_loss_data.append({**point, "value": m.recon_loss})
+
+            if is_valid_float(m.learning_rate):
+                lr_data.append({**point, "value": m.learning_rate})
+
+            if is_valid_float(m.grad_norm):
+                grad_norm_data.append({**point, "value": m.grad_norm})
+
+            if is_valid_float(m.grad_norm_text_encoder):
+                grad_norm_te_data.append({**point, "value": m.grad_norm_text_encoder})
+
+            if is_valid_float(m.grad_norm_unet):
+                grad_norm_unet_data.append({**point, "value": m.grad_norm_unet})
+
+        return {
+            "loss": loss_data,
+            "recon_loss": recon_loss_data,
+            "learning_rate": lr_data,
+            "grad_norm": grad_norm_data,
+            "grad_norm_text_encoder": grad_norm_te_data,
+            "grad_norm_unet": grad_norm_unet_data
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to read metrics from DB: {str(e)}")
 
 
 @router.get("/training/runs/{run_id}/samples")
@@ -4096,11 +5566,7 @@ async def get_training_samples(
     samples_by_step = {}
     pattern = re.compile(r"step_(\d+)_sample_(\d+)\.png")
 
-    # Get absolute path of training directory (project root / training)
-    import os
-    project_root = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    training_base = (project_root / "training").resolve()
-
+    # Build sample file list using run.output_dir (not UserSettings.training_dir)
     for file in sample_files:
         match = pattern.match(file.name)
         if match:
@@ -4110,18 +5576,9 @@ async def get_training_samples(
             if step not in samples_by_step:
                 samples_by_step[step] = []
 
-            # Convert absolute path to relative path from training directory
-            # e.g., /path/to/training/20251130_220607_28dee11d/samples/step_000100_sample_0.png
-            # -> 20251130_220607_28dee11d/samples/step_000100_sample_0.png
-            file_abs = file.resolve()
-            try:
-                relative_path = file_abs.relative_to(training_base)
-                path_url = f"/training/{relative_path.as_posix()}"
-            except ValueError:
-                # Fallback: if not under training directory, construct path from output_dir
-                # This should not happen but handle gracefully
-                relative_to_output = file.relative_to(output_dir)
-                path_url = f"/training/{output_dir.name}/{relative_to_output.as_posix()}"
+            # Use API endpoint to serve sample images (not static files)
+            # This ensures compatibility even if UserSettings.training_dir changes
+            path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}"
 
             samples_by_step[step].append({
                 "sample_index": sample_idx,
@@ -4137,6 +5594,40 @@ async def get_training_samples(
         })
 
     return {"samples": samples}
+
+@router.get("/training/runs/{run_id}/samples/{filename}")
+async def get_training_sample_image(
+    run_id: int,
+    filename: str,
+    db: Session = Depends(get_training_db)
+):
+    """
+    Serve a specific sample image file from run.output_dir
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    from pathlib import Path
+    output_dir = Path(run.output_dir)
+    samples_dir = output_dir / "samples"
+    file_path = samples_dir / filename
+
+    # Security check: ensure file is within samples directory
+    try:
+        file_path = file_path.resolve()
+        samples_dir = samples_dir.resolve()
+        if not str(file_path).startswith(str(samples_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Sample image not found")
+
+    # Return image file
+    from fastapi.responses import FileResponse
+    return FileResponse(file_path, media_type="image/png")
 
 
 # ============================================================
@@ -4224,3 +5715,102 @@ async def delete_training_preset(preset_id: int, db: Session = Depends(get_train
     db.delete(preset)
     db.commit()
     return {"message": "Preset deleted successfully"}
+
+
+# ============================================================
+# Batch Operations for Dataset Items
+# ============================================================
+
+from api.batch_operations import (
+    BatchTaggerRequest,
+    BatchReorderTagsRequest,
+    BatchReplaceTagRequest,
+    BatchOperationResponse,
+    batch_tagger_inference,
+    batch_reorder_tags,
+    batch_replace_tag,
+    cancel_batch_operation,
+)
+
+@router.post("/datasets/{dataset_id}/batch-tagger", response_model=BatchOperationResponse)
+async def batch_tagger_endpoint(
+    dataset_id: int,
+    request: BatchTaggerRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Run tagger inference on multiple items.
+    If item_ids is empty, process all items in the dataset.
+    """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_tagger_inference(request, db, send_progress)
+
+    print(f"[BatchTagger] {result.message}")
+    print(f"[BatchTagger] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-reorder-tags", response_model=BatchOperationResponse)
+async def batch_reorder_tags_endpoint(
+    dataset_id: int,
+    request: BatchReorderTagsRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Reorder tags by category for multiple items.
+    If item_ids is empty, process all items in the dataset.
+    """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_reorder_tags(request, db, send_progress)
+
+    print(f"[BatchReorder] {result.message}")
+    print(f"[BatchReorder] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-replace-tag", response_model=BatchOperationResponse)
+async def batch_replace_tag_endpoint(
+    dataset_id: int,
+    request: BatchReplaceTagRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Replace a specific tag with another tag for multiple items.
+    If item_ids is empty, process all items in the dataset.
+    """
+    # If no items specified, get all items from dataset
+    if not request.item_ids:
+        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+        request.item_ids = [item.id for item in all_items]
+
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_replace_tag(request, db, send_progress)
+
+    print(f"[BatchReplace] {result.message}")
+    print(f"[BatchReplace] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
+
+    return result
+
+@router.post("/datasets/{dataset_id}/batch-cancel")
+async def batch_cancel_endpoint(dataset_id: int):
+    """
+    Cancel the current batch operation
+    """
+    cancel_batch_operation()
+    return {"message": "Batch operation cancellation requested"}

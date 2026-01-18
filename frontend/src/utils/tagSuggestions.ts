@@ -528,19 +528,27 @@ export async function loadAllTags(): Promise<void> {
 }
 
 // Special tags that should always be available
+// Must match backend/core/training/tag_group_utils.py hardcoded tags
 const SPECIAL_TAGS = {
   rating: [
-    { tag: "sensitive", category: "Rating" },
-    { tag: "explicit", category: "Rating" },
-    { tag: "questionable", category: "Rating" },
     { tag: "general", category: "Rating" },
+    { tag: "sensitive", category: "Rating" },
+    { tag: "questionable", category: "Rating" },
+    { tag: "explicit", category: "Rating" },
+    { tag: "rating:general", category: "Rating" },
+    { tag: "rating:sensitive", category: "Rating" },
+    { tag: "rating:questionable", category: "Rating" },
+    { tag: "rating:explicit", category: "Rating" },
   ],
   quality: [
-    { tag: "best_quality", category: "Quality" },
-    { tag: "normal_quality", category: "Quality" },
-    { tag: "bad_quality", category: "Quality" },
-    { tag: "worst_quality", category: "Quality" },
+    { tag: "best quality", category: "Quality" },
+    { tag: "high quality", category: "Quality" },
+    { tag: "great quality", category: "Quality" },
+    { tag: "normal quality", category: "Quality" },
+    { tag: "low quality", category: "Quality" },
+    { tag: "worst quality", category: "Quality" },
     { tag: "masterpiece", category: "Quality" },
+    { tag: "amazing quality", category: "Quality" },
   ],
 };
 
@@ -808,9 +816,14 @@ export async function getCategoriesForTags(tags: string[]): Promise<Map<string, 
   const result = new Map<string, string>();
 
   // Normalize all input tags once
-  const normalizedInputTags = new Map<string, string>(); // normalized -> original
+  // Use array to handle duplicate normalized tags (e.g., "long hair" and "long_hair")
+  const normalizedInputTags = new Map<string, string[]>(); // normalized -> original[]
   for (const tag of tags) {
-    normalizedInputTags.set(normalizeTag(tag), tag);
+    const normalized = normalizeTag(tag);
+    if (!normalizedInputTags.has(normalized)) {
+      normalizedInputTags.set(normalized, []);
+    }
+    normalizedInputTags.get(normalized)!.push(tag);
   }
 
   // Track which tags we've found with their priority
@@ -821,11 +834,13 @@ export async function getCategoriesForTags(tags: string[]): Promise<Map<string, 
   for (const specialTag of allSpecialTags) {
     const normalizedTag = normalizeTag(specialTag.tag);
     if (normalizedInputTags.has(normalizedTag)) {
-      const originalTag = normalizedInputTags.get(normalizedTag)!;
-      foundTags.set(originalTag, {
-        category: specialTag.category,
-        priority: 999, // Highest priority for special tags
-      });
+      const originalTags = normalizedInputTags.get(normalizedTag)!;
+      for (const originalTag of originalTags) {
+        foundTags.set(originalTag, {
+          category: specialTag.category,
+          priority: 999, // Highest priority for special tags
+        });
+      }
     }
   }
 
@@ -842,15 +857,17 @@ export async function getCategoriesForTags(tags: string[]): Promise<Map<string, 
 
       // Check if this tag matches any of our input tags
       if (normalizedInputTags.has(normalizedTag)) {
-        const originalTag = normalizedInputTags.get(normalizedTag)!;
-        const existing = foundTags.get(originalTag);
+        const originalTags = normalizedInputTags.get(normalizedTag)!;
+        for (const originalTag of originalTags) {
+          const existing = foundTags.get(originalTag);
 
-        // If not found yet, or if this category has higher priority
-        if (!existing || categoryPriority > existing.priority) {
-          foundTags.set(originalTag, {
-            category: category.name,
-            priority: categoryPriority,
-          });
+          // If not found yet, or if this category has higher priority
+          if (!existing || categoryPriority > existing.priority) {
+            foundTags.set(originalTag, {
+              category: category.name,
+              priority: categoryPriority,
+            });
+          }
         }
       }
     }

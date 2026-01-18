@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import logging
 from PIL import Image
+from sqlalchemy.orm import Session
 
 # Remove PIL image size limit for large images
 # Reference: https://kakashibata.hatenablog.jp/entry/2022/03/27/232553
@@ -81,6 +82,45 @@ async def startup_event():
 
     asyncio.create_task(load_model_background())
 
+    # Pre-scan models, LoRAs, ControlNets in background to populate cache
+    async def prescan_resources():
+        try:
+            print("[Startup] Pre-scanning models, LoRAs, and ControlNets to populate cache...")
+            from api import routes
+            import asyncio
+
+            # Run scans in thread pool (blocking operations)
+            def scan_all():
+                # Scan models
+                try:
+                    from database import GallerySessionLocal
+                    db = GallerySessionLocal()
+                    asyncio.run(routes.get_models(db=db, force_rescan=True))
+                    db.close()
+                    print("[Startup] Models cache populated")
+                except Exception as e:
+                    print(f"[Startup] Error scanning models: {e}")
+
+                # Scan LoRAs
+                try:
+                    lora_manager.get_available_loras(force_rescan=True)
+                    print("[Startup] LoRAs cache populated")
+                except Exception as e:
+                    print(f"[Startup] Error scanning LoRAs: {e}")
+
+                # Scan ControlNets
+                try:
+                    controlnet_manager.get_available_controlnets(force_rescan=True)
+                    print("[Startup] ControlNets cache populated")
+                except Exception as e:
+                    print(f"[Startup] Error scanning ControlNets: {e}")
+
+            await asyncio.to_thread(scan_all)
+        except Exception as e:
+            print(f"[Startup] Error in pre-scan: {e}")
+
+    asyncio.create_task(prescan_resources())
+
 # WebSocket endpoint BEFORE middleware (to bypass CORS)
 @app.websocket("/api/v1/ws/progress")
 async def websocket_route(websocket: WebSocket):
@@ -135,13 +175,9 @@ if os.path.exists(settings.thumbnails_dir):
 else:
     print(f"[Static] WARNING: thumbnails_dir does not exist: {settings.thumbnails_dir}")
 
-# Mount training directory
-training_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "training")
-if os.path.exists(training_dir):
-    print(f"[Static] Mounting /training -> {training_dir}")
-    app.mount("/training", StaticFiles(directory=training_dir), name="training")
-else:
-    print(f"[Static] WARNING: training directory does not exist: {training_dir}")
+# Note: Training files (samples, checkpoints, etc.) are served via API endpoints
+# using run.output_dir, not static file mounting. This allows training_dir changes
+# without breaking access to old training runs.
 
 @app.get("/")
 async def root():

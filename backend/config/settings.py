@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     thumbnails_dir: str = os.path.realpath(os.path.join(_root_dir, "thumbnails"))
     lora_dir: str = os.path.realpath(os.path.join(_root_dir, "lora"))
     controlnet_dir: str = os.path.realpath(os.path.join(_root_dir, "controlnet"))
+    cache_dir: str = os.path.realpath(os.path.join(_root_dir, "cache"))
+    training_dir: str = os.path.realpath(os.path.join(_root_dir, "training"))  # DEPRECATED: Use UserSettings.training_dir instead
 
     # Database (deprecated - now using separate databases in database/__init__.py)
     # database_url: str = f"sqlite:///{os.path.realpath(os.path.join(_root_dir, 'sd_webui.db'))}"
@@ -57,3 +59,5 @@ print(f"[Settings] Models dir: {settings.models_dir}")
 print(f"[Settings] LoRA dir: {settings.lora_dir}")
 print(f"[Settings] ControlNet dir: {settings.controlnet_dir}")
 print(f"[Settings] Thumbnails dir: {settings.thumbnails_dir}")
+print(f"[Settings] Cache dir: {settings.cache_dir}")
+# Note: training_dir is DEPRECATED, use UserSettings.training_dir instead

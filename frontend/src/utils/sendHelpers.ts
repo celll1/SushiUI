@@ -42,19 +42,137 @@ interface ExtendedSendParams extends BaseSendParams {
 }
 
 /**
+ * Sends prompt and/or parameters to target panel's localStorage
+ *
+ * @param sourceParams - Source parameters to send
+ * @param targetStorageKey - Target panel's localStorage key
+ * @param options - Options for what to send
+ */
+export function sendToPanel(
+  sourceParams: ExtendedSendParams,
+  targetStorageKey: string,
+  options: {
+    sendPrompt?: boolean;
+    sendParameters?: boolean;
+    includeDenoising?: boolean;
+    dispatchEvent?: string;
+  } = {}
+): void {
+  const {
+    sendPrompt = true,
+    sendParameters = true,
+    includeDenoising = false,
+    dispatchEvent
+  } = options;
+
+  console.log("[sendToPanel] targetStorageKey:", targetStorageKey);
+  console.log("[sendToPanel] sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+  console.log("[sendToPanel] sourceParams.prompt:", sourceParams.prompt);
+
+  // Load existing params and merge
+  const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
+  console.log("[sendToPanel] Existing targetParams:", targetParams);
+
+  // Send prompt if requested
+  if (sendPrompt) {
+    targetParams.prompt = sourceParams.prompt;
+    targetParams.negative_prompt = sourceParams.negative_prompt;
+    console.log("[sendToPanel] Set prompt to:", targetParams.prompt);
+  }
+
+  // Send parameters if requested
+  if (sendParameters) {
+    targetParams.steps = sourceParams.steps;
+    targetParams.cfg_scale = sourceParams.cfg_scale !== undefined ? roundFloat(sourceParams.cfg_scale, 2) : sourceParams.cfg_scale;
+    targetParams.sampler = sourceParams.sampler;
+    targetParams.schedule_type = sourceParams.schedule_type;
+    targetParams.seed = sourceParams.seed;
+    targetParams.ancestral_seed = sourceParams.ancestral_seed;
+    targetParams.width = sourceParams.width;
+    targetParams.height = sourceParams.height;
+
+    // Add Advanced CFG parameters
+    if (sourceParams.cfg_schedule_type !== undefined) {
+      targetParams.cfg_schedule_type = sourceParams.cfg_schedule_type;
+    }
+    if (sourceParams.cfg_schedule_min !== undefined) {
+      targetParams.cfg_schedule_min = sourceParams.cfg_schedule_min;
+    }
+    if (sourceParams.cfg_schedule_max !== undefined) {
+      targetParams.cfg_schedule_max = sourceParams.cfg_schedule_max;
+    }
+    if (sourceParams.cfg_schedule_power !== undefined) {
+      targetParams.cfg_schedule_power = sourceParams.cfg_schedule_power;
+    }
+    if (sourceParams.cfg_rescale_snr_alpha !== undefined) {
+      targetParams.cfg_rescale_snr_alpha = sourceParams.cfg_rescale_snr_alpha;
+    }
+    if (sourceParams.dynamic_threshold_percentile !== undefined) {
+      targetParams.dynamic_threshold_percentile = sourceParams.dynamic_threshold_percentile;
+    }
+    if (sourceParams.dynamic_threshold_mimic_scale !== undefined) {
+      targetParams.dynamic_threshold_mimic_scale = sourceParams.dynamic_threshold_mimic_scale;
+    }
+
+    // Add NAG parameters
+    if (sourceParams.nag_enable !== undefined) {
+      targetParams.nag_enable = sourceParams.nag_enable;
+    }
+    if (sourceParams.nag_scale !== undefined) {
+      targetParams.nag_scale = sourceParams.nag_scale;
+    }
+    if (sourceParams.nag_tau !== undefined) {
+      targetParams.nag_tau = sourceParams.nag_tau;
+    }
+    if (sourceParams.nag_alpha !== undefined) {
+      targetParams.nag_alpha = sourceParams.nag_alpha;
+    }
+    if (sourceParams.nag_sigma_end !== undefined) {
+      targetParams.nag_sigma_end = sourceParams.nag_sigma_end;
+    }
+    if (sourceParams.nag_negative_prompt !== undefined) {
+      targetParams.nag_negative_prompt = sourceParams.nag_negative_prompt;
+    }
+
+    // Add attention processor type
+    if (sourceParams.attention_type !== undefined) {
+      targetParams.attention_type = sourceParams.attention_type;
+    }
+
+    if (includeDenoising && sourceParams.denoising_strength !== undefined) {
+      targetParams.denoising_strength = roundFloat(sourceParams.denoising_strength, 2);
+    }
+  }
+
+  // Save merged params once
+  if (sendPrompt || sendParameters) {
+    console.log("[sendToPanel] Saving merged params:", targetParams);
+    localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));
+
+    // Dispatch custom event if specified
+    if (dispatchEvent) {
+      console.log("[sendToPanel] Dispatching event:", dispatchEvent);
+      window.dispatchEvent(new Event(dispatchEvent));
+    }
+  }
+}
+
+/**
+ * @deprecated Use sendToPanel instead
  * Sends prompt to target panel's localStorage
  */
 export function sendPromptToPanel(
   sourceParams: BaseSendParams,
   targetStorageKey: string
 ): void {
-  const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
-  targetParams.prompt = sourceParams.prompt;
-  targetParams.negative_prompt = sourceParams.negative_prompt;
-  localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));
+  sendToPanel(sourceParams, targetStorageKey, {
+    sendPrompt: true,
+    sendParameters: false
+  });
 }
 
 /**
+ * @deprecated Use sendToPanel instead
  * Sends parameters to target panel's localStorage
  */
 export function sendParametersToPanel(
@@ -62,69 +180,11 @@ export function sendParametersToPanel(
   targetStorageKey: string,
   includeDenoising: boolean = false
 ): void {
-  const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
-  targetParams.steps = sourceParams.steps;
-  targetParams.cfg_scale = sourceParams.cfg_scale !== undefined ? roundFloat(sourceParams.cfg_scale, 2) : sourceParams.cfg_scale;
-  targetParams.sampler = sourceParams.sampler;
-  targetParams.schedule_type = sourceParams.schedule_type;
-  targetParams.seed = sourceParams.seed;
-  targetParams.ancestral_seed = sourceParams.ancestral_seed;
-  targetParams.width = sourceParams.width;
-  targetParams.height = sourceParams.height;
-
-  // Add Advanced CFG parameters
-  if (sourceParams.cfg_schedule_type !== undefined) {
-    targetParams.cfg_schedule_type = sourceParams.cfg_schedule_type;
-  }
-  if (sourceParams.cfg_schedule_min !== undefined) {
-    targetParams.cfg_schedule_min = sourceParams.cfg_schedule_min;
-  }
-  if (sourceParams.cfg_schedule_max !== undefined) {
-    targetParams.cfg_schedule_max = sourceParams.cfg_schedule_max;
-  }
-  if (sourceParams.cfg_schedule_power !== undefined) {
-    targetParams.cfg_schedule_power = sourceParams.cfg_schedule_power;
-  }
-  if (sourceParams.cfg_rescale_snr_alpha !== undefined) {
-    targetParams.cfg_rescale_snr_alpha = sourceParams.cfg_rescale_snr_alpha;
-  }
-  if (sourceParams.dynamic_threshold_percentile !== undefined) {
-    targetParams.dynamic_threshold_percentile = sourceParams.dynamic_threshold_percentile;
-  }
-  if (sourceParams.dynamic_threshold_mimic_scale !== undefined) {
-    targetParams.dynamic_threshold_mimic_scale = sourceParams.dynamic_threshold_mimic_scale;
-  }
-
-  // Add NAG parameters
-  if (sourceParams.nag_enable !== undefined) {
-    targetParams.nag_enable = sourceParams.nag_enable;
-  }
-  if (sourceParams.nag_scale !== undefined) {
-    targetParams.nag_scale = sourceParams.nag_scale;
-  }
-  if (sourceParams.nag_tau !== undefined) {
-    targetParams.nag_tau = sourceParams.nag_tau;
-  }
-  if (sourceParams.nag_alpha !== undefined) {
-    targetParams.nag_alpha = sourceParams.nag_alpha;
-  }
-  if (sourceParams.nag_sigma_end !== undefined) {
-    targetParams.nag_sigma_end = sourceParams.nag_sigma_end;
-  }
-  if (sourceParams.nag_negative_prompt !== undefined) {
-    targetParams.nag_negative_prompt = sourceParams.nag_negative_prompt;
-  }
-
-  // Add attention processor type
-  if (sourceParams.attention_type !== undefined) {
-    targetParams.attention_type = sourceParams.attention_type;
-  }
-
-  if (includeDenoising && sourceParams.denoising_strength !== undefined) {
-    targetParams.denoising_strength = roundFloat(sourceParams.denoising_strength, 2);
-  }
-
-  localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));
+  sendToPanel(sourceParams, targetStorageKey, {
+    sendPrompt: false,
+    sendParameters: true,
+    includeDenoising
+  });
 }
 
 /**

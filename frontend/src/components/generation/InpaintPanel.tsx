@@ -1444,7 +1444,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     setCfgMetrics([]); // Clear previous metrics
 
     try {
-      const apiParams: ApiInpaintParams = {
+      let apiParams: ApiInpaintParams = {
         prompt: nextItem.params.prompt,
         negative_prompt: nextItem.params.negative_prompt,
         steps: nextItem.params.steps,

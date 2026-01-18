@@ -2122,12 +2122,18 @@ class DiffusionPipelineManager:
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                 else:
-                    # No CFG: Single forward pass with conditional only
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
                     with torch.no_grad():
                         noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
-                            guidance=None,
+                            guidance=guidance_vec,
                             encoder_hidden_states=prompt_embeds,
                             txt_ids=text_ids,
                             img_ids=latent_image_ids,
@@ -2586,12 +2592,18 @@ class DiffusionPipelineManager:
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                 else:
-                    # No CFG: Single forward pass with conditional only
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
                     with torch.no_grad():
                         noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
-                            guidance=None,
+                            guidance=guidance_vec,
                             encoder_hidden_states=prompt_embeds,
                             txt_ids=text_ids,
                             img_ids=latent_ids,
@@ -2927,12 +2939,18 @@ class DiffusionPipelineManager:
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                 else:
-                    # No CFG: Single forward pass with conditional only
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
                     with torch.no_grad():
                         noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
-                            guidance=None,
+                            guidance=guidance_vec,
                             encoder_hidden_states=prompt_embeds,
                             txt_ids=text_ids,
                             img_ids=latent_ids,

@@ -814,9 +814,18 @@ def _quantize_text_encoder(text_encoder, quantization: str):
                         converted_count += 1
                     # Keep bias in original dtype (if exists)
 
+                    # Register forward hook to convert FP8 output to BF16
+                    # This ensures compatibility with RMSNorm which expects BF16 input
+                    def fp8_to_bf16_hook(module, input, output):
+                        if output.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                            return output.to(torch.bfloat16)
+                        return output
+
+                    module.register_forward_hook(fp8_to_bf16_hook)
+
             print(f"[Quantization] Successfully converted {converted_count} Linear layers to {dtype_name}")
+            print(f"[Quantization] Added forward hooks to convert FP8 outputs to BF16")
             print(f"[Quantization] Embeddings and buffers kept in BF16")
-            print(f"[Quantization] Note: Compute will use mixed precision automatically (autocast)")
 
             return quantized_text_encoder
 

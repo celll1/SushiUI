@@ -836,3 +836,91 @@ def _quantize_text_encoder(text_encoder, quantization: str):
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
     print(f"[Quantization] Falling back to non-quantized text encoder")
     return copy.deepcopy(text_encoder)
+
+
+# ============================================================
+# FLUX.2-Specific VRAM Optimization
+# ============================================================
+
+def move_flux2_text_encoder_to_gpu(text_encoder, quantization=None):
+    """Move FLUX.2 text encoder (Qwen3) to GPU for encoding (with optional quantization)
+
+    Args:
+        text_encoder: FLUX.2 text encoder model (Qwen3)
+        quantization: Optional quantization type (fp8_e4m3fn, fp8_e5m2, uint2-uint8, etc.)
+
+    Returns:
+        text_encoder (potentially quantized copy if quantization is enabled)
+    """
+    if text_encoder is None:
+        return None
+
+    # Fast path: No quantization
+    if not quantization or quantization == "none":
+        print("[VRAM] Moving FLUX.2 Text Encoder (Qwen3) to GPU for encoding...")
+        text_encoder.to('cuda:0', non_blocking=False)
+        return text_encoder
+
+    # Quantization path: Create quantized copy and move to GPU
+    print(f"[VRAM] Moving FLUX.2 Text Encoder (Qwen3) to GPU with {quantization} quantization...")
+    print(f"[Quantization] Creating quantized Text Encoder ({quantization})...")
+
+    # Text Encoder must be on CPU for quantization
+    if next(text_encoder.parameters()).device.type != 'cpu':
+        print(f"[Quantization] Moving Text Encoder to CPU for quantization...")
+        text_encoder.to('cpu')
+
+    # Quantize (creates a copy)
+    quantized_text_encoder = _quantize_text_encoder(text_encoder, quantization)
+
+    # Move quantized copy to GPU
+    print(f"[Quantization] Moving quantized Text Encoder to GPU...")
+    quantized_text_encoder.to('cuda:0', non_blocking=False)
+
+    print(f"[Quantization] FLUX.2 Text Encoder quantization complete ({quantization})")
+
+    return quantized_text_encoder
+
+
+def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+    """Move FLUX.2 transformer to GPU for inference, optionally with quantization
+
+    Args:
+        transformer: FLUX.2 transformer model (Flux2Transformer2DModel)
+        quantization: Quantization type - None, 'none', 'fp8_e4m3fn', 'fp8_e5m2', etc.
+
+    Returns:
+        transformer: Transformer on GPU (may be quantized)
+    """
+    # Normalize quantization parameter
+    if quantization in [None, "", "none"]:
+        quantization = None
+
+    if transformer is None:
+        return transformer
+
+    # Fast path: No quantization (most common case)
+    if not quantization:
+        print("[VRAM] Moving FLUX.2 Transformer to GPU for inference...")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+    # Quantization path
+    print(f"[VRAM] Moving FLUX.2 Transformer to GPU with {quantization} quantization...")
+
+    # Ensure transformer is on CPU for quantization
+    if next(transformer.parameters()).device.type != 'cpu':
+        print(f"[Quantization] Moving Transformer to CPU for quantization...")
+        transformer.to('cpu')
+
+    # Apply quantization (similar to U-Net quantization)
+    try:
+        quantized_transformer = _quantize_transformer(transformer, quantization)
+        quantized_transformer.to('cuda:0', non_blocking=False)
+        print(f"[Quantization] FLUX.2 Transformer quantization complete ({quantization})")
+        return quantized_transformer
+    except Exception as e:
+        print(f"[VRAM] Warning: Quantization failed: {e}")
+        print(f"[VRAM] Falling back to non-quantized transformer")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer

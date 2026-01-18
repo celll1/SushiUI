@@ -1977,11 +1977,21 @@ class DiffusionPipelineManager:
             print(f"[FLUX.2] CFG enabled: {do_classifier_free_guidance}")
             print(f"[FLUX.2] Prompt: {prompt[:100]}...")
 
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                move_flux2_text_encoder_to_gpu,
+                move_flux2_transformer_to_gpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
+            text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Qwen3)
+
             # ============================================================
             # Stage 1: Text Encoding (Qwen3)
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = text_encoder.to(self.device)
+            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -2078,7 +2088,7 @@ class DiffusionPipelineManager:
                 # No Block Swap - ensure ALL weights are on GPU
                 # This is important when switching from Block Swap ON to OFF
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = transformer.to(self.device)
+                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 # Move all block weights to GPU (in case they were on CPU from previous Block Swap)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
@@ -2597,11 +2607,21 @@ class DiffusionPipelineManager:
             is_distilled = config.get("is_distilled", False)
             do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                move_flux2_text_encoder_to_gpu,
+                move_flux2_transformer_to_gpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")
+            text_encoder_quantization = params.get("text_encoder_quantization")
+
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = text_encoder.to(self.device)
+            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -2721,7 +2741,7 @@ class DiffusionPipelineManager:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = transformer.to(self.device)
+                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -2965,11 +2985,21 @@ class DiffusionPipelineManager:
             is_distilled = config.get("is_distilled", False)
             do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                move_flux2_text_encoder_to_gpu,
+                move_flux2_transformer_to_gpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")
+            text_encoder_quantization = params.get("text_encoder_quantization")
+
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = text_encoder.to(self.device)
+            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -3110,7 +3140,7 @@ class DiffusionPipelineManager:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = transformer.to(self.device)
+                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:

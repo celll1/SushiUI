@@ -786,6 +786,7 @@ class DiffusionPipelineManager:
         for i, lora_config in enumerate(lora_configs):
             lora_path = lora_config.get("path", "")
             lora_strength = lora_config.get("strength", 1.0)
+            layer_weights = lora_config.get("unet_layer_weights", {})
 
             # Resolve path using LoRAManager
             resolved_path = lora_manager._resolve_lora_path(lora_path)
@@ -797,6 +798,8 @@ class DiffusionPipelineManager:
                 continue
 
             print(f"[FLUX.2 LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+            if layer_weights:
+                print(f"[FLUX.2 LoRA] Layer weights: {layer_weights}")
 
             # Load LoRA weights
             from safetensors import safe_open
@@ -810,9 +813,24 @@ class DiffusionPipelineManager:
                 # Apply LoRA to transformer modules
                 applied_count = 0
 
+                # Debug: Print first few LoRA keys
+                lora_keys_sample = list(lora_state_dict.keys())[:5]
+                print(f"[FLUX.2 LoRA] Sample LoRA keys: {lora_keys_sample}")
+
+                # Debug: Print module class names found
+                module_classes_found = set()
+                for name, module in transformer.named_modules():
+                    module_classes_found.add(module.__class__.__name__)
+                print(f"[FLUX.2 LoRA] Module classes in transformer: {module_classes_found}")
+
                 for name, module in transformer.named_modules():
                     # Flux2Attention (dual stream blocks)
                     if module.__class__.__name__ == "Flux2Attention":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
                         # Standard QKV projections
                         for attr_name in ["to_q", "to_k", "to_v"]:
                             if hasattr(module, attr_name):
@@ -832,12 +850,12 @@ class DiffusionPipelineManager:
                                         module_key = f"{name}.{attr_name}"
                                         wrapped = self._wrap_with_lora_flux2(
                                             module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                         )
                                         if wrapped:
                                             applied_count += 1
 
-                        # to_out (ModuleList)
+                        # to_out (ModuleList) - uses same effective_strength computed above
                         if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
                             if len(module.to_out) > 0 and isinstance(module.to_out[0], torch.nn.Linear):
                                 lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
@@ -853,12 +871,12 @@ class DiffusionPipelineManager:
                                     module_key = f"{name}.to_out.0"
                                     wrapped = self._wrap_with_lora_flux2(
                                         module.to_out, 0, module.to_out[0],
-                                        lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                     )
                                     if wrapped:
                                         applied_count += 1
 
-                        # Additional projections for encoder cross attention
+                        # Additional projections for encoder cross attention - uses same effective_strength
                         for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
                             if hasattr(module, attr_name):
                                 original_linear = getattr(module, attr_name)
@@ -876,13 +894,18 @@ class DiffusionPipelineManager:
                                         module_key = f"{name}.{attr_name}"
                                         wrapped = self._wrap_with_lora_flux2(
                                             module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                         )
                                         if wrapped:
                                             applied_count += 1
 
                     # Flux2ParallelSelfAttention (single stream blocks)
                     elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
                         # Fused QKV + MLP projection
                         if hasattr(module, "to_qkv_mlp_proj"):
                             original_linear = module.to_qkv_mlp_proj
@@ -900,12 +923,12 @@ class DiffusionPipelineManager:
                                     module_key = f"{name}.to_qkv_mlp_proj"
                                     wrapped = self._wrap_with_lora_flux2(
                                         module, "to_qkv_mlp_proj", original_linear,
-                                        lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                     )
                                     if wrapped:
                                         applied_count += 1
 
-                        # Output projection (fused attention + MLP)
+                        # Output projection (fused attention + MLP) - uses same effective_strength
                         if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.Linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
                             lora_down_key = f"{lora_name}.lora_down.weight"
@@ -920,13 +943,18 @@ class DiffusionPipelineManager:
                                 module_key = f"{name}.to_out"
                                 wrapped = self._wrap_with_lora_flux2(
                                     module, "to_out", module.to_out,
-                                    lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                    lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                 )
                                 if wrapped:
                                     applied_count += 1
 
                     # Flux2FeedForward (dual stream blocks)
                     elif module.__class__.__name__ == "Flux2FeedForward":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
                         for attr_name in ["linear_in", "linear_out"]:
                             if hasattr(module, attr_name):
                                 original_linear = getattr(module, attr_name)
@@ -944,7 +972,7 @@ class DiffusionPipelineManager:
                                         module_key = f"{name}.{attr_name}"
                                         wrapped = self._wrap_with_lora_flux2(
                                             module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
                                         )
                                         if wrapped:
                                             applied_count += 1
@@ -956,6 +984,32 @@ class DiffusionPipelineManager:
                 import traceback
                 traceback.print_exc()
 
+    def _get_flux2_block_name(self, module_name: str) -> str:
+        """Get the block name (DUAL{XX} or SING{XX}) from module name for layer-wise weight lookup
+
+        Args:
+            module_name: Module name like 'transformer_blocks.0.attn' or 'single_transformer_blocks.5.attn'
+
+        Returns:
+            Block name like 'DUAL00', 'SING05', or 'BASE' if no match
+        """
+        import re
+
+        # Dual stream blocks: transformer_blocks.X.* (but not single_transformer_blocks)
+        if 'transformer_blocks' in module_name and 'single_transformer_blocks' not in module_name:
+            match = re.search(r'transformer_blocks\.(\d+)', module_name)
+            if match:
+                block_num = int(match.group(1))
+                return f"DUAL{block_num:02d}"
+
+        # Single stream blocks: single_transformer_blocks.X.*
+        match = re.search(r'single_transformer_blocks\.(\d+)', module_name)
+        if match:
+            block_num = int(match.group(1))
+            return f"SING{block_num:02d}"
+
+        return "BASE"
+
     def _wrap_with_lora_flux2(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
         """Wrap a linear layer with LoRA for FLUX.2
 
@@ -965,7 +1019,7 @@ class DiffusionPipelineManager:
             original_linear: Original linear layer
             lora_down_weight: LoRA down projection weight
             lora_up_weight: LoRA up projection weight
-            strength: LoRA strength multiplier
+            strength: LoRA strength multiplier (already adjusted with layer weight)
             alpha: LoRA alpha parameter
             module_key: Unique key for tracking
 
@@ -1865,9 +1919,21 @@ class DiffusionPipelineManager:
 
             # Load LoRAs if specified
             lora_configs = params.get("loras", [])
+            print(f"[FLUX.2] DEBUG: lora_configs from params = {lora_configs}")
             if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
+                else:
+                    print(f"[FLUX.2] DEBUG: No LoRAs in params, skipping LoRA loading")
 
             # Extract components
             transformer = self.flux2_components["transformer"]
@@ -2297,8 +2363,17 @@ class DiffusionPipelineManager:
             # Load LoRAs if specified
             lora_configs = params.get("loras", [])
             if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
 
             # Extract components
             transformer = self.flux2_components["transformer"]
@@ -2591,8 +2666,17 @@ class DiffusionPipelineManager:
             # Load LoRAs if specified
             lora_configs = params.get("loras", [])
             if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
 
             # Extract components
             transformer = self.flux2_components["transformer"]

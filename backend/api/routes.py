@@ -599,6 +599,7 @@ async def generate_img2img(
             "height": height,
             "resize_mode": resize_mode,
             "resampling_method": resampling_method,
+            "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
@@ -916,6 +917,7 @@ async def generate_inpaint(
             "inpaint_fill_mode": inpaint_fill_mode,
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
+            "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,

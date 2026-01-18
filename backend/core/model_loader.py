@@ -882,7 +882,7 @@ class ModelLoader:
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
             cache_dir = snapshot_download(
                 base_model_repo,
-                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json"],
+                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json", "model_index.json"],
             )
             print(f"[ModelLoader] Base components downloaded to: {cache_dir}")
 
@@ -896,6 +896,15 @@ class ModelLoader:
             print(f"  - num_single_layers: {transformer_config.get('num_single_layers', 48)} (single stream)")
             print(f"  - num_attention_heads: {transformer_config.get('num_attention_heads', 48)}")
             print(f"  - attention_head_dim: {transformer_config.get('attention_head_dim', 128)}")
+
+            # Load is_distilled flag from model_index.json (not in transformer config)
+            model_index_path = os.path.join(cache_dir, "model_index.json")
+            is_distilled = False
+            if os.path.exists(model_index_path):
+                with open(model_index_path, 'r') as f:
+                    model_index = json.load(f)
+                    is_distilled = model_index.get("is_distilled", False)
+            print(f"  - is_distilled: {is_distilled}")
 
             # Step 3: Create transformer and load weights from safetensors
             print(f"[ModelLoader] Loading FLUX.2 transformer weights from: {file_path}")
@@ -969,13 +978,17 @@ class ModelLoader:
             print(f"  - Tokenizer: Qwen2TokenizerFast (max_length=512)")
             print(f"  - Scheduler: FlowMatchEulerDiscreteScheduler")
 
+            # Add is_distilled to config dict (for inference logic)
+            config_dict = transformer_config.copy()
+            config_dict["is_distilled"] = is_distilled
+
             return {
                 "transformer": transformer,
                 "vae": vae,
                 "text_encoder": text_encoder,
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
-                "config": transformer_config,
+                "config": config_dict,
                 "model_type": "flux2",  # Distinguish from Z-Image
             }
 

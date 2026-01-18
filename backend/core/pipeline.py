@@ -2513,7 +2513,8 @@ class DiffusionPipelineManager:
 
             # Add noise at start timestep (Flow Matching linear interpolation)
             # t ranges from 1.0 (pure noise) to 0.0 (clean image)
-            t_value = timesteps[0]
+            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
+            t_value = timesteps[0].item() / 1000.0
             noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
             latents = (1 - t_value) * init_latents + t_value * noise
 
@@ -2862,7 +2863,8 @@ class DiffusionPipelineManager:
 
             # Add noise (Flow Matching linear interpolation)
             # t ranges from 1.0 (pure noise) to 0.0 (clean image)
-            t_value = timesteps[0]
+            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
+            t_value = timesteps[0].item() / 1000.0
             noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
             latents = (1 - t_value) * init_latents_packed + t_value * noise
 

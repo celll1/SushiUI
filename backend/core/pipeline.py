@@ -2000,6 +2000,21 @@ class DiffusionPipelineManager:
             torch.cuda.empty_cache()
 
             # ============================================================
+            # Stage 1.5: Encode Reference Images (Image Edit)
+            # ============================================================
+            ref_images = params.get("ref_images", [])
+            ref_tokens = None
+            ref_ids = None
+
+            if ref_images:
+                print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                if ref_tokens is not None:
+                    ref_tokens = ref_tokens.to(prompt_embeds.dtype)
+                    ref_ids = ref_ids.to(self.device)
+                    print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
+
+            # ============================================================
             # Stage 2: Prepare Latents
             # ============================================================
             print("[FLUX.2] Stage 2: Preparing latents...")
@@ -2097,6 +2112,11 @@ class DiffusionPipelineManager:
                 latent_model_input = latents.to(transformer.dtype)
                 latent_image_ids = latent_ids
 
+                # Concatenate reference tokens/IDs if present (Image Edit)
+                if ref_tokens is not None:
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
+
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
                 if do_classifier_free_guidance:
                     # Double the batch: [uncond, cond]
@@ -2117,6 +2137,11 @@ class DiffusionPipelineManager:
                             img_ids=latent_image_ids_doubled,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
                     # Split and apply CFG formula
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
@@ -2139,6 +2164,11 @@ class DiffusionPipelineManager:
                             img_ids=latent_image_ids,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred = noise_pred[:, :seq_len, :]
 
                 # Scheduler step
                 latents_dtype = latents.dtype
@@ -2353,6 +2383,124 @@ class DiffusionPipelineManager:
 
         return float(mu)
 
+    def encode_flux2_image_refs(self, images: List[Image.Image], device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode reference images for FLUX.2 Image Edit feature
+
+        This encodes reference images into latent tokens with position IDs,
+        allowing them to be used as sequence-level conditioning in the transformer.
+        Reference images are concatenated with generation latents in the sequence dimension.
+
+        Args:
+            images: List of reference images (max 10)
+            device: Device to encode on
+
+        Returns:
+            ref_tokens: [1, K, 128] Encoded reference image tokens
+            ref_ids: [1, K, 4] Position IDs [t, h, w, l]
+                     Returns (None, None) if no images provided
+        """
+        if not images:
+            return None, None
+
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded")
+
+        import numpy as np
+
+        # Pixel limits based on number of images
+        limit_pixels = 2024**2 if len(images) == 1 else 1024**2
+
+        vae = self.flux2_components["vae"]
+        vae_device = next(vae.parameters()).device
+        vae_dtype = next(vae.parameters()).dtype
+
+        print(f"[FLUX.2 Image Edit] Encoding {len(images)} reference image(s)...")
+
+        # Preprocess and encode each image
+        encoded_refs = []
+        for idx, img in enumerate(images[:10]):  # Max 10 images
+            # Convert to RGB
+            img = img.convert("RGB")
+
+            # Resize to fit pixel limit (preserve aspect ratio)
+            w, h = img.size
+            if w * h > limit_pixels:
+                scale = (limit_pixels / (w * h)) ** 0.5
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                print(f"[FLUX.2 Image Edit] Image {idx+1}: Resized from {w}x{h} to {new_w}x{new_h}")
+
+            # Crop to multiple of 16
+            w, h = img.size
+            new_w = (w // 16) * 16
+            new_h = (h // 16) * 16
+            left = (w - new_w) // 2
+            top = (h - new_h) // 2
+            img = img.crop((left, top, left + new_w, top + new_h))
+
+            # Convert to tensor
+            img_array = np.array(img).astype(np.float32) / 255.0
+            img_array = (img_array - 0.5) * 2.0
+            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
+            img_tensor = img_tensor.to(device=vae_device, dtype=vae_dtype)
+
+            # VAE encode
+            with torch.no_grad():
+                latent_dist = vae.encode(img_tensor).latent_dist
+                encoded = latent_dist.sample()
+
+                # Patchify: (1, 32, H, W) -> (1, 128, H/2, W/2)
+                encoded = self._flux2_patchify_latents(encoded)
+
+                # BatchNorm normalization
+                latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(encoded.device, encoded.dtype)
+                latents_bn_std = torch.sqrt(
+                    vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
+                ).to(encoded.device, encoded.dtype)
+                encoded = (encoded - latents_bn_mean) / latents_bn_std
+
+                encoded_refs.append(encoded[0])  # [128, H, W]
+                print(f"[FLUX.2 Image Edit] Image {idx+1}: Encoded to latent {encoded[0].shape}")
+
+        # Generate position IDs for each reference image
+        ref_tokens_list = []
+        ref_ids_list = []
+
+        scale = 10  # Time offset scale
+        for idx, encoded in enumerate(encoded_refs):
+            c, h, w = encoded.shape
+
+            # Time offset: 10, 20, 30, ...
+            t_coord = torch.tensor([scale + scale * idx], dtype=torch.long, device=device)
+
+            # Position IDs: [t, h, w, l]
+            t_ids = t_coord.expand(h * w)
+            h_ids = torch.arange(h, device=device).repeat_interleave(w)
+            w_ids = torch.arange(w, device=device).repeat(h)
+            l_ids = torch.zeros(h * w, dtype=torch.long, device=device)
+
+            pos_ids = torch.stack([t_ids, h_ids, w_ids, l_ids], dim=1)  # [H*W, 4]
+
+            # Flatten spatial dimensions
+            tokens = encoded.view(c, -1).permute(1, 0)  # [H*W, 128]
+
+            ref_tokens_list.append(tokens)
+            ref_ids_list.append(pos_ids)
+
+        # Concatenate all references
+        ref_tokens = torch.cat(ref_tokens_list, dim=0)  # [K, 128]
+        ref_ids = torch.cat(ref_ids_list, dim=0)        # [K, 4]
+
+        # Add batch dimension
+        ref_tokens = ref_tokens.unsqueeze(0)  # [1, K, 128]
+        ref_ids = ref_ids.unsqueeze(0)        # [1, K, 4]
+
+        print(f"[FLUX.2 Image Edit] Total reference tokens: {ref_tokens.shape[1]}, shape: {ref_tokens.shape}")
+
+        return ref_tokens, ref_ids
+
     def _generate_img2img_flux2(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from image using FLUX.2 Klein
 
@@ -2463,6 +2611,21 @@ class DiffusionPipelineManager:
             torch.cuda.empty_cache()
 
             # ============================================================
+            # Stage 1.5: Encode Reference Images (Image Edit)
+            # ============================================================
+            ref_images = params.get("ref_images", [])
+            ref_tokens = None
+            ref_ids = None
+
+            if ref_images:
+                print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                if ref_tokens is not None:
+                    ref_tokens = ref_tokens.to(prompt_embeds.dtype)
+                    ref_ids = ref_ids.to(self.device)
+                    print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
+
+            # ============================================================
             # Stage 2: Encode input image
             # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image...")
@@ -2569,6 +2732,12 @@ class DiffusionPipelineManager:
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
+                latent_image_ids = latent_ids
+
+                # Concatenate reference tokens/IDs if present (Image Edit)
+                if ref_tokens is not None:
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
                 if do_classifier_free_guidance:
@@ -2577,7 +2746,7 @@ class DiffusionPipelineManager:
                     timestep_doubled = torch.cat([timestep, timestep], dim=0)
                     prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                     text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
                     with torch.no_grad():
@@ -2587,9 +2756,14 @@ class DiffusionPipelineManager:
                             guidance=None,
                             encoder_hidden_states=prompt_embeds_combined,
                             txt_ids=text_ids_combined,
-                            img_ids=latent_ids_doubled,
+                            img_ids=latent_image_ids_doubled,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
                     # Split and apply CFG formula
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
@@ -2609,9 +2783,14 @@ class DiffusionPipelineManager:
                             guidance=guidance_vec,
                             encoder_hidden_states=prompt_embeds,
                             txt_ids=text_ids,
-                            img_ids=latent_ids,
+                            img_ids=latent_image_ids,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred = noise_pred[:, :seq_len, :]
 
                 # Step
                 latents_dtype = latents.dtype
@@ -2792,6 +2971,21 @@ class DiffusionPipelineManager:
             torch.cuda.empty_cache()
 
             # ============================================================
+            # Stage 1.5: Encode Reference Images (Image Edit)
+            # ============================================================
+            ref_images = params.get("ref_images", [])
+            ref_tokens = None
+            ref_ids = None
+
+            if ref_images:
+                print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                if ref_tokens is not None:
+                    ref_tokens = ref_tokens.to(prompt_embeds.dtype)
+                    ref_ids = ref_ids.to(self.device)
+                    print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
+
+            # ============================================================
             # Stage 2: Encode input image and prepare mask
             # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image and mask...")
@@ -2919,6 +3113,12 @@ class DiffusionPipelineManager:
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
+                latent_image_ids = latent_ids
+
+                # Concatenate reference tokens/IDs if present (Image Edit)
+                if ref_tokens is not None:
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
                 if do_classifier_free_guidance:
@@ -2927,7 +3127,7 @@ class DiffusionPipelineManager:
                     timestep_doubled = torch.cat([timestep, timestep], dim=0)
                     prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                     text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
                     with torch.no_grad():
@@ -2937,9 +3137,14 @@ class DiffusionPipelineManager:
                             guidance=None,
                             encoder_hidden_states=prompt_embeds_combined,
                             txt_ids=text_ids_combined,
-                            img_ids=latent_ids_doubled,
+                            img_ids=latent_image_ids_doubled,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
                     # Split and apply CFG formula
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
@@ -2959,9 +3164,14 @@ class DiffusionPipelineManager:
                             guidance=guidance_vec,
                             encoder_hidden_states=prompt_embeds,
                             txt_ids=text_ids,
-                            img_ids=latent_ids,
+                            img_ids=latent_image_ids,
                             return_dict=False,
                         )[0]
+
+                    # Extract generation part only (remove reference tokens)
+                    if ref_tokens is not None:
+                        seq_len = latents.shape[1]
+                        noise_pred = noise_pred[:, :seq_len, :]
 
                 # Step
                 latents_dtype = latents.dtype

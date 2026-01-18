@@ -1816,7 +1816,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     file:cursor-pointer cursor-pointer
                     disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                {refImages.length > 0 && (
+                {refImagePreviews.length > 0 && (
                   <Button
                     onClick={handleClearAllRefImages}
                     variant="secondary"
@@ -1829,7 +1829,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
 
               {/* Thumbnails and drag & drop area (side by side) */}
-              {refImages.length === 0 ? (
+              {refImagePreviews.length === 0 ? (
                 <div
                   onDragOver={handleRefImageDragOver}
                   onDragLeave={handleRefImageDragLeave}

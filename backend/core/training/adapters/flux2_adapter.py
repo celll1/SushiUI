@@ -402,11 +402,21 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
                 combined_state_dict[f"text_encoders.qwen3.{key}"] = value.cpu()
 
         # Save to safetensors with metadata
+        # Include base_model_repo and is_distilled for inference
+        base_model_repo = getattr(trainer, 'base_model_repo', None)
+        is_distilled = getattr(trainer, 'is_distilled', False)
+
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "flux2",
         }
+
+        # Add base model info if available
+        if base_model_repo:
+            metadata["base_model_repo"] = base_model_repo
+        if is_distilled is not None:
+            metadata["is_distilled"] = str(is_distilled).lower()
 
         print(f"[FLUX2FullParameterAdapter] Saving to {output_path}...")
         save_file(combined_state_dict, output_path, metadata=metadata)

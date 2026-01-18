@@ -1000,6 +1000,11 @@ class BaseTrainer(ABC):
         self.unet = None
         self.noise_scheduler = self.scheduler
 
+        # Save base model info for checkpoint metadata
+        config = components.get("config", {})
+        self.base_model_repo = config.get("base_model_repo", None)
+        self.is_distilled = config.get("is_distilled", False)
+
         # Convert VAE to vae_dtype
         self.vae = self.vae.to(dtype=self.vae_dtype)
 

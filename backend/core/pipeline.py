@@ -2511,11 +2511,13 @@ class DiffusionPipelineManager:
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
 
-            # Add noise at start timestep
+            # Add noise at start timestep (Flow Matching linear interpolation)
+            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
+            t_value = timesteps[0]
             noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
-            latents = scheduler.add_noise(init_latents, noise, timesteps[:1])
+            latents = (1 - t_value) * init_latents + t_value * noise
 
-            print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps)")
+            print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
             # ============================================================
             # Stage 4: Denoising Loop
@@ -2858,11 +2860,13 @@ class DiffusionPipelineManager:
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
 
-            # Add noise
+            # Add noise (Flow Matching linear interpolation)
+            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
+            t_value = timesteps[0]
             noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
-            latents = scheduler.add_noise(init_latents_packed, noise, timesteps[:1])
+            latents = (1 - t_value) * init_latents_packed + t_value * noise
 
-            print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps)")
+            print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
             # ============================================================
             # Stage 4: Denoising Loop with mask blending

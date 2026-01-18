@@ -2512,7 +2512,7 @@ class DiffusionPipelineManager:
             timesteps = timesteps[t_start:]
 
             # Add noise at start timestep
-            noise = torch.randn_like(init_latents, generator=generator)
+            noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
             latents = scheduler.add_noise(init_latents, noise, timesteps[:1])
 
             print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps)")
@@ -2859,7 +2859,7 @@ class DiffusionPipelineManager:
             timesteps = timesteps[t_start:]
 
             # Add noise
-            noise = torch.randn_like(init_latents_packed, generator=generator)
+            noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
             latents = scheduler.add_noise(init_latents_packed, noise, timesteps[:1])
 
             print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps)")

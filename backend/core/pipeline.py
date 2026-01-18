@@ -2268,6 +2268,14 @@ class DiffusionPipelineManager:
         device = text_encoder.device
         dtype = text_encoder.dtype
 
+        # Check if Text Encoder has FP8 weights
+        has_fp8_weights = False
+        for module in text_encoder.modules():
+            if hasattr(module, 'weight') and module.weight is not None:
+                if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                    has_fp8_weights = True
+                    break
+
         # Apply chat template
         messages = [{"role": "user", "content": prompt}]
         text = tokenizer.apply_chat_template(
@@ -2290,13 +2298,23 @@ class DiffusionPipelineManager:
         attention_mask = inputs["attention_mask"].to(device)
 
         # Forward pass
+        # For FP8 quantized Text Encoder, use autocast for mixed precision
         with torch.no_grad():
-            output = text_encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                use_cache=False,
-            )
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    output = text_encoder(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                        use_cache=False,
+                    )
+            else:
+                output = text_encoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
 
         # Extract and stack hidden states from specified layers
         out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)

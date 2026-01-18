@@ -2266,7 +2266,6 @@ class DiffusionPipelineManager:
         FLUX.2 extracts hidden states from layers 9, 18, 27 of Qwen3 and concatenates them.
         """
         device = text_encoder.device
-        dtype = text_encoder.dtype
 
         # Check if Text Encoder has FP8 weights
         has_fp8_weights = False
@@ -2276,7 +2275,13 @@ class DiffusionPipelineManager:
                     has_fp8_weights = True
                     break
 
-        print(f"[FLUX.2] FP8 weight detection: has_fp8_weights = {has_fp8_weights}")
+        # For FP8 quantized models, use BF16 for output dtype (not FP8)
+        if has_fp8_weights:
+            dtype = torch.bfloat16
+        else:
+            dtype = text_encoder.dtype
+
+        print(f"[FLUX.2] FP8 weight detection: has_fp8_weights = {has_fp8_weights}, output dtype = {dtype}")
 
         # Apply chat template
         messages = [{"role": "user", "content": prompt}]

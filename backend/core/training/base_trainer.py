@@ -6665,9 +6665,29 @@ class BaseTrainer(ABC):
                         timesteps = timestep_sampler.sample(batch_size, self.device)
 
                         # Determine if we should save debug latents (only on first MNT iteration)
+                        # With MNT > 1, global_step increments multiple times per batch.
+                        # We check if any step within this batch's MNT range hits the debug interval.
+                        # Example: MNT=32, debug_every=200
+                        #   - Batch 6: steps 192-223, includes step 200 → save at mnt_idx=0
+                        #   - Old logic: mnt_idx=0, global_step=192 → 192 % 200 != 0 → NO save (BUG)
+                        #   - New logic: mnt_idx=0, check if 192..223 contains a multiple of 200 → YES → save
                         debug_save_path = None
-                        if mnt_idx == 0 and debug_dir is not None and global_step % debug_latents_every == 0:
-                            debug_save_path = debug_dir / f"step_{global_step:06d}"
+                        if mnt_idx == 0 and debug_dir is not None:
+                            # batch_start_step = global_step (current step before MNT loop increments)
+                            # batch_end_step = global_step + multi_noise_timesteps - 1 (inclusive)
+                            batch_start_step = global_step
+                            batch_end_step = global_step + multi_noise_timesteps - 1
+                            # Check if any multiple of debug_latents_every falls within [batch_start, batch_end]
+                            # This happens when floor(batch_end / every) > floor((batch_start - 1) / every)
+                            # Or more simply: batch_start <= k*every <= batch_end for some integer k
+                            next_debug_step = ((batch_start_step // debug_latents_every) + 1) * debug_latents_every
+                            if batch_start_step % debug_latents_every == 0 or next_debug_step <= batch_end_step:
+                                # Determine which step to use for the filename
+                                if batch_start_step % debug_latents_every == 0:
+                                    save_step = batch_start_step
+                                else:
+                                    save_step = next_debug_step
+                                debug_save_path = debug_dir / f"step_{save_step:06d}"
 
                         # Detach latents to create fresh computation graph for this MNT iteration
                         # This is necessary because backward() frees the graph

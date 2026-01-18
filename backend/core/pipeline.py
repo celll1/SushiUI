@@ -2114,7 +2114,10 @@ class DiffusionPipelineManager:
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    # Temporarily move to GPU for concatenation
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_ids = ref_ids.to(device=latent_image_ids.device)
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
@@ -2191,6 +2194,11 @@ class DiffusionPipelineManager:
                 block_offloader.cleanup()
             transformer.to("cpu")
             torch.cuda.empty_cache()
+
+            # Clean up reference tokens/IDs (Image Edit)
+            if ref_tokens is not None:
+                del ref_tokens, ref_ids
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 4: VAE Decode
@@ -2736,7 +2744,10 @@ class DiffusionPipelineManager:
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    # Temporarily move to GPU for concatenation
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_ids = ref_ids.to(device=latent_image_ids.device)
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
@@ -2810,6 +2821,11 @@ class DiffusionPipelineManager:
                 block_offloader.cleanup()
             transformer.to("cpu")
             torch.cuda.empty_cache()
+
+            # Clean up reference tokens/IDs (Image Edit)
+            if ref_tokens is not None:
+                del ref_tokens, ref_ids
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 5: VAE Decode (img2img)
@@ -3117,7 +3133,10 @@ class DiffusionPipelineManager:
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens.to(transformer.dtype)], dim=1)
+                    # Temporarily move to GPU for concatenation
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_ids = ref_ids.to(device=latent_image_ids.device)
+                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
@@ -3204,6 +3223,11 @@ class DiffusionPipelineManager:
                 block_offloader.cleanup()
             transformer.to("cpu")
             torch.cuda.empty_cache()
+
+            # Clean up reference tokens/IDs (Image Edit)
+            if ref_tokens is not None:
+                del ref_tokens, ref_ids
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 5: VAE Decode (inpaint)

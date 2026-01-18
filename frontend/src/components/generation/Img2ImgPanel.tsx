@@ -1762,7 +1762,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               ) : (
                 <div>
                   {/* Thumbnail grid with integrated D&D area */}
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-5 auto-rows-fr gap-2">
                     {refImagePreviews.map((preview, index) => (
                       <div
                         key={index}
@@ -1799,7 +1799,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                         title="Drop more images here"
                         style={{
                           gridColumn: refImages.length % 5 === 0 ? 'span 5' : `span ${5 - (refImages.length % 5)}`,
-                          aspectRatio: '1'
+                          gridRow: 'span 1'
                         }}
                       >
                         <p className="text-gray-400 text-center text-sm px-2">

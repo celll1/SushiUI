@@ -2276,6 +2276,8 @@ class DiffusionPipelineManager:
                     has_fp8_weights = True
                     break
 
+        print(f"[FLUX.2] FP8 weight detection: has_fp8_weights = {has_fp8_weights}")
+
         # Apply chat template
         messages = [{"role": "user", "content": prompt}]
         text = tokenizer.apply_chat_template(

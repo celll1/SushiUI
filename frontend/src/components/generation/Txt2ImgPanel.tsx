@@ -673,7 +673,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           }
 
           if (newPreviews.length === newFiles.length) {
-            setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+            // Use functional setState to get the latest state
+            setRefImagePreviews((prevPreviews) => [...prevPreviews, ...newPreviews]);
 
             // Update localStorage with refs
             const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
@@ -749,7 +750,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           }
 
           if (newPreviews.length === imageFiles.length) {
-            setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+            // Use functional setState to get the latest state
+            setRefImagePreviews((prevPreviews) => [...prevPreviews, ...newPreviews]);
 
             // Update localStorage with refs
             const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);

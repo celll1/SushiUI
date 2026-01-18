@@ -1537,7 +1537,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 )}
               </div>
 
-              {/* Drag & drop area or thumbnails */}
+              {/* Thumbnails and drag & drop area (side by side) */}
               {refImages.length === 0 ? (
                 <div
                   onDragOver={handleRefImageDragOver}
@@ -1556,36 +1556,56 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </p>
                 </div>
               ) : (
-                <div>
+                <div className="flex gap-3">
                   {/* Thumbnail grid */}
-                  <div className="grid grid-cols-5 gap-2">
-                    {refImagePreviews.map((preview, index) => (
-                      <div
-                        key={index}
-                        className="relative aspect-square bg-gray-800 rounded-lg overflow-hidden border border-gray-700 group"
-                      >
-                        <img
-                          src={preview}
-                          alt={`Reference ${index + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                        <button
-                          onClick={() => handleRemoveRefImage(index)}
-                          className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title={`Remove image ${index + 1}`}
+                  <div className="flex-1">
+                    <div className="grid grid-cols-5 gap-2">
+                      {refImagePreviews.map((preview, index) => (
+                        <div
+                          key={index}
+                          className="relative aspect-square bg-gray-800 rounded-lg overflow-hidden border border-gray-700 group"
                         >
-                          <X className="w-3 h-3" />
-                        </button>
-                        <span className="absolute bottom-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-                          {index + 1}
-                        </span>
-                      </div>
-                    ))}
+                          <img
+                            src={preview}
+                            alt={`Reference ${index + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                          <button
+                            onClick={() => handleRemoveRefImage(index)}
+                            className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title={`Remove image ${index + 1}`}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                          <span className="absolute bottom-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
+                            {index + 1}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Info text */}
+                    <p className="text-xs text-gray-400 mt-2">
+                      💡 {refImages.length}/10 images. {refImages.length < 10 ? 'Drop more on the right →' : 'Max reached'}
+                    </p>
                   </div>
-                  {/* Info text */}
-                  <p className="text-xs text-gray-400 mt-2">
-                    💡 Reference images guide generation through attention conditioning (max 10). {refImages.length < 10 && `${10 - refImages.length} slot${10 - refImages.length > 1 ? 's' : ''} remaining.`}
-                  </p>
+                  {/* Drag & drop area (always visible when images exist and not full) */}
+                  {refImages.length < 10 && (
+                    <div
+                      onDragOver={handleRefImageDragOver}
+                      onDragLeave={handleRefImageDragLeave}
+                      onDrop={handleRefImageDrop}
+                      className={`w-28 bg-gray-800 rounded-lg border-2 border-dashed transition-colors flex items-center justify-center flex-shrink-0 ${
+                        isRefImageDragging
+                          ? 'border-blue-500 bg-gray-700'
+                          : 'border-gray-600'
+                      }`}
+                      title="Drop more images here"
+                    >
+                      <p className="text-gray-400 text-center text-xs px-2 leading-tight whitespace-pre-line">
+                        {isRefImageDragging ? 'Drop\nhere' : 'Drop\nmore\nhere'}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

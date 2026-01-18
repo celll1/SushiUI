@@ -120,6 +120,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
+
+  // FLUX.2 Image Edit: Reference images
+  const [refImages, setRefImages] = useState<File[]>([]);
+  const [refImagePreviews, setRefImagePreviews] = useState<string[]>([]);
+  const [isRefImageDragging, setIsRefImageDragging] = useState(false);
+
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
     steps: []
@@ -610,6 +616,80 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
+  // FLUX.2 Image Edit: Reference image handlers
+  const handleRefImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const newFiles = Array.from(files).slice(0, 10 - refImages.length); // Max 10 total
+    const newPreviews: string[] = [];
+
+    for (const file of newFiles) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          newPreviews.push(event.target.result as string);
+          if (newPreviews.length === newFiles.length) {
+            setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    setRefImages([...refImages, ...newFiles]);
+  };
+
+  const handleRemoveRefImage = (index: number) => {
+    setRefImages(refImages.filter((_, i) => i !== index));
+    setRefImagePreviews(refImagePreviews.filter((_, i) => i !== index));
+  };
+
+  const handleClearAllRefImages = () => {
+    setRefImages([]);
+    setRefImagePreviews([]);
+  };
+
+  const handleRefImageDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsRefImageDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    const imageFiles = Array.from(files)
+      .filter(file => file.type.startsWith('image/'))
+      .slice(0, 10 - refImages.length); // Max 10 total
+
+    if (imageFiles.length === 0) return;
+
+    const newPreviews: string[] = [];
+    for (const file of imageFiles) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          newPreviews.push(event.target.result as string);
+          if (newPreviews.length === imageFiles.length) {
+            setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    setRefImages([...refImages, ...imageFiles]);
+  };
+
+  const handleRefImageDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsRefImageDragging(true);
+  };
+
+  const handleRefImageDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsRefImageDragging(false);
+  };
+
   const handleGenerateTIPO = async () => {
     // Use params.prompt directly, or selection if user has selected text
     const textarea = promptTextareaRef.current;
@@ -1084,6 +1164,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             dynamic_threshold_percentile: 0.0,
           };
         }
+        // Add FLUX.2 Image Edit reference images
+        if (refImages.length > 0) {
+          paramsWithDevMode = {
+            ...paramsWithDevMode,
+            ref_images: refImages,
+          };
+        }
         result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
         imageUrl = `/outputs/${result.image.filename}`;
       } else if (nextItem.type === "img2img") {
@@ -1404,6 +1491,106 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             console.log("[Txt2Img] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
           }
         }} />
+
+        {/* FLUX.2 Image Edit: Reference Images */}
+        {currentModelInfo?.model_info?.type === "flux2" && (
+          <Card
+            title="FLUX.2 Image Edit (Reference Images)"
+            collapsible={true}
+            defaultCollapsed={true}
+            storageKey="txt2img_ref_images_collapsed"
+            collapsedPreview={
+              refImages.length > 0 ? (
+                <span className="text-green-400 text-sm">✓ {refImages.length} image{refImages.length > 1 ? 's' : ''}</span>
+              ) : (
+                <span className="text-gray-500 text-sm">No reference images</span>
+              )
+            }
+          >
+            <div className="space-y-3">
+              {/* Upload section */}
+              <div className="flex gap-2">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  multiple
+                  onChange={handleRefImageUpload}
+                  disabled={refImages.length >= 10}
+                  className="flex-1 block w-full text-sm text-gray-400
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-lg file:border-0
+                    file:text-sm file:font-medium
+                    file:bg-blue-600 file:text-white
+                    hover:file:bg-blue-700
+                    file:cursor-pointer cursor-pointer
+                    disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                {refImages.length > 0 && (
+                  <Button
+                    onClick={handleClearAllRefImages}
+                    variant="secondary"
+                    size="sm"
+                    title="Clear all reference images"
+                  >
+                    Clear All
+                  </Button>
+                )}
+              </div>
+
+              {/* Drag & drop area or thumbnails */}
+              {refImages.length === 0 ? (
+                <div
+                  onDragOver={handleRefImageDragOver}
+                  onDragLeave={handleRefImageDragLeave}
+                  onDrop={handleRefImageDrop}
+                  className={`h-32 bg-gray-800 rounded-lg border-2 border-dashed transition-colors flex items-center justify-center ${
+                    isRefImageDragging
+                      ? 'border-blue-500 bg-gray-700'
+                      : 'border-gray-600'
+                  }`}
+                >
+                  <p className="text-gray-500 text-center text-sm px-4">
+                    {isRefImageDragging
+                      ? 'Drop images here (max 10)'
+                      : 'Drag and drop images here or use the file picker above (max 10)'}
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  {/* Thumbnail grid */}
+                  <div className="grid grid-cols-5 gap-2">
+                    {refImagePreviews.map((preview, index) => (
+                      <div
+                        key={index}
+                        className="relative aspect-square bg-gray-800 rounded-lg overflow-hidden border border-gray-700 group"
+                      >
+                        <img
+                          src={preview}
+                          alt={`Reference ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          onClick={() => handleRemoveRefImage(index)}
+                          className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={`Remove image ${index + 1}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                        <span className="absolute bottom-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
+                          {index + 1}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Info text */}
+                  <p className="text-xs text-gray-400 mt-2">
+                    💡 Reference images guide generation through attention conditioning (max 10). {refImages.length < 10 && `${10 - refImages.length} slot${10 - refImages.length > 1 ? 's' : ''} remaining.`}
+                  </p>
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
         <Card title="Prompt">
           <div className="relative">

@@ -4835,30 +4835,40 @@ class BaseTrainer(ABC):
 
                     latent_model_input = latents.to(self.transformer.dtype)
 
-                    # Forward pass (conditional)
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,  # Normalize timestep
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        return_dict=False,
-                    )[0]
-
-                    # Classifier-free guidance
+                    # Batch CFG: Concatenate unconditional and conditional for single forward pass
                     if do_classifier_free_guidance:
-                        neg_noise_pred = self.transformer(
+                        # Double the batch: [uncond, cond]
+                        latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                        timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                        prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                        text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+
+                        # Single forward pass for both unconditional and conditional
+                        noise_pred_combined = self.transformer(
+                            hidden_states=latent_model_input_doubled,
+                            timestep=timestep_doubled / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds_combined,
+                            txt_ids=text_ids_combined,
+                            img_ids=latent_ids_doubled,
+                            return_dict=False,
+                        )[0]
+
+                        # Split and apply CFG formula
+                        noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        # No CFG: Single forward pass with conditional only
+                        noise_pred = self.transformer(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
                             guidance=None,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            txt_ids=negative_text_ids,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-                        # CFG formula
-                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                     # Scheduler step
                     latents_dtype = latents.dtype

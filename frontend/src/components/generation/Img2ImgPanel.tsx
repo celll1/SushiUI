@@ -955,7 +955,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       reader.readAsDataURL(file);
     }
 
-    setRefImages([...refImages, ...newFiles]);
+    // Use functional setState to get the latest state
+    setRefImages((prevFiles) => [...prevFiles, ...newFiles]);
   };
 
   const handleRemoveRefImage = (index: number) => {
@@ -1032,7 +1033,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       reader.readAsDataURL(file);
     }
 
-    setRefImages([...refImages, ...imageFiles]);
+    // Use functional setState to get the latest state
+    setRefImages((prevFiles) => [...prevFiles, ...imageFiles]);
   };
 
   const handleRefImageDragOver = (e: React.DragEvent<HTMLDivElement>) => {

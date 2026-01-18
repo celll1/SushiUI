@@ -262,7 +262,7 @@ def load_loras_for_generation(
 
 def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[str, Any]:
     """
-    データベース保存用にパラメータを準備（ControlNet画像をハッシュに変換）
+    データベース保存用にパラメータを準備（ControlNet画像・ref_imagesをハッシュに変換）
 
     重複削減: 30行 → 10行（20行削減）
 
@@ -282,6 +282,12 @@ def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[
                 for k, v in cn.items()
             }
             for cn in params_for_db["controlnet_images"]
+        ]
+
+    # FLUX.2 Image Edit: Convert ref_images to hashes
+    if "ref_images" in params_for_db and params_for_db["ref_images"]:
+        params_for_db["ref_images"] = [
+            calculate_image_hash(img) for img in params_for_db["ref_images"]
         ]
 
     return params_for_db

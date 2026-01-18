@@ -1968,17 +1968,13 @@ class DiffusionPipelineManager:
             guidance_scale = params.get("cfg_scale", 4.0)
             max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
 
-            # FLUX.2 uses Guidance Embedding (distilled model) - no True CFG needed
-            # Check if model has guidance embedding support (FLUX.2 Klein default: True)
-            use_guidance_embed = config.get("use_guidance_embed", True)
-            is_distilled = config.get("is_distilled", True)  # FLUX.2 default: distilled
-
-            # Only use True CFG if model doesn't support guidance embedding
-            do_classifier_free_guidance = guidance_scale > 1.0 and not use_guidance_embed
+            # Check if distilled model (no CFG)
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
             print(f"[FLUX.2] Generating {width}x{height} image")
-            print(f"[FLUX.2] Steps: {num_inference_steps}, Guidance: {guidance_scale}, Seed: {seed}")
-            print(f"[FLUX.2] Guidance Embedding: {use_guidance_embed}, True CFG: {do_classifier_free_guidance}")
+            print(f"[FLUX.2] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[FLUX.2] CFG enabled: {do_classifier_free_guidance}")
             print(f"[FLUX.2] Prompt: {prompt[:100]}...")
 
             # ============================================================
@@ -1991,22 +1987,13 @@ class DiffusionPipelineManager:
                 text_encoder, tokenizer, prompt, max_sequence_length
             )
 
-            # Negative prompt handling
             if do_classifier_free_guidance:
-                # True CFG: need negative prompt embeddings
-                negative_prompt = params.get("negative_prompt", "")
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer,
-                    negative_prompt if negative_prompt else "",
-                    max_sequence_length
+                    text_encoder, tokenizer, "", max_sequence_length
                 )
-                print(f"[FLUX.2] Using True CFG (negative prompt: '{negative_prompt[:50] if negative_prompt else '(empty)'}...')")
             else:
-                # Guidance Embedding: no negative prompt needed
                 negative_prompt_embeds = None
                 negative_text_ids = None
-                if use_guidance_embed:
-                    print(f"[FLUX.2] Using Guidance Embedding (no negative prompt)")
 
             # Offload text encoder to CPU
             text_encoder.to("cpu")
@@ -2094,17 +2081,6 @@ class DiffusionPipelineManager:
             timesteps = scheduler.timesteps
             scheduler.set_begin_index(0)
 
-            # Prepare guidance vector for Guidance Embedding
-            if use_guidance_embed:
-                guidance_vec = torch.full(
-                    (latents.shape[0],),
-                    guidance_scale,
-                    device=self.device,
-                    dtype=latents.dtype
-                )
-            else:
-                guidance_vec = None
-
             # Denoising loop
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
@@ -2121,44 +2097,32 @@ class DiffusionPipelineManager:
                 latent_model_input = latents.to(transformer.dtype)
                 latent_image_ids = latent_ids
 
-                if use_guidance_embed:
-                    # Single-pass inference with Guidance Embedding (FLUX.2 default)
+                # Forward pass (conditional) - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,  # Normalize timestep
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_image_ids,
+                        return_dict=False,
+                    )[0]
+
+                # Classifier-free guidance
+                if do_classifier_free_guidance:
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,  # Normalize timestep
-                            guidance=guidance_vec,  # Pass guidance vector
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_image_ids,
-                            return_dict=False,
-                        )[0]
-                else:
-                    # True CFG (2-pass inference for non-distilled models)
-                    with torch.no_grad():
-                        noise_pred = transformer_wrapper(
+                        neg_noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
                             guidance=None,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
                             img_ids=latent_image_ids,
                             return_dict=False,
                         )[0]
-
-                    if do_classifier_free_guidance:
-                        with torch.no_grad():
-                            neg_noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=None,
-                                encoder_hidden_states=negative_prompt_embeds,
-                                txt_ids=negative_text_ids,
-                                img_ids=latent_image_ids,
-                                return_dict=False,
-                            )[0]
-                        # CFG formula
-                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                    # CFG formula
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                 # Scheduler step
                 latents_dtype = latents.dtype
@@ -2457,10 +2421,9 @@ class DiffusionPipelineManager:
 
             print(f"[FLUX.2] img2img: {width}x{height}, strength: {denoising_strength}")
 
-            # FLUX.2 uses Guidance Embedding (distilled model)
-            use_guidance_embed = config.get("use_guidance_embed", True)
-            is_distilled = config.get("is_distilled", True)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not use_guidance_embed
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -2472,13 +2435,9 @@ class DiffusionPipelineManager:
                 text_encoder, tokenizer, prompt, max_sequence_length
             )
 
-            # Negative prompt handling
             if do_classifier_free_guidance:
-                negative_prompt = params.get("negative_prompt", "")
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer,
-                    negative_prompt if negative_prompt else "",
-                    max_sequence_length
+                    text_encoder, tokenizer, "", max_sequence_length
                 )
             else:
                 negative_prompt_embeds = None
@@ -2579,17 +2538,6 @@ class DiffusionPipelineManager:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-            # Create guidance vector for Guidance Embedding
-            if use_guidance_embed:
-                guidance_vec = torch.full(
-                    (latents.shape[0],),
-                    guidance_scale,
-                    device=self.device,
-                    dtype=latents.dtype
-                )
-            else:
-                guidance_vec = None
-
             scheduler.set_begin_index(t_start)
 
             for i, t in enumerate(timesteps):
@@ -2603,45 +2551,31 @@ class DiffusionPipelineManager:
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
 
-                # Use Guidance Embedding (single-pass) or True CFG (2-pass)
-                if use_guidance_embed:
-                    # Single-pass inference with Guidance Embedding (FLUX.2 default)
+                # Forward pass - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_ids,
+                        return_dict=False,
+                    )[0]
+
+                # CFG
+                if do_classifier_free_guidance:
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=guidance_vec,  # Pass guidance vector
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_ids,
-                            return_dict=False,
-                        )[0]
-                else:
-                    # True CFG (2-pass inference for non-distilled models)
-                    with torch.no_grad():
-                        noise_pred = transformer_wrapper(
+                        neg_noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
                             guidance=None,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-
-                    # CFG
-                    if do_classifier_free_guidance:
-                        with torch.no_grad():
-                            neg_noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=None,
-                                encoder_hidden_states=negative_prompt_embeds,
-                                txt_ids=negative_text_ids,
-                                img_ids=latent_ids,
-                                return_dict=False,
-                            )[0]
-                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                 # Step
                 latents_dtype = latents.dtype
@@ -2796,10 +2730,9 @@ class DiffusionPipelineManager:
                 from PIL import ImageFilter
                 mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
 
-            # FLUX.2 uses Guidance Embedding (distilled model)
-            use_guidance_embed = config.get("use_guidance_embed", True)
-            is_distilled = config.get("is_distilled", True)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not use_guidance_embed
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -2811,13 +2744,9 @@ class DiffusionPipelineManager:
                 text_encoder, tokenizer, prompt, max_sequence_length
             )
 
-            # Negative prompt handling
             if do_classifier_free_guidance:
-                negative_prompt = params.get("negative_prompt", "")
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer,
-                    negative_prompt if negative_prompt else "",
-                    max_sequence_length
+                    text_encoder, tokenizer, "", max_sequence_length
                 )
             else:
                 negative_prompt_embeds = None
@@ -2939,17 +2868,6 @@ class DiffusionPipelineManager:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-            # Create guidance vector for Guidance Embedding
-            if use_guidance_embed:
-                guidance_vec = torch.full(
-                    (latents.shape[0],),
-                    guidance_scale,
-                    device=self.device,
-                    dtype=latents.dtype
-                )
-            else:
-                guidance_vec = None
-
             scheduler.set_begin_index(t_start)
 
             for i, t in enumerate(timesteps):
@@ -2963,45 +2881,31 @@ class DiffusionPipelineManager:
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
 
-                # Use Guidance Embedding (single-pass) or True CFG (2-pass)
-                if use_guidance_embed:
-                    # Single-pass inference with Guidance Embedding (FLUX.2 default)
+                # Forward pass - use wrapper for Block Swap
+                with torch.no_grad():
+                    noise_pred = transformer_wrapper(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=None,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_ids,
+                        return_dict=False,
+                    )[0]
+
+                # CFG
+                if do_classifier_free_guidance:
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=guidance_vec,  # Pass guidance vector
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_ids,
-                            return_dict=False,
-                        )[0]
-                else:
-                    # True CFG (2-pass inference for non-distilled models)
-                    with torch.no_grad():
-                        noise_pred = transformer_wrapper(
+                        neg_noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
                             guidance=None,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-
-                    # CFG
-                    if do_classifier_free_guidance:
-                        with torch.no_grad():
-                            neg_noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=None,
-                                encoder_hidden_states=negative_prompt_embeds,
-                                txt_ids=negative_text_ids,
-                                img_ids=latent_ids,
-                                return_dict=False,
-                            )[0]
-                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                 # Step
                 latents_dtype = latents.dtype

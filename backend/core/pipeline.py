@@ -2579,6 +2579,17 @@ class DiffusionPipelineManager:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
+            # Create guidance vector for Guidance Embedding
+            if use_guidance_embed:
+                guidance_vec = torch.full(
+                    (latents.shape[0],),
+                    guidance_scale,
+                    device=self.device,
+                    dtype=latents.dtype
+                )
+            else:
+                guidance_vec = None
+
             scheduler.set_begin_index(t_start)
 
             for i, t in enumerate(timesteps):
@@ -2592,31 +2603,45 @@ class DiffusionPipelineManager:
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
 
-                # Forward pass - use wrapper for Block Swap
-                with torch.no_grad():
-                    noise_pred = transformer_wrapper(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        return_dict=False,
-                    )[0]
-
-                # CFG
-                if do_classifier_free_guidance:
+                # Use Guidance Embedding (single-pass) or True CFG (2-pass)
+                if use_guidance_embed:
+                    # Single-pass inference with Guidance Embedding (FLUX.2 default)
                     with torch.no_grad():
-                        neg_noise_pred = transformer_wrapper(
+                        noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
-                            guidance=None,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            txt_ids=negative_text_ids,
+                            guidance=guidance_vec,  # Pass guidance vector
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                else:
+                    # True CFG (2-pass inference for non-distilled models)
+                    with torch.no_grad():
+                        noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+
+                    # CFG
+                    if do_classifier_free_guidance:
+                        with torch.no_grad():
+                            neg_noise_pred = transformer_wrapper(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=None,
+                                encoder_hidden_states=negative_prompt_embeds,
+                                txt_ids=negative_text_ids,
+                                img_ids=latent_ids,
+                                return_dict=False,
+                            )[0]
+                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                 # Step
                 latents_dtype = latents.dtype
@@ -2914,6 +2939,17 @@ class DiffusionPipelineManager:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
+            # Create guidance vector for Guidance Embedding
+            if use_guidance_embed:
+                guidance_vec = torch.full(
+                    (latents.shape[0],),
+                    guidance_scale,
+                    device=self.device,
+                    dtype=latents.dtype
+                )
+            else:
+                guidance_vec = None
+
             scheduler.set_begin_index(t_start)
 
             for i, t in enumerate(timesteps):
@@ -2927,31 +2963,45 @@ class DiffusionPipelineManager:
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = latents.to(transformer.dtype)
 
-                # Forward pass - use wrapper for Block Swap
-                with torch.no_grad():
-                    noise_pred = transformer_wrapper(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        return_dict=False,
-                    )[0]
-
-                # CFG
-                if do_classifier_free_guidance:
+                # Use Guidance Embedding (single-pass) or True CFG (2-pass)
+                if use_guidance_embed:
+                    # Single-pass inference with Guidance Embedding (FLUX.2 default)
                     with torch.no_grad():
-                        neg_noise_pred = transformer_wrapper(
+                        noise_pred = transformer_wrapper(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
-                            guidance=None,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            txt_ids=negative_text_ids,
+                            guidance=guidance_vec,  # Pass guidance vector
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                else:
+                    # True CFG (2-pass inference for non-distilled models)
+                    with torch.no_grad():
+                        noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+
+                    # CFG
+                    if do_classifier_free_guidance:
+                        with torch.no_grad():
+                            neg_noise_pred = transformer_wrapper(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=None,
+                                encoder_hidden_states=negative_prompt_embeds,
+                                txt_ids=negative_text_ids,
+                                img_ids=latent_ids,
+                                return_dict=False,
+                            )[0]
+                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                 # Step
                 latents_dtype = latents.dtype

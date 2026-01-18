@@ -4824,9 +4824,21 @@ class BaseTrainer(ABC):
             timesteps = self.scheduler.timesteps
             self.scheduler.set_begin_index(0)
 
-            # Check if distilled model (no CFG)
-            is_distilled = getattr(self.transformer.config, "is_distilled", False)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+            # Check if distilled model (FLUX.2 uses Guidance Embedding)
+            use_guidance_embed = getattr(self.transformer.config, "use_guidance_embed", True)
+            is_distilled = getattr(self.transformer.config, "is_distilled", True)  # FLUX.2 default: distilled
+            do_classifier_free_guidance = guidance_scale > 1.0 and not use_guidance_embed
+
+            # Create guidance vector for Guidance Embedding
+            if use_guidance_embed:
+                guidance_vec = torch.full(
+                    (latents.shape[0],),
+                    guidance_scale,
+                    device=self.device,
+                    dtype=latents.dtype
+                )
+            else:
+                guidance_vec = None
 
             with torch.no_grad():
                 for i, t in enumerate(tqdm(timesteps, desc="Generating")):
@@ -4835,30 +4847,44 @@ class BaseTrainer(ABC):
 
                     latent_model_input = latents.to(self.transformer.dtype)
 
-                    # Forward pass (conditional)
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,  # Normalize timestep
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        return_dict=False,
-                    )[0]
-
-                    # Classifier-free guidance
-                    if do_classifier_free_guidance:
-                        neg_noise_pred = self.transformer(
+                    # Use Guidance Embedding (single-pass) or True CFG (2-pass)
+                    if use_guidance_embed:
+                        # Single-pass inference with Guidance Embedding (FLUX.2 default)
+                        noise_pred = self.transformer(
                             hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=None,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            txt_ids=negative_text_ids,
+                            timestep=timestep / 1000,  # Normalize timestep
+                            guidance=guidance_vec,  # Pass guidance vector
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
                             img_ids=latent_ids,
                             return_dict=False,
                         )[0]
-                        # CFG formula
-                        noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+                    else:
+                        # True CFG (2-pass inference for non-distilled models)
+                        # Forward pass (conditional)
+                        noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+
+                        # Classifier-free guidance
+                        if do_classifier_free_guidance:
+                            neg_noise_pred = self.transformer(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=None,
+                                encoder_hidden_states=negative_prompt_embeds,
+                                txt_ids=negative_text_ids,
+                                img_ids=latent_ids,
+                                return_dict=False,
+                            )[0]
+                            # CFG formula
+                            noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
                     # Scheduler step
                     latents_dtype = latents.dtype

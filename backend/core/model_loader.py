@@ -854,7 +854,7 @@ class ModelLoader:
         file_path: str,
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.bfloat16,
-        base_model_repo: str = "black-forest-labs/FLUX.2-Klein-4B"
+        base_model_repo: str = None
     ) -> Dict[str, Any]:
         """Load FLUX.2 Klein from safetensors file (transformer weights only)
 
@@ -865,7 +865,7 @@ class ModelLoader:
             file_path: Path to FLUX.2 transformer safetensors
             device: Device to load models on
             torch_dtype: Data type for model weights (bfloat16 recommended)
-            base_model_repo: HuggingFace repo ID for base components
+            base_model_repo: HuggingFace repo ID for base components (auto-detected if None)
 
         Returns:
             Dict with transformer, vae, text_encoder, tokenizer, scheduler components
@@ -874,9 +874,49 @@ class ModelLoader:
             from diffusers import Flux2Transformer2DModel, AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler
             from transformers import Qwen3ForCausalLM, Qwen2TokenizerFast
             from huggingface_hub import snapshot_download
+            from safetensors import safe_open
             import os
 
             print(f"[ModelLoader] Loading FLUX.2 Klein from safetensors: {file_path}")
+
+            # Auto-detect base_model_repo from safetensors metadata if not specified
+            if base_model_repo is None:
+                print(f"[ModelLoader] Auto-detecting HuggingFace repo from metadata...")
+                with safe_open(file_path, framework="pt", device="cpu") as f:
+                    metadata = f.metadata() or {}
+
+                    # Check num_single_layers to determine model variant
+                    # Klein Base 4B: 48 single layers
+                    # Klein 4B (distilled): 24 single layers
+                    # Klein 9B (distilled): 36 single layers
+                    num_single_layers = None
+                    for key in f.keys():
+                        if "single_blocks.47." in key or "single_transformer_blocks.47." in key:
+                            num_single_layers = 48
+                            break
+                        elif "single_blocks.35." in key or "single_transformer_blocks.35." in key:
+                            num_single_layers = 36
+                            break
+                        elif "single_blocks.23." in key or "single_transformer_blocks.23." in key:
+                            num_single_layers = 24
+                            break
+
+                    # Determine repo based on layer count
+                    if num_single_layers == 48:
+                        base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
+                        print(f"[ModelLoader] Detected Klein Base 4B (48 single layers)")
+                    elif num_single_layers == 36:
+                        base_model_repo = "black-forest-labs/FLUX.2-klein-9B"
+                        print(f"[ModelLoader] Detected Klein 9B (36 single layers)")
+                    elif num_single_layers == 24:
+                        base_model_repo = "black-forest-labs/FLUX.2-klein-4B"
+                        print(f"[ModelLoader] Detected Klein 4B (24 single layers)")
+                    else:
+                        # Fallback: use Base 4B as default
+                        base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
+                        print(f"[ModelLoader] Could not detect model variant, defaulting to Klein Base 4B")
+
+                print(f"[ModelLoader] Using HuggingFace repo: {base_model_repo}")
 
             # Step 1: Download base components from HuggingFace
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")

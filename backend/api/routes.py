@@ -198,6 +198,7 @@ async def generate_txt2img(
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(20),
     use_pinned_memory: bool = Form(False),
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -273,6 +274,16 @@ async def generate_txt2img(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
+        # Process reference images (FLUX.2 Image Edit)
+        ref_image_list = []
+        if ref_images:
+            from PIL import Image
+            import io
+            for ref_img_file in ref_images:
+                img_bytes = await ref_img_file.read()
+                ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
+            print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -308,6 +319,7 @@ async def generate_txt2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
 
         # Log params without large base64 data
@@ -500,6 +512,7 @@ async def generate_img2img(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from image"""
@@ -583,6 +596,14 @@ async def generate_img2img(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
+        # Process reference images (FLUX.2 Image Edit)
+        ref_image_list = []
+        if ref_images:
+            for ref_img_file in ref_images:
+                img_bytes = await ref_img_file.read()
+                ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
+            print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -622,6 +643,7 @@ async def generate_img2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
@@ -800,6 +822,7 @@ async def generate_inpaint(
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
     db: Session = Depends(get_gallery_db)
 ):
     """Generate inpainted image"""
@@ -897,6 +920,14 @@ async def generate_inpaint(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
+        # Process reference images (FLUX.2 Image Edit)
+        ref_image_list = []
+        if ref_images:
+            for ref_img_file in ref_images:
+                img_bytes = await ref_img_file.read()
+                ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
+            print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -940,6 +971,7 @@ async def generate_inpaint(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 

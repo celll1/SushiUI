@@ -193,6 +193,8 @@ export interface GenerationParams {
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
+  // FLUX.2 Image Edit (reference images for sequence conditioning)
+  ref_images?: File[];
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -321,6 +323,13 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
   formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
 
+  // FLUX.2 Image Edit (reference images)
+  if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
+    for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
+      formData.append("ref_images", paramsWithImages.ref_images[i]);
+    }
+  }
+
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -403,6 +412,13 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // FLUX.2 Image Edit (reference images)
+  if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
+    for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
+      formData.append("ref_images", paramsWithImages.ref_images[i]);
+    }
+  }
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -500,6 +516,13 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // FLUX.2 Image Edit (reference images)
+  if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
+    for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
+      formData.append("ref_images", paramsWithImages.ref_images[i]);
+    }
+  }
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

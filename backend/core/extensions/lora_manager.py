@@ -665,11 +665,27 @@ class LoRAManager:
                             block_num = int(match.group(1))
                             blocks.add(f"FDiT{block_num:02d}")
 
+                    # Check for FLUX.2 transformer structure
+                    # Key format: lora_transformer_transformer_blocks_X_... (dual stream)
+                    #             lora_transformer_single_transformer_blocks_X_... (single stream)
+                    elif 'transformer_blocks_' in key or 'single_transformer_blocks_' in key:
+                        # Dual stream blocks: transformer_blocks_0 ~ transformer_blocks_4
+                        match_dual = re.search(r'transformer_blocks_(\d+)', key)
+                        if match_dual and 'single_transformer_blocks' not in key:
+                            block_num = int(match_dual.group(1))
+                            blocks.add(f"DUAL{block_num:02d}")
+
+                        # Single stream blocks: single_transformer_blocks_0 ~ single_transformer_blocks_19
+                        match_single = re.search(r'single_transformer_blocks_(\d+)', key)
+                        if match_single:
+                            block_num = int(match_single.group(1))
+                            blocks.add(f"SING{block_num:02d}")
+
                 # If no blocks found, add BASE
                 if not blocks:
                     blocks.add("BASE")
 
-            # Sort blocks: BASE, IN00-IN11, MID/MID00-MID01, OUT00-OUT29 (SD/SDXL), NRef0-1, CRef0-1, FDiT00-29 (Z-Image)
+            # Sort blocks: BASE, IN00-IN11, MID/MID00-MID01, OUT00-OUT29 (SD/SDXL), NRef0-1, CRef0-1, FDiT00-29 (Z-Image), DUAL00-04, SING00-19 (FLUX.2)
             def sort_key(block):
                 if block == "BASE":
                     return (0, 0)
@@ -692,6 +708,13 @@ class LoRAManager:
                 elif block.startswith("FDiT"):
                     # FDiT00-FDiT29
                     return (3, int(block[4:]))
+                # FLUX.2 specific blocks
+                elif block.startswith("DUAL"):
+                    # DUAL00-DUAL04 (dual stream blocks)
+                    return (1, int(block[4:]))
+                elif block.startswith("SING"):
+                    # SING00-SING19 (single stream blocks)
+                    return (2, int(block[4:]))
                 return (9, 0)
 
             sorted_blocks = sorted(list(blocks), key=sort_key)

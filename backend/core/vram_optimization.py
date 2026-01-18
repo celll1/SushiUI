@@ -804,14 +804,15 @@ def _quantize_text_encoder(text_encoder, quantization: str):
             # Clone the model
             quantized_text_encoder = copy.deepcopy(text_encoder)
 
-            # Convert only Linear layer weights to FP8 (leave buffers/embeddings in BF16)
-            converted_count = 0
+            # Convert Linear and Embedding layer weights to FP8 (leave buffers in BF16)
+            linear_count = 0
+            embedding_count = 0
             for name, module in quantized_text_encoder.named_modules():
                 if isinstance(module, torch.nn.Linear):
                     # Convert weight parameter only
                     if hasattr(module, 'weight') and module.weight is not None:
                         module.weight.data = module.weight.data.to(fp8_dtype)
-                        converted_count += 1
+                        linear_count += 1
                     # Keep bias in original dtype (if exists)
 
                     # Register forward hook to convert FP8 output to BF16
@@ -823,9 +824,23 @@ def _quantize_text_encoder(text_encoder, quantization: str):
 
                     module.register_forward_hook(fp8_to_bf16_hook)
 
-            print(f"[Quantization] Successfully converted {converted_count} Linear layers to {dtype_name}")
+                # Convert Embedding layers to FP8 as well (consistent with Linear layers)
+                elif isinstance(module, torch.nn.Embedding):
+                    if hasattr(module, 'weight') and module.weight is not None:
+                        module.weight.data = module.weight.data.to(fp8_dtype)
+                        embedding_count += 1
+
+                    # Register forward hook to convert FP8 output to BF16
+                    def embedding_fp8_to_bf16_hook(module, input, output):
+                        if output.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                            return output.to(torch.bfloat16)
+                        return output
+
+                    module.register_forward_hook(embedding_fp8_to_bf16_hook)
+
+            print(f"[Quantization] Successfully converted {linear_count} Linear layers and {embedding_count} Embedding layers to {dtype_name}")
             print(f"[Quantization] Added forward hooks to convert FP8 outputs to BF16")
-            print(f"[Quantization] Embeddings and buffers kept in BF16")
+            print(f"[Quantization] Buffers kept in BF16")
 
             return quantized_text_encoder
 

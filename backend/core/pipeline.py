@@ -2970,12 +2970,12 @@ class DiffusionPipelineManager:
                     latents = latents.to(latents_dtype)
 
                 # Blend with original in unmasked regions
-                # Noise original latents to current timestep
+                # Noise original latents to current timestep using Flow Matching interpolation
                 if i < len(timesteps) - 1:
-                    noise_timestep = timesteps[i + 1]
-                    init_latents_noised = scheduler.add_noise(
-                        init_latents_packed, noise, torch.tensor([noise_timestep])
-                    )
+                    # Flow Matching: normalize timestep [0, 1000] -> [0.0, 1.0]
+                    t_value = timesteps[i + 1].item() / 1000.0
+                    # Linear interpolation: x_t = (1 - t) * x_0 + t * noise
+                    init_latents_noised = (1 - t_value) * init_latents_packed + t_value * noise
                 else:
                     init_latents_noised = init_latents_packed
 

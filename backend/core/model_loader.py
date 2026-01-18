@@ -885,36 +885,41 @@ class ModelLoader:
                 with safe_open(file_path, framework="pt", device="cpu") as f:
                     metadata = f.metadata() or {}
 
-                    # Check num_single_layers to determine model variant
-                    # Klein Base 4B: 48 single layers
-                    # Klein 4B (distilled): 24 single layers
-                    # Klein 9B (distilled): 36 single layers
-                    num_single_layers = None
-                    for key in f.keys():
-                        if "single_blocks.47." in key or "single_transformer_blocks.47." in key:
-                            num_single_layers = 48
-                            break
-                        elif "single_blocks.35." in key or "single_transformer_blocks.35." in key:
-                            num_single_layers = 36
-                            break
-                        elif "single_blocks.23." in key or "single_transformer_blocks.23." in key:
-                            num_single_layers = 24
-                            break
-
-                    # Determine repo based on layer count
-                    if num_single_layers == 48:
-                        base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
-                        print(f"[ModelLoader] Detected Klein Base 4B (48 single layers)")
-                    elif num_single_layers == 36:
-                        base_model_repo = "black-forest-labs/FLUX.2-klein-9B"
-                        print(f"[ModelLoader] Detected Klein 9B (36 single layers)")
-                    elif num_single_layers == 24:
-                        base_model_repo = "black-forest-labs/FLUX.2-klein-4B"
-                        print(f"[ModelLoader] Detected Klein 4B (24 single layers)")
+                    # Priority 1: Check metadata for base_model_repo (from finetuned models)
+                    if "base_model_repo" in metadata:
+                        base_model_repo = metadata["base_model_repo"]
+                        print(f"[ModelLoader] Found base_model_repo in metadata: {base_model_repo}")
                     else:
-                        # Fallback: use Base 4B as default
-                        base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
-                        print(f"[ModelLoader] Could not detect model variant, defaulting to Klein Base 4B")
+                        # Priority 2: Detect from layer count (for original models)
+                        # Klein Base 4B: 48 single layers
+                        # Klein 4B (distilled): 24 single layers
+                        # Klein 9B (distilled): 36 single layers
+                        num_single_layers = None
+                        for key in f.keys():
+                            if "single_blocks.47." in key or "single_transformer_blocks.47." in key:
+                                num_single_layers = 48
+                                break
+                            elif "single_blocks.35." in key or "single_transformer_blocks.35." in key:
+                                num_single_layers = 36
+                                break
+                            elif "single_blocks.23." in key or "single_transformer_blocks.23." in key:
+                                num_single_layers = 24
+                                break
+
+                        # Determine repo based on layer count
+                        if num_single_layers == 48:
+                            base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
+                            print(f"[ModelLoader] Detected Klein Base 4B (48 single layers)")
+                        elif num_single_layers == 36:
+                            base_model_repo = "black-forest-labs/FLUX.2-klein-9B"
+                            print(f"[ModelLoader] Detected Klein 9B (36 single layers)")
+                        elif num_single_layers == 24:
+                            base_model_repo = "black-forest-labs/FLUX.2-klein-4B"
+                            print(f"[ModelLoader] Detected Klein 4B (24 single layers)")
+                        else:
+                            # Fallback: use Base 4B as default
+                            base_model_repo = "black-forest-labs/FLUX.2-klein-base-4B"
+                            print(f"[ModelLoader] Could not detect model variant, defaulting to Klein Base 4B")
 
                 print(f"[ModelLoader] Using HuggingFace repo: {base_model_repo}")
 
@@ -937,14 +942,23 @@ class ModelLoader:
             print(f"  - num_attention_heads: {transformer_config.get('num_attention_heads', 48)}")
             print(f"  - attention_head_dim: {transformer_config.get('attention_head_dim', 128)}")
 
-            # Load is_distilled flag from model_index.json (not in transformer config)
-            model_index_path = os.path.join(cache_dir, "model_index.json")
+            # Load is_distilled flag
+            # Priority 1: Check safetensors metadata (from finetuned models)
+            # Priority 2: Check model_index.json from HuggingFace repo
             is_distilled = False
-            if os.path.exists(model_index_path):
-                with open(model_index_path, 'r') as f:
-                    model_index = json.load(f)
-                    is_distilled = model_index.get("is_distilled", False)
-            print(f"  - is_distilled: {is_distilled}")
+            with safe_open(file_path, framework="pt", device="cpu") as f:
+                metadata = f.metadata() or {}
+                if "is_distilled" in metadata:
+                    is_distilled = metadata["is_distilled"].lower() == "true"
+                    print(f"  - is_distilled (from metadata): {is_distilled}")
+                else:
+                    # Fallback to model_index.json
+                    model_index_path = os.path.join(cache_dir, "model_index.json")
+                    if os.path.exists(model_index_path):
+                        with open(model_index_path, 'r') as f_index:
+                            model_index = json.load(f_index)
+                            is_distilled = model_index.get("is_distilled", False)
+                    print(f"  - is_distilled (from model_index.json): {is_distilled}")
 
             # Step 3: Create transformer and load weights from safetensors
             print(f"[ModelLoader] Loading FLUX.2 transformer weights from: {file_path}")
@@ -1018,9 +1032,10 @@ class ModelLoader:
             print(f"  - Tokenizer: Qwen2TokenizerFast (max_length=512)")
             print(f"  - Scheduler: FlowMatchEulerDiscreteScheduler")
 
-            # Add is_distilled to config dict (for inference logic)
+            # Add is_distilled and base_model_repo to config dict (for inference and training)
             config_dict = transformer_config.copy()
             config_dict["is_distilled"] = is_distilled
+            config_dict["base_model_repo"] = base_model_repo
 
             return {
                 "transformer": transformer,

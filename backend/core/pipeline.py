@@ -2583,6 +2583,10 @@ class DiffusionPipelineManager:
 
         print(f"[FLUX.2 Image Edit] Total reference tokens: {ref_tokens.shape[1]}, shape: {ref_tokens.shape}")
 
+        # Offload VAE to CPU after encoding reference images
+        vae.to("cpu")
+        torch.cuda.empty_cache()
+
         return ref_tokens, ref_ids
 
     def _generate_img2img_flux2(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:

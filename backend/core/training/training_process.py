@@ -213,21 +213,12 @@ class TrainingProcess:
             except Exception as e:
                 print(f"[Training] WARNING: Failed to create stop flag file: {e}")
 
-            # Wait for graceful shutdown (up to 120 seconds to allow checkpoint save)
-            # Checkpoint save can take 60+ seconds for large models (12GB+ safetensors + optimizer state)
-            print(f"[Training] Waiting for graceful shutdown (max 120 seconds)...")
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=120)
-                print(f"[Training] Process terminated gracefully")
-            except asyncio.TimeoutError:
-                print(f"[Training] Graceful shutdown timeout, terminating process...")
-                self.process.terminate()
-                try:
-                    await asyncio.wait_for(self.process.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    print(f"[Training] Process did not terminate, killing...")
-                    self.process.kill()
-                    await self.process.wait()
+            # Wait for graceful shutdown (no timeout - MNT batches can take several minutes)
+            # With MNT=32 and large models, a single batch can take 5+ minutes
+            # Checkpoint save can also take 60+ seconds for large models (12GB+ safetensors + optimizer state)
+            print(f"[Training] Waiting for graceful shutdown (no timeout, press Ctrl+C in terminal to force kill)...")
+            await self.process.wait()
+            print(f"[Training] Process terminated gracefully")
 
             self.is_running = False
 

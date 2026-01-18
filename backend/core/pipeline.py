@@ -2106,6 +2106,21 @@ class DiffusionPipelineManager:
             timesteps = scheduler.timesteps
             scheduler.set_begin_index(0)
 
+            # Determine input dtype for transformer (FP8 quantized uses BF16 input)
+            transformer_has_fp8 = False
+            for module in transformer.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        transformer_has_fp8 = True
+                        break
+
+            if transformer_has_fp8:
+                transformer_input_dtype = torch.bfloat16
+            else:
+                transformer_input_dtype = transformer.dtype
+
+            print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
+
             # Denoising loop
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
@@ -2119,13 +2134,13 @@ class DiffusionPipelineManager:
                 # Expand timestep
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-                latent_model_input = latents.to(transformer.dtype)
+                latent_model_input = latents.to(transformer_input_dtype)
                 latent_image_ids = latent_ids
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
                     # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
                     ref_ids = ref_ids.to(device=latent_image_ids.device)
                     latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
@@ -2140,16 +2155,29 @@ class DiffusionPipelineManager:
                     latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred_combined = transformer_wrapper(
-                            hidden_states=latent_model_input_doubled,
-                            timestep=timestep_doubled / 1000,
-                            guidance=None,
-                            encoder_hidden_states=prompt_embeds_combined,
-                            txt_ids=text_ids_combined,
-                            img_ids=latent_image_ids_doubled,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred_combined = transformer_wrapper(
+                                    hidden_states=latent_model_input_doubled,
+                                    timestep=timestep_doubled / 1000,
+                                    guidance=None,
+                                    encoder_hidden_states=prompt_embeds_combined,
+                                    txt_ids=text_ids_combined,
+                                    img_ids=latent_image_ids_doubled,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred_combined = transformer_wrapper(
+                                hidden_states=latent_model_input_doubled,
+                                timestep=timestep_doubled / 1000,
+                                guidance=None,
+                                encoder_hidden_states=prompt_embeds_combined,
+                                txt_ids=text_ids_combined,
+                                img_ids=latent_image_ids_doubled,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:
@@ -2167,16 +2195,29 @@ class DiffusionPipelineManager:
                         device=latent_model_input.device,
                         dtype=latent_model_input.dtype
                     )
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=guidance_vec,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_image_ids,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred = transformer_wrapper(
+                                    hidden_states=latent_model_input,
+                                    timestep=timestep / 1000,
+                                    guidance=guidance_vec,
+                                    encoder_hidden_states=prompt_embeds,
+                                    txt_ids=text_ids,
+                                    img_ids=latent_image_ids,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred = transformer_wrapper(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=guidance_vec,
+                                encoder_hidden_states=prompt_embeds,
+                                txt_ids=text_ids,
+                                img_ids=latent_image_ids,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:
@@ -2775,6 +2816,21 @@ class DiffusionPipelineManager:
 
             scheduler.set_begin_index(t_start)
 
+            # Determine input dtype for transformer (FP8 quantized uses BF16 input)
+            transformer_has_fp8 = False
+            for module in transformer.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        transformer_has_fp8 = True
+                        break
+
+            if transformer_has_fp8:
+                transformer_input_dtype = torch.bfloat16
+            else:
+                transformer_input_dtype = transformer.dtype
+
+            print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
+
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
@@ -2784,13 +2840,13 @@ class DiffusionPipelineManager:
                     raise RuntimeError("Generation cancelled by user")
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                latent_model_input = latents.to(transformer.dtype)
+                latent_model_input = latents.to(transformer_input_dtype)
                 latent_image_ids = latent_ids
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
                     # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
                     ref_ids = ref_ids.to(device=latent_image_ids.device)
                     latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
@@ -2805,16 +2861,29 @@ class DiffusionPipelineManager:
                     latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred_combined = transformer_wrapper(
-                            hidden_states=latent_model_input_doubled,
-                            timestep=timestep_doubled / 1000,
-                            guidance=None,
-                            encoder_hidden_states=prompt_embeds_combined,
-                            txt_ids=text_ids_combined,
-                            img_ids=latent_image_ids_doubled,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred_combined = transformer_wrapper(
+                                    hidden_states=latent_model_input_doubled,
+                                    timestep=timestep_doubled / 1000,
+                                    guidance=None,
+                                    encoder_hidden_states=prompt_embeds_combined,
+                                    txt_ids=text_ids_combined,
+                                    img_ids=latent_image_ids_doubled,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred_combined = transformer_wrapper(
+                                hidden_states=latent_model_input_doubled,
+                                timestep=timestep_doubled / 1000,
+                                guidance=None,
+                                encoder_hidden_states=prompt_embeds_combined,
+                                txt_ids=text_ids_combined,
+                                img_ids=latent_image_ids_doubled,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:
@@ -2832,16 +2901,29 @@ class DiffusionPipelineManager:
                         device=latent_model_input.device,
                         dtype=latent_model_input.dtype
                     )
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=guidance_vec,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_image_ids,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred = transformer_wrapper(
+                                    hidden_states=latent_model_input,
+                                    timestep=timestep / 1000,
+                                    guidance=guidance_vec,
+                                    encoder_hidden_states=prompt_embeds,
+                                    txt_ids=text_ids,
+                                    img_ids=latent_image_ids,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred = transformer_wrapper(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=guidance_vec,
+                                encoder_hidden_states=prompt_embeds,
+                                txt_ids=text_ids,
+                                img_ids=latent_image_ids,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:
@@ -3174,6 +3256,21 @@ class DiffusionPipelineManager:
 
             scheduler.set_begin_index(t_start)
 
+            # Determine input dtype for transformer (FP8 quantized uses BF16 input)
+            transformer_has_fp8 = False
+            for module in transformer.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        transformer_has_fp8 = True
+                        break
+
+            if transformer_has_fp8:
+                transformer_input_dtype = torch.bfloat16
+            else:
+                transformer_input_dtype = transformer.dtype
+
+            print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
+
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
@@ -3183,13 +3280,13 @@ class DiffusionPipelineManager:
                     raise RuntimeError("Generation cancelled by user")
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                latent_model_input = latents.to(transformer.dtype)
+                latent_model_input = latents.to(transformer_input_dtype)
                 latent_image_ids = latent_ids
 
                 # Concatenate reference tokens/IDs if present (Image Edit)
                 if ref_tokens is not None:
                     # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer.dtype)
+                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
                     ref_ids = ref_ids.to(device=latent_image_ids.device)
                     latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
                     latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
@@ -3204,16 +3301,29 @@ class DiffusionPipelineManager:
                     latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred_combined = transformer_wrapper(
-                            hidden_states=latent_model_input_doubled,
-                            timestep=timestep_doubled / 1000,
-                            guidance=None,
-                            encoder_hidden_states=prompt_embeds_combined,
-                            txt_ids=text_ids_combined,
-                            img_ids=latent_image_ids_doubled,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred_combined = transformer_wrapper(
+                                    hidden_states=latent_model_input_doubled,
+                                    timestep=timestep_doubled / 1000,
+                                    guidance=None,
+                                    encoder_hidden_states=prompt_embeds_combined,
+                                    txt_ids=text_ids_combined,
+                                    img_ids=latent_image_ids_doubled,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred_combined = transformer_wrapper(
+                                hidden_states=latent_model_input_doubled,
+                                timestep=timestep_doubled / 1000,
+                                guidance=None,
+                                encoder_hidden_states=prompt_embeds_combined,
+                                txt_ids=text_ids_combined,
+                                img_ids=latent_image_ids_doubled,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:
@@ -3231,16 +3341,29 @@ class DiffusionPipelineManager:
                         device=latent_model_input.device,
                         dtype=latent_model_input.dtype
                     )
+                    # For FP8 quantized models, use autocast for mixed precision
                     with torch.no_grad():
-                        noise_pred = transformer_wrapper(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=guidance_vec,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_image_ids,
-                            return_dict=False,
-                        )[0]
+                        if transformer_has_fp8:
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                noise_pred = transformer_wrapper(
+                                    hidden_states=latent_model_input,
+                                    timestep=timestep / 1000,
+                                    guidance=guidance_vec,
+                                    encoder_hidden_states=prompt_embeds,
+                                    txt_ids=text_ids,
+                                    img_ids=latent_image_ids,
+                                    return_dict=False,
+                                )[0]
+                        else:
+                            noise_pred = transformer_wrapper(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                guidance=guidance_vec,
+                                encoder_hidden_states=prompt_embeds,
+                                txt_ids=text_ids,
+                                img_ids=latent_image_ids,
+                                return_dict=False,
+                            )[0]
 
                     # Extract generation part only (remove reference tokens)
                     if ref_tokens is not None:

@@ -653,7 +653,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const newFiles = Array.from(files).slice(0, 10 - refImages.length); // Max 10 total
+    const newFiles = Array.from(files).slice(0, 10 - refImagePreviews.length); // Max 10 total
     const newPreviews: string[] = [];
     const newRefs: string[] = [];
 
@@ -728,7 +728,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     const imageFiles = Array.from(files)
       .filter(file => file.type.startsWith('image/'))
-      .slice(0, 10 - refImages.length); // Max 10 total
+      .slice(0, 10 - refImagePreviews.length); // Max 10 total
 
     if (imageFiles.length === 0) return;
 
@@ -1676,7 +1676,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       </div>
                     ))}
                     {/* Drag & drop area fills remaining grid cells */}
-                    {refImages.length < 10 && (
+                    {refImagePreviews.length < 10 && (
                       <div
                         onDragOver={handleRefImageDragOver}
                         onDragLeave={handleRefImageDragLeave}
@@ -1688,7 +1688,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                         }`}
                         title="Drop more images here"
                         style={{
-                          gridColumn: refImages.length % 5 === 0 ? 'span 5' : `span ${5 - (refImages.length % 5)}`,
+                          gridColumn: refImagePreviews.length % 5 === 0 ? 'span 5' : `span ${5 - (refImagePreviews.length % 5)}`,
                           gridRow: 'span 1'
                         }}
                       >

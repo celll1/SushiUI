@@ -13,13 +13,14 @@ from typing import Optional, Literal
 import copy
 
 
-def log_device_status(stage: str, pipeline, show_details: bool = False):
+def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None):
     """Log device status of all pipeline components
 
     Args:
         stage: Description of current stage (e.g., "After moving to GPU")
-        pipeline: The diffusers pipeline
+        pipeline: The diffusers pipeline (or None for Z-Image)
         show_details: Show detailed submodule information
+        zimage_components: Dict with Z-Image components (text_encoder, transformer, vae)
     """
     print(f"\n{'='*60}")
     print(f"[VRAM] Device Status: {stage}")
@@ -136,13 +137,47 @@ def log_device_status(stage: str, pipeline, show_details: bool = False):
             print(f"  U-Net:          no parameters")
 
     # VAE
-    if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+    if pipeline and hasattr(pipeline, 'vae') and pipeline.vae is not None:
         try:
             device = next(pipeline.vae.parameters()).device
             dtype = get_dtype_info(pipeline.vae)
             print(f"  VAE:            {device} ({dtype})")
         except:
             print(f"  VAE:            no parameters")
+
+    # Z-Image components (if provided)
+    if zimage_components:
+        # Text Encoder
+        if 'text_encoder' in zimage_components and zimage_components['text_encoder'] is not None:
+            try:
+                device = next(zimage_components['text_encoder'].parameters()).device
+                dtype = get_dtype_info(zimage_components['text_encoder'])
+                print(f"  Text Encoder (Z-Image): {device} ({dtype})")
+            except:
+                print(f"  Text Encoder (Z-Image): no parameters")
+
+        # Transformer (equivalent to U-Net)
+        if 'transformer' in zimage_components and zimage_components['transformer'] is not None:
+            try:
+                device = next(zimage_components['transformer'].parameters()).device
+                dtype = get_dtype_info(zimage_components['transformer'])
+                quant_info = check_quantization(zimage_components['transformer'])
+
+                if quant_info:
+                    print(f"  Transformer (Z-Image):  {device} ({dtype}, {quant_info})")
+                else:
+                    print(f"  Transformer (Z-Image):  {device} ({dtype})")
+            except:
+                print(f"  Transformer (Z-Image):  no parameters")
+
+        # VAE
+        if 'vae' in zimage_components and zimage_components['vae'] is not None:
+            try:
+                device = next(zimage_components['vae'].parameters()).device
+                dtype = get_dtype_info(zimage_components['vae'])
+                print(f"  VAE (Z-Image):          {device} ({dtype})")
+            except:
+                print(f"  VAE (Z-Image):          no parameters")
 
     # VRAM usage
     if torch.cuda.is_available():
@@ -519,3 +554,285 @@ def move_vae_to_cpu(pipeline):
         pipeline.vae.to('cpu', non_blocking=False)
 
     # Note: torch.cuda.empty_cache() removed to reduce VPN latency
+
+
+# ============================================================
+# Z-Image VRAM Optimization
+# ============================================================
+
+def move_zimage_text_encoder_to_gpu(text_encoder, quantization=None):
+    """Move Z-Image text encoder to GPU for encoding (with optional quantization)
+
+    Args:
+        text_encoder: Z-Image text encoder model
+        quantization: Optional quantization type (fp8_e4m3fn, fp8_e5m2, uint2-uint8, etc.)
+
+    Returns:
+        text_encoder (potentially quantized copy if quantization is enabled)
+    """
+    if text_encoder is None:
+        return None
+
+    # Fast path: No quantization
+    if not quantization or quantization == "none":
+        print("[VRAM] Moving Z-Image Text Encoder to GPU for encoding...")
+        text_encoder.to('cuda:0', non_blocking=False)
+        return text_encoder
+
+    # Quantization path: Create quantized copy and move to GPU
+    print(f"[VRAM] Moving Z-Image Text Encoder to GPU with {quantization} quantization...")
+    print(f"[Quantization] Creating quantized Text Encoder ({quantization})...")
+
+    # Text Encoder must be on CPU for quantization
+    if next(text_encoder.parameters()).device.type != 'cpu':
+        print(f"[Quantization] Moving Text Encoder to CPU for quantization...")
+        text_encoder.to('cpu')
+
+    # Quantize (creates a copy)
+    quantized_text_encoder = _quantize_text_encoder(text_encoder, quantization)
+
+    # Move quantized copy to GPU
+    print(f"[Quantization] Moving quantized Text Encoder to GPU...")
+    quantized_text_encoder.to('cuda:0', non_blocking=False)
+
+    print(f"[Quantization] Text Encoder quantization complete ({quantization})")
+
+    return quantized_text_encoder
+
+
+def move_zimage_text_encoder_to_cpu(text_encoder):
+    """Move Z-Image text encoder to CPU to free VRAM
+
+    Args:
+        text_encoder: Z-Image text encoder model
+    """
+    print("[VRAM] Moving Z-Image Text Encoder to CPU to free VRAM...")
+    if text_encoder is not None:
+        text_encoder.to('cpu', non_blocking=False)
+        torch.cuda.empty_cache()
+
+
+def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+    """Move Z-Image transformer to GPU for inference, optionally with quantization
+
+    Note: Z-Image transformer does not support torch.compile yet
+
+    Args:
+        transformer: Z-Image transformer model
+        quantization: Quantization type - None, 'none', 'fp8_e4m3fn', 'fp8_e5m2', etc.
+
+    Returns:
+        transformer: Transformer on GPU (may be quantized)
+    """
+    # Normalize quantization parameter
+    if quantization in [None, "", "none"]:
+        quantization = None
+
+    if transformer is None:
+        return transformer
+
+    # Fast path: No quantization (most common case)
+    if not quantization:
+        print("[VRAM] Moving Z-Image Transformer to GPU for inference...")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+    # Quantization path
+    print(f"[VRAM] Moving Z-Image Transformer to GPU with {quantization} quantization...")
+    print(f"[VRAM] Note: Quantization for Z-Image is experimental")
+
+    # Store original transformer reference if not already stored
+    if not hasattr(transformer, '_original_state'):
+        transformer._original_state = True
+
+    # Apply quantization (similar to U-Net quantization)
+    try:
+        quantized_transformer = _quantize_transformer(transformer, quantization)
+        quantized_transformer.to('cuda:0', non_blocking=False)
+        return quantized_transformer
+    except Exception as e:
+        print(f"[VRAM] Warning: Quantization failed: {e}")
+        print(f"[VRAM] Falling back to non-quantized transformer")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+
+def move_zimage_transformer_to_cpu(transformer):
+    """Move Z-Image transformer to CPU to free VRAM
+
+    Args:
+        transformer: Z-Image transformer model
+    """
+    print("[VRAM] Moving Z-Image Transformer to CPU to free VRAM...")
+    if transformer is not None:
+        transformer.to('cpu', non_blocking=False)
+
+
+def move_zimage_vae_to_gpu(vae):
+    """Move Z-Image VAE to GPU for decode
+
+    Args:
+        vae: Z-Image VAE model
+    """
+    print("[VRAM] Moving Z-Image VAE to GPU for decode...")
+    if vae is not None:
+        vae.to('cuda:0')
+
+
+def move_zimage_vae_to_cpu(vae):
+    """Move Z-Image VAE to CPU to free VRAM
+
+    Args:
+        vae: Z-Image VAE model
+    """
+    print("[VRAM] Moving Z-Image VAE to CPU to free VRAM...")
+    if vae is not None:
+        vae.to('cpu')
+
+
+def _quantize_transformer(transformer, quantization: str):
+    """Create a quantized copy of Z-Image transformer
+
+    Z-Image transformer requires special FP8 handling:
+    - FP8 must only be applied to Linear layer WEIGHTS, not buffers
+    - Standard .to() converts everything (weights + buffers), causing dtype mismatch
+    - Solution: Manually iterate through Linear layers and convert only weights
+
+    Args:
+        transformer: Original Z-Image transformer model
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8'
+
+    Returns:
+        Quantized transformer model
+    """
+    print(f"[Quantization] Applying {quantization} to Z-Image Transformer...")
+
+    # FP8 quantization: weight-only conversion (manual)
+    if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
+        # Determine FP8 dtype
+        if quantization == 'fp8_e4m3fn':
+            fp8_dtype = torch.float8_e4m3fn
+            dtype_name = "FP8 E4M3FN"
+        else:
+            fp8_dtype = torch.float8_e5m2
+            dtype_name = "FP8 E5M2"
+
+        print(f"[Quantization] Applying {dtype_name} quantization (weight-only)...")
+
+        # Check PyTorch version
+        if not hasattr(torch, 'float8_e4m3fn'):
+            print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
+            print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(transformer)
+
+        try:
+            # Clone the model
+            quantized_transformer = copy.deepcopy(transformer)
+
+            # Convert only Linear layer weights to FP8 (leave buffers in BF16)
+            converted_count = 0
+            for name, module in quantized_transformer.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Convert weight parameter only
+                    if hasattr(module, 'weight') and module.weight is not None:
+                        module.weight.data = module.weight.data.to(fp8_dtype)
+                        converted_count += 1
+                    # Keep bias in original dtype (if exists)
+                    # Buffers are automatically preserved
+
+            print(f"[Quantization] Successfully converted {converted_count} Linear layers to {dtype_name}")
+            print(f"[Quantization] Buffers (x_pad_token, etc.) kept in BF16")
+            print(f"[Quantization] Note: Compute will use mixed precision automatically (autocast)")
+            print(f"[Quantization] Estimated memory reduction: ~50%")
+
+            return quantized_transformer
+
+        except Exception as e:
+            print(f"[Quantization] ERROR during {dtype_name} conversion: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(transformer)
+
+    # UINT quantization is supported (weight-only, doesn't affect buffers)
+    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
+        # Reuse U-Net quantization logic for UINT
+        return _quantize_unet(transformer, quantization)
+
+    # Unknown quantization type
+    print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Falling back to non-quantized transformer")
+    return copy.deepcopy(transformer)
+
+
+def _quantize_text_encoder(text_encoder, quantization: str):
+    """Create a quantized copy of Z-Image text encoder
+
+    Uses same weight-only FP8/UINT quantization as Transformer.
+    Z-Image text encoder (Qwen 3.4B) is large, so quantization can significantly reduce VRAM.
+
+    Args:
+        text_encoder: Original Z-Image text encoder model (Qwen)
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+
+    Returns:
+        Quantized text encoder model
+    """
+    print(f"[Quantization] Applying {quantization} to Z-Image Text Encoder (Qwen)...")
+
+    # FP8 quantization: weight-only conversion (same as Transformer)
+    if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
+        # Determine FP8 dtype
+        if quantization == 'fp8_e4m3fn':
+            fp8_dtype = torch.float8_e4m3fn
+            dtype_name = "FP8 E4M3FN"
+        else:
+            fp8_dtype = torch.float8_e5m2
+            dtype_name = "FP8 E5M2"
+
+        print(f"[Quantization] Applying {dtype_name} quantization (weight-only)...")
+
+        # Check PyTorch version
+        if not hasattr(torch, 'float8_e4m3fn'):
+            print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
+            print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(text_encoder)
+
+        try:
+            # Clone the model
+            quantized_text_encoder = copy.deepcopy(text_encoder)
+
+            # Convert only Linear layer weights to FP8 (leave buffers/embeddings in BF16)
+            converted_count = 0
+            for name, module in quantized_text_encoder.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    # Convert weight parameter only
+                    if hasattr(module, 'weight') and module.weight is not None:
+                        module.weight.data = module.weight.data.to(fp8_dtype)
+                        converted_count += 1
+                    # Keep bias in original dtype (if exists)
+
+            print(f"[Quantization] Successfully converted {converted_count} Linear layers to {dtype_name}")
+            print(f"[Quantization] Embeddings and buffers kept in BF16")
+            print(f"[Quantization] Note: Compute will use mixed precision automatically (autocast)")
+
+            return quantized_text_encoder
+
+        except Exception as e:
+            print(f"[Quantization] ERROR during {dtype_name} conversion: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[Quantization] Falling back to original model without quantization")
+            return copy.deepcopy(text_encoder)
+
+    # UINT quantization
+    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
+        # Reuse U-Net quantization logic for UINT
+        return _quantize_unet(text_encoder, quantization)
+
+    # Unknown quantization type
+    print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Falling back to non-quantized text encoder")
+    return copy.deepcopy(text_encoder)

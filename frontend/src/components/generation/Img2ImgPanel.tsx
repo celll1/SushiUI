@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
@@ -19,11 +20,11 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -63,6 +64,10 @@ interface Img2ImgParams {
   nag_negative_prompt?: string;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // Text Encoder Quantization (Z-Image only)
+  text_encoder_quantization?: string | null;
+  // Attention type
+  attention_type?: string;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -93,6 +98,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   dynamic_threshold_mimic_scale: 7.0,
   nag_enable: false,
   unet_quantization: null,
+  text_encoder_quantization: null,
   nag_scale: 5.0,
   nag_tau: 3.5,
   nag_alpha: 0.25,
@@ -100,6 +106,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   use_torch_compile: false,
+  attention_type: "normal",
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -130,6 +137,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
+  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -168,8 +176,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // TIPO: Treat as Natural Language (local state, not persisted)
+  const [treatAsNL, setTreatAsNL] = useState(false);
 
   // Use refs for WebSocket callback to prevent recreations
   const isGeneratingRef = useRef(isGenerating);
@@ -209,11 +224,20 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
-    console.clear();
+    // console.clear(); // Temporarily disabled for debugging
     console.log("=== Img2ImgPanel mounted ===");
     setIsMounted(true);
 
     const loadInitialData = async () => {
+      // Load current model info
+      try {
+        const modelInfo = await getCurrentModel();
+        setCurrentModelInfo(modelInfo);
+        console.log("[Img2Img] Current model info:", modelInfo);
+      } catch (error) {
+        console.error("Failed to load model info:", error);
+      }
+
       // Load params
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -288,6 +312,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setShowAdvancedCFG(true);
       }
 
+      // Load attention type from global settings
+      const savedAttentionType = localStorage.getItem('attention_type');
+      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+        setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
+      }
+
       // Load custom presets
       const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
       if (savedAspectRatioPresets) {
@@ -326,6 +356,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           console.error('Failed to parse loop generation config:', e);
         }
       }
+
+      // Mark initial load as complete
+      setIsInitialLoad(false);
+      console.log("[Img2Img] Initial load complete");
     };
 
     loadInitialData();
@@ -459,19 +493,96 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     };
   }, []);
 
-  // Save params to localStorage whenever they change (but only after mounted)
+  // Save params to localStorage whenever they change (but only after mounted and initial load complete)
   useEffect(() => {
-    if (isMounted) {
-      // ControlNet images are now managed by ControlNetSelector via tempImageStorage
-      console.log("[Img2Img] Saving params to localStorage:", {
-        loras: params.loras?.length || 0,
-        controlnets: params.controlnets?.length || 0,
-        prompt_length: params.prompt?.length || 0,
-        // Don't log full params to avoid base64 spam
-      });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+    if (isMounted && !isInitialLoad) {
+      // Only save if params are different from what's in localStorage
+      // This prevents overwriting params sent from Gallery/other panels
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const savedParams = saved ? JSON.parse(saved) : null;
+      const currentParamsStr = JSON.stringify(params);
+      const savedParamsStr = savedParams ? JSON.stringify(savedParams) : null;
+
+      if (currentParamsStr !== savedParamsStr) {
+        console.log("[Img2Img] Params changed by user, saving to localStorage:", {
+          loras: params.loras?.length || 0,
+          controlnets: params.controlnets?.length || 0,
+          prompt_length: params.prompt?.length || 0,
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+      }
     }
-  }, [params, isMounted]);
+  }, [params, isMounted, isInitialLoad]);
+
+  // Listen for localStorage changes from Gallery/Preview (send to feature)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Img2Img] Params updated from storage event (cross-tab)");
+        } catch (error) {
+          console.error("[Img2Img] Failed to parse storage change:", error);
+        }
+      }
+    };
+
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      console.log("[Img2Img] handleCustomStorageChange - saved:", saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Img2Img] handleCustomStorageChange - parsed:", parsed);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          console.log("[Img2Img] handleCustomStorageChange - merged prompt:", merged.prompt);
+          setParams(fixed);
+          console.log("[Img2Img] Params updated from custom storage event (same-tab)");
+        } catch (error) {
+          console.error("[Img2Img] Failed to parse custom storage change:", error);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('img2img_params_updated', handleCustomStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('img2img_params_updated', handleCustomStorageChange);
+    };
+  }, []);
+
+  // Reload params from localStorage when navigating to /generate?tab=img2img (from Gallery)
+  useEffect(() => {
+    if (pathname === "/generate" && searchParams.get('tab') === 'img2img' && isMounted) {
+      console.log("[Img2Img] Page navigated to img2img tab, reloading params from localStorage");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      console.log("[Img2Img] Navigation reload - saved:", saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Img2Img] Navigation reload - parsed:", parsed);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          console.log("[Img2Img] Navigation reload - merged prompt:", merged.prompt);
+          setParams(fixed);
+          console.log("[Img2Img] Params reloaded:", {
+            prompt_length: fixed.prompt?.length || 0,
+            prompt: fixed.prompt,
+            steps: fixed.steps,
+            cfg_scale: fixed.cfg_scale,
+          });
+        } catch (error) {
+          console.error("[Img2Img] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, searchParams, isMounted]);
 
   // Save preview image to localStorage whenever it changes
   useEffect(() => {
@@ -718,15 +829,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, STORAGE_KEY);
-    }
+    console.log("[Img2Img] sendToTxt2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Img2Img] sendToTxt2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, STORAGE_KEY, true);
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, STORAGE_KEY, {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "txt2img_params_updated"
+    });
+
+    console.log("[Img2Img] sendToTxt2Img - Sent to panel");
   };
 
   const sendToInpaint = async () => {
@@ -747,15 +861,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "inpaint_params");
-    }
+    console.log("[Img2Img] sendToInpaint - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Img2Img] sendToInpaint - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "inpaint_params", true);
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "inpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "inpaint_params_updated"
+    });
+
+    console.log("[Img2Img] sendToInpaint - Sent to panel");
 
     // Navigate to inpaint tab
     if (onTabChange) {
@@ -902,27 +1019,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // Feeling Lucky mode: Generate prompt with TIPO before queueing
     if (params.feeling_lucky) {
       try {
-        // Load shared TIPO settings from localStorage (same as Prompt Editor)
-        const saved = localStorage.getItem("tipo_settings");
-        const sharedTipoSettings = saved ? JSON.parse(saved) : tipoSettings;
-
+        // Use panel's TIPO settings (not localStorage)
         // Build category order and enabled map from settings
-        const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
+        const categoryOrder = tipoSettings.categories.map((c: any) => c.id);
         const enabledCategories: Record<string, boolean> = {};
-        sharedTipoSettings.categories.forEach((c: any) => {
+        tipoSettings.categories.forEach((c: any) => {
           enabledCategories[c.id] = c.enabled;
         });
 
         console.log('[Img2Img] Feeling Lucky: Generating prompt with TIPO...');
         const result = await generateTIPOPrompt({
           input_prompt: processedPrompt,
-          model_name: sharedTipoSettings.model_name,
-          tag_length: sharedTipoSettings.tag_length,
-          nl_length: sharedTipoSettings.nl_length,
-          temperature: sharedTipoSettings.temperature,
-          top_p: sharedTipoSettings.top_p,
-          top_k: sharedTipoSettings.top_k,
-          max_new_tokens: sharedTipoSettings.max_new_tokens,
+          model_name: tipoSettings.model_name,
+          tag_length: tipoSettings.tag_length,
+          nl_length: tipoSettings.nl_length,
+          temperature: tipoSettings.temperature,
+          top_p: tipoSettings.top_p,
+          top_k: tipoSettings.top_k,
+          max_new_tokens: tipoSettings.max_new_tokens,
+          treat_as_nl: treatAsNL,
           category_order: categoryOrder,
           enabled_categories: enabledCategories
         });
@@ -1396,7 +1511,24 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
-        <ModelSelector />
+        <ModelSelector onModelLoad={async () => {
+          // Reload model info when model changes
+          const modelInfo = await getCurrentModel();
+          setCurrentModelInfo(modelInfo);
+          console.log("[Img2Img] Model changed, updated currentModelInfo:", modelInfo);
+
+          // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
+          const modelType = modelInfo?.model_info?.type;
+          if (modelType === "zimage" || modelType === "flux2") {
+            // Flow Matching models: use Euler with flow schedule
+            setParams(prev => ({
+              ...prev,
+              sampler: "euler",
+              schedule_type: "flow"
+            }));
+            console.log("[Img2Img] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
+          }
+        }} />
 
         <Card
           title="Input Image"
@@ -1500,6 +1632,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               />
               <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
             </label>
+            <label className="flex items-center gap-2 cursor-pointer ml-4">
+              <input
+                type="checkbox"
+                checked={treatAsNL}
+                onChange={(e) => setTreatAsNL(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+                title="Treat input as natural language instead of tags"
+              />
+              <span className="text-xs text-gray-400">NL</span>
+            </label>
             <button
               onClick={() => setIsTIPODialogOpen(true)}
               className="ml-auto px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
@@ -1574,7 +1716,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               />
               <Slider
                 label="CFG Scale"
-                min={1}
+                min={0}
                 max={30}
                 step={0.5}
                 value={params.cfg_scale}
@@ -1957,11 +2099,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     -1
                   </Button>
                   <Button
-                    onClick={() => generatedImageAncestralSeed !== null && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                    onClick={() => generatedImageAncestralSeed !== null && generatedImageAncestralSeed !== -1 && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
                     variant="secondary"
                     size="sm"
                     title="Use ancestral seed from preview image"
-                    disabled={generatedImageAncestralSeed === null}
+                    disabled={generatedImageAncestralSeed === null || generatedImageAncestralSeed === -1}
                   >
                     ♻️
                   </Button>
@@ -1972,34 +2114,83 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Select
-                label="U-Net Quantization"
-                value={params.unet_quantization || "none"}
-                onChange={(e) => setParams({
-                  ...params,
-                  unet_quantization: e.target.value === "none" ? null : e.target.value
-                })}
-                options={[
-                  { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  { value: "uint8", label: "UINT8" },
-                  { value: "uint7", label: "UINT7" },
-                  { value: "uint6", label: "UINT6" },
-                  { value: "uint5", label: "UINT5" },
-                  { value: "uint4", label: "UINT4" },
-                  { value: "uint3", label: "UINT3" },
-                  { value: "uint2", label: "UINT2" },
-                ]}
-              />
-            </div>
-            {params.unet_quantization && params.unet_quantization !== "none" && (
-              <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                <p className="text-xs text-yellow-200">
-                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
-                </p>
-              </div>
+            {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2") ? (
+              <>
+                {/* Z-Image/FLUX.2: 2-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint4", label: "UINT4" },
+                    ]}
+                  />
+                  <Select
+                    label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                    value={params.text_encoder_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint4", label: "UINT4" },
+                    ]}
+                  />
+                </div>
+                {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                  <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                    <p className="text-xs text-blue-200">
+                      💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {/* SD/SDXL: 1-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label="U-Net Quantization"
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      { value: "uint8", label: "UINT8" },
+                      { value: "uint7", label: "UINT7" },
+                      { value: "uint6", label: "UINT6" },
+                      { value: "uint5", label: "UINT5" },
+                      { value: "uint4", label: "UINT4" },
+                      { value: "uint3", label: "UINT3" },
+                      { value: "uint2", label: "UINT2" },
+                    ]}
+                  />
+                </div>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                    <p className="text-xs text-yellow-200">
+                      ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
             {developerMode && (

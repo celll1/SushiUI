@@ -34,6 +34,7 @@ def init_db():
         Dataset, DatasetItem, DatasetCaption, TagDictionary,  # Datasets
         TrainingRun, TrainingCheckpoint, TrainingSample  # Training
     )
+    from .auto_migrate import auto_migrate_all_databases
     import uuid
 
     # Create tables for each database
@@ -46,8 +47,11 @@ def init_db():
     print("[Database] Initializing training.db...")
     TrainingBase.metadata.create_all(bind=training_engine)
 
+    # Run auto-migration to add any missing columns
+    auto_migrate_all_databases()
+
     # Migration: Add unique_id to existing datasets
-    print("[Database] Running migrations...")
+    print("[Database] Running data migrations...")
     datasets_db = DatasetsSessionLocal()
     try:
         datasets_without_unique_id = datasets_db.query(Dataset).filter(

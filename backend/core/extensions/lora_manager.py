@@ -67,6 +67,10 @@ class LoRAManager:
         self.additional_dirs: List[Path] = []  # User-configured additional directories
         self.loaded_loras: List[LoRAConfig] = []
 
+        # Cache for validated LoRA files (to avoid re-validation on every API call)
+        self._lora_cache: Optional[List[str]] = None
+        self._cache_timestamp: float = 0.0
+
         # Add training directory to search paths (for trained LoRAs)
         training_dir = Path(settings.root_dir) / "training"
         if training_dir.exists():
@@ -79,6 +83,8 @@ class LoRAManager:
         """Set additional directories to scan for LoRAs"""
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[LoRAManager] Additional directories set: {self.additional_dirs}")
+        # Invalidate cache when directories change
+        self._lora_cache = None
 
     def _resolve_lora_path(self, lora_path: str) -> Optional[Path]:
         """Resolve LoRA path, checking default and additional directories"""
@@ -100,8 +106,8 @@ class LoRAManager:
         Validate if a file is a valid LoRA model file.
 
         Checks:
-        1. File extension (.safetensors, .pt, .bin)
-        2. File contains LoRA-specific keys (lora_unet_*, lora_te*, etc.)
+        1. File extension (.safetensors only - .pt/.bin excluded to avoid debug latents)
+        2. File contains LoRA-specific keys (lora_down, lora_up, etc.)
         3. Excludes training artifacts (optimizer states, debug latents, etc.)
 
         Returns:
@@ -121,98 +127,75 @@ class LoRAManager:
                 print(f"[LoRAManager] Excluding training artifact: {file_path.name}")
                 return False
 
-        # Check file extension
-        if file_path.suffix not in ['.safetensors', '.pt', '.bin']:
+        # Check file extension (only .safetensors - exclude .pt to avoid debug latents)
+        if file_path.suffix not in ['.safetensors']:
             return False
 
-        # For .safetensors files, verify they contain LoRA keys by checking architecture
-        if file_path.suffix == '.safetensors':
-            try:
-                from safetensors import safe_open
+        # Verify .safetensors files contain LoRA keys
+        try:
+            from safetensors import safe_open
 
-                with safe_open(file_path, framework="pt", device="cpu") as f:
-                    keys = list(f.keys())
+            with safe_open(file_path, framework="pt", device="cpu") as f:
+                keys = list(f.keys())
 
-                    # LoRA architecture detection:
-                    # LoRA files have lora_down AND lora_up weights (rank decomposition)
-                    # Full parameter fine-tune has only full weights (unet.*.weight without lora)
+                # LoRA architecture detection:
+                # LoRA files have lora_down AND lora_up weights (rank decomposition)
+                # Full parameter fine-tune has only full weights (unet.*.weight without lora)
 
-                    has_lora_down = any('lora_down' in key for key in keys)
-                    has_lora_up = any('lora_up' in key for key in keys)
+                has_lora_down = any('lora_down' in key for key in keys)
+                has_lora_up = any('lora_up' in key for key in keys)
 
-                    # Alternative LoRA formats (diffusers, kohya-ss variants)
-                    has_lora_A = any('.lora_A.' in key for key in keys)
-                    has_lora_B = any('.lora_B.' in key for key in keys)
-                    has_lora_unet = any('lora_unet' in key for key in keys)
-                    has_lora_te = any('lora_te' in key for key in keys)
+                # Alternative LoRA formats (diffusers, kohya-ss variants)
+                has_lora_A = any('.lora_A.' in key for key in keys)
+                has_lora_B = any('.lora_B.' in key for key in keys)
+                has_lora_unet = any('lora_unet' in key for key in keys)
+                has_lora_te = any('lora_te' in key for key in keys)
 
-                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
-                    is_lora = (has_lora_down and has_lora_up) or \
-                              (has_lora_A and has_lora_B) or \
-                              (has_lora_unet or has_lora_te)
+                # Z-Image LoRA format (transformer-based)
+                # Keys: transformer.layers.0.attn1.to_q.lora_down.weight
+                has_lora_transformer = any('transformer.' in key and ('lora_down' in key or 'lora_up' in key) for key in keys)
 
-                    if not is_lora:
-                        print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
-                        if len(keys) > 0:
-                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
-                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                        return False
+                # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
+                is_lora = (has_lora_down and has_lora_up) or \
+                          (has_lora_A and has_lora_B) or \
+                          (has_lora_unet or has_lora_te) or \
+                          has_lora_transformer
 
-            except Exception as e:
-                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
-                # If we can't read it, exclude it to be safe
-                return False
-
-        # For .pt/.bin files, check contents to distinguish LoRA from optimizer
-        elif file_path.suffix in ['.pt', '.bin']:
-            try:
-                import torch
-
-                # Load state dict keys only (without loading full tensors)
-                state_dict = torch.load(file_path, map_location='cpu', weights_only=False)
-
-                # Check if it's an optimizer state (has 'state', 'param_groups' keys)
-                if isinstance(state_dict, dict):
-                    keys = list(state_dict.keys())
-
-                    # Optimizer state has these keys
-                    if 'state' in keys and 'param_groups' in keys:
-                        print(f"[LoRAManager] Excluding optimizer state: {file_path.name}")
-                        return False
-
-                    # Check for LoRA architecture (same as .safetensors)
-                    has_lora_down = any('lora_down' in key for key in keys)
-                    has_lora_up = any('lora_up' in key for key in keys)
-                    has_lora_A = any('.lora_A.' in key for key in keys)
-                    has_lora_B = any('.lora_B.' in key for key in keys)
-                    has_lora_unet = any('lora_unet' in key for key in keys)
-                    has_lora_te = any('lora_te' in key for key in keys)
-
-                    # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
-                    is_lora = (has_lora_down and has_lora_up) or \
-                              (has_lora_A and has_lora_B) or \
-                              (has_lora_unet or has_lora_te)
-
-                    if not is_lora:
-                        print(f"[LoRAManager] Excluding non-LoRA .pt file (full parameter or other): {file_path.name}")
-                        if len(keys) > 0:
-                            print(f"[LoRAManager]   Sample keys: {keys[:5]}")
-                            print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                        return False
-                else:
-                    # Not a dict, probably not a LoRA
-                    print(f"[LoRAManager] Excluding non-dict .pt file: {file_path.name}")
+                if not is_lora:
+                    print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
+                    if len(keys) > 0:
+                        print(f"[LoRAManager]   Sample keys: {keys[:5]}")
+                        print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
                     return False
 
-            except Exception as e:
-                print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
-                # If we can't read it, exclude it to be safe
-                return False
+        except Exception as e:
+            print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
+            # If we can't read it, exclude it to be safe
+            return False
 
         return True
 
-    def get_available_loras(self) -> List[str]:
-        """Get list of available LoRA files from default and additional directories"""
+    def get_available_loras(self, force_rescan: bool = False) -> List[str]:
+        """
+        Get list of available LoRA files from default and additional directories.
+
+        Uses cache to avoid expensive validation on every API call.
+
+        Args:
+            force_rescan: Force re-scanning and validation (ignores cache)
+
+        Returns:
+            List of valid LoRA file paths
+        """
+        import time
+
+        # Return cached result if available and not forcing rescan
+        if not force_rescan and self._lora_cache is not None:
+            return self._lora_cache
+
+        print(f"[LoRAManager] Scanning and validating LoRA files...")
+        scan_start = time.time()
+
         lora_files = []
 
         # Combine default directory with additional directories
@@ -230,7 +213,8 @@ class LoRAManager:
                     print(f"[LoRAManager] Skipping non-existent directory: {lora_dir}")
                 continue
 
-            for ext in [".safetensors", ".pt", ".bin"]:
+            # Only scan .safetensors files (exclude .pt to avoid debug latents and training artifacts)
+            for ext in [".safetensors"]:
                 found = list(lora_dir.rglob(f"*{ext}"))
                 print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
 
@@ -239,8 +223,22 @@ class LoRAManager:
                     if self._is_valid_lora_file(f):
                         lora_files.append(str(f.relative_to(lora_dir)))
 
-        print(f"[LoRAManager] Total valid LoRA files found: {len(lora_files)}")
-        return sorted(list(set(lora_files)))  # Remove duplicates
+        result = sorted(list(set(lora_files)))  # Remove duplicates
+        scan_duration = time.time() - scan_start
+
+        print(f"[LoRAManager] Total valid LoRA files found: {len(result)}")
+        print(f"[LoRAManager] Scan completed in {scan_duration:.2f}s")
+
+        # Cache result
+        self._lora_cache = result
+        self._cache_timestamp = time.time()
+
+        return result
+
+    def invalidate_cache(self):
+        """Invalidate cached LoRA list (call when files are added/removed)"""
+        print(f"[LoRAManager] Cache invalidated")
+        self._lora_cache = None
 
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:
         """
@@ -368,7 +366,9 @@ class LoRAManager:
                     os.remove(temp_lora_path)
                     print(f"[LoRAManager] Temporary file removed")
                 else:
-                    # SD format or already compatible - load directly
+                    # SD format (Kohya-ss format: lora_te1_*, lora_unet_*) - load directly
+                    # diffusers' pipeline.load_lora_weights natively supports SD/Kohya-ss format
+                    print(f"[LoRAManager] SD/Kohya-ss format detected - loading directly")
                     print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
                     pipeline.load_lora_weights(
                         str(lora_path.parent),
@@ -617,35 +617,104 @@ class LoRAManager:
                             blocks.add(f"OUT{block_num:02d}")
 
                     # Check for down_blocks / mid_block / up_blocks (SDXL/diffusers format)
+                    # Conversion follows sd-scripts mapping (library/sdxl_model_util.py:make_unet_conversion_map)
+                    # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
+                    # up_blocks.i.attentions.j → output_blocks[3*i + j]
                     elif 'down_blocks' in key:
-                        match = re.search(r'down_blocks[_.](\d+)', key)
+                        # Match: down_blocks.{i}.attentions.{j} or down_blocks_{i}_attentions_{j}
+                        match = re.search(r'down_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
                         if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"IN{block_num:02d}")
+                            i = int(match.group(1))
+                            j = int(match.group(2))
+                            # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
+                            kohya_block_num = 3 * i + j + 1
+                            blocks.add(f"IN{kohya_block_num:02d}")
 
                     elif 'mid_block' in key:
                         blocks.add("MID")
 
                     elif 'up_blocks' in key:
-                        match = re.search(r'up_blocks[_.](\d+)', key)
+                        # Match: up_blocks.{i}.attentions.{j} or up_blocks_{i}_attentions_{j}
+                        match = re.search(r'up_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
+                        if match:
+                            i = int(match.group(1))
+                            j = int(match.group(2))
+                            # up_blocks.i.attentions.j → output_blocks[3*i + j]
+                            kohya_block_num = 3 * i + j
+                            blocks.add(f"OUT{kohya_block_num:02d}")
+
+                    # Check for Z-Image transformer structure
+                    elif 'noise_refiner' in key:
+                        # noise_refiner.0, noise_refiner.1 → NRef0, NRef1
+                        match = re.search(r'noise_refiner[_.](\d+)', key)
                         if match:
                             block_num = int(match.group(1))
-                            blocks.add(f"OUT{block_num:02d}")
+                            blocks.add(f"NRef{block_num}")
+
+                    elif 'context_refiner' in key:
+                        # context_refiner.0, context_refiner.1 → CRef0, CRef1
+                        match = re.search(r'context_refiner[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"CRef{block_num}")
+
+                    elif 'transformer.layers.' in key:
+                        # transformer.layers.0 ~ layers.29 → FDiT00-FDiT29
+                        match = re.search(r'layers[_.](\d+)', key)
+                        if match:
+                            block_num = int(match.group(1))
+                            blocks.add(f"FDiT{block_num:02d}")
+
+                    # Check for FLUX.2 transformer structure
+                    # Key format: lora_transformer_transformer_blocks_X_... (dual stream)
+                    #             lora_transformer_single_transformer_blocks_X_... (single stream)
+                    elif 'transformer_blocks_' in key or 'single_transformer_blocks_' in key:
+                        # Dual stream blocks: transformer_blocks_0 ~ transformer_blocks_4
+                        match_dual = re.search(r'transformer_blocks_(\d+)', key)
+                        if match_dual and 'single_transformer_blocks' not in key:
+                            block_num = int(match_dual.group(1))
+                            blocks.add(f"DUAL{block_num:02d}")
+
+                        # Single stream blocks: single_transformer_blocks_0 ~ single_transformer_blocks_19
+                        match_single = re.search(r'single_transformer_blocks_(\d+)', key)
+                        if match_single:
+                            block_num = int(match_single.group(1))
+                            blocks.add(f"SING{block_num:02d}")
 
                 # If no blocks found, add BASE
                 if not blocks:
                     blocks.add("BASE")
 
-            # Sort blocks: BASE, IN00-IN11, MID, OUT00-OUT11
+            # Sort blocks: BASE, IN00-IN11, MID/MID00-MID01, OUT00-OUT29 (SD/SDXL), NRef0-1, CRef0-1, FDiT00-29 (Z-Image), DUAL00-04, SING00-19 (FLUX.2)
             def sort_key(block):
                 if block == "BASE":
                     return (0, 0)
                 elif block == "MID":
                     return (2, 0)
+                elif block.startswith("MID"):
+                    # MID00, MID01, etc.
+                    return (2, int(block[3:]) if len(block) > 3 else 0)
                 elif block.startswith("IN"):
                     return (1, int(block[2:]))
                 elif block.startswith("OUT"):
                     return (3, int(block[3:]))
+                # Z-Image specific blocks
+                elif block.startswith("NRef"):
+                    # NRef0, NRef1
+                    return (1, int(block[4:]))
+                elif block.startswith("CRef"):
+                    # CRef0, CRef1
+                    return (2, int(block[4:]))
+                elif block.startswith("FDiT"):
+                    # FDiT00-FDiT29
+                    return (3, int(block[4:]))
+                # FLUX.2 specific blocks
+                elif block.startswith("DUAL"):
+                    # DUAL00-DUAL04 (dual stream blocks)
+                    return (1, int(block[4:]))
+                elif block.startswith("SING"):
+                    # SING00-SING19 (single stream blocks)
+                    return (2, int(block[4:]))
                 return (9, 0)
 
             sorted_blocks = sorted(list(blocks), key=sort_key)

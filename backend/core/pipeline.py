@@ -3,7 +3,9 @@ from PIL import Image
 import torch
 import json
 import os
+import sys
 import gc
+import random
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -38,12 +40,27 @@ class DiffusionPipelineManager:
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
 
+        # Z-Image components (component-based, not pipeline-based)
+        self.zimage_components: Optional[Dict[str, Any]] = None
+        self.is_zimage_model: bool = False
+
+        # DEUS components (SDXL-like architecture with SigLIP-2 text encoder)
+        # Key differences from SDXL: single text encoder (1152d), no time_ids, 2-Pass CFG
+        self.deus_components: Optional[Dict[str, Any]] = None
+        self.is_deus_model: bool = False
+
+        # FLUX.2 Klein components (MMDiT with Qwen3 text encoder)
+        # Key features: 8 dual + 48 single stream blocks, 32ch VAE with BatchNorm, Flow Matching
+        self.flux2_components: Optional[Dict[str, Any]] = None
+        self.is_flux2_model: bool = False
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
 
         # Attention processor settings (dynamically loaded from localStorage via API)
         self.original_processors: Optional[dict] = None  # Store original processors
+        self.current_attention_type: str = "normal"  # Track current attention type to avoid redundant switching
 
         # Cancellation flag
         self.cancel_requested = False
@@ -119,6 +136,36 @@ class DiffusionPipelineManager:
                 del self.inpaint_pipeline
                 self.inpaint_pipeline = None
 
+            # Clean up Z-Image components
+            if self.zimage_components is not None:
+                print("[Pipeline] Cleaning up Z-Image components...")
+                for comp_name, comp in self.zimage_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.zimage_components = None
+                self.is_zimage_model = False
+
+            # Clean up DEUS components
+            if self.deus_components is not None:
+                print("[Pipeline] Cleaning up DEUS components...")
+                for comp_name, comp in self.deus_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.deus_components = None
+                self.is_deus_model = False
+
+            # Clean up FLUX.2 components
+            if self.flux2_components is not None:
+                print("[Pipeline] Cleaning up FLUX.2 components...")
+                for comp_name, comp in self.flux2_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        comp.to('cpu')
+                    del comp
+                self.flux2_components = None
+                self.is_flux2_model = False
+
             # Force garbage collection
             gc.collect()
 
@@ -135,9 +182,9 @@ class DiffusionPipelineManager:
             # Always use fp16 (default in ModelLoader)
             torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-            # Load base pipeline
+            # Load base pipeline or Z-Image components
             print("[Pipeline] Loading new model...")
-            base_pipeline = ModelLoader.load_model(
+            model_result = ModelLoader.load_model(
                 source_type=source_type,
                 source=source,
                 device=self.device,
@@ -145,11 +192,218 @@ class DiffusionPipelineManager:
                 **kwargs
             )
 
-            # Log component devices after loading
-            self._log_component_devices(base_pipeline, "After model loading")
+            # Check if FLUX.2 (must check before Z-Image since both have "transformer" key)
+            if isinstance(model_result, dict) and model_result.get("model_type") == "flux2":
+                # FLUX.2 component-based model
+                print("[Pipeline] FLUX.2 model detected (component-based dict returned)")
+                self.flux2_components = model_result
+                self.is_flux2_model = True
+                self.is_zimage_model = False
+                self.is_deus_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # Initialize VRAM optimization: Move all components to CPU
+                print("[VRAM] Initializing sequential loading strategy for FLUX.2...")
+                if self.flux2_components.get("text_encoder") is not None:
+                    self.flux2_components["text_encoder"].to("cpu")
+                if self.flux2_components.get("transformer") is not None:
+                    self.flux2_components["transformer"].to("cpu")
+                if self.flux2_components.get("vae") is not None:
+                    self.flux2_components["vae"].to("cpu")
+                torch.cuda.empty_cache()
+                print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
+
+                # FLUX.2 info
+                model_type = "flux2"
+                is_v_prediction = False  # FLUX.2 uses flow matching
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash,
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] FLUX.2 model loaded successfully")
+                return
+
+            # Check if Z-Image
+            if isinstance(model_result, dict) and "transformer" in model_result:
+                # Z-Image component-based model
+                print("[Pipeline] Z-Image model detected (component-based dict returned)")
+                self.zimage_components = model_result
+                self.is_zimage_model = True
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # Initialize VRAM optimization: Move all components to CPU
+                print("[VRAM] Initializing sequential loading strategy for Z-Image...")
+                from core.vram_optimization import (
+                    move_zimage_text_encoder_to_cpu,
+                    move_zimage_transformer_to_cpu,
+                    move_zimage_vae_to_cpu
+                )
+                move_zimage_text_encoder_to_cpu(self.zimage_components["text_encoder"])
+                move_zimage_transformer_to_cpu(self.zimage_components["transformer"])
+                move_zimage_vae_to_cpu(self.zimage_components["vae"])
+                torch.cuda.empty_cache()
+                print("[VRAM] All Z-Image components moved to CPU. Will load to GPU as needed.")
+
+                # Z-Image info
+                model_type = "zimage"
+                is_v_prediction = False
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                # Get VAE type from loaded components (flux or sdxl)
+                zimage_vae_type = model_result.get("vae_type", "flux")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash,
+                    "vae_type": zimage_vae_type  # "flux" (16ch) or "sdxl" (4ch)
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] Z-Image model loaded successfully")
+                return
+
+            # Check if DEUS (SDXL-like with SigLIP-2, detected by "unet" key without "transformer")
+            if isinstance(model_result, dict) and "unet" in model_result and "transformer" not in model_result:
+                # DEUS component-based model
+                print("[Pipeline] DEUS model detected (component-based dict with unet)")
+                self.deus_components = model_result
+                self.is_deus_model = True
+                self.is_zimage_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"  # Reset on model load
+
+                # Initialize VRAM optimization: Move all components to CPU
+                # DEUS uses SDXL-like VRAM optimization (sequential offloading)
+                print("[VRAM] Initializing sequential loading strategy for DEUS...")
+                from core.vram_optimization import (
+                    move_text_encoders_to_cpu,
+                    move_unet_to_cpu,
+                    move_vae_to_cpu
+                )
+                # Note: DEUS has single text encoder, but we can use the same functions
+                if self.deus_components.get("text_encoder") is not None:
+                    self.deus_components["text_encoder"].to("cpu")
+                if self.deus_components.get("unet") is not None:
+                    self.deus_components["unet"].to("cpu")
+                if self.deus_components.get("vae") is not None:
+                    self.deus_components["vae"].to("cpu")
+                torch.cuda.empty_cache()
+                print("[VRAM] All DEUS components moved to CPU. Will load to GPU as needed.")
+
+                # DEUS info
+                model_type = "deus"
+                is_v_prediction = False  # DEUS uses epsilon prediction
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    from utils.hash_cache import get_cached_file_hash
+                    model_hash = get_cached_file_hash(source)
+                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": model_type,
+                    "is_v_prediction": is_v_prediction,
+                    "model_hash": model_hash
+                }
+
+                # Save this model as the last loaded model
+                self._save_last_model(source_type, source, pipeline_type)
+
+                print("[Pipeline] DEUS model loaded successfully")
+                return
+
+            # Check if FLUX.2 (detected by "transformer" key with Flux2Transformer2DModel-specific keys)
+            if isinstance(model_result, dict) and "transformer" in model_result and "scheduler" in model_result:
+                # Check if it's FLUX.2 by looking at config or class name
+                transformer = model_result.get("transformer")
+                is_flux2 = (
+                    transformer is not None and
+                    hasattr(transformer, 'config') and
+                    hasattr(transformer.config, 'num_single_layers')  # FLUX.2-specific config
+                )
+
+                if is_flux2:
+                    print("[Pipeline] FLUX.2 Klein model detected (Flux2Transformer2DModel)")
+                    self.flux2_components = model_result
+                    self.is_flux2_model = True
+                    self.is_zimage_model = False
+                    self.is_deus_model = False
+                    self.current_model = model_id
+                    self.current_attention_type = "normal"  # Reset on model load
+
+                    # Initialize VRAM optimization: Move all components to CPU
+                    print("[VRAM] Initializing sequential loading strategy for FLUX.2...")
+                    if self.flux2_components.get("text_encoder") is not None:
+                        self.flux2_components["text_encoder"].to("cpu")
+                    if self.flux2_components.get("transformer") is not None:
+                        self.flux2_components["transformer"].to("cpu")
+                    if self.flux2_components.get("vae") is not None:
+                        self.flux2_components["vae"].to("cpu")
+                    torch.cuda.empty_cache()
+                    print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
+
+                    # FLUX.2 info
+                    model_type = "flux2"
+                    is_v_prediction = False  # FLUX.2 uses Flow Matching with velocity prediction
+                    model_hash = ""
+                    if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                        print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+
+                    self.current_model_info = {
+                        "source_type": source_type,
+                        "source": source,
+                        "type": model_type,
+                        "is_v_prediction": is_v_prediction,
+                        "model_hash": model_hash
+                    }
+
+                    # Save this model as the last loaded model
+                    self._save_last_model(source_type, source, pipeline_type)
+
+                    print("[Pipeline] FLUX.2 Klein model loaded successfully")
+                    return
+
+            # Standard SD1.5/SDXL pipeline
+            base_pipeline = model_result
+            self.is_zimage_model = False
+            self.is_deus_model = False
+            self.is_flux2_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
+            model_arch = "SDXL" if is_sdxl else "SD1.5"
+            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image/DEUS)")
+
+            # Log component devices after loading
+            self._log_component_devices(base_pipeline, "After model loading")
 
             # === Step 3: Create all pipeline variants from base ===
             print("[Pipeline] Creating pipeline variants...")
@@ -173,13 +427,15 @@ class DiffusionPipelineManager:
 
             # Initialize VRAM optimization: Move all components to CPU except what's immediately needed
             print("[VRAM] Initializing sequential loading strategy...")
-            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu, log_device_status
             move_text_encoders_to_cpu(self.txt2img_pipeline)
             move_unet_to_cpu(self.txt2img_pipeline)
             move_vae_to_cpu(self.txt2img_pipeline)
-            print("[VRAM] All components moved to CPU. Will load to GPU as needed.")
+            torch.cuda.empty_cache()
+            log_device_status("Initial load complete, all components on CPU", self.txt2img_pipeline)
 
             self.current_model = model_id
+            self.current_attention_type = "normal"  # Reset on model load
 
             # Detect v-prediction status
             is_v_prediction = False
@@ -238,6 +494,3572 @@ class DiffusionPipelineManager:
             t_start = total_steps - actual_steps
 
         return total_steps, t_start, actual_steps
+
+    def _load_lora_zimage(self, lora_configs: List[Dict]):
+        """Load LoRAs for Z-Image Transformer
+
+        Args:
+            lora_configs: List of LoRA configurations
+
+        Note:
+            Z-Image uses component-based architecture (not pipeline-based).
+            LoRAs wrap original linear layers (forward-time addition, not weight merging).
+            This allows LoRAs to be unloaded by restoring original modules.
+            Based on training implementation in lora_trainer.py:674-708
+        """
+        if not lora_configs:
+            return
+
+        if not self.zimage_components:
+            print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
+            return
+
+        transformer = self.zimage_components["transformer"]
+
+        # Store original modules for unloading (first time only)
+        if not hasattr(self, '_zimage_lora_original_modules'):
+            self._zimage_lora_original_modules = {}
+            self._zimage_lora_wrapped_modules = set()  # Track which modules have LoRA
+
+        # Use global lora_manager instance (has user-configured additional_dirs)
+        from core.extensions.lora_manager import lora_manager
+
+        print(f"[Z-Image LoRA] Loading {len(lora_configs)} LoRA(s)...")
+
+        for i, lora_config in enumerate(lora_configs):
+            lora_path = lora_config.get("path", "")
+            lora_strength = lora_config.get("strength", 1.0)
+
+            # Resolve path using LoRAManager (checks lora_dir + additional_dirs)
+            resolved_path = lora_manager._resolve_lora_path(lora_path)
+
+            if resolved_path is None:
+                print(f"[Z-Image LoRA] WARNING: LoRA file not found: {lora_path}")
+                print(f"[Z-Image LoRA]   Searched in: {lora_manager.lora_dir}")
+                print(f"[Z-Image LoRA]   Additional dirs: {lora_manager.additional_dirs}")
+                continue
+
+            print(f"[Z-Image LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+
+            # Load LoRA weights
+            from safetensors import safe_open
+
+            try:
+                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
+
+                print(f"[Z-Image LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+
+                # Apply LoRA to transformer attention modules
+                # Target modules: to_q, to_k, to_v, to_out.0 in ZImageAttention
+                applied_count = 0
+
+                # Find all attention modules
+                for attn_name, attn_module in transformer.named_modules():
+                    if "ZImageAttention" not in attn_module.__class__.__name__:
+                        continue
+
+                    # Apply to to_q, to_k, to_v
+                    for attr_name in ["to_q", "to_k", "to_v"]:
+                        if hasattr(attn_module, attr_name):
+                            original_linear = getattr(attn_module, attr_name)
+
+                            if isinstance(original_linear, torch.nn.Linear):
+                                # Build LoRA key prefix
+                                lora_key_prefix = f"transformer.{attn_name}.{attr_name}"
+                                lora_down_key = f"{lora_key_prefix}.lora_down.weight"
+                                lora_up_key = f"{lora_key_prefix}.lora_up.weight"
+
+                                # Check if LoRA weights exist for this module
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+
+                                    # Load alpha if present
+                                    lora_alpha_key = f"{lora_key_prefix}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                    # Wrap with LoRA layer
+                                    module_key = f"{attn_name}.{attr_name}"
+                                    wrapped_module = self._wrap_with_lora(
+                                        attn_module,
+                                        attr_name,
+                                        original_linear,
+                                        lora_down_weight,
+                                        lora_up_weight,
+                                        lora_strength,
+                                        lora_alpha,
+                                        module_key
+                                    )
+                                    if wrapped_module is not None:
+                                        applied_count += 1
+
+                    # Apply to to_out.0 (ModuleList)
+                    if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
+                        if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], torch.nn.Linear):
+                            original_linear = attn_module.to_out[0]
+
+                            lora_key_prefix = f"transformer.{attn_name}.to_out.0"
+                            lora_down_key = f"{lora_key_prefix}.lora_down.weight"
+                            lora_up_key = f"{lora_key_prefix}.lora_up.weight"
+
+                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                lora_down_weight = lora_state_dict[lora_down_key]
+                                lora_up_weight = lora_state_dict[lora_up_key]
+
+                                # Load alpha if present
+                                lora_alpha_key = f"{lora_key_prefix}.alpha"
+                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                # Wrap with LoRA layer (to_out is ModuleList, replace [0])
+                                module_key = f"{attn_name}.to_out.0"
+                                wrapped_module = self._wrap_with_lora(
+                                    attn_module.to_out,
+                                    0,  # ModuleList index
+                                    original_linear,
+                                    lora_down_weight,
+                                    lora_up_weight,
+                                    lora_strength,
+                                    lora_alpha,
+                                    module_key
+                                )
+                                if wrapped_module is not None:
+                                    applied_count += 1
+
+                print(f"[Z-Image LoRA] Applied LoRA to {applied_count} modules")
+
+            except Exception as e:
+                print(f"[Z-Image LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _wrap_with_lora(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
+        """Wrap a linear layer with LoRA
+
+        Args:
+            parent_module: Parent module containing the linear layer
+            attr_name: Attribute name or index (for ModuleList)
+            original_linear: Original linear layer
+            lora_down_weight: LoRA down projection weight [rank, in_features]
+            lora_up_weight: LoRA up projection weight [out_features, rank]
+            strength: LoRA strength multiplier
+            alpha: LoRA alpha parameter
+            module_key: Unique key for this module (for tracking)
+
+        Returns:
+            Wrapped LoRA module or None if failed
+        """
+        # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        import numpy as np
+
+        # Get true original module (unwrap if it's already a LoRA wrapper)
+        LoRALinearLayerClass = LoRALinearLayer  # Same class, just alias for clarity
+
+        if isinstance(original_linear, LoRALinearLayerClass):
+            # Already wrapped - extract the original module
+            true_original = original_linear.original_module
+            print(f"[Z-Image LoRA DEBUG] Detected existing LoRA wrapper, extracting original module")
+        else:
+            true_original = original_linear
+
+        # Save original module (first time only)
+        if module_key not in self._zimage_lora_original_modules:
+            self._zimage_lora_original_modules[module_key] = true_original
+
+        # Compute rank and alpha value
+        rank = lora_down_weight.shape[0]
+        alpha_value = alpha.item() if alpha is not None else rank
+
+        # Create LoRA wrapper using the true original module
+        # lora_name is required parameter, use module_key for identification
+        lora_wrapper = LoRALinearLayer(
+            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        )
+
+        # Load pretrained LoRA weights
+        device = true_original.weight.device
+        dtype = true_original.weight.dtype
+
+        with torch.no_grad():
+            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
+
+        # Apply strength by adjusting scaling (override the default scale)
+        lora_wrapper.scale = (alpha_value / rank) * strength
+
+        # Replace in parent module
+        if isinstance(attr_name, int):
+            # ModuleList index
+            parent_module[attr_name] = lora_wrapper
+        else:
+            # Attribute name
+            setattr(parent_module, attr_name, lora_wrapper)
+
+        # Track wrapped modules
+        self._zimage_lora_wrapped_modules.add(module_key)
+
+        print(f"[Z-Image LoRA DEBUG] Wrapped {module_key}: alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, scaling={lora_wrapper.scaling:.4f}")
+
+        return lora_wrapper
+
+    def _unload_lora_zimage(self):
+        """Unload LoRAs from Z-Image Transformer
+
+        Restores original linear layers by removing LoRA wrappers.
+        """
+        if not hasattr(self, '_zimage_lora_original_modules'):
+            print("[Z-Image LoRA] No LoRAs loaded")
+            return
+
+        if not self.zimage_components:
+            print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
+            return
+
+        transformer = self.zimage_components["transformer"]
+        unloaded_count = 0
+
+        print(f"[Z-Image LoRA] Unloading LoRAs ({len(self._zimage_lora_wrapped_modules)} modules)...")
+
+        # Restore original modules
+        for attn_name, attn_module in transformer.named_modules():
+            if "ZImageAttention" not in attn_module.__class__.__name__:
+                continue
+
+            # Restore to_q, to_k, to_v
+            for attr_name in ["to_q", "to_k", "to_v"]:
+                module_key = f"{attn_name}.{attr_name}"
+                if module_key in self._zimage_lora_original_modules:
+                    original_module = self._zimage_lora_original_modules[module_key]
+                    setattr(attn_module, attr_name, original_module)
+                    unloaded_count += 1
+
+            # Restore to_out.0 (ModuleList)
+            if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
+                module_key = f"{attn_name}.to_out.0"
+                if module_key in self._zimage_lora_original_modules:
+                    original_module = self._zimage_lora_original_modules[module_key]
+                    attn_module.to_out[0] = original_module
+                    unloaded_count += 1
+
+        # Clear wrapped modules tracking (but keep original modules for future loads)
+        self._zimage_lora_wrapped_modules.clear()
+
+        print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
+        print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
+
+    def _load_lora_flux2(self, lora_configs: List[Dict]):
+        """Load LoRAs for FLUX.2 Transformer
+
+        Args:
+            lora_configs: List of LoRA configurations
+
+        Note:
+            FLUX.2 uses component-based architecture (not pipeline-based).
+            LoRAs wrap original linear layers (forward-time addition, not weight merging).
+            This allows LoRAs to be unloaded by restoring original modules.
+            Based on training implementation in flux2_adapter.py
+
+            FLUX.2 has two block types:
+            1. Dual stream blocks: Flux2Attention (to_q, to_k, to_v, to_out[0], add_q_proj, add_k_proj, add_v_proj, to_add_out)
+            2. Single stream blocks: Flux2ParallelSelfAttention (to_qkv_mlp_proj, to_out)
+        """
+        if not lora_configs:
+            return
+
+        if not self.flux2_components:
+            print("[FLUX.2 LoRA] WARNING: FLUX.2 components not loaded")
+            return
+
+        transformer = self.flux2_components["transformer"]
+
+        # Store original modules for unloading (first time only)
+        if not hasattr(self, '_flux2_lora_original_modules'):
+            self._flux2_lora_original_modules = {}
+            self._flux2_lora_wrapped_modules = set()
+
+        # Use global lora_manager instance (has user-configured additional_dirs)
+        from core.extensions.lora_manager import lora_manager
+
+        print(f"[FLUX.2 LoRA] Loading {len(lora_configs)} LoRA(s)...")
+
+        for i, lora_config in enumerate(lora_configs):
+            lora_path = lora_config.get("path", "")
+            lora_strength = lora_config.get("strength", 1.0)
+            layer_weights = lora_config.get("unet_layer_weights", {})
+
+            # Resolve path using LoRAManager
+            resolved_path = lora_manager._resolve_lora_path(lora_path)
+
+            if resolved_path is None:
+                print(f"[FLUX.2 LoRA] WARNING: LoRA file not found: {lora_path}")
+                print(f"[FLUX.2 LoRA]   Searched in: {lora_manager.lora_dir}")
+                print(f"[FLUX.2 LoRA]   Additional dirs: {lora_manager.additional_dirs}")
+                continue
+
+            print(f"[FLUX.2 LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+            if layer_weights:
+                print(f"[FLUX.2 LoRA] Layer weights: {layer_weights}")
+
+            # Load LoRA weights
+            from safetensors import safe_open
+
+            try:
+                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
+
+                print(f"[FLUX.2 LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+
+                # Apply LoRA to transformer modules
+                applied_count = 0
+
+                # Debug: Print first few LoRA keys
+                lora_keys_sample = list(lora_state_dict.keys())[:5]
+                print(f"[FLUX.2 LoRA] Sample LoRA keys: {lora_keys_sample}")
+
+                # Debug: Print module class names found
+                module_classes_found = set()
+                for name, module in transformer.named_modules():
+                    module_classes_found.add(module.__class__.__name__)
+                print(f"[FLUX.2 LoRA] Module classes in transformer: {module_classes_found}")
+
+                for name, module in transformer.named_modules():
+                    # Flux2Attention (dual stream blocks)
+                    if module.__class__.__name__ == "Flux2Attention":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
+                        # Standard QKV projections
+                        for attr_name in ["to_q", "to_k", "to_v"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    # Build LoRA key using training adapter's naming convention
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                        # to_out (ModuleList) - uses same effective_strength computed above
+                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
+                            if len(module.to_out) > 0 and isinstance(module.to_out[0], torch.nn.Linear):
+                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
+                                lora_down_key = f"{lora_name}.lora_down.weight"
+                                lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+                                    lora_alpha_key = f"{lora_name}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                    module_key = f"{name}.to_out.0"
+                                    wrapped = self._wrap_with_lora_flux2(
+                                        module.to_out, 0, module.to_out[0],
+                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                    )
+                                    if wrapped:
+                                        applied_count += 1
+
+                        # Additional projections for encoder cross attention - uses same effective_strength
+                        for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                    # Flux2ParallelSelfAttention (single stream blocks)
+                    elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
+                        # Fused QKV + MLP projection
+                        if hasattr(module, "to_qkv_mlp_proj"):
+                            original_linear = module.to_qkv_mlp_proj
+                            if isinstance(original_linear, torch.nn.Linear):
+                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
+                                lora_down_key = f"{lora_name}.lora_down.weight"
+                                lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                    lora_down_weight = lora_state_dict[lora_down_key]
+                                    lora_up_weight = lora_state_dict[lora_up_key]
+                                    lora_alpha_key = f"{lora_name}.alpha"
+                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                    module_key = f"{name}.to_qkv_mlp_proj"
+                                    wrapped = self._wrap_with_lora_flux2(
+                                        module, "to_qkv_mlp_proj", original_linear,
+                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                    )
+                                    if wrapped:
+                                        applied_count += 1
+
+                        # Output projection (fused attention + MLP) - uses same effective_strength
+                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.Linear):
+                            lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
+                            lora_down_key = f"{lora_name}.lora_down.weight"
+                            lora_up_key = f"{lora_name}.lora_up.weight"
+
+                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                lora_down_weight = lora_state_dict[lora_down_key]
+                                lora_up_weight = lora_state_dict[lora_up_key]
+                                lora_alpha_key = f"{lora_name}.alpha"
+                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                module_key = f"{name}.to_out"
+                                wrapped = self._wrap_with_lora_flux2(
+                                    module, "to_out", module.to_out,
+                                    lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                )
+                                if wrapped:
+                                    applied_count += 1
+
+                    # Flux2FeedForward (dual stream blocks)
+                    elif module.__class__.__name__ == "Flux2FeedForward":
+                        # Get block name for layer-wise weight lookup
+                        block_name = self._get_flux2_block_name(name)
+                        block_weight = layer_weights.get(block_name, 1.0)
+                        effective_strength = lora_strength * block_weight
+
+                        for attr_name in ["linear_in", "linear_out"]:
+                            if hasattr(module, attr_name):
+                                original_linear = getattr(module, attr_name)
+                                if isinstance(original_linear, torch.nn.Linear):
+                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
+                                    lora_down_key = f"{lora_name}.lora_down.weight"
+                                    lora_up_key = f"{lora_name}.lora_up.weight"
+
+                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
+                                        lora_down_weight = lora_state_dict[lora_down_key]
+                                        lora_up_weight = lora_state_dict[lora_up_key]
+                                        lora_alpha_key = f"{lora_name}.alpha"
+                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                                        module_key = f"{name}.{attr_name}"
+                                        wrapped = self._wrap_with_lora_flux2(
+                                            module, attr_name, original_linear,
+                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
+                                        )
+                                        if wrapped:
+                                            applied_count += 1
+
+                print(f"[FLUX.2 LoRA] Applied LoRA to {applied_count} modules")
+
+            except Exception as e:
+                print(f"[FLUX.2 LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _get_flux2_block_name(self, module_name: str) -> str:
+        """Get the block name (DUAL{XX} or SING{XX}) from module name for layer-wise weight lookup
+
+        Args:
+            module_name: Module name like 'transformer_blocks.0.attn' or 'single_transformer_blocks.5.attn'
+
+        Returns:
+            Block name like 'DUAL00', 'SING05', or 'BASE' if no match
+        """
+        import re
+
+        # Dual stream blocks: transformer_blocks.X.* (but not single_transformer_blocks)
+        if 'transformer_blocks' in module_name and 'single_transformer_blocks' not in module_name:
+            match = re.search(r'transformer_blocks\.(\d+)', module_name)
+            if match:
+                block_num = int(match.group(1))
+                return f"DUAL{block_num:02d}"
+
+        # Single stream blocks: single_transformer_blocks.X.*
+        match = re.search(r'single_transformer_blocks\.(\d+)', module_name)
+        if match:
+            block_num = int(match.group(1))
+            return f"SING{block_num:02d}"
+
+        return "BASE"
+
+    def _wrap_with_lora_flux2(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
+        """Wrap a linear layer with LoRA for FLUX.2
+
+        Args:
+            parent_module: Parent module containing the linear layer
+            attr_name: Attribute name or index (for ModuleList)
+            original_linear: Original linear layer
+            lora_down_weight: LoRA down projection weight
+            lora_up_weight: LoRA up projection weight
+            strength: LoRA strength multiplier (already adjusted with layer weight)
+            alpha: LoRA alpha parameter
+            module_key: Unique key for tracking
+
+        Returns:
+            True if wrapped successfully, False otherwise
+        """
+        # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+        # Handle already wrapped modules
+        if isinstance(original_linear, LoRALinearLayer):
+            true_original = original_linear.original_module
+        else:
+            true_original = original_linear
+
+        # Save original module (first time only)
+        if module_key not in self._flux2_lora_original_modules:
+            self._flux2_lora_original_modules[module_key] = true_original
+
+        # Compute rank and alpha value
+        rank = lora_down_weight.shape[0]
+        alpha_value = alpha.item() if alpha is not None else rank
+
+        # Create LoRA wrapper
+        # lora_name is required parameter, use module_key for identification
+        lora_wrapper = LoRALinearLayer(
+            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        )
+
+        # Load pretrained weights
+        device = true_original.weight.device
+        dtype = true_original.weight.dtype
+
+        with torch.no_grad():
+            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
+
+        # Apply strength (override the default scale)
+        lora_wrapper.scale = (alpha_value / rank) * strength
+
+        # Replace in parent module
+        if isinstance(attr_name, int):
+            parent_module[attr_name] = lora_wrapper
+        else:
+            setattr(parent_module, attr_name, lora_wrapper)
+
+        self._flux2_lora_wrapped_modules.add(module_key)
+        return True
+
+    def _unload_lora_flux2(self):
+        """Unload LoRAs from FLUX.2 Transformer"""
+        if not hasattr(self, '_flux2_lora_original_modules'):
+            print("[FLUX.2 LoRA] No LoRAs loaded")
+            return
+
+        if not self.flux2_components:
+            print("[FLUX.2 LoRA] WARNING: FLUX.2 components not loaded")
+            return
+
+        transformer = self.flux2_components["transformer"]
+        unloaded_count = 0
+
+        print(f"[FLUX.2 LoRA] Unloading LoRAs ({len(self._flux2_lora_wrapped_modules)} modules)...")
+
+        for name, module in transformer.named_modules():
+            # Flux2Attention
+            if module.__class__.__name__ == "Flux2Attention":
+                for attr_name in ["to_q", "to_k", "to_v", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+                # to_out (ModuleList)
+                module_key = f"{name}.to_out.0"
+                if module_key in self._flux2_lora_original_modules and hasattr(module, "to_out"):
+                    module.to_out[0] = self._flux2_lora_original_modules[module_key]
+                    unloaded_count += 1
+
+            # Flux2ParallelSelfAttention
+            elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
+                for attr_name in ["to_qkv_mlp_proj", "to_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+            # Flux2FeedForward
+            elif module.__class__.__name__ == "Flux2FeedForward":
+                for attr_name in ["linear_in", "linear_out"]:
+                    module_key = f"{name}.{attr_name}"
+                    if module_key in self._flux2_lora_original_modules:
+                        setattr(module, attr_name, self._flux2_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+        self._flux2_lora_wrapped_modules.clear()
+        print(f"[FLUX.2 LoRA] Unloaded {unloaded_count} LoRA modules")
+
+    def _get_zimage_scheduler(self, sampler: str):
+        """
+        Get appropriate Flow Match scheduler for Z-Image based on sampler selection
+
+        Z-Image uses Flow Matching schedulers (different from SD/SDXL).
+        Maps user-selected sampler to compatible Flow Match scheduler.
+
+        Sampler mapping:
+        - euler → FlowMatchEulerDiscreteScheduler (stochastic_sampling=False)
+        - euler_a → FlowMatchEulerDiscreteScheduler (stochastic_sampling=True)
+        - heun → FlowMatchHeunDiscreteScheduler
+
+        Args:
+            sampler: User-selected sampler name (e.g., "euler", "heun")
+
+        Returns:
+            Configured Flow Match scheduler instance
+        """
+        from diffusers.schedulers import (
+            FlowMatchEulerDiscreteScheduler,
+            FlowMatchHeunDiscreteScheduler,
+        )
+
+        base_scheduler = self.zimage_components["scheduler"]
+        config = base_scheduler.config
+
+        # Map sampler to Flow Match scheduler class
+        if sampler == "heun":
+            scheduler_class = FlowMatchHeunDiscreteScheduler
+            print(f"[Z-Image] Using FlowMatchHeunDiscreteScheduler for sampler '{sampler}'")
+            return scheduler_class.from_config(config)
+        else:
+            # Euler/Euler a: use FlowMatchEulerDiscreteScheduler with stochastic_sampling flag
+            is_ancestral = sampler in ["euler_a", "dpm2_a"]
+            print(f"[Z-Image] Using FlowMatchEulerDiscreteScheduler for sampler '{sampler}' (stochastic={is_ancestral})")
+
+            # Create config dict and enable stochastic_sampling for ancestral samplers
+            scheduler_config = dict(config)
+            scheduler_config["stochastic_sampling"] = is_ancestral
+
+            return FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
+
+    def _generate_txt2img_deus(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from text using DEUS (SDXL-like with SigLIP-2)
+
+        DEUS is similar to SDXL but with key differences:
+        - Single text encoder: SigLIP-2 (1152d) instead of dual CLIP (2048d)
+        - No added_cond_kwargs: No time_ids or pooled_embeds needed
+        - 2-Pass CFG: Due to variable sequence length, negative and positive are processed separately
+
+        Uses custom_sampling_loop with is_deus=True for advanced features:
+        - Prompt editing
+        - LoRA step range
+        - NAG
+        - CFG schedule
+        - Progress callback
+        - ControlNet (future)
+
+        Args:
+            params: Generation parameters (same as SDXL)
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting txt2img generation (using custom_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+
+            print(f"[DEUS] Generating {width}x{height} image")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            # Move text encoder to GPU for encoding
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            # DEUS uses SigLIP-2 (single text encoder, 1152d)
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # DEUS doesn't use pooled embeddings (unlike SDXL)
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_sampling_loop with is_deus=True for 2-Pass CFG
+            image = custom_sampling_loop(
+                pipeline=pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                width=width,
+                height=height,
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                latents=None,
+                prompt_embeds_callback=None,  # TODO: Add prompt editing support
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,  # TODO: Add ControlNet support
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] Generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
+
+    def _generate_img2img_deus(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from image using DEUS (img2img)
+
+        DEUS img2img uses the same architecture as txt2img but with:
+        - Initial latents from the input image (VAE encoded)
+        - Denoising strength to control how much of the original image to preserve
+
+        Args:
+            params: Generation parameters
+            init_image: Input image to transform
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting img2img generation (using custom_img2img_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+            denoising_strength = params.get("denoising_strength", 0.75)
+
+            # Get image dimensions from input image or params
+            width = params.get("width", init_image.width)
+            height = params.get("height", init_image.height)
+
+            print(f"[DEUS] Generating {width}x{height} image (denoising_strength={denoising_strength})")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_img2img_sampling_loop with is_deus=True for 2-Pass CFG
+            from core.inference.custom_sampling import custom_img2img_sampling_loop
+            image = custom_img2img_sampling_loop(
+                pipeline=pipeline,
+                init_image=init_image,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                prompt_embeds_callback=None,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                width=width,
+                height=height,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] img2img generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] img2img generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
+
+    def _generate_inpaint_deus(self, params: Dict[str, Any], init_image: Image.Image, mask_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate inpainted image using DEUS
+
+        DEUS inpaint uses the same architecture as img2img but with:
+        - Mask blending during denoising
+        - Denoising strength to control how much of the original image to preserve
+
+        Args:
+            params: Generation parameters
+            init_image: Input image to inpaint
+            mask_image: Mask indicating areas to inpaint (white = inpaint)
+            progress_callback: Legacy callback for progress
+            step_callback: Step callback for step-based control
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.deus_components:
+            raise RuntimeError("DEUS components not loaded. Please load a DEUS model first.")
+
+        print("[DEUS] Starting inpaint generation (using custom_inpaint_sampling_loop)")
+
+        try:
+            # Get the DeusPipeline reference
+            pipeline = self.deus_components.get("pipeline")
+            if pipeline is None:
+                raise RuntimeError("DEUS pipeline not available in components")
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 20)
+            guidance_scale = params.get("cfg_scale", 7.0)
+            denoising_strength = params.get("denoising_strength", 0.75)
+            mask_blur = params.get("mask_blur", 4)
+
+            # Get image dimensions from input image or params
+            width = params.get("width", init_image.width)
+            height = params.get("height", init_image.height)
+
+            print(f"[DEUS] Generating {width}x{height} inpainted image (denoising_strength={denoising_strength})")
+            print(f"[DEUS] Steps: {num_inference_steps}, CFG: {guidance_scale}")
+            print(f"[DEUS] Prompt: {prompt[:100]}...")
+
+            # Create generator and get actual seed
+            seed = params.get("seed", -1)
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[DEUS] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[DEUS] Using specified ancestral seed: {ancestral_seed}")
+
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+
+            # ===== STAGE 1: TEXT ENCODING =====
+            print("[DEUS] Moving text encoder to GPU...")
+            pipeline.text_encoder.to(self.device)
+
+            # Encode prompts using DeusPipeline's encode_prompt
+            print("[DEUS] Encoding prompts...")
+            prompt_embeds, negative_prompt_embeds = pipeline.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                device=self.device,
+                do_classifier_free_guidance=True,
+            )
+
+            print(f"[DEUS] Prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[DEUS] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+
+            # Offload text encoder to CPU
+            print("[DEUS] Offloading text encoder to CPU...")
+            pipeline.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ===== STAGE 2: U-NET INFERENCE =====
+            # Move U-Net to GPU
+            print("[DEUS] Moving U-Net to GPU...")
+            pipeline.unet.to(self.device)
+
+            # Set scheduler based on sampler parameter
+            sampler = params.get("sampler", "euler")
+            schedule_type = params.get("schedule_type", "uniform")
+            try:
+                pipeline.scheduler = get_scheduler(pipeline, sampler, schedule_type)
+                print(f"[DEUS] Using scheduler: {type(pipeline.scheduler).__name__}")
+            except Exception as e:
+                print(f"[DEUS] Warning: Could not set sampler to {sampler}: {e}")
+
+            # Use custom_inpaint_sampling_loop with is_deus=True for 2-Pass CFG
+            from core.inference.custom_sampling import custom_inpaint_sampling_loop
+            image = custom_inpaint_sampling_loop(
+                pipeline=pipeline,
+                init_image=init_image,
+                mask_image=mask_image,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=None,  # DEUS doesn't use pooled embeddings
+                negative_pooled_prompt_embeds=None,
+                num_inference_steps=num_inference_steps,
+                strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                guidance_rescale=params.get("guidance_rescale", 0.0),
+                generator=generator,
+                ancestral_generator=ancestral_generator,
+                width=width,
+                height=height,
+                inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
+                inpaint_fill_strength=params.get("inpaint_fill_strength", 1.0),
+                inpaint_blur_strength=float(mask_blur),
+                prompt_embeds_callback=None,
+                progress_callback=progress_callback,
+                step_callback=step_callback,
+                developer_mode=params.get("developer_mode", False),
+                controlnet_images=None,
+                controlnet_conditioning_scale=None,
+                control_guidance_start=None,
+                control_guidance_end=None,
+                cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
+                cfg_schedule_min=params.get("cfg_schedule_min", 1.0),
+                cfg_schedule_max=params.get("cfg_schedule_max", None),
+                cfg_schedule_power=params.get("cfg_schedule_power", 2.0),
+                cfg_rescale_snr_alpha=params.get("cfg_rescale_snr_alpha", 0.0),
+                dynamic_threshold_percentile=params.get("dynamic_threshold_percentile", 0.0),
+                dynamic_threshold_mimic_scale=params.get("dynamic_threshold_mimic_scale", 1.0),
+                nag_enable=False,  # NAG not yet supported for DEUS
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type=params.get("attention_type", "normal"),
+                is_deus=True,  # Enable 2-Pass CFG
+            )
+
+            print("[DEUS] inpaint generation complete")
+
+            return image, actual_seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[DEUS] inpaint generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            # Offload components to CPU to free VRAM
+            print("[DEUS] Offloading components to CPU...")
+            if self.deus_components.get("text_encoder") is not None:
+                self.deus_components["text_encoder"].to("cpu")
+            if self.deus_components.get("unet") is not None:
+                self.deus_components["unet"].to("cpu")
+            if self.deus_components.get("vae") is not None:
+                self.deus_components["vae"].to("cpu")
+            torch.cuda.empty_cache()
+            print("[DEUS] All components offloaded to CPU")
+
+    def _generate_txt2img_zimage(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from text using Z-Image
+
+        Args:
+            params: Generation parameters
+            progress_callback: Legacy callback (not used for Z-Image)
+            step_callback: Step callback (not used for Z-Image)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.zimage_components:
+            raise RuntimeError("Z-Image components not loaded. Please load a Z-Image model first.")
+
+        print("[Z-Image] Starting txt2img generation")
+
+        try:
+
+            # Extract components
+            transformer = self.zimage_components["transformer"]
+            vae = self.zimage_components["vae"]
+            text_encoder = self.zimage_components["text_encoder"]
+            tokenizer = self.zimage_components["tokenizer"]
+
+            # Get scheduler based on user-selected sampler
+            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
+            sampler = params.get("sampler", "euler")
+            scheduler = self._get_zimage_scheduler(sampler)
+
+            # Set attention backend based on global settings or params
+            attention_type = params.get("attention_type", settings.attention_type)
+
+            # Only switch if attention type has changed (avoid redundant switching overhead)
+            if attention_type != self.current_attention_type:
+                print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type
+                self.current_attention_type = attention_type
+            else:
+                print(f"[Z-Image] Attention backend already set to: {attention_type} (skipping)")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type  # Ensure it's set (for safety)
+
+            # Load or unload LoRAs
+            lora_configs = params.get("loras", [])
+            print(f"[Z-Image] DEBUG: lora_configs received: {lora_configs}")
+            print(f"[Z-Image] DEBUG: lora_configs type: {type(lora_configs)}")
+            print(f"[Z-Image] DEBUG: lora_configs length: {len(lora_configs) if lora_configs else 0}")
+
+            if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
+                # Load new LoRAs
+                self._load_lora_zimage(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for reproducibility tracking
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                # Use specified seed
+                actual_ancestral_seed = ancestral_seed
+                print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
+
+            # Z-Image parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 8)  # Turbo default: 8 steps
+            max_sequence_length = params.get("max_sequence_length", 512)
+
+            # Z-Image supports CFG (guidance_scale)
+            # CFG=1.0: no CFG (positive only)
+            # CFG!=1.0: CFG enabled
+            guidance_scale = params.get("cfg_scale", 3.5)
+
+            print(f"[Z-Image] Generating {width}x{height} image")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
+            text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Z-Image only)
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
+                self._zimage_encode_prompt(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    guidance_scale, max_sequence_length, text_encoder_quantization
+                )
+
+            # Offload Text Encoder to CPU to free VRAM
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: Denoising Loop
+            # ============================================================
+            # Block Swap parameters
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 20)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+
+            if not enable_block_swap:
+                # Normal mode: move entire Transformer to GPU
+                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+
+                # DEBUG: Verify LoRA is still applied after GPU move
+                if lora_configs:
+                    for attn_name, attn_module in transformer.named_modules():
+                        if "ZImageAttention" in attn_module.__class__.__name__:
+                            if hasattr(attn_module, "to_q"):
+                                weight_norm = attn_module.to_q.weight.data.norm().item()
+                                print(f"[Z-Image LoRA DEBUG] After GPU move, first attention to_q weight norm: {weight_norm:.4f}")
+                            break
+
+                log_device_status("Ready for Z-Image denoising loop", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+            else:
+                # Block Swap mode: keep Transformer on CPU for Block Swap initialization
+                print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
+
+                # Create block offloader
+                from core.memory_management import create_block_offloader_for_model
+
+                block_offloader = create_block_offloader_for_model(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory
+                )
+
+                # Attach block offloader to transformer
+                transformer._block_offloader = block_offloader
+
+                # Prepare block devices (this moves blocks to GPU/CPU according to strategy)
+                block_offloader.prepare_block_devices_before_forward()
+
+                log_device_status("Ready for Z-Image denoising loop (Block Swap enabled)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+
+            latents = self._zimage_denoising_loop(
+                transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+                height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+                generator, progress_callback, step_callback
+            )
+
+            # Offload Transformer to CPU to free VRAM for VAE
+            move_zimage_transformer_to_cpu(transformer)
+            log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 3: VAE Decode
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            images = self._zimage_decode_latents(vae, latents)
+
+            # Offload VAE to CPU after decoding
+            move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors from GPU memory
+            del prompt_embeds_list, negative_prompt_embeds_list, latents
+            torch.cuda.empty_cache()  # Release PyTorch's VRAM cache
+
+            log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            print("[Z-Image] Generation completed")
+
+            return images[0], seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[Z-Image] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Z-Image generation failed: {str(e)}")
+
+    def _generate_txt2img_flux2(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from text using FLUX.2 Klein
+
+        Args:
+            params: Generation parameters
+            progress_callback: Callback for progress (step, total_steps, latent)
+            step_callback: Step callback (not used for FLUX.2)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting txt2img generation")
+
+        try:
+            import numpy as np
+
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            print(f"[FLUX.2] DEBUG: lora_configs from params = {lora_configs}")
+            if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
+                else:
+                    print(f"[FLUX.2] DEBUG: No LoRAs in params, skipping LoRA loading")
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed (for stochastic samplers)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[FLUX.2] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                actual_ancestral_seed = ancestral_seed
+                print(f"[FLUX.2] Using specified ancestral seed: {ancestral_seed}")
+
+            # FLUX.2 parameters
+            prompt = params.get("prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
+
+            # Check if distilled model (no CFG)
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            print(f"[FLUX.2] Generating {width}x{height} image")
+            print(f"[FLUX.2] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
+            print(f"[FLUX.2] CFG enabled: {do_classifier_free_guidance}")
+            print(f"[FLUX.2] Prompt: {prompt[:100]}...")
+
+            # ============================================================
+            # Stage 1: Text Encoding (Qwen3)
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            # Offload text encoder to CPU
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Prepare Latents
+            # ============================================================
+            print("[FLUX.2] Stage 2: Preparing latents...")
+
+            # VAE scale factor (8) * patch size (2) = 16
+            vae_scale_factor = 8
+            patch_size = 2
+
+            # Ensure height/width divisible by vae_scale_factor * patch_size
+            latent_height = 2 * (int(height) // (vae_scale_factor * patch_size))
+            latent_width = 2 * (int(width) // (vae_scale_factor * patch_size))
+
+            # FLUX.2 has 32 latent channels, but patchified to 128
+            num_channels_latents = transformer.config.in_channels // 4  # 32
+
+            # Create random latents
+            latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
+            latents = torch.randn(latent_shape, generator=generator, device=self.device, dtype=prompt_embeds.dtype)
+
+            # Prepare latent position IDs
+            latent_ids = self._flux2_prepare_latent_ids(latents).to(self.device)
+
+            # Pack latents: (B, C, H, W) -> (B, H*W, C)
+            latents = self._flux2_pack_latents(latents)
+
+            print(f"[FLUX.2] Latents shape: {latents.shape}, Latent IDs shape: {latent_ids.shape}")
+
+            # ============================================================
+            # Stage 3: Denoising Loop
+            # ============================================================
+            print("[FLUX.2] Stage 3: Denoising loop...")
+
+            # Block Swap setup
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if enable_block_swap and blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                # Create block offloader
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+
+                # Prepare block devices
+                block_offloader.prepare_block_devices_before_forward()
+
+                # Wrap transformer
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                # No Block Swap - ensure ALL weights are on GPU
+                # This is important when switching from Block Swap ON to OFF
+                from core.memory_management.block_offloading import weighs_to_device
+                transformer = transformer.to(self.device)
+                # Move all block weights to GPU (in case they were on CPU from previous Block Swap)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                transformer_wrapper = transformer
+
+            # Prepare timesteps
+            image_seq_len = latents.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+
+            # Set timesteps with sigmas
+            sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+            scheduler.set_begin_index(0)
+
+            # Denoising loop
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    # Cleanup block offloader if used
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                # Expand timestep
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                latent_model_input = latents.to(transformer.dtype)
+                latent_image_ids = latent_ids
+
+                # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                if do_classifier_free_guidance:
+                    # Double the batch: [uncond, cond]
+                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
+
+                    # Single forward pass for both unconditional and conditional
+                    with torch.no_grad():
+                        noise_pred_combined = transformer_wrapper(
+                            hidden_states=latent_model_input_doubled,
+                            timestep=timestep_doubled / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds_combined,
+                            txt_ids=text_ids_combined,
+                            img_ids=latent_image_ids_doubled,
+                            return_dict=False,
+                        )[0]
+
+                    # Split and apply CFG formula
+                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
+                    with torch.no_grad():
+                        noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=guidance_vec,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_image_ids,
+                            return_dict=False,
+                        )[0]
+
+                # Scheduler step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
+                if progress_callback:
+                    try:
+                        progress_callback(i, len(timesteps), latents)
+                    except Exception as e:
+                        print(f"[FLUX.2] Progress callback error: {e}")
+
+                if (i + 1) % 10 == 0 or i == len(timesteps) - 1:
+                    print(f"[FLUX.2] Step {i + 1}/{len(timesteps)}")
+
+            # Cleanup block offloader and offload transformer to CPU
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 4: VAE Decode
+            # ============================================================
+            print("[FLUX.2] Stage 4: VAE decoding...")
+            vae = vae.to(self.device)
+
+            # Unpack latents with IDs
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Apply BatchNorm scaling (FLUX.2-specific)
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            # Unpatchify
+            latents = self._flux2_unpatchify_latents(latents)
+
+            # Decode - convert latents to VAE dtype (bfloat16 -> float32)
+            latents = latents.to(dtype=vae.dtype)
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            # Convert to PIL
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            # Offload VAE to CPU
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] Generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 generation failed: {str(e)}")
+
+    def _flux2_encode_prompt(
+        self,
+        text_encoder,
+        tokenizer,
+        prompt: str,
+        max_sequence_length: int = 512,
+        hidden_states_layers: tuple = (9, 18, 27),
+    ):
+        """Encode prompt using Qwen3 text encoder
+
+        FLUX.2 extracts hidden states from layers 9, 18, 27 of Qwen3 and concatenates them.
+        """
+        device = text_encoder.device
+        dtype = text_encoder.dtype
+
+        # Apply chat template
+        messages = [{"role": "user", "content": prompt}]
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
+        # Tokenize
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=max_sequence_length,
+        )
+
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"].to(device)
+
+        # Forward pass
+        with torch.no_grad():
+            output = text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                use_cache=False,
+            )
+
+        # Extract and stack hidden states from specified layers
+        out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
+        out = out.to(dtype=dtype, device=device)
+
+        # Reshape: (B, num_layers, seq_len, hidden_dim) -> (B, seq_len, num_layers * hidden_dim)
+        batch_size, num_channels, seq_len, hidden_dim = out.shape
+        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+        # Prepare text IDs (4D position coordinates)
+        text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(device)
+
+        return prompt_embeds, text_ids
+
+    def _flux2_prepare_text_ids(self, x: torch.Tensor):
+        """Prepare 4D position IDs for text embeddings"""
+        B, L, _ = x.shape
+        out_ids = []
+
+        for i in range(B):
+            t = torch.arange(1)
+            h = torch.arange(1)
+            w = torch.arange(1)
+            l = torch.arange(L)
+            coords = torch.cartesian_prod(t, h, w, l)
+            out_ids.append(coords)
+
+        return torch.stack(out_ids)
+
+    def _flux2_prepare_latent_ids(self, latents: torch.Tensor):
+        """Prepare 4D position IDs for latents"""
+        batch_size, _, height, width = latents.shape
+
+        t = torch.arange(1)
+        h = torch.arange(height)
+        w = torch.arange(width)
+        l = torch.arange(1)
+
+        latent_ids = torch.cartesian_prod(t, h, w, l)
+        latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+        return latent_ids
+
+    def _flux2_pack_latents(self, latents: torch.Tensor):
+        """Pack latents: (B, C, H, W) -> (B, H*W, C)"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+        return latents
+
+    def _flux2_unpack_latents_with_ids(self, x: torch.Tensor, x_ids: torch.Tensor):
+        """Unpack latents using position IDs"""
+        x_list = []
+        for data, pos in zip(x, x_ids):
+            _, ch = data.shape
+            h_ids = pos[:, 1].to(torch.int64)
+            w_ids = pos[:, 2].to(torch.int64)
+
+            h = torch.max(h_ids) + 1
+            w = torch.max(w_ids) + 1
+
+            flat_ids = h_ids * w + w_ids
+
+            out = torch.zeros((h * w, ch), device=data.device, dtype=data.dtype)
+            out.scatter_(0, flat_ids.unsqueeze(1).expand(-1, ch), data)
+
+            out = out.view(h, w, ch).permute(2, 0, 1)
+            x_list.append(out)
+
+        return torch.stack(x_list, dim=0)
+
+    def _flux2_patchify_latents(self, latents: torch.Tensor):
+        """Patchify latents for 2x2 patches"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.view(batch_size, num_channels, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4)
+        latents = latents.reshape(batch_size, num_channels * 4, height // 2, width // 2)
+        return latents
+
+    def _flux2_unpatchify_latents(self, latents: torch.Tensor):
+        """Unpatchify latents from 2x2 patches"""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels // 4, 2, 2, height, width)
+        latents = latents.permute(0, 1, 4, 2, 5, 3)
+        latents = latents.reshape(batch_size, num_channels // 4, height * 2, width * 2)
+        return latents
+
+    def _flux2_compute_empirical_mu(self, image_seq_len: int, num_steps: int) -> float:
+        """Compute empirical mu for FLUX.2 scheduler"""
+        a1, b1 = 8.73809524e-05, 1.89833333
+        a2, b2 = 0.00016927, 0.45666666
+
+        if image_seq_len > 4300:
+            mu = a2 * image_seq_len + b2
+            return float(mu)
+
+        m_200 = a2 * image_seq_len + b2
+        m_10 = a1 * image_seq_len + b1
+
+        a = (m_200 - m_10) / 190.0
+        b = m_200 - 200.0 * a
+        mu = a * num_steps + b
+
+        return float(mu)
+
+    def _generate_img2img_flux2(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+        """Generate image from image using FLUX.2 Klein
+
+        FLUX.2 supports image conditioning by encoding input images to latents
+        and using them as reference during denoising.
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            progress_callback: Callback for progress
+            step_callback: Step callback (not used)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting img2img generation")
+
+        try:
+            import numpy as np
+
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+            else:
+                actual_ancestral_seed = ancestral_seed
+
+            # Parameters
+            prompt = params.get("prompt", "")
+            denoising_strength = params.get("denoising_strength", 0.75)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            max_sequence_length = 512
+
+            # Get image dimensions (use input image size)
+            width, height = init_image.size
+
+            # VAE scale factor
+            vae_scale_factor = 8
+            patch_size = 2
+            multiple_of = vae_scale_factor * patch_size
+
+            # Resize if needed
+            width = (width // multiple_of) * multiple_of
+            height = (height // multiple_of) * multiple_of
+            if init_image.size != (width, height):
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            print(f"[FLUX.2] img2img: {width}x{height}, strength: {denoising_strength}")
+
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Encode input image
+            # ============================================================
+            print("[FLUX.2] Stage 2: Encoding input image...")
+            vae = vae.to(self.device)
+
+            # Preprocess image
+            image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+            image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # (1, C, H, W)
+            image_tensor = (image_tensor - 0.5) * 2  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(self.device, dtype=vae.dtype)
+
+            # Encode
+            with torch.no_grad():
+                latent_dist = vae.encode(image_tensor).latent_dist
+                init_latents = latent_dist.mode()  # Use mode for img2img
+
+            # Patchify
+            init_latents = self._flux2_patchify_latents(init_latents)
+
+            # Apply BatchNorm normalization
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
+            init_latents = (init_latents - latents_bn_mean) / latents_bn_std
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 3: Prepare latents with noise
+            # ============================================================
+            print("[FLUX.2] Stage 3: Preparing latents...")
+
+            # Prepare position IDs
+            latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
+
+            # Pack latents
+            init_latents = self._flux2_pack_latents(init_latents)
+
+            # Prepare timesteps
+            image_seq_len = init_latents.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+
+            # Calculate start timestep based on denoising strength
+            t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
+            timesteps = timesteps[t_start:]
+
+            # Add noise at start timestep (Flow Matching linear interpolation)
+            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
+            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
+            t_value = timesteps[0].item() / 1000.0
+            noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
+            latents = (1 - t_value) * init_latents + t_value * noise
+
+            print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
+
+            # ============================================================
+            # Stage 4: Denoising Loop
+            # ============================================================
+            print("[FLUX.2] Stage 4: Denoising loop...")
+
+            # Block Swap setup
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if enable_block_swap and blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+                block_offloader.prepare_block_devices_before_forward()
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                # No Block Swap - ensure ALL weights are on GPU
+                from core.memory_management.block_offloading import weighs_to_device
+                transformer = transformer.to(self.device)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                transformer_wrapper = transformer
+
+            scheduler.set_begin_index(t_start)
+
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                latent_model_input = latents.to(transformer.dtype)
+
+                # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                if do_classifier_free_guidance:
+                    # Double the batch: [uncond, cond]
+                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                    latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+
+                    # Single forward pass for both unconditional and conditional
+                    with torch.no_grad():
+                        noise_pred_combined = transformer_wrapper(
+                            hidden_states=latent_model_input_doubled,
+                            timestep=timestep_doubled / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds_combined,
+                            txt_ids=text_ids_combined,
+                            img_ids=latent_ids_doubled,
+                            return_dict=False,
+                        )[0]
+
+                    # Split and apply CFG formula
+                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
+                    with torch.no_grad():
+                        noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=guidance_vec,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+
+                # Step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
+                if progress_callback:
+                    try:
+                        progress_callback(i, len(timesteps), latents)
+                    except Exception:
+                        pass
+
+            # Cleanup block offloader and offload transformer to CPU (img2img)
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 5: VAE Decode (img2img)
+            # ============================================================
+            print("[FLUX.2] Stage 5: VAE decoding...")
+            vae = vae.to(self.device)
+
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Denormalize
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            latents = self._flux2_unpatchify_latents(latents)
+
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] img2img generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] img2img error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 img2img failed: {str(e)}")
+
+    def _generate_inpaint_flux2(
+        self,
+        params: Dict[str, Any],
+        init_image: Image.Image,
+        mask_image: Image.Image,
+        progress_callback=None,
+        step_callback=None
+    ) -> tuple[Image.Image, int, int]:
+        """Generate inpainted image using FLUX.2 Klein
+
+        FLUX.2 inpainting works by blending masked regions during denoising.
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            mask_image: Mask PIL image (white = inpaint, black = keep)
+            progress_callback: Callback for progress
+            step_callback: Step callback (not used)
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed)
+        """
+        if not self.flux2_components:
+            raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
+
+        print("[FLUX.2] Starting inpaint generation")
+
+        try:
+            import numpy as np
+
+            # Load LoRAs if specified
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                # Unload previous LoRAs first (if any)
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    self._unload_lora_flux2()
+                # Load new LoRAs
+                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
+                self._load_lora_flux2(lora_configs)
+            else:
+                # No LoRAs requested - unload if any are loaded
+                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
+                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
+                    self._unload_lora_flux2()
+
+            # Extract components
+            transformer = self.flux2_components["transformer"]
+            vae = self.flux2_components["vae"]
+            text_encoder = self.flux2_components["text_encoder"]
+            tokenizer = self.flux2_components["tokenizer"]
+            scheduler = self.flux2_components["scheduler"]
+            config = self.flux2_components.get("config", {})
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Ancestral seed
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                actual_ancestral_seed = random.randint(0, 2147483647)
+            else:
+                actual_ancestral_seed = ancestral_seed
+
+            # Parameters
+            prompt = params.get("prompt", "")
+            denoising_strength = params.get("denoising_strength", 1.0)
+            num_inference_steps = params.get("steps", 50)
+            guidance_scale = params.get("cfg_scale", 4.0)
+            mask_blur = params.get("mask_blur", 4)
+            max_sequence_length = 512
+
+            # Get dimensions
+            width, height = init_image.size
+
+            vae_scale_factor = 8
+            patch_size = 2
+            multiple_of = vae_scale_factor * patch_size
+
+            # Resize if needed
+            width = (width // multiple_of) * multiple_of
+            height = (height // multiple_of) * multiple_of
+            if init_image.size != (width, height):
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+                mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            print(f"[FLUX.2] inpaint: {width}x{height}, strength: {denoising_strength}")
+
+            # Apply mask blur
+            if mask_blur > 0:
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+
+            # Check CFG
+            is_distilled = config.get("is_distilled", False)
+            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            print("[FLUX.2] Stage 1: Text encoding...")
+            text_encoder = text_encoder.to(self.device)
+
+            prompt_embeds, text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, prompt, max_sequence_length
+            )
+
+            if do_classifier_free_guidance:
+                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, "", max_sequence_length
+                )
+            else:
+                negative_prompt_embeds = None
+                negative_text_ids = None
+
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 2: Encode input image and prepare mask
+            # ============================================================
+            print("[FLUX.2] Stage 2: Encoding input image and mask...")
+            vae = vae.to(self.device)
+
+            # Preprocess image
+            image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
+            image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
+            image_tensor = (image_tensor - 0.5) * 2
+            image_tensor = image_tensor.to(self.device, dtype=vae.dtype)
+
+            # Encode
+            with torch.no_grad():
+                latent_dist = vae.encode(image_tensor).latent_dist
+                init_latents = latent_dist.mode()
+
+            # Prepare mask in latent space
+            mask_tensor = torch.from_numpy(np.array(mask_image.convert("L"))).float() / 255.0
+            mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+
+            # Resize mask to latent size
+            latent_h = height // vae_scale_factor
+            latent_w = width // vae_scale_factor
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor, size=(latent_h, latent_w), mode='bilinear', align_corners=False
+            )
+            mask_latent = mask_latent.to(self.device, dtype=init_latents.dtype)
+
+            # Patchify
+            init_latents = self._flux2_patchify_latents(init_latents)
+
+            # Apply BatchNorm normalization
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
+            init_latents_normalized = (init_latents - latents_bn_mean) / latents_bn_std
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 3: Prepare latents
+            # ============================================================
+            print("[FLUX.2] Stage 3: Preparing latents...")
+
+            # Patchify mask (same spatial transform as latents)
+            # Mask for patchified latents needs special handling
+            mask_patchified = torch.nn.functional.interpolate(
+                mask_latent, size=(latent_h // 2, latent_w // 2), mode='bilinear', align_corners=False
+            )
+
+            # Prepare position IDs
+            latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
+
+            # Pack latents
+            init_latents_packed = self._flux2_pack_latents(init_latents_normalized)
+
+            # Pack mask (1, 1, H/2, W/2) -> (1, H*W/4, 1)
+            mask_packed = mask_patchified.reshape(1, 1, -1).permute(0, 2, 1)
+
+            # Prepare timesteps
+            image_seq_len = init_latents_packed.shape[1]
+            mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
+            scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
+            timesteps = scheduler.timesteps
+
+            # Calculate start timestep
+            t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
+            timesteps = timesteps[t_start:]
+
+            # Add noise (Flow Matching linear interpolation)
+            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
+            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
+            t_value = timesteps[0].item() / 1000.0
+            noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
+            latents = (1 - t_value) * init_latents_packed + t_value * noise
+
+            print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
+
+            # ============================================================
+            # Stage 4: Denoising Loop with mask blending
+            # ============================================================
+            print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
+
+            # Block Swap setup
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
+            use_pinned_memory = params.get("use_pinned_memory", False)
+            block_offloader = None
+
+            if enable_block_swap and blocks_to_swap > 0:
+                print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
+                from core.memory_management import create_flux_block_offloader
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+                block_offloader = create_flux_block_offloader(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory,
+                    supports_backward=False
+                )
+                block_offloader.prepare_block_devices_before_forward()
+                transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
+                print("[FLUX.2] Using Block Swap wrapper for denoising")
+            else:
+                # No Block Swap - ensure ALL weights are on GPU
+                from core.memory_management.block_offloading import weighs_to_device
+                transformer = transformer.to(self.device)
+                for block in transformer.transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                for block in transformer.single_transformer_blocks:
+                    weighs_to_device(block, torch.device(self.device))
+                transformer_wrapper = transformer
+
+            scheduler.set_begin_index(t_start)
+
+            for i, t in enumerate(timesteps):
+                if self.cancel_requested:
+                    print("[FLUX.2] Generation cancelled")
+                    self.cancel_requested = False
+                    if block_offloader is not None:
+                        block_offloader.cleanup()
+                    raise RuntimeError("Generation cancelled by user")
+
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                latent_model_input = latents.to(transformer.dtype)
+
+                # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                if do_classifier_free_guidance:
+                    # Double the batch: [uncond, cond]
+                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                    latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+
+                    # Single forward pass for both unconditional and conditional
+                    with torch.no_grad():
+                        noise_pred_combined = transformer_wrapper(
+                            hidden_states=latent_model_input_doubled,
+                            timestep=timestep_doubled / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds_combined,
+                            txt_ids=text_ids_combined,
+                            img_ids=latent_ids_doubled,
+                            return_dict=False,
+                        )[0]
+
+                    # Split and apply CFG formula
+                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    # Distilled model: Use guidance vector (not CFG)
+                    guidance_vec = torch.full(
+                        (latent_model_input.shape[0],),
+                        guidance_scale,
+                        device=latent_model_input.device,
+                        dtype=latent_model_input.dtype
+                    )
+                    with torch.no_grad():
+                        noise_pred = transformer_wrapper(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=guidance_vec,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            return_dict=False,
+                        )[0]
+
+                # Step
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+
+                # Blend with original in unmasked regions
+                # Noise original latents to current timestep using Flow Matching interpolation
+                if i < len(timesteps) - 1:
+                    # Flow Matching: normalize timestep [0, 1000] -> [0.0, 1.0]
+                    t_value = timesteps[i + 1].item() / 1000.0
+                    # Linear interpolation: x_t = (1 - t) * x_0 + t * noise
+                    init_latents_noised = (1 - t_value) * init_latents_packed + t_value * noise
+                else:
+                    init_latents_noised = init_latents_packed
+
+                # Blend: mask=1 -> use new latents, mask=0 -> use original
+                latents = mask_packed * latents + (1 - mask_packed) * init_latents_noised
+
+                # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
+                if progress_callback:
+                    try:
+                        progress_callback(i, len(timesteps), latents)
+                    except Exception:
+                        pass
+
+            # Cleanup block offloader and offload transformer to CPU (inpaint)
+            if block_offloader is not None:
+                block_offloader.cleanup()
+            transformer.to("cpu")
+            torch.cuda.empty_cache()
+
+            # ============================================================
+            # Stage 5: VAE Decode (inpaint)
+            # ============================================================
+            print("[FLUX.2] Stage 5: VAE decoding...")
+            vae = vae.to(self.device)
+
+            latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
+
+            # Denormalize
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+
+            latents = self._flux2_unpatchify_latents(latents)
+
+            with torch.no_grad():
+                image = vae.decode(latents, return_dict=False)[0]
+
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image[0] * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image)
+
+            vae.to("cpu")
+            torch.cuda.empty_cache()
+
+            print("[FLUX.2] inpaint generation completed")
+            return pil_image, seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[FLUX.2] inpaint error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"FLUX.2 inpaint failed: {str(e)}")
+
+    def _generate_img2img_zimage(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+        """Generate image from image using Z-Image
+
+        Args:
+            params: Generation parameters
+            init_image: Input PIL image
+            progress_callback: Legacy callback (not used for Z-Image)
+            step_callback: Step callback (not used for Z-Image)
+
+        Returns:
+            tuple: (image, actual_seed)
+        """
+        if not self.zimage_components:
+            raise RuntimeError("Z-Image components not loaded. Please load a Z-Image model first.")
+
+        print("[Z-Image] Starting img2img generation")
+
+        try:
+            # Extract components
+            transformer = self.zimage_components["transformer"]
+            vae = self.zimage_components["vae"]
+            text_encoder = self.zimage_components["text_encoder"]
+            tokenizer = self.zimage_components["tokenizer"]
+
+            # Get scheduler based on user-selected sampler
+            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
+            sampler = params.get("sampler", "euler")
+            scheduler = self._get_zimage_scheduler(sampler)
+
+            # Set attention backend
+            attention_type = params.get("attention_type", settings.attention_type)
+            if attention_type != self.current_attention_type:
+                print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type
+                self.current_attention_type = attention_type
+            else:
+                print(f"[Z-Image] Attention backend already set to: {attention_type} (skipping)")
+                from core.models.zimage_transformer import ZImageAttention
+                ZImageAttention._attention_backend = attention_type
+
+            # Load or unload LoRAs
+            lora_configs = params.get("loras", [])
+            if lora_configs:
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
+                self._load_lora_zimage(lora_configs)
+            else:
+                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
+                    self._unload_lora_zimage()
+
+            # Prepare generator
+            seed = params.get("seed", -1)
+            if seed == -1:
+                seed = random.randint(0, 2**32 - 1)
+
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(seed)
+
+            # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for reproducibility tracking
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                # Use specified seed
+                actual_ancestral_seed = ancestral_seed
+                print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
+
+            # Z-Image parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            num_inference_steps = params.get("steps", 8)
+            max_sequence_length = params.get("max_sequence_length", 512)
+            guidance_scale = params.get("cfg_scale", 3.5)
+
+            # img2img specific parameters
+            denoising_strength = params.get("denoising_strength", 0.75)
+
+            print(f"[Z-Image] Generating {width}x{height} image from input image")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")
+            print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")
+            text_encoder_quantization = params.get("text_encoder_quantization")
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
+                self._zimage_encode_prompt(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    guidance_scale, max_sequence_length, text_encoder_quantization
+                )
+
+            # Offload Text Encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: VAE Encode Input Image
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE encode (img2img)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # Resize input image if needed
+            if init_image.size != (width, height):
+                print(f"[Z-Image] Resizing input image from {init_image.size} to {width}x{height}")
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Prepare image tensor
+            import numpy as np
+            image_array = np.array(init_image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Encode to latent space
+            # Z-Image VAE uses encoder -> quant_conv -> sample (not encode method)
+            with torch.no_grad():
+                h = vae.encoder(image_tensor)
+                if vae.quant_conv is not None:
+                    h = vae.quant_conv(h)
+                mean, logvar = torch.chunk(h, 2, dim=1)
+                std = torch.exp(0.5 * logvar)
+
+                # Generate noise with generator
+                noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
+                init_latents = mean + std * noise
+
+                # Z-Image VAE scaling factor (apply scaling and shift)
+                if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
+                    init_latents = init_latents * vae.config.scaling_factor
+                else:
+                    # Fallback: assume standard scaling
+                    init_latents = init_latents * 0.13025
+
+                # Clean up intermediate tensors
+                del h, mean, logvar, std
+
+            print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
+
+            # Offload VAE to CPU after encoding
+            move_zimage_vae_to_cpu(vae)
+
+            # ============================================================
+            # Stage 3: Add Noise to Latents (Flow Matching Style)
+            # ============================================================
+            device = torch.device(self.device)
+
+            # Calculate VAE scale factor for dynamic shift
+            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+            else:
+                vae_scale_factor = 8
+
+            # Calculate dynamic shift
+            from core.zimage_utils import calculate_shift
+            image_seq_len = (init_latents.shape[2] // 2) * (init_latents.shape[3] // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                scheduler.config.get("base_image_seq_len", 256),
+                scheduler.config.get("max_image_seq_len", 4096),
+                scheduler.config.get("base_shift", 0.5),
+                scheduler.config.get("max_shift", 1.15),
+            )
+
+            # Set scheduler parameters
+            scheduler.sigma_min = 0.0
+            scheduler_kwargs = {"mu": mu}
+
+            # Prepare full timesteps first
+            scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+            timesteps = scheduler.timesteps
+
+            # Calculate timestep to start from (based on strength)
+            init_timestep = int(num_inference_steps * denoising_strength)
+            t_start = max(num_inference_steps - init_timestep, 0)
+
+            # Get partial timesteps for img2img
+            timesteps_img2img = timesteps[t_start:]
+
+            print(f"[Z-Image] img2img: Using {len(timesteps_img2img)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
+
+            # Add noise to init_latents at the starting timestep
+            noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
+
+            # Flow Matching noise addition
+            # Check if scheduler has add_noise method
+            if hasattr(scheduler, 'add_noise'):
+                print(f"[Z-Image] Using scheduler.add_noise() for noise addition")
+                noised_latents = scheduler.add_noise(init_latents, noise, timesteps_img2img[0:1])
+            else:
+                # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
+                # Normalize timestep to [0, 1] range (Z-Image: 1000=start/noisy, 0=end/clean)
+                t_normalized = timesteps_img2img[0].item() / 1000.0
+                print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_img2img[0].item():.1f}, t_norm={t_normalized:.3f}")
+                noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
+
+            print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
+
+            # ============================================================
+            # Stage 4: Denoising Loop
+            # ============================================================
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 20)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+
+            if not enable_block_swap:
+                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                log_device_status("Ready for Z-Image denoising loop (img2img)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+            else:
+                print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
+                from core.memory_management import create_block_offloader_for_model
+                block_offloader = create_block_offloader_for_model(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory
+                )
+                transformer._block_offloader = block_offloader
+                block_offloader.prepare_block_devices_before_forward()
+                log_device_status("Ready for Z-Image denoising loop (Block Swap enabled, img2img)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+
+            # Run denoising loop with noised latents and partial timesteps
+            latents = self._zimage_denoising_loop(
+                transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+                height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+                generator, progress_callback, step_callback,
+                init_latents=noised_latents,
+                timesteps_override=timesteps_img2img
+            )
+
+            # Offload Transformer to CPU
+            move_zimage_transformer_to_cpu(transformer)
+            log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 5: VAE Decode
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            images = self._zimage_decode_latents(vae, latents)
+
+            # Offload VAE to CPU after decoding
+            move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors
+            del prompt_embeds_list, negative_prompt_embeds_list, init_latents, noised_latents, latents
+            torch.cuda.empty_cache()
+
+            log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            print("[Z-Image] img2img generation completed")
+
+            return images[0], seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[Z-Image] img2img generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Z-Image img2img generation failed: {str(e)}")
+
+    def _generate_inpaint_zimage(
+        self, params: dict, init_image, mask_image, progress_callback=None, step_callback=None
+    ) -> tuple:
+        """
+        Generate inpainted image using Z-Image model.
+
+        Inpaint = img2img + mask blending
+        - Encode init_image to latents
+        - Add noise based on denoising_strength
+        - Denoise with mask blending at each step
+        - Decode back to image
+
+        Args:
+            params: Generation parameters (prompt, steps, cfg_scale, etc.)
+            init_image: PIL Image (area to inpaint)
+            mask_image: PIL Image (white = inpaint, black = keep)
+            progress_callback: Progress callback function
+            step_callback: Step callback function
+
+        Returns:
+            (generated_image, seed)
+        """
+        try:
+            # Get components
+            text_encoder = self.zimage_components["text_encoder"]
+            tokenizer = self.zimage_components["tokenizer"]
+            transformer = self.zimage_components["transformer"]
+            vae = self.zimage_components["vae"]
+            scheduler = self.zimage_components["scheduler"]
+
+            # Get parameters
+            prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
+            num_inference_steps = params.get("steps", 8)
+            guidance_scale = params.get("cfg_scale", 3.5)
+            height = params.get("height", 1024)
+            width = params.get("width", 1024)
+            seed = params.get("seed", -1)
+            denoising_strength = params.get("denoising_strength", 0.75)
+            mask_blur = params.get("mask_blur", 0)
+            max_sequence_length = params.get("max_sequence_length", 256)
+
+            # Generate seed
+            if seed == -1:
+                seed = torch.randint(0, 2**32, (1,)).item()
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+
+            print(f"[Z-Image] Starting inpaint generation")
+            print(f"[Z-Image] Generating {width}x{height} inpainted image")
+            print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")
+            print(f"[Z-Image] Mask blur: {mask_blur}")
+            print(f"[Z-Image] Prompt: {prompt[:100]}...")
+
+            # Import VRAM optimization functions
+            from core.vram_optimization import (
+                log_device_status,
+                move_zimage_text_encoder_to_gpu,
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_gpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_gpu,
+                move_zimage_vae_to_cpu
+            )
+
+            # Get quantization parameters
+            transformer_quantization = params.get("unet_quantization")
+            text_encoder_quantization = params.get("text_encoder_quantization")
+
+            # ============================================================
+            # Stage 1: Text Encoding
+            # ============================================================
+            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
+                self._zimage_encode_prompt(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    guidance_scale, max_sequence_length, text_encoder_quantization
+                )
+
+            # Offload Text Encoder to CPU
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 2: VAE Encode Input Image and Mask
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE encode (inpaint)", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # Resize input image and mask if needed
+            if init_image.size != (width, height):
+                print(f"[Z-Image] Resizing input image from {init_image.size} to {width}x{height}")
+                init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            if mask_image.size != (width, height):
+                print(f"[Z-Image] Resizing mask from {mask_image.size} to {width}x{height}")
+                mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Apply mask blur if requested
+            if mask_blur > 0:
+                from PIL import ImageFilter
+                mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+                print(f"[Z-Image] Applied Gaussian blur to mask (radius={mask_blur})")
+
+            # Prepare image tensor
+            import numpy as np
+            image_array = np.array(init_image).astype(np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+            image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
+            image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Prepare mask tensor (white = 1 = inpaint, black = 0 = keep)
+            mask_array = np.array(mask_image.convert('L')).astype(np.float32) / 255.0  # Grayscale
+            mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)  # 1CHW
+            mask_tensor = mask_tensor.to(device=self.device, dtype=vae.dtype)
+
+            # Encode input image to latent space
+            with torch.no_grad():
+                h = vae.encoder(image_tensor)
+                if vae.quant_conv is not None:
+                    h = vae.quant_conv(h)
+                mean, logvar = torch.chunk(h, 2, dim=1)
+                std = torch.exp(0.5 * logvar)
+
+                # Generate noise with generator
+                noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
+                init_latents = mean + std * noise
+
+                # Z-Image VAE scaling factor
+                if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
+                    init_latents = init_latents * vae.config.scaling_factor
+                else:
+                    init_latents = init_latents * 0.13025
+
+                # Store original latents for mask blending
+                original_latents = init_latents.clone()
+
+                # Clean up intermediate tensors
+                del h, mean, logvar, std
+
+            # Resize mask to latent dimensions (downsample by VAE scale factor)
+            # Z-Image VAE: 8x downsampling -> latent is 1/8 of image size
+            latent_height = init_latents.shape[2]
+            latent_width = init_latents.shape[3]
+            mask_latent = torch.nn.functional.interpolate(
+                mask_tensor, size=(latent_height, latent_width), mode='nearest'
+            )
+
+            print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
+            print(f"[Z-Image] Mask latent shape: {mask_latent.shape}")
+
+            # Offload VAE to CPU after encoding
+            move_zimage_vae_to_cpu(vae)
+
+            # ============================================================
+            # Stage 3: Add Noise to Latents (Flow Matching Style)
+            # ============================================================
+            device = torch.device(self.device)
+
+            # Calculate VAE scale factor for dynamic shift
+            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+            else:
+                vae_scale_factor = 8
+
+            # Calculate dynamic shift
+            from core.zimage_utils import calculate_shift
+            image_seq_len = (init_latents.shape[2] // 2) * (init_latents.shape[3] // 2)
+            mu = calculate_shift(
+                image_seq_len,
+                scheduler.config.get("base_image_seq_len", 256),
+                scheduler.config.get("max_image_seq_len", 4096),
+                scheduler.config.get("base_shift", 0.5),
+                scheduler.config.get("max_shift", 1.15),
+            )
+
+            # Set scheduler parameters
+            scheduler.sigma_min = 0.0
+            scheduler_kwargs = {"mu": mu}
+
+            # Prepare full timesteps first
+            scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+            timesteps = scheduler.timesteps
+
+            # Calculate timestep to start from (based on strength)
+            init_timestep = int(num_inference_steps * denoising_strength)
+            t_start = max(num_inference_steps - init_timestep, 0)
+
+            # Get partial timesteps for inpaint
+            timesteps_inpaint = timesteps[t_start:]
+
+            print(f"[Z-Image] inpaint: Using {len(timesteps_inpaint)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
+
+            # Save original unnoised latents (for mask blending in loop)
+            original_latents = init_latents.clone()
+
+            # Add noise to init_latents at the starting timestep
+            noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
+
+            # Flow Matching noise addition (apply to entire image, mask blending happens in loop)
+            if hasattr(scheduler, 'add_noise'):
+                print(f"[Z-Image] Using scheduler.add_noise() for noise addition")
+                noised_latents = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
+            else:
+                # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
+                t_normalized = timesteps_inpaint[0].item() / 1000.0
+                print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_inpaint[0].item():.1f}, t_norm={t_normalized:.3f}")
+                noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
+
+            print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
+
+            # ============================================================
+            # Stage 4: Denoising Loop with Mask Blending
+            # ============================================================
+            enable_block_swap = params.get("enable_block_swap", False)
+            blocks_to_swap = params.get("blocks_to_swap", 20)
+            use_pinned_memory = params.get("use_pinned_memory", False)
+
+            if not enable_block_swap:
+                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                log_device_status("Ready for Z-Image denoising loop (inpaint)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+            else:
+                print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
+                from core.memory_management import create_block_offloader_for_model
+                block_offloader = create_block_offloader_for_model(
+                    transformer=transformer,
+                    blocks_to_swap=blocks_to_swap,
+                    device=torch.device(self.device),
+                    target_dtype=torch.bfloat16,
+                    use_pinned_memory=use_pinned_memory
+                )
+                transformer._block_offloader = block_offloader
+                block_offloader.prepare_block_devices_before_forward()
+                log_device_status("Ready for Z-Image denoising loop (Block Swap enabled, inpaint)", None, zimage_components={
+                    "text_encoder": text_encoder,
+                    "transformer": transformer,
+                    "vae": vae
+                })
+
+            # Run denoising loop with mask blending
+            latents = self._zimage_denoising_loop(
+                transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+                height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+                generator, progress_callback, step_callback,
+                init_latents=noised_latents,
+                timesteps_override=timesteps_inpaint,
+                mask_latent=mask_latent,
+                original_latents=original_latents
+            )
+
+            # Offload Transformer to CPU
+            move_zimage_transformer_to_cpu(transformer)
+            log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            # ============================================================
+            # Stage 5: VAE Decode
+            # ============================================================
+            move_zimage_vae_to_gpu(vae)
+            log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            images = self._zimage_decode_latents(vae, latents)
+
+            # Offload VAE to CPU after decoding
+            move_zimage_vae_to_cpu(vae)
+
+            # Clear intermediate tensors
+            del prompt_embeds_list, negative_prompt_embeds_list, init_latents, original_latents, noised_latents, mask_latent, latents
+            torch.cuda.empty_cache()
+
+            log_device_status("VAE decode complete, all components offloaded to CPU", None, zimage_components={
+                "text_encoder": text_encoder,
+                "transformer": transformer,
+                "vae": vae
+            })
+
+            print("[Z-Image] inpaint generation completed")
+
+            return images[0], seed, actual_ancestral_seed
+
+        except Exception as e:
+            print(f"[Z-Image] inpaint generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Z-Image inpaint generation failed: {str(e)}")
+
+    def _zimage_encode_prompt(
+        self, text_encoder, tokenizer, prompt, negative_prompt,
+        guidance_scale, max_sequence_length, text_encoder_quantization=None
+    ):
+        """
+        Stage 1: Text Encoding for Z-Image
+        Encodes prompt and negative prompt using Qwen text encoder.
+        Text encoder is on GPU when this is called, and will be moved to CPU after.
+
+        Returns:
+            prompt_embeds_list: List of text embeddings (one per image)
+            negative_prompt_embeds_list: List of negative embeddings (if CFG enabled)
+            do_classifier_free_guidance: bool
+        """
+        device = next(text_encoder.parameters()).device
+
+        # Check if Text Encoder has FP8 weights
+        has_fp8_weights = False
+        if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
+            for module in text_encoder.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        has_fp8_weights = True
+                        break
+
+        # Format prompts using Qwen chat template
+        if isinstance(prompt, str):
+            prompt = [prompt]
+
+        # CFG is enabled when guidance_scale is not 1.0 (consistent with SD/SDXL)
+        # CFG=1.0 or CFG=0.0: no CFG (positive only)
+        # CFG!=1.0 and CFG!=0.0: CFG enabled
+        # Note: CFG=0.0 is treated as "positive only" (same as CFG=1.0)
+        do_classifier_free_guidance = abs(guidance_scale - 1.0) > 1e-5 and abs(guidance_scale) > 1e-5
+
+        print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
+
+        formatted_prompts = []
+        for p in prompt:
+            messages = [{"role": "user", "content": p}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            formatted_prompts.append(formatted_prompt)
+
+        # Tokenize prompts
+        text_inputs = tokenizer(
+            formatted_prompts,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        text_input_ids = text_inputs.input_ids.to(device)
+        prompt_masks = text_inputs.attention_mask.to(device).bool()
+
+        # Encode prompts (use penultimate layer output)
+        # For FP8 quantized Text Encoder, use autocast for mixed precision
+        with torch.no_grad():
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    prompt_embeds = text_encoder(
+                        input_ids=text_input_ids,
+                        attention_mask=prompt_masks,
+                        output_hidden_states=True,
+                    ).hidden_states[-2]
+            else:
+                prompt_embeds = text_encoder(
+                    input_ids=text_input_ids,
+                    attention_mask=prompt_masks,
+                    output_hidden_states=True,
+                ).hidden_states[-2]
+
+        # Extract embeddings per prompt (masked by attention mask)
+        prompt_embeds_list = []
+        for i in range(len(prompt_embeds)):
+            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
+
+        # Encode negative prompts if CFG is enabled
+        negative_prompt_embeds_list = []
+        if do_classifier_free_guidance:
+            if negative_prompt is None:
+                negative_prompt = ["" for _ in prompt]
+            elif isinstance(negative_prompt, str):
+                negative_prompt = [negative_prompt]
+
+            neg_formatted = []
+            for p in negative_prompt:
+                messages = [{"role": "user", "content": p}]
+                formatted_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=True,
+                )
+                neg_formatted.append(formatted_prompt)
+
+            neg_inputs = tokenizer(
+                neg_formatted,
+                padding="max_length",
+                max_length=max_sequence_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            neg_input_ids = neg_inputs.input_ids.to(device)
+            neg_masks = neg_inputs.attention_mask.to(device).bool()
+
+            with torch.no_grad():
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        neg_embeds = text_encoder(
+                            input_ids=neg_input_ids,
+                            attention_mask=neg_masks,
+                            output_hidden_states=True,
+                        ).hidden_states[-2]
+                else:
+                    neg_embeds = text_encoder(
+                        input_ids=neg_input_ids,
+                        attention_mask=neg_masks,
+                        output_hidden_states=True,
+                    ).hidden_states[-2]
+
+            for i in range(len(neg_embeds)):
+                negative_prompt_embeds_list.append(neg_embeds[i][neg_masks[i]])
+
+        print(f"[Z-Image] Text encoding complete: {len(prompt_embeds_list)} prompts encoded")
+
+        return prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance
+
+    def _zimage_denoising_loop(
+        self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
+        height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
+        generator, progress_callback, step_callback,
+        init_latents: Optional[torch.Tensor] = None,
+        timesteps_override: Optional[torch.Tensor] = None,
+        mask_latent: Optional[torch.Tensor] = None,
+        original_latents: Optional[torch.Tensor] = None
+    ):
+        """
+        Stage 2: Denoising Loop for Z-Image
+        Runs the transformer denoising loop with flow matching.
+        Transformer is on GPU when this is called, and will be moved to CPU after.
+
+        Args:
+            init_latents: Optional initial latents for img2img/inpaint (already noised)
+            timesteps_override: Optional timesteps for img2img/inpaint (partial timesteps from t_start)
+            mask_latent: Optional mask for inpainting (1 = inpaint, 0 = keep original)
+            original_latents: Optional original unnoised latents for inpaint blending
+
+        Returns:
+            latents: Denoised latents (torch.Tensor)
+        """
+        # Import calculate_shift from local zimage_utils (with fallback)
+        try:
+            from core.zimage_utils import calculate_shift
+        except ImportError:
+            # Fallback implementation if zimage_utils is not available
+            def calculate_shift(image_seq_len, base_seq_len=256, max_seq_len=4096, base_shift=0.5, max_shift=1.15):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
+
+        # Use self.device instead of transformer device (Block Swap may have weights on CPU)
+        device = torch.device(self.device)
+
+        print(f"[Z-Image] Starting denoising loop on {device}")
+
+        # Calculate VAE scale factor
+        vae = self.zimage_components["vae"]
+        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+            vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        else:
+            vae_scale_factor = 8
+        vae_scale = vae_scale_factor * 2
+
+        # Calculate latent dimensions
+        height_latent = 2 * (int(height) // vae_scale)
+        width_latent = 2 * (int(width) // vae_scale)
+        batch_size = len(prompt_embeds_list)
+        shape = (batch_size, transformer.in_channels, height_latent, width_latent)
+
+        # Initialize latents (use init_latents if provided for img2img, otherwise random for txt2img)
+        if init_latents is not None:
+            latents = init_latents.to(device=device, dtype=torch.float32)
+            print(f"[Z-Image] Starting from noised input image latents (img2img)")
+        else:
+            latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+            print(f"[Z-Image] Starting from random latents (txt2img)")
+
+        # Calculate dynamic shift for flow matching
+        image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+
+        # Use local calculate_shift implementation (from zimage_utils.py or fallback)
+        mu = calculate_shift(
+            image_seq_len,
+            scheduler.config.get("base_image_seq_len", 256),
+            scheduler.config.get("max_image_seq_len", 4096),
+            scheduler.config.get("base_shift", 0.5),
+            scheduler.config.get("max_shift", 1.15),
+        )
+
+        # Set scheduler parameters
+        scheduler.sigma_min = 0.0
+
+        # Prepare timesteps (use override if provided for img2img, otherwise calculate normally)
+        if timesteps_override is not None:
+            timesteps = timesteps_override
+            print(f"[Z-Image] Using {len(timesteps)} timesteps for img2img (strength-based, from t_start)")
+        else:
+            # Only FlowMatchEulerDiscreteScheduler supports 'mu' parameter
+            # FlowMatchHeunDiscreteScheduler does not support it
+            if hasattr(scheduler, '__class__') and 'Euler' in scheduler.__class__.__name__:
+                scheduler_kwargs = {"mu": mu}
+                scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
+                print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(scheduler.timesteps)} timesteps generated, shift={mu:.3f}")
+            else:
+                # Heun or other schedulers: no mu parameter
+                scheduler.set_timesteps(num_inference_steps, device=device)
+                print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(scheduler.timesteps)} timesteps generated (scheduler: {scheduler.__class__.__name__})")
+            timesteps = scheduler.timesteps
+
+        # Detect FP8 quantization (check once before loop)
+        has_fp8_weights = False
+        for module in transformer.modules():
+            if isinstance(module, torch.nn.Linear):
+                if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                    has_fp8_weights = True
+                    print(f"[Z-Image] Detected FP8 quantized Transformer (dtype: {module.weight.dtype})")
+                    print(f"[Z-Image] Will use autocast for mixed precision inference")
+                    break
+        if not has_fp8_weights:
+            print(f"[Z-Image] Transformer not quantized (BF16 inference)")
+
+        # Denoising loop with progress callback
+        # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
+        # We normalize progress to user-requested num_inference_steps for UI consistency
+        for i, t in enumerate(timesteps):
+            # Skip last step if t=0 (flow matching termination)
+            if t == 0 and i == len(timesteps) - 1:
+                print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")
+                continue
+
+            # Calculate normalized step for progress bar (map timestep index to user-requested steps)
+            # For Heun: len(timesteps)=39, num_inference_steps=20 → normalize i to 0-19 range
+            normalized_step = int((i / len(timesteps)) * num_inference_steps)
+
+            # Call progress callbacks (pass 0-indexed step for consistency with SD/SDXL)
+            if progress_callback:
+                progress_callback(normalized_step, num_inference_steps, latents)
+            if step_callback:
+                step_callback(normalized_step, num_inference_steps)
+
+            # Normalize timestep to [0, 1]
+            timestep = t.expand(latents.shape[0])
+            timestep = (1000 - timestep) / 1000
+            t_norm = timestep[0].item()
+
+            # CFG truncation logic (disable CFG after certain timestep)
+            # Default value from Z-Image: DEFAULT_CFG_TRUNCATION = 1.0
+            current_guidance_scale = guidance_scale
+            cfg_truncation = 1.0  # Z-Image default
+            if do_classifier_free_guidance and cfg_truncation is not None and float(cfg_truncation) <= 1:
+                if t_norm > cfg_truncation:
+                    current_guidance_scale = 1.0  # Set to 1.0 (no CFG) instead of 0.0
+
+            # Apply CFG when guidance_scale is not 1.0 (consistent with SD/SDXL)
+            apply_cfg = do_classifier_free_guidance and abs(current_guidance_scale - 1.0) > 1e-5
+
+            # Prepare model input (concat positive + negative if CFG)
+            # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
+            if has_fp8_weights:
+                # FP8 quantized: use BF16 input (autocast will handle conversion)
+                input_dtype = torch.bfloat16
+            else:
+                # Normal case: use transformer's dtype
+                transformer_dtype = next(transformer.parameters()).dtype
+                input_dtype = transformer_dtype
+
+            if apply_cfg:
+                latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
+                # CFG input order: [negative, positive] (consistent with SD/SDXL)
+                prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
+                timestep_model_input = timestep.repeat(2)
+            else:
+                latent_model_input = latents.to(input_dtype)
+                prompt_embeds_model_input = prompt_embeds_list
+                timestep_model_input = timestep
+
+            # Add channel dimension and split into list
+            latent_model_input = latent_model_input.unsqueeze(2)
+            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+
+            # Transformer forward pass
+            # For FP8 quantized models, use autocast to handle mixed precision
+            with torch.no_grad():
+                if has_fp8_weights:
+                    # FP8: use autocast for automatic mixed precision
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        model_out_list = transformer(
+                            latent_model_input_list,
+                            timestep_model_input,
+                            prompt_embeds_model_input,
+                        )[0]
+                else:
+                    # Normal: no autocast needed
+                    model_out_list = transformer(
+                        latent_model_input_list,
+                        timestep_model_input,
+                        prompt_embeds_model_input,
+                    )[0]
+
+            # Apply CFG if enabled
+            if apply_cfg:
+                # CFG output order matches input: [negative, positive]
+                neg_out = model_out_list[:batch_size]  # negative (uncond)
+                pos_out = model_out_list[batch_size:]  # positive (cond)
+                noise_pred = []
+                for j in range(batch_size):
+                    neg = neg_out[j].float()
+                    pos = pos_out[j].float()
+                    # Standard CFG formula (consistent with SD/SDXL)
+                    # pred = uncond + guidance_scale * (cond - uncond)
+                    pred = neg + current_guidance_scale * (pos - neg)
+                    noise_pred.append(pred)
+                noise_pred = torch.stack(noise_pred, dim=0)
+            else:
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+
+            # Scheduler step (flow matching with stochastic_sampling if enabled)
+            noise_pred = -noise_pred.squeeze(2)
+            latents = scheduler.step(
+                noise_pred.to(torch.float32), t, latents,
+                return_dict=False
+            )[0]
+
+            # Inpaint mask blending: blend denoised latents with noised original latents
+            if mask_latent is not None and original_latents is not None:
+                # For inpaint, non-masked area should also be noised at current timestep
+                # then blended with denoised latents
+                original_latents_device = original_latents.to(device=latents.device, dtype=latents.dtype)
+                mask_latent_device = mask_latent.to(device=latents.device, dtype=latents.dtype)
+
+                # Add noise to original latents at current timestep
+                # This ensures non-masked area follows the same noise schedule
+                if i < len(timesteps) - 1:  # Not the last step
+                    next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
+                    # Generate noise for original latents
+                    noise_for_original = torch.randn_like(original_latents_device)
+
+                    # Flow Matching: add noise at next timestep level
+                    t_next_normalized = next_t.item() / 1000.0
+                    noised_original = (1.0 - t_next_normalized) * original_latents_device + t_next_normalized * noise_for_original
+                else:
+                    # Last step: use clean original latents
+                    noised_original = original_latents_device
+
+                # Blend: mask * denoised + (1 - mask) * noised_original
+                latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original
+
+            if normalized_step % 5 == 0 or normalized_step == num_inference_steps - 1:
+                print(f"[Z-Image] Step {normalized_step+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
+
+        print(f"[Z-Image] Denoising loop complete")
+
+        return latents
+
+    def _zimage_decode_latents(self, vae, latents):
+        """
+        Stage 3: VAE Decode for Z-Image
+        Decodes latents to images using VAE.
+        VAE is on GPU when this is called, and will be moved to CPU after.
+
+        Returns:
+            images: List of PIL images
+        """
+        device = next(vae.parameters()).device
+
+        print(f"[Z-Image] Decoding latents with VAE on {device}")
+
+        # Apply VAE scaling and shift
+        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+
+        # Decode latents
+        with torch.no_grad():
+            image = vae.decode(latents, return_dict=False)[0]
+
+        # Convert to PIL images
+        from PIL import Image
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = (image * 255).round().astype("uint8")
+        images = [Image.fromarray(img) for img in image]
+
+        print(f"[Z-Image] VAE decode complete: {len(images)} images generated")
+
+        return images
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
@@ -931,7 +4753,7 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
-    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text
 
         Args:
@@ -940,8 +4762,20 @@ class DiffusionPipelineManager:
             step_callback: New style callback for step-based control (pipe, step, timestep, callback_kwargs)
 
         Returns:
-            tuple: (image, actual_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed)
         """
+        # Z-Image handling
+        if self.is_zimage_model:
+            return self._generate_txt2img_zimage(params, progress_callback, step_callback)
+
+        # DEUS handling (SDXL-like with SigLIP-2 text encoder)
+        if self.is_deus_model:
+            return self._generate_txt2img_deus(params, progress_callback, step_callback)
+
+        # FLUX.2 Klein handling (MMDiT with Qwen3 text encoder)
+        if self.is_flux2_model:
+            return self._generate_txt2img_flux2(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -1129,7 +4963,6 @@ class DiffusionPipelineManager:
         seed = params.get("seed", -1)
         if seed < 0:
             # Generate random seed
-            import random
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed
@@ -1139,12 +4972,15 @@ class DiffusionPipelineManager:
         # Create ancestral generator for stochastic samplers
         ancestral_seed = params.get("ancestral_seed", -1)
         if ancestral_seed == -1:
-            # Use main seed for ancestral sampling (default behavior)
-            ancestral_generator = None  # Will use generator in custom_sampling_loop
+            # Generate random seed for ancestral sampling (reproducible when saved)
+            actual_ancestral_seed = random.randint(0, 2147483647)
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+            print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
         else:
-            # Use separate seed for ancestral sampling
+            # Use specified seed for ancestral sampling
+            actual_ancestral_seed = ancestral_seed
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
-            print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+            print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
         # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
@@ -1272,9 +5108,22 @@ class DiffusionPipelineManager:
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
-            if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.inference.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+            # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+            if not params.get("nag_enable", False):
+                if attention_type != "normal" and attention_type != self.current_attention_type:
+                    print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                    from core.inference.attention_processors import set_attention_processor
+                    self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                    self.current_attention_type = attention_type
+                elif attention_type == "normal" and self.current_attention_type != "normal":
+                    print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                    if self.original_processors is not None:
+                        pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                        self.original_processors = None
+                    self.current_attention_type = "normal"
+                else:
+                    print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
             # Call custom sampling loop
             image = custom_sampling_loop(
@@ -1325,6 +5174,13 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Offload all components to CPU to free VRAM
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            move_text_encoders_to_cpu(pipeline_to_use)
+            move_unet_to_cpu(pipeline_to_use)
+            move_vae_to_cpu(pipeline_to_use)
+            print("[VRAM] All components offloaded to CPU after txt2img generation")
+
             # Clear intermediate tensors
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()
@@ -1334,7 +5190,7 @@ class DiffusionPipelineManager:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, actual_seed
+        return image, actual_seed, actual_ancestral_seed
 
     def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image
@@ -1342,6 +5198,18 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # Z-Image handling
+        if self.is_zimage_model:
+            return self._generate_img2img_zimage(params, init_image, progress_callback, step_callback)
+
+        # DEUS handling
+        if self.deus_components:
+            return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
+
+        # FLUX.2 Klein handling
+        if self.is_flux2_model:
+            return self._generate_img2img_flux2(params, init_image, progress_callback, step_callback)
+
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
             if not self.txt2img_pipeline:
@@ -1378,7 +5246,6 @@ class DiffusionPipelineManager:
         seed = params.get("seed", -1)
         if seed < 0:
             # Generate random seed
-            import random
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed
@@ -1679,10 +5546,15 @@ class DiffusionPipelineManager:
             # Create ancestral generator for stochastic samplers
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                ancestral_generator = None
+                # Generate random ancestral seed for reproducibility tracking
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+                print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
+                # Use specified ancestral seed
+                actual_ancestral_seed = ancestral_seed
                 ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
-                print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
+                print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
             # Detect v-prediction and apply guidance_rescale if needed
             is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
@@ -1693,9 +5565,22 @@ class DiffusionPipelineManager:
             # Set attention processor based on attention_type (unless NAG is enabled)
             # NAG has its own processors that will be set in custom_sampling_loop
             attention_type = params.get("attention_type", "normal")
-            if not params.get("nag_enable", False) and attention_type != "normal":
-                from core.inference.attention_processors import set_attention_processor
-                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+            # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+            if not params.get("nag_enable", False):
+                if attention_type != "normal" and attention_type != self.current_attention_type:
+                    print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                    from core.inference.attention_processors import set_attention_processor
+                    self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                    self.current_attention_type = attention_type
+                elif attention_type == "normal" and self.current_attention_type != "normal":
+                    print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                    if self.original_processors is not None:
+                        pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                        self.original_processors = None
+                    self.current_attention_type = "normal"
+                else:
+                    print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
             # Use t_start directly for custom sampling loop
             t_start_override = t_start if fix_steps else None
@@ -1761,12 +5646,23 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Offload all components to CPU to free VRAM
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            move_text_encoders_to_cpu(pipeline_to_use)
+            move_unet_to_cpu(pipeline_to_use)
+            move_vae_to_cpu(pipeline_to_use)
+            print("[VRAM] All components offloaded to CPU after img2img generation")
+
+            # Clear intermediate tensors
+            if hasattr(self, 'device') and self.device == "cuda":
+                torch.cuda.empty_cache()
+
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, actual_seed
+        return image, actual_seed, actual_ancestral_seed
 
     def generate_inpaint(
         self,
@@ -1781,6 +5677,18 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        # Z-Image inpaint support
+        if self.is_zimage_model:
+            return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)
+
+        # DEUS inpaint support
+        if self.deus_components:
+            return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
+
+        # FLUX.2 Klein inpaint support
+        if self.is_flux2_model:
+            return self._generate_inpaint_flux2(params, init_image, mask_image, progress_callback, step_callback)
+
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
             if not self.txt2img_pipeline:
@@ -1816,6 +5724,19 @@ class DiffusionPipelineManager:
         if seed == -1:
             seed = torch.randint(0, 2**32 - 1, (1,)).item()
         generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        # Create ancestral generator for stochastic samplers
+        ancestral_seed = params.get("ancestral_seed", -1)
+        if ancestral_seed == -1:
+            # Generate random seed for ancestral sampling (reproducible when saved)
+            actual_ancestral_seed = random.randint(0, 2147483647)
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
+            print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
+        else:
+            # Use specified seed for ancestral sampling
+            actual_ancestral_seed = ancestral_seed
+            ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
+            print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
         # Resize images if needed
         target_width = params.get("width", settings.default_width)
@@ -1978,9 +5899,22 @@ class DiffusionPipelineManager:
         # Set attention processor based on attention_type (unless NAG is enabled)
         # NAG has its own processors that will be set in custom_sampling_loop
         attention_type = params.get("attention_type", "normal")
-        if not params.get("nag_enable", False) and attention_type != "normal":
-            from core.inference.attention_processors import set_attention_processor
-            self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+
+        # Only switch if attention type has changed and NAG is not enabled (avoid redundant switching overhead)
+        if not params.get("nag_enable", False):
+            if attention_type != "normal" and attention_type != self.current_attention_type:
+                print(f"[Pipeline] Switching attention processor: {self.current_attention_type} -> {attention_type}")
+                from core.inference.attention_processors import set_attention_processor
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, attention_type)
+                self.current_attention_type = attention_type
+            elif attention_type == "normal" and self.current_attention_type != "normal":
+                print(f"[Pipeline] Restoring original attention processors (normal mode)")
+                if self.original_processors is not None:
+                    pipeline_to_use.unet.set_attn_processor(self.original_processors)
+                    self.original_processors = None
+                self.current_attention_type = "normal"
+            else:
+                print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
         # Use t_start directly for custom sampling loop
         t_start_override = t_start if fix_steps else None
@@ -2044,12 +5978,23 @@ class DiffusionPipelineManager:
             restore_processors(pipeline_to_use.unet, self.original_processors)
             self.original_processors = None
 
+        # Offload all components to CPU to free VRAM
+        from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+        move_text_encoders_to_cpu(pipeline_to_use)
+        move_unet_to_cpu(pipeline_to_use)
+        move_vae_to_cpu(pipeline_to_use)
+        print("[VRAM] All components offloaded to CPU after inpaint generation")
+
+        # Clear intermediate tensors
+        if hasattr(self, 'device') and self.device == "cuda":
+            torch.cuda.empty_cache()
+
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
                 image = ext.process_after_generation(image, params)
 
-        return image, seed
+        return image, seed, actual_ancestral_seed
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

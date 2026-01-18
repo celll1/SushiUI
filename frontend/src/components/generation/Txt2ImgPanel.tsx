@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
@@ -17,11 +18,11 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
-import { sendPromptToPanel, sendParametersToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -54,8 +55,13 @@ const DEFAULT_PARAMS: GenerationParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   unet_quantization: null,
+  text_encoder_quantization: null,
   use_torch_compile: false,
   use_tipo: false,
+  enable_block_swap: false,
+  blocks_to_swap: 20,
+  use_pinned_memory: false,
+  attention_type: "normal",
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -69,6 +75,7 @@ interface Txt2ImgPanelProps {
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
   const { modelLoaded, isBackendReady } = useStartup();
+  const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -84,6 +91,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
@@ -126,6 +134,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const tokenizePromptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const tokenizeNegativeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // TIPO: Treat as Natural Language (local state, not persisted)
+  const [treatAsNL, setTreatAsNL] = useState(false);
 
   // Tokenize prompts using backend tokenizer (debounced)
   useEffect(() => {
@@ -182,9 +193,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
-    console.clear();
+    // console.clear(); // Temporarily disabled for debugging
     console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
+
+    // Load current model info
+    getCurrentModel().then((modelInfo) => {
+      setCurrentModelInfo(modelInfo);
+      console.log("[Txt2Img] Current model info:", modelInfo);
+    }).catch((error) => {
+      console.error("Failed to load model info:", error);
+    });
 
     // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -231,6 +250,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setShowAdvancedCFG(true);
     }
 
+    // Load attention type from global settings
+    const savedAttentionType = localStorage.getItem('attention_type');
+    if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+      setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
+    }
+
     // Load custom presets
     const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
     if (savedAspectRatioPresets) {
@@ -271,6 +296,81 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
 
   }, []);
+
+  // Listen for localStorage changes from Gallery/Preview (send to feature)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      // Only react to changes in our storage key from other tabs/windows
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          console.log("[Txt2Img] Received params from Gallery via storage event:", {
+            prompt_length: parsed.prompt?.length || 0,
+            steps: parsed.steps,
+            cfg_scale: parsed.cfg_scale,
+          });
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+        } catch (error) {
+          console.error("[Txt2Img] Failed to parse storage change:", error);
+        }
+      }
+    };
+
+    // Custom event for same-tab localStorage changes (Gallery -> Generate panel)
+    const handleCustomStorageChange = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          console.log("[Txt2Img] Received params from Gallery via custom event:", {
+            prompt_length: parsed.prompt?.length || 0,
+            steps: parsed.steps,
+            cfg_scale: parsed.cfg_scale,
+          });
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+        } catch (error) {
+          console.error("[Txt2Img] Failed to parse custom storage change:", error);
+        }
+      }
+    };
+
+    // storage event only fires for changes from OTHER tabs/windows
+    window.addEventListener('storage', handleStorageChange);
+    // Custom event for same-tab changes (triggered by ImageGrid)
+    window.addEventListener('txt2img_params_updated', handleCustomStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('txt2img_params_updated', handleCustomStorageChange);
+    };
+  }, []);
+
+  // Reload params from localStorage when navigating to /generate (from Gallery)
+  useEffect(() => {
+    if (pathname === "/generate" && isMounted) {
+      console.log("[Txt2Img] Page navigated to /generate, reloading params from localStorage");
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          const fixed = fixFloatingPointParams(merged);
+          setParams(fixed);
+          console.log("[Txt2Img] Params reloaded:", {
+            prompt_length: fixed.prompt?.length || 0,
+            steps: fixed.steps,
+            cfg_scale: fixed.cfg_scale,
+          });
+        } catch (error) {
+          console.error("[Txt2Img] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, isMounted]);
 
   // Reload images when backend becomes ready
   useEffect(() => {
@@ -392,15 +492,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Use generated image params if available, otherwise fall back to current UI params
     const sourceParams = generatedImageParams || params;
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "img2img_params");
-    }
+    console.log("[Txt2Img] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Txt2Img] sendToImg2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "img2img_params");
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "img2img_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: false,
+      dispatchEvent: "img2img_params_updated"
+    });
+
+    console.log("[Txt2Img] sendToImg2Img - Sent to panel");
 
     // Navigate to img2img tab
     if (onTabChange) {
@@ -426,15 +529,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Use generated image params if available, otherwise fall back to current UI params
     const sourceParams = generatedImageParams || params;
 
-    // Send prompt if checked
-    if (sendPrompt) {
-      sendPromptToPanel(sourceParams, "inpaint_params");
-    }
+    console.log("[Txt2Img] sendToInpaint - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
+    console.log("[Txt2Img] sendToInpaint - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send parameters if checked
-    if (sendParameters) {
-      sendParametersToPanel(sourceParams, "inpaint_params");
-    }
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "inpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: false,
+      dispatchEvent: "inpaint_params_updated"
+    });
+
+    console.log("[Txt2Img] sendToInpaint - Sent to panel");
 
     // Navigate to inpaint tab
     if (onTabChange) {
@@ -544,7 +650,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         top_k: tipoSettings.top_k,
         max_new_tokens: tipoSettings.max_new_tokens,
         category_order: categoryOrder,
-        enabled_categories: enabledCategories
+        enabled_categories: enabledCategories,
+        treat_as_nl: treatAsNL
       });
 
       // Replace with generated prompt
@@ -667,28 +774,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Prepare TIPO config if use_tipo is enabled
     let tipo_config = undefined;
     if (params.use_tipo) {
-      const saved = localStorage.getItem("tipo_settings");
-      const sharedTipoSettings = saved ? JSON.parse(saved) : null;
+      const categoryOrder = tipoSettings.categories.map((c: any) => c.id);
+      const enabledCategories: Record<string, boolean> = {};
+      tipoSettings.categories.forEach((c: any) => {
+        enabledCategories[c.id] = c.enabled;
+      });
 
-      if (sharedTipoSettings) {
-        const categoryOrder = sharedTipoSettings.categories.map((c: any) => c.id);
-        const enabledCategories: Record<string, boolean> = {};
-        sharedTipoSettings.categories.forEach((c: any) => {
-          enabledCategories[c.id] = c.enabled;
-        });
-
-        tipo_config = {
-          model_name: sharedTipoSettings.model_name,
-          tag_length: sharedTipoSettings.tag_length,
-          nl_length: sharedTipoSettings.nl_length,
-          temperature: sharedTipoSettings.temperature,
-          top_p: sharedTipoSettings.top_p,
-          top_k: sharedTipoSettings.top_k,
-          max_new_tokens: sharedTipoSettings.max_new_tokens,
-          category_order: categoryOrder,
-          enabled_categories: enabledCategories
-        };
-      }
+      tipo_config = {
+        model_name: tipoSettings.model_name,
+        tag_length: tipoSettings.tag_length,
+        nl_length: tipoSettings.nl_length,
+        temperature: tipoSettings.temperature,
+        top_p: tipoSettings.top_p,
+        top_k: tipoSettings.top_k,
+        max_new_tokens: tipoSettings.max_new_tokens,
+        category_order: categoryOrder,
+        enabled_categories: enabledCategories,
+        treat_as_nl: treatAsNL  // Add local state
+      };
     }
 
     // Create loop group ID if loop generation is enabled
@@ -1283,7 +1386,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
-        <ModelSelector />
+        <ModelSelector onModelLoad={async () => {
+          // Reload model info when model changes
+          const modelInfo = await getCurrentModel();
+          setCurrentModelInfo(modelInfo);
+          console.log("[Txt2Img] Model changed, updated currentModelInfo:", modelInfo);
+
+          // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
+          const modelType = modelInfo?.model_info?.type;
+          if (modelType === "zimage" || modelType === "flux2") {
+            // Flow Matching models: use Euler with flow schedule
+            setParams(prev => ({
+              ...prev,
+              sampler: "euler",
+              schedule_type: "flow"
+            }));
+            console.log("[Txt2Img] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
+          }
+        }} />
 
         <Card title="Prompt">
           <div className="relative">
@@ -1319,6 +1439,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
               />
               <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer ml-4">
+              <input
+                type="checkbox"
+                checked={treatAsNL}
+                onChange={(e) => setTreatAsNL(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+                title="Treat input as natural language instead of tags"
+              />
+              <span className="text-xs text-gray-400">NL</span>
             </label>
             <button
               onClick={() => setIsTIPODialogOpen(true)}
@@ -1358,7 +1488,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
               <Slider
                 label="CFG Scale"
-                min={1}
+                min={0}
                 max={30}
                 step={0.5}
                 value={params.cfg_scale}
@@ -1702,11 +1832,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   -1
                 </Button>
                 <Button
-                  onClick={() => generatedImageAncestralSeed !== null && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                  onClick={() => generatedImageAncestralSeed !== null && generatedImageAncestralSeed !== -1 && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
                   variant="secondary"
                   size="sm"
                   title="Use ancestral seed from preview image"
-                  disabled={generatedImageAncestralSeed === null}
+                  disabled={generatedImageAncestralSeed === null || generatedImageAncestralSeed === -1}
                 >
                   ♻️
                 </Button>
@@ -1717,34 +1847,98 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Select
-              label="U-Net Quantization"
-              value={params.unet_quantization || "none"}
-              onChange={(e) => setParams({
-                ...params,
-                unet_quantization: e.target.value === "none" ? null : e.target.value
-              })}
-              options={[
-                { value: "none", label: "None" },
-                { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                { value: "fp8_e5m2", label: "FP8 E5M2" },
-                { value: "uint8", label: "UINT8" },
-                { value: "uint7", label: "UINT7" },
-                { value: "uint6", label: "UINT6" },
-                { value: "uint5", label: "UINT5" },
-                { value: "uint4", label: "UINT4" },
-                { value: "uint3", label: "UINT3" },
-                { value: "uint2", label: "UINT2" },
-              ]}
-            />
-          </div>
-          {params.unet_quantization && params.unet_quantization !== "none" && (
-            <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-              <p className="text-xs text-yellow-200">
-                ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
-              </p>
-            </div>
+          {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+          {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2") ? (
+            <>
+              {/* Z-Image/FLUX.2: 2-column layout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Select
+                  label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                  value={params.unet_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    unet_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint4", label: "UINT4" },
+                  ]}
+                />
+                <Select
+                  label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint4", label: "UINT4" },
+                  ]}
+                />
+              </div>
+              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
+                  </p>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {/* SD/SDXL: 1-column layout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Select
+                  label="U-Net Quantization"
+                  value={params.unet_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    unet_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint7", label: "UINT7" },
+                    { value: "uint6", label: "UINT6" },
+                    { value: "uint5", label: "UINT5" },
+                    { value: "uint4", label: "UINT4" },
+                    { value: "uint3", label: "UINT3" },
+                    { value: "uint2", label: "UINT2" },
+                  ]}
+                />
+                <Select
+                  label="Text Encoder Quantization (Z-Image)"
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    { value: "uint8", label: "UINT8" },
+                    { value: "uint4", label: "UINT4" },
+                  ]}
+                />
+              </div>
+              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
+                  </p>
+                </div>
+              ) : null}
+            </>
           )}
 
           {developerMode && (
@@ -1767,6 +1961,52 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
                     Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
                   </p>
+                </div>
+              )}
+
+              {/* Block Swap (Z-Image only) */}
+              <div className="flex items-center gap-2 mt-4">
+                <input
+                  type="checkbox"
+                  id="enable_block_swap"
+                  checked={params.enable_block_swap || false}
+                  onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
+                  className="rounded"
+                />
+                <label htmlFor="enable_block_swap" className="text-sm text-gray-300">
+                  Block Swap (Z-Image Transformer offloading)
+                </label>
+              </div>
+              {params.enable_block_swap && (
+                <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
+                  <Slider
+                    label="Blocks to Swap"
+                    min={1}
+                    max={29}
+                    step={1}
+                    value={params.blocks_to_swap || 20}
+                    onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="use_pinned_memory"
+                      checked={params.use_pinned_memory || false}
+                      onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="use_pinned_memory" className="text-xs text-gray-300">
+                      Use Pinned Memory (faster transfer, more RAM)
+                    </label>
+                  </div>
+                  <div className="text-xs text-blue-200">
+                    <p>
+                      <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                    </p>
+                    <p className="mt-1">
+                      <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
+                    </p>
+                  </div>
                 </div>
               )}
             </>

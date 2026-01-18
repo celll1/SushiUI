@@ -116,7 +116,24 @@ class TrainingProcess:
         try:
             # Use async iteration for non-blocking I/O
             while True:
-                line_bytes = await self.process.stdout.readline()
+                try:
+                    line_bytes = await self.process.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError) as e:
+                    # Line too long (exceeds buffer limit)
+                    # This can happen with very long progress bars or debug output
+                    # ValueError is raised as a wrapper for LimitOverrunError in some Python versions
+                    print(f"[Training] Warning: Skipping oversized log line (buffer overflow: {type(e).__name__})")
+                    # Read and discard the oversized line in chunks until we find a newline
+                    try:
+                        while True:
+                            chunk = await self.process.stdout.read(8192)
+                            if not chunk or b'\n' in chunk:
+                                break
+                    except Exception as read_error:
+                        print(f"[Training] Warning: Error while discarding oversized line: {read_error}")
+                        # If we can't even read chunks, skip and continue
+                    continue
+
                 if not line_bytes:
                     break
 
@@ -187,13 +204,31 @@ class TrainingProcess:
         if self.process and self.is_running:
             print(f"[Training] Stopping process (user requested)")
             self.is_user_stopped = True  # Mark as user-requested stop
-            self.process.terminate()
+
+            # Create stop flag file for graceful shutdown (works on Windows)
+            stop_flag_file = Path(self.output_dir) / ".stop_training"
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=10)
+                stop_flag_file.touch()
+                print(f"[Training] Created stop flag file: {stop_flag_file}")
+            except Exception as e:
+                print(f"[Training] WARNING: Failed to create stop flag file: {e}")
+
+            # Wait for graceful shutdown (up to 120 seconds to allow checkpoint save)
+            # Checkpoint save can take 60+ seconds for large models (12GB+ safetensors + optimizer state)
+            print(f"[Training] Waiting for graceful shutdown (max 120 seconds)...")
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=120)
+                print(f"[Training] Process terminated gracefully")
             except asyncio.TimeoutError:
-                print(f"[Training] Process did not terminate gracefully, killing...")
-                self.process.kill()
-                await self.process.wait()
+                print(f"[Training] Graceful shutdown timeout, terminating process...")
+                self.process.terminate()
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    print(f"[Training] Process did not terminate, killing...")
+                    self.process.kill()
+                    await self.process.wait()
+
             self.is_running = False
 
     def get_status(self) -> Dict[str, Any]:

@@ -24,11 +24,25 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-4,
         lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
+        optimizer_is_paged: bool = False,
+        optimizer_cautious: bool = False,
+        optimizer_beta1: Optional[float] = None,
+        optimizer_beta2: Optional[float] = None,
+        optimizer_epsilon: Optional[float] = None,
+        optimizer_weight_decay: Optional[float] = None,
+        optimizer_schedule_free: bool = False,
+        optimizer_schedule_free_r: float = 0.0,
+        optimizer_schedule_free_weight_lr_power: float = 2.0,
+        optimizer_use_radam: bool = False,
+        optimizer_stochastic_rounding: bool = False,
         lora_rank: int = 16,
         lora_alpha: int = 16,
+        lora_dtype: str = "fp32",
         save_every: int = 100,
         save_every_unit: str = "steps",
+        max_step_saves_to_keep: int = 10,
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
@@ -39,10 +53,12 @@ class TrainingConfigGenerator:
         multi_resolution_mode: str = "max",
         train_unet: bool = True,
         train_text_encoder: bool = False,
+        train_image_encoder: bool = False,  # Image Encoder (future support)
         unet_lr: Optional[float] = None,
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        image_encoder_lr: Optional[float] = None,  # Image Encoder LR (future support)
         cache_latents_to_disk: bool = False,
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
@@ -51,14 +67,49 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        reconstruction_loss_weight: float = 0.0,
+        # Block Swap settings (training VRAM optimization)
+        blocks_to_swap: int = 0,
+        use_pinned_memory: bool = False,
+        num_optimizer_groups: int = 0,
+        # Text encoding settings
+        text_encoding_mode: str = "swap_onthefly",
+        text_encoding_swap_interval: int = 256,
+        # Latent encoding settings
+        latent_encoding_mode: str = "swap_onthefly",
+        latent_encoding_swap_interval: int = 256,
         sample_width: int = 1024,
         sample_height: int = 1024,
         sample_steps: int = 28,
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
+        sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = 42,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
+        max_prompt_chunks: int = 0,  # 0 = unlimited
+        # Resume settings
+        resume_from_checkpoint: Optional[str] = None,
         # Caption processing settings
         caption_processing: Optional[Dict[str, Any]] = None,
+        # Multi Noise-Timestep (MNT) settings
+        multi_noise_timesteps: int = 1,
+        multi_noise_mode: str = "independent",
+        trajectory_blend_alpha: float = 0.7,
+        timestep_sampling_config: Optional[Dict[str, Any]] = None,
+        # Regularization settings (prevent overbaking)
+        regularization_type: Optional[str] = None,  # "snr", "energy", or None
+        snr_regularization_weight: float = 0.1,
+        snr_timestep_adaptive: bool = True,
+        snr_penalty_mode: str = "relu",
+        energy_regularization_weight: float = 0.05,
+        energy_timestep_adaptive: bool = True,
+        energy_penalty_mode: str = "abs",
+        energy_normalize_by_pixels: bool = True,
+        # Unified training framework settings
+        noise_process: str = "auto",  # "auto", "ddpm", "flow"
+        prediction_target: str = "auto",  # "auto", "epsilon", "velocity", "sample"
+        strict_validation: bool = False,  # If True, error on mismatch; if False, warn only
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -96,6 +147,10 @@ class TrainingConfigGenerator:
             cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
             use_flash_attention: Enable Flash Attention for training (faster, lower memory)
             min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, set to 0 to disable)
+            text_encoding_mode: Text encoding mode ("swap_onthefly", "pre_encoded_cache", "onthefly_gpu")
+            text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256)
+            latent_encoding_mode: Latent encoding mode ("swap_onthefly", "pre_encoded_cache", "onthefly_gpu")
+            latent_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256)
 
         Returns:
             YAML configuration string
@@ -113,6 +168,7 @@ class TrainingConfigGenerator:
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
                 ds_caption_processing = ds_config.get("caption_processing", {})
+                ds_caption_types = ds_config.get("caption_types", [])
 
                 dataset_entry = {
                     "folder_path": ds_path,
@@ -133,6 +189,11 @@ class TrainingConfigGenerator:
                     "cache_latents_to_disk": cache_latents_to_disk,
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
+
+                # Add caption_types if specified
+                if ds_caption_types:
+                    dataset_entry["caption_types"] = ds_caption_types
+
                 datasets_array.append(dataset_entry)
         else:
             # Fallback: use single dataset_path (backward compatibility)
@@ -167,17 +228,22 @@ class TrainingConfigGenerator:
                         "type": "sd_trainer",
                         "training_folder": output_dir,
                         "device": "cuda:0",
-                        "trigger_word": "",  # Can be customized
                         "network": {
                             "type": "lora",
                             "linear": lora_rank,
                             "linear_alpha": lora_alpha,
+                            "lora_dtype": lora_dtype,
+                        },
+                        "dtype": {
+                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
+                            "training": training_dtype,    # Training/activation dtype (autocast)
+                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
+                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
                         },
                         "save": {
-                            "dtype": "float16",
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": 10,
+                            "max_step_saves_to_keep": max_step_saves_to_keep,
                         },
                         "datasets": datasets_array,
                         "train": {
@@ -186,19 +252,32 @@ class TrainingConfigGenerator:
                             "gradient_accumulation_steps": 1,
                             "train_unet": train_unet,
                             "train_text_encoder": train_text_encoder,
-                            "gradient_checkpointing": True,
-                            "noise_scheduler": "ddpm",  # ddpm for epsilon prediction (SDXL standard)
+                            "train_image_encoder": train_image_encoder,
+                            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
+                            # Unified training framework (replaces noise_scheduler)
+                            "noise_process": noise_process,  # "auto", "ddpm", "flow"
+                            "prediction_target": prediction_target,  # "auto", "epsilon", "velocity", "sample"
+                            "strict_validation": strict_validation,
                             "optimizer": optimizer,
                             "lr": learning_rate,
+                            "lr_scheduler": lr_scheduler,
+                            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
+                            **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
+                            **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
+                            **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
+                            **({"optimizer_beta2": optimizer_beta2} if optimizer_beta2 is not None else {}),
+                            **({"optimizer_epsilon": optimizer_epsilon} if optimizer_epsilon is not None else {}),
+                            **({"optimizer_weight_decay": optimizer_weight_decay} if optimizer_weight_decay is not None else {}),
+                            **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
+                            **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
+                            **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
+                            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
+                            **({"optimizer_stochastic_rounding": optimizer_stochastic_rounding} if optimizer_stochastic_rounding else {}),
                             "unet_lr": unet_lr if unet_lr is not None else learning_rate,
                             "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
                             "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
                             "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
-                            "lr_scheduler": lr_scheduler,
-                            "ema_config": {"use_ema": True, "ema_decay": 0.99},
-                            "dtype": training_dtype,  # Training/activation dtype
-                            "weight_dtype": weight_dtype,  # Model weight dtype
-                            "output_dtype": output_dtype,  # Output latent dtype
+                            "image_encoder_lr": image_encoder_lr if image_encoder_lr is not None else learning_rate,
                             "mixed_precision": mixed_precision,  # Enable autocast for mixed precision
                             "debug_latents": debug_latents,
                             "debug_latents_every": debug_latents_every,
@@ -208,25 +287,47 @@ class TrainingConfigGenerator:
                             "multi_resolution_mode": multi_resolution_mode,
                             "use_flash_attention": use_flash_attention,
                             "min_snr_gamma": min_snr_gamma,
+                            "reconstruction_loss_weight": reconstruction_loss_weight,
+                            "blocks_to_swap": blocks_to_swap,
+                            "use_pinned_memory": use_pinned_memory,
+                            "num_optimizer_groups": num_optimizer_groups,
+                            "text_encoding_mode": text_encoding_mode,
+                            "text_encoding_swap_interval": text_encoding_swap_interval,
+                            "latent_encoding_mode": latent_encoding_mode,
+                            "latent_encoding_swap_interval": latent_encoding_swap_interval,
+                            "multi_noise_timesteps": multi_noise_timesteps,
+                            "multi_noise_mode": multi_noise_mode,
+                            "trajectory_blend_alpha": trajectory_blend_alpha,
+                            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
+                            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
+                            # Regularization settings
+                            **({"regularization_type": regularization_type} if regularization_type else {}),
+                            "snr_regularization_weight": snr_regularization_weight,
+                            "snr_timestep_adaptive": snr_timestep_adaptive,
+                            "snr_penalty_mode": snr_penalty_mode,
+                            "energy_regularization_weight": energy_regularization_weight,
+                            "energy_timestep_adaptive": energy_timestep_adaptive,
+                            "energy_penalty_mode": energy_penalty_mode,
+                            "energy_normalize_by_pixels": energy_normalize_by_pixels,
                         },
                         "model": {
                             "name_or_path": base_model_path,
-                            "is_flux": False,
-                            "quantize": False,
-                            "vae_dtype": vae_dtype,  # VAE-specific dtype
                         },
                         "sample": {
                             "sampler": sample_sampler,
+                            "schedule_type": sample_schedule_type,
                             "sample_every": sample_every,
                             "width": sample_width,
                             "height": sample_height,
                             "prompts": sample_prompts or [],
                             "neg": "",
                             "seed": sample_seed,
-                            "walk_seed": True,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
                         },
+                        # Prompt chunking settings (for long prompts >75 tokens)
+                        "prompt_chunking_mode": prompt_chunking_mode,
+                        "max_prompt_chunks": max_prompt_chunks,
                     }
                 ],
             },
@@ -246,9 +347,22 @@ class TrainingConfigGenerator:
         batch_size: int = 1,
         learning_rate: float = 1e-6,
         lr_scheduler: str = "constant",
+        lr_warmup_steps: int = 0,
         optimizer: str = "adamw8bit",
+        optimizer_is_paged: bool = False,
+        optimizer_cautious: bool = False,
+        optimizer_beta1: Optional[float] = None,
+        optimizer_beta2: Optional[float] = None,
+        optimizer_epsilon: Optional[float] = None,
+        optimizer_weight_decay: Optional[float] = None,
+        optimizer_schedule_free: bool = False,
+        optimizer_schedule_free_r: float = 0.0,
+        optimizer_schedule_free_weight_lr_power: float = 2.0,
+        optimizer_use_radam: bool = False,
+        optimizer_stochastic_rounding: bool = False,
         save_every: int = 100,
         save_every_unit: str = "steps",
+        max_step_saves_to_keep: int = 3,  # Fewer for full models (larger checkpoint size)
         sample_every: int = 100,
         sample_prompts: Optional[list] = None,
         debug_latents: bool = False,
@@ -259,10 +373,12 @@ class TrainingConfigGenerator:
         multi_resolution_mode: str = "max",
         train_unet: bool = True,
         train_text_encoder: bool = True,
+        train_image_encoder: bool = False,  # Image Encoder (future support)
         unet_lr: Optional[float] = None,
         text_encoder_lr: Optional[float] = None,
         text_encoder_1_lr: Optional[float] = None,
         text_encoder_2_lr: Optional[float] = None,
+        image_encoder_lr: Optional[float] = None,  # Image Encoder LR (future support)
         cache_latents_to_disk: bool = False,
         weight_dtype: str = "fp16",
         training_dtype: str = "fp16",
@@ -271,13 +387,47 @@ class TrainingConfigGenerator:
         mixed_precision: bool = True,
         use_flash_attention: bool = False,
         min_snr_gamma: float = 5.0,
+        reconstruction_loss_weight: float = 0.0,
+        # Block Swap settings (training VRAM optimization)
+        blocks_to_swap: int = 0,
+        use_pinned_memory: bool = False,
+        num_optimizer_groups: int = 0,
+        # Text encoding settings
+        text_encoding_mode: str = "swap_onthefly",
+        text_encoding_swap_interval: int = 256,
+        # Latent encoding settings
+        latent_encoding_mode: str = "swap_onthefly",
+        latent_encoding_swap_interval: int = 256,
         sample_width: int = 1024,
         sample_height: int = 1024,
         sample_steps: int = 28,
         sample_cfg_scale: float = 7.0,
         sample_sampler: str = "euler",
+        sample_schedule_type: str = "sgm_uniform",
         sample_seed: int = -1,
+        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
+        max_prompt_chunks: int = 0,  # 0 = unlimited
+        resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[dict] = None,
+        # Multi Noise-Timestep (MNT) settings
+        multi_noise_timesteps: int = 1,
+        multi_noise_mode: str = "independent",
+        trajectory_blend_alpha: float = 0.7,
+        timestep_sampling_config: Optional[Dict[str, Any]] = None,
+        # Regularization settings (prevent overbaking)
+        regularization_type: Optional[str] = None,  # "snr", "energy", or None
+        snr_regularization_weight: float = 0.1,
+        snr_timestep_adaptive: bool = True,
+        snr_penalty_mode: str = "relu",
+        energy_regularization_weight: float = 0.05,
+        energy_timestep_adaptive: bool = True,
+        energy_penalty_mode: str = "abs",
+        energy_normalize_by_pixels: bool = True,
+        # Unified training framework settings
+        noise_process: str = "add_noise",
+        prediction_target: str = "auto",
+        strict_validation: bool = True,
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -313,19 +463,54 @@ class TrainingConfigGenerator:
             "gradient_accumulation_steps": 1,
             "train_unet": train_unet,
             "train_text_encoder": train_text_encoder,
-            "gradient_checkpointing": True,
-            "noise_scheduler": "ddpm",
+            "train_image_encoder": train_image_encoder,
+            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
             "optimizer": optimizer,
             "lr": learning_rate,
             "lr_scheduler": lr_scheduler,
-            "weight_dtype": weight_dtype,
-            "dtype": training_dtype,  # Training/activation dtype
-            "output_dtype": output_dtype,
+            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
+            **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
+            **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
+            **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
+            **({"optimizer_beta2": optimizer_beta2} if optimizer_beta2 is not None else {}),
+            **({"optimizer_epsilon": optimizer_epsilon} if optimizer_epsilon is not None else {}),
+            **({"optimizer_weight_decay": optimizer_weight_decay} if optimizer_weight_decay is not None else {}),
+            **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
+            **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
+            **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
+            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
+            **({"optimizer_stochastic_rounding": optimizer_stochastic_rounding} if optimizer_stochastic_rounding else {}),
             "mixed_precision": mixed_precision,
             "use_flash_attention": use_flash_attention,
             "min_snr_gamma": min_snr_gamma,
+            "reconstruction_loss_weight": reconstruction_loss_weight,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
+            "num_optimizer_groups": num_optimizer_groups,
+            "text_encoding_mode": text_encoding_mode,
+            "text_encoding_swap_interval": text_encoding_swap_interval,
+            "latent_encoding_mode": latent_encoding_mode,
+            "latent_encoding_swap_interval": latent_encoding_swap_interval,
             "debug_latents": debug_latents,
             "debug_latents_every": debug_latents_every,
+            "multi_noise_timesteps": multi_noise_timesteps,
+            "multi_noise_mode": multi_noise_mode,
+            "trajectory_blend_alpha": trajectory_blend_alpha,
+            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
+            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
+            # Regularization settings
+            **({"regularization_type": regularization_type} if regularization_type else {}),
+            "snr_regularization_weight": snr_regularization_weight,
+            "snr_timestep_adaptive": snr_timestep_adaptive,
+            "snr_penalty_mode": snr_penalty_mode,
+            "energy_regularization_weight": energy_regularization_weight,
+            "energy_timestep_adaptive": energy_timestep_adaptive,
+            "energy_penalty_mode": energy_penalty_mode,
+            "energy_normalize_by_pixels": energy_normalize_by_pixels,
+            # Unified training framework settings
+            "noise_process": noise_process,
+            "prediction_target": prediction_target,
+            "strict_validation": strict_validation,
         }
 
         # Add component-specific learning rates if specified
@@ -337,6 +522,8 @@ class TrainingConfigGenerator:
             train_config["text_encoder_1_lr"] = text_encoder_1_lr
         if text_encoder_2_lr is not None:
             train_config["text_encoder_2_lr"] = text_encoder_2_lr
+        if image_encoder_lr is not None:
+            train_config["image_encoder_lr"] = image_encoder_lr
 
         # Add bucketing parameters
         if enable_bucketing:
@@ -352,6 +539,7 @@ class TrainingConfigGenerator:
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
                 ds_caption_processing = ds_config.get("caption_processing", {})
+                ds_caption_types = ds_config.get("caption_types", [])
 
                 dataset_entry = {
                     "folder_path": ds_path,
@@ -362,6 +550,10 @@ class TrainingConfigGenerator:
                 # Add caption processing if provided
                 if ds_caption_processing:
                     dataset_entry["caption_processing"] = ds_caption_processing
+
+                # Add caption_types if specified
+                if ds_caption_types:
+                    dataset_entry["caption_types"] = ds_caption_types
 
                 datasets_array.append(dataset_entry)
         else:
@@ -387,37 +579,40 @@ class TrainingConfigGenerator:
                         "type": "sd_trainer",
                         "training_folder": output_dir,
                         "device": "cuda:0",
-                        "trigger_word": "",
                         "network": {
                             "type": "full_finetune",
                         },
+                        "dtype": {
+                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
+                            "training": training_dtype,    # Training/activation dtype (autocast)
+                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
+                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                        },
                         "save": {
-                            "dtype": output_dtype,
                             "save_every": save_every,
                             "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": 3,  # Fewer saves for full models (larger size)
+                            "max_step_saves_to_keep": max_step_saves_to_keep,
                         },
                         "datasets": datasets_array,
                         "train": train_config,
                         "model": {
                             "name_or_path": base_model_path,
-                            "is_flux": False,
-                            "quantize": False,
-                            "vae_dtype": vae_dtype,
                         },
                         "sample": {
                             "sampler": sample_sampler,
+                            "schedule_type": sample_schedule_type,
                             "sample_every": sample_every,
                             "width": sample_width,
                             "height": sample_height,
                             "prompts": sample_prompts or [],
                             "neg": "",
                             "seed": sample_seed,
-                            "walk_seed": True,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
-                            "schedule_type": "sgm_uniform",
                         },
+                        # Prompt chunking settings (for long prompts >75 tokens)
+                        "prompt_chunking_mode": prompt_chunking_mode,
+                        "max_prompt_chunks": max_prompt_chunks,
                     }
                 ],
             },

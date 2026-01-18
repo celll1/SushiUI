@@ -17,6 +17,43 @@ import torch
 from PIL import Image
 
 
+def get_cache_base_dir() -> str:
+    """
+    Get the base cache directory from user settings.
+
+    Priority:
+    1. UserSettings.cache_dir (if set in database)
+    2. settings.cache_dir (default from config/settings.py)
+
+    Returns:
+        Base cache directory path with /datasets suffix
+    """
+    try:
+        from database import get_gallery_db
+        from database.models import UserSettings
+
+        db = next(get_gallery_db())
+        try:
+            user_settings = db.query(UserSettings).first()
+            if user_settings and user_settings.cache_dir:
+                # User configured cache directory (from database)
+                return str(Path(user_settings.cache_dir) / "datasets")
+        finally:
+            db.close()
+    except Exception as e:
+        # Fallback to default if database query fails
+        print(f"[Cache] Warning: Failed to get cache_dir from UserSettings: {e}")
+
+    # Default cache directory (from config/settings.py)
+    try:
+        from config.settings import settings
+        return str(Path(settings.cache_dir) / "datasets")
+    except Exception as e:
+        print(f"[Cache] Warning: Failed to get cache_dir from settings: {e}")
+        # Ultimate fallback
+        return "cache/datasets"
+
+
 class LatentCache:
     """
     Manages disk cache for VAE latents and optionally text embeddings.
@@ -34,15 +71,17 @@ class LatentCache:
             └── cache_info.json
     """
 
-    def __init__(self, dataset_unique_id: str, base_cache_dir: str = "cache/datasets"):
+    def __init__(self, dataset_unique_id: str, base_cache_dir: str = None):
         """
         Initialize latent cache.
 
         Args:
             dataset_unique_id: Dataset unique ID (UUID)
-            base_cache_dir: Base directory for cache (relative to project root)
+            base_cache_dir: Base directory for cache (default: from user settings or "cache/datasets")
         """
         self.dataset_unique_id = dataset_unique_id
+        if base_cache_dir is None:
+            base_cache_dir = get_cache_base_dir()
         self.cache_dir = Path(base_cache_dir) / dataset_unique_id
         self.latents_dir = self.cache_dir / "latents"
         self.embeddings_dir = self.cache_dir / "text_embeddings"
@@ -88,7 +127,8 @@ class LatentCache:
         image_path: str,
         width: int,
         height: int,
-        latents: torch.Tensor
+        latents: torch.Tensor,
+        skip_existing: bool = True
     ):
         """
         Save VAE latents to cache.
@@ -98,9 +138,17 @@ class LatentCache:
             width: Target width
             height: Target height
             latents: Latent tensor [1, 4, H/8, W/8]
+            skip_existing: If True, skip if cache file already exists (default: True)
+
+        Returns:
+            True if saved (new file), False if skipped (existing file)
         """
         cache_hash = self.compute_image_hash(image_path, width, height)
         cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        # Skip if file already exists
+        if skip_existing and cache_path.exists():
+            return False
 
         torch.save({
             'latents': latents.cpu(),
@@ -109,6 +157,28 @@ class LatentCache:
             'height': height,
             'created_at': datetime.utcnow().isoformat(),
         }, cache_path)
+        return True
+
+    def has_latent(
+        self,
+        image_path: str,
+        width: int,
+        height: int,
+    ) -> bool:
+        """
+        Check if latent exists in cache WITHOUT loading it.
+
+        Args:
+            image_path: Source image path
+            width: Target width
+            height: Target height
+
+        Returns:
+            True if latent is cached, False otherwise
+        """
+        cache_hash = self.compute_image_hash(image_path, width, height)
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+        return cache_path.exists()
 
     def load_latent(
         self,
@@ -232,19 +302,21 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cached embeddings for caption: {e}")
             return None
 
-    def save_cache_info(self, model_path: str, model_type: str, item_count: int):
+    def save_cache_info(self, model_path: str, model_type: str, item_count: int, training_dtype: str = 'unknown'):
         """
         Save cache metadata.
 
         Args:
             model_path: Path to base model
-            model_type: Model type ('sdxl' or 'sd15')
+            model_type: Model type ('sdxl', 'sd15', 'zimage')
             item_count: Number of items in dataset
+            training_dtype: Training dtype (e.g., 'bf16', 'fp16', 'fp32')
         """
         info = {
             'dataset_unique_id': self.dataset_unique_id,
             'model_path': model_path,
             'model_type': model_type,
+            'training_dtype': training_dtype,
             'created_at': datetime.utcnow().isoformat(),
             'item_count': item_count,
         }
@@ -269,13 +341,14 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cache info: {e}")
             return None
 
-    def is_valid(self, model_path: str, model_type: str) -> bool:
+    def is_valid(self, model_path: str, model_type: str, training_dtype: str = 'unknown') -> bool:
         """
         Check if cache is valid for current model.
 
         Args:
             model_path: Current model path
             model_type: Current model type
+            training_dtype: Current training dtype
 
         Returns:
             True if cache is valid
@@ -312,6 +385,14 @@ class LatentCache:
             print(f"[LatentCache] Validation failed: Model type mismatch")
             print(f"[LatentCache]   Cached: {info.get('model_type')}")
             print(f"[LatentCache]   Current: {model_type}")
+            return False
+
+        # Check training dtype (latents are stored in training dtype for memory efficiency)
+        cached_dtype = info.get('training_dtype', 'unknown')
+        if cached_dtype != 'unknown' and cached_dtype != training_dtype:
+            print(f"[LatentCache] Validation failed: Training dtype mismatch")
+            print(f"[LatentCache]   Cached: {cached_dtype}")
+            print(f"[LatentCache]   Current: {training_dtype}")
             return False
 
         print(f"[LatentCache] Validation passed: Cache is valid for current model")

@@ -92,6 +92,7 @@ class TIPOManager:
         top_p: float = 0.95,
         top_k: int = 50,
         max_new_tokens: int = 256,
+        treat_as_nl: bool = False,
         **kwargs
     ) -> str:
         """Generate enhanced prompt from input
@@ -104,6 +105,7 @@ class TIPOManager:
             top_p: Nucleus sampling parameter (default: 0.95)
             top_k: Top-k sampling parameter (default: 50)
             max_new_tokens: Maximum tokens to generate (default: 256)
+            treat_as_nl: Treat input as natural language instead of tags (default: False)
 
         Returns:
             Generated/enhanced prompt
@@ -117,7 +119,7 @@ class TIPOManager:
             if hasattr(self, 'tipo_runner'):
                 return self._generate_with_kgen(
                     input_prompt, tag_length, nl_length,
-                    temperature, top_p, top_k, max_new_tokens, **kwargs
+                    temperature, top_p, top_k, max_new_tokens, treat_as_nl, **kwargs
                 )
             else:
                 return self._generate_with_transformers(
@@ -139,6 +141,7 @@ class TIPOManager:
         top_p: float,
         top_k: int,
         max_new_tokens: int,
+        treat_as_nl: bool,
         **kwargs
     ) -> str:
         """Generate using tipo-kgen library"""
@@ -149,30 +152,37 @@ class TIPOManager:
 
             print(f"[TIPO KGen] Input: '{input_prompt}'")
             print(f"[TIPO KGen] Tag length: {tag_length}, NL length: {nl_length}")
+            print(f"[TIPO KGen] Treat as NL: {treat_as_nl}")
 
             # Extract ban_tags from kwargs
             ban_tags = kwargs.get('ban_tags', '')
             if ban_tags:
                 print(f"[TIPO KGen] BAN_TAGS: '{ban_tags}'")
 
-            # Parse input as tags or natural language
-            # If comma-separated, treat as tags; otherwise as natural language
-            if ',' in input_prompt:
-                tags = [t.strip() for t in input_prompt.split(',')]
-                nl_prompt = ""
-            else:
+            # Parse input based on treat_as_nl flag
+            if treat_as_nl:
+                # NL mode: Use input as natural language prompt, no input tags
+                print("[TIPO KGen] NL mode: Treating entire input as natural language")
                 tags = []
                 nl_prompt = input_prompt
-
-            # Separate tags into categories using kgen
-            if tags:
-                tag_map = self.seperate_tags(tags)
-            else:
-                # Empty tag map for natural language only
                 tag_map = {
                     'artist': [], 'characters': [], 'copyrights': [],
                     'meta': [], 'special': [], 'quality': [], 'rating': [], 'general': []
                 }
+            else:
+                # Tag mode (default): Parse input as tags
+                # IMPORTANT: Always try to parse as tags first (split by comma)
+                # Even single tags like "1girl" should be treated as tags, not natural language
+                tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
+                nl_prompt = ""  # No natural language prompt by default
+
+                # Separate tags into categories using kgen
+                # IMPORTANT: Always call seperate_tags, even for single tags like "1girl"
+                tag_map = self.seperate_tags(tags)
+
+            print(f"[TIPO KGen] Input tags: {tags}")
+            print(f"[TIPO KGen] NL prompt: '{nl_prompt}'")
+            print(f"[TIPO KGen] Tag map: {tag_map}")
 
             # Parse request
             meta, operations, general, nl_prompt_parsed = self.parse_tipo_request(
@@ -183,7 +193,7 @@ class TIPOManager:
                 generate_extra_nl_prompt=not nl_prompt
             )
 
-            print(f"[TIPO KGen] Parsed - meta: {len(meta)}, operations: {len(operations)}, general: {len(general)}, nl: {nl_prompt_parsed}")
+            print(f"[TIPO KGen] Parsed - meta: {len(meta)}, operations: {len(operations)}, general: {len(general)}, nl: '{nl_prompt_parsed}'")
 
             # Prepare BAN_TAGS for tipo_runner
             ban_tags_list = [t.strip() for t in ban_tags.split(',') if t.strip()] if ban_tags else []
@@ -743,28 +753,29 @@ class TIPOManager:
     ) -> Dict[str, Any]:
         """Merge input tags with TIPO-KGen output to preserve user input
 
+        IMPORTANT: User input tags ALWAYS take priority over TIPO-generated tags.
+        If the user specifies "1girl" but TIPO generates "2girls", the user's "1girl" is preserved.
+
         Args:
             input_prompt: Original input prompt
             kgen_result: Result dict from TIPO-KGen
 
         Returns:
-            Merged result dict with input tags preserved
+            Merged result dict with input tags preserved and prioritized
         """
         # Parse input tags
-        if ',' in input_prompt:
-            input_tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
-        else:
-            # Single tag or natural language
-            input_tags = [input_prompt.strip()] if input_prompt.strip() else []
+        # IMPORTANT: Always split by comma, even for single tags like "1girl"
+        input_tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
 
         if not input_tags:
             return kgen_result
 
-        # Use kgen's tag separator if available
+        # Use kgen's tag separator to categorize input tags
+        # IMPORTANT: Always use seperate_tags, even for single tags
         if hasattr(self, 'seperate_tags'):
             input_tag_map = self.seperate_tags(input_tags)
         else:
-            # Fallback: simple categorization
+            # Fallback: simple categorization (should not happen if tipo-kgen is installed)
             input_tag_map = {
                 'artist': [], 'characters': [], 'copyrights': [],
                 'meta': [], 'special': [], 'quality': [], 'rating': [], 'general': input_tags
@@ -776,19 +787,11 @@ class TIPOManager:
         merged = dict(kgen_result)
 
         # Track seen tags (case-insensitive) to avoid duplicates
+        # IMPORTANT: We build this set AFTER adding input tags to prioritize user input
         seen_lower = set()
 
-        # First, collect all existing tags from kgen_result
-        for key, value in kgen_result.items():
-            if isinstance(value, list):
-                for tag in value:
-                    if isinstance(tag, str):
-                        seen_lower.add(tag.lower())
-
-        print(f"[TIPO Merge] Existing tags in kgen output: {len(seen_lower)}")
-
         # Merge input tags into their respective categories
-        # Priority: input tags come first (prepend)
+        # Priority: input tags come FIRST (prepend), and mark them as seen
         for category, input_category_tags in input_tag_map.items():
             if not input_category_tags:
                 continue
@@ -805,17 +808,24 @@ class TIPOManager:
             if not isinstance(existing_tags, list):
                 existing_tags = []
 
-            # Prepend input tags that aren't already present (case-insensitive check)
+            # Add ALL input tags first (they ALWAYS take priority)
             new_tags = []
             for tag in input_category_tags:
-                if tag.lower() not in seen_lower:
-                    new_tags.append(tag)
-                    seen_lower.add(tag.lower())
-                    print(f"[TIPO Merge] Adding input tag '{tag}' to {kgen_key}")
+                new_tags.append(tag)
+                seen_lower.add(tag.lower())
+                print(f"[TIPO Merge] Prioritizing input tag '{tag}' in {kgen_key}")
 
-            # Prepend new input tags to existing kgen tags
-            if new_tags:
-                merged[kgen_key] = new_tags + existing_tags
+            # Now filter existing_tags to remove duplicates of input tags
+            filtered_existing = []
+            for tag in existing_tags:
+                if tag.lower() not in seen_lower:
+                    filtered_existing.append(tag)
+                    seen_lower.add(tag.lower())
+                else:
+                    print(f"[TIPO Merge] Skipping TIPO tag '{tag}' (duplicate of user input)")
+
+            # Merge: input tags FIRST, then non-duplicate TIPO tags
+            merged[kgen_key] = new_tags + filtered_existing
 
         return merged
 

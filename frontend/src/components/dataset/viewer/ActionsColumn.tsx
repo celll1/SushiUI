@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { CheckSquare, Square, Tag, Trash2, Download, Save, RotateCcw } from "lucide-react";
-import { saveAllCaptionsToTxt } from "@/utils/api";
+import { addTagToCategory } from "@/utils/api";
+import { X } from "lucide-react";
+import BatchOperationsPanel from "../batch/BatchOperationsPanel";
 
 interface TagStatistic {
   category: string;
@@ -11,12 +12,12 @@ interface TagStatistic {
 
 interface ActionsColumnProps {
   datasetId: number;
-  selectedItems: Set<number>;
-  totalItems: number;
   tagStatistics?: Record<string, TagStatistic>;
-  onSelectAll: () => void;
-  onDeselectAll: () => void;
   onRefresh: () => void;
+  selectedItemIds: number[];
+  totalItems: number;
+  captionProcessingConfig?: any;
+  taggerSettings?: any;
 }
 
 // Category colors (same as ItemDetailColumn)
@@ -40,56 +41,67 @@ const getCategoryColor = (category: string): string => {
 
 export default function ActionsColumn({
   datasetId,
-  selectedItems,
-  totalItems,
   tagStatistics,
-  onSelectAll,
-  onDeselectAll,
   onRefresh,
+  selectedItemIds,
+  totalItems,
+  captionProcessingConfig,
+  taggerSettings,
 }: ActionsColumnProps) {
-  const [isSavingToTxt, setIsSavingToTxt] = useState(false);
+  // Category visibility state (all visible by default)
+  const [visibleCategories, setVisibleCategories] = useState<Set<string>>(
+    new Set(["character", "artist", "copyright", "general", "meta", "quality", "rating", "model", "unknown"])
+  );
 
-  // Sort tags by count (most common first)
+  // Categorization dialog state
+  const [selectedTag, setSelectedTag] = useState<{ tag: string; count: number } | null>(null);
+  const [isCategorizing, setIsCategorizing] = useState(false);
+
+  // Get unique categories from tag statistics
+  const allCategories = tagStatistics
+    ? Array.from(new Set(Object.values(tagStatistics).map(s => s.category)))
+    : [];
+
+  // Sort tags by count (most common first) and filter by visible categories
   const sortedTags = tagStatistics
     ? Object.entries(tagStatistics)
+        .filter(([_, stats]) => visibleCategories.has(stats.category.toLowerCase()))
         .sort((a, b) => b[1].count - a[1].count)
-        .slice(0, 50) // Show top 50
+        .slice(0, 100) // Show top 100
     : [];
-  const handleBatchTag = () => {
-    console.log("Batch tagging", selectedItems.size, "items");
-    // TODO: Implement batch tagger
+
+  const toggleCategory = (category: string) => {
+    const newVisible = new Set(visibleCategories);
+    const normalized = category.toLowerCase();
+    if (newVisible.has(normalized)) {
+      newVisible.delete(normalized);
+    } else {
+      newVisible.add(normalized);
+    }
+    setVisibleCategories(newVisible);
   };
 
-  const handleClearTags = () => {
-    if (confirm(`Clear tags from ${selectedItems.size} selected items?`)) {
-      console.log("Clearing tags from", selectedItems.size, "items");
-      // TODO: Implement clear tags
+  const handleTagClick = (tag: string, stats: TagStatistic) => {
+    // Only allow categorization for Unknown tags
+    if (stats.category.toLowerCase() === "unknown") {
+      setSelectedTag({ tag, count: stats.count });
     }
   };
 
-  const handleExport = () => {
-    console.log("Exporting dataset");
-    // TODO: Implement export
-  };
+  const handleCategorize = async (targetCategory: string) => {
+    if (!selectedTag) return;
 
-  const handleSaveAllToTxt = async () => {
-    if (!confirm("Save all captions to TXT files? This will overwrite existing TXT files.")) {
-      return;
-    }
-
-    setIsSavingToTxt(true);
+    setIsCategorizing(true);
     try {
-      const result = await saveAllCaptionsToTxt(datasetId);
-      console.log("[ActionsColumn] Bulk save result:", result);
-      alert(`Saved ${result.saved} captions to TXT files\n` +
-            `Skipped: ${result.skipped} (no caption or no image file)\n` +
-            `Errors: ${result.errors}`);
-      onRefresh(); // Refresh dataset view
-    } catch (err) {
-      console.error("[ActionsColumn] Failed to save all to TXT:", err);
-      alert("Failed to save captions to TXT files. Please try again.");
+      await addTagToCategory(selectedTag.tag, targetCategory, selectedTag.count);
+      alert(`Tag "${selectedTag.tag}" added to ${targetCategory} category`);
+      setSelectedTag(null);
+      onRefresh(); // Refresh dataset to update tag categories
+    } catch (error) {
+      console.error("Failed to categorize tag:", error);
+      alert("Failed to categorize tag. See console for details.");
     } finally {
-      setIsSavingToTxt(false);
+      setIsCategorizing(false);
     }
   };
 
@@ -97,97 +109,61 @@ export default function ActionsColumn({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="p-3 border-b border-gray-700">
-        <h3 className="text-sm font-semibold">Actions</h3>
+        <h3 className="text-sm font-semibold">Actions & Statistics</h3>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
-        {/* Selection Info */}
-        <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">Selection</h4>
-          <div className="text-xs text-gray-300 mb-3">
-            <div>{selectedItems.size} selected</div>
-            <div className="text-gray-500">{totalItems} total items</div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {/* Batch Operations Panel */}
+        <BatchOperationsPanel
+          datasetId={datasetId}
+          selectedItemIds={Array.from(selectedItemIds)}
+          totalItems={totalItems}
+          captionProcessingConfig={captionProcessingConfig}
+          taggerSettings={taggerSettings}
+          onOperationComplete={onRefresh}
+        />
+        {/* Category Filter */}
+        {allCategories.length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-2">
+            <div className="text-[10px] font-semibold text-gray-400 mb-1">Filter by Category</div>
+            <div className="flex flex-wrap gap-1">
+              {allCategories.map(category => {
+                const normalized = category.toLowerCase();
+                const isVisible = visibleCategories.has(normalized);
+                const colorClass = getCategoryColor(category);
+                return (
+                  <button
+                    key={category}
+                    onClick={() => toggleCategory(category)}
+                    className={`px-1.5 py-0.5 rounded text-[9px] transition-opacity ${colorClass} ${
+                      isVisible ? 'opacity-100' : 'opacity-30'
+                    }`}
+                    title={isVisible ? `Hide ${category}` : `Show ${category}`}
+                  >
+                    {category}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <button
-              onClick={onSelectAll}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
-            >
-              <CheckSquare className="h-3.5 w-3.5" />
-              <span>Select All</span>
-            </button>
-            <button
-              onClick={onDeselectAll}
-              disabled={selectedItems.size === 0}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Square className="h-3.5 w-3.5" />
-              <span>Deselect All</span>
-            </button>
-          </div>
-        </div>
+        )}
 
-        {/* Batch Operations */}
+        {/* Tag List */}
         <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">Batch Operations</h4>
-          <div className="text-[10px] text-gray-400 mb-2">
-            Apply to: {selectedItems.size > 0 ? `${selectedItems.size} selected` : "all items"}
-          </div>
-          <div className="space-y-1.5">
-            <button
-              onClick={handleBatchTag}
-              disabled={selectedItems.size === 0}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Tag className="h-3.5 w-3.5" />
-              <span>Tag Selected</span>
-            </button>
-            <button
-              onClick={handleClearTags}
-              disabled={selectedItems.size === 0}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span>Clear Tags</span>
-            </button>
-            <button
-              onClick={handleExport}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
-            >
-              <Download className="h-3.5 w-3.5" />
-              <span>Export Dataset</span>
-            </button>
-          </div>
-        </div>
-
-        {/* TXT File Synchronization */}
-        <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">TXT File Sync</h4>
-          <div className="space-y-1.5">
-            <button
-              onClick={handleSaveAllToTxt}
-              disabled={isSavingToTxt}
-              className="w-full flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Save all DB captions to TXT files"
-            >
-              <Save className="h-3.5 w-3.5" />
-              <span>{isSavingToTxt ? "Saving..." : "Save All to TXT"}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Tag Statistics */}
-        <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">Tag Statistics</h4>
           {sortedTags.length > 0 ? (
             <div className="space-y-1 max-h-96 overflow-y-auto">
               {sortedTags.map(([tag, stats]) => {
                 const colorClass = getCategoryColor(stats.category);
+                const isUnknown = stats.category.toLowerCase() === "unknown";
                 return (
                   <div
                     key={tag}
-                    className="flex items-center justify-between text-xs group hover:bg-gray-700 rounded px-1.5 py-0.5 transition-colors"
+                    className={`flex items-center justify-between text-xs group hover:bg-gray-700 rounded px-1.5 py-0.5 transition-colors ${
+                      isUnknown ? 'cursor-pointer' : ''
+                    }`}
+                    onClick={() => handleTagClick(tag, stats)}
+                    title={isUnknown ? "Click to categorize" : ""}
                   >
                     <div className="flex items-center space-x-1.5 flex-1 min-w-0">
                       <span className={`px-1.5 py-0.5 ${colorClass} rounded text-[10px] flex-shrink-0`}>
@@ -208,15 +184,51 @@ export default function ActionsColumn({
             </div>
           )}
         </div>
+      </div>
 
-        {/* Auto-Tagger (Placeholder) */}
-        <div className="bg-gray-800 rounded-lg p-3">
-          <h4 className="text-xs font-semibold mb-2">Auto-Tagger</h4>
-          <div className="text-[10px] text-gray-500 text-center py-4">
-            Tagger integration coming soon
+      {/* Categorization Dialog */}
+      {selectedTag && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-lg border border-gray-700 w-full max-w-sm p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold">Categorize Tag</h3>
+              <button
+                onClick={() => setSelectedTag(null)}
+                className="p-1 hover:bg-gray-700 rounded transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mb-3">
+              <div className="text-xs text-gray-300 mb-1">Tag:</div>
+              <div className="bg-gray-900 rounded px-2 py-1 text-xs text-gray-200">
+                {selectedTag.tag}
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <div className="text-xs text-gray-300 mb-2">Select Category:</div>
+              <div className="grid grid-cols-2 gap-2">
+                {["Artist", "Character", "Copyright", "General", "Meta", "Model", "Quality", "Rating"].map(category => (
+                  <button
+                    key={category}
+                    onClick={() => handleCategorize(category)}
+                    disabled={isCategorizing}
+                    className={`px-3 py-2 rounded text-xs transition-colors ${getCategoryColor(category)} hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="text-[10px] text-gray-500">
+              Count: {selectedTag.count} (will be saved to taglist JSON)
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

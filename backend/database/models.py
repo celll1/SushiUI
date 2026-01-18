@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, Text, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -27,6 +27,8 @@ class UserSettings(GalleryBase):
     model_dirs = Column(JSON, default=list)  # Additional directories for base models
     lora_dirs = Column(JSON, default=list)   # Additional directories for LoRAs
     controlnet_dirs = Column(JSON, default=list)  # Additional directories for ControlNets
+    cache_dir = Column(String, nullable=True)  # Custom cache directory (default: backend/cache)
+    training_dir = Column(String, nullable=True)  # Custom training output directory (default: training)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -35,6 +37,8 @@ class UserSettings(GalleryBase):
             "model_dirs": self.model_dirs or [],
             "lora_dirs": self.lora_dirs or [],
             "controlnet_dirs": self.controlnet_dirs or [],
+            "cache_dir": self.cache_dir,
+            "training_dir": self.training_dir,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -337,6 +341,15 @@ class DatasetCaption(DatasetBase):
     caption_subtype = Column(String, nullable=True)
     content = Column(Text, nullable=False)
 
+    # Tag data with categories (for per-epoch shuffle/dropout optimization)
+    # JSON format: [{"tag": "1girl", "category": "General"}, {"tag": "long_hair", "category": "General"}, ...]
+    tag_data = Column(Text, nullable=True)  # Stored as JSON string
+
+    # Caption format detection (for auto-handling tags vs natural language)
+    field_category = Column(String, default="training")  # "training" | "metadata"
+    is_tags_format = Column(Boolean, default=False)  # True if Danbooru tags format
+    tag_match_rate = Column(Float, default=0.0)  # 0.0-1.0 (percentage of tokens matching taglist)
+
     # Metadata
     language = Column(String, nullable=True)
     source = Column(String, default="manual", index=True)
@@ -351,12 +364,15 @@ class DatasetCaption(DatasetBase):
     item = relationship("DatasetItem", back_populates="captions")
 
     def to_dict(self):
-        return {
+        result = {
             "id": self.id,
             "item_id": self.item_id,
             "caption_type": self.caption_type,
             "caption_subtype": self.caption_subtype,
             "content": self.content,
+            "field_category": self.field_category,
+            "is_tags_format": self.is_tags_format,
+            "tag_match_rate": self.tag_match_rate,
             "language": self.language,
             "source": self.source,
             "source_field": self.source_field,
@@ -364,6 +380,18 @@ class DatasetCaption(DatasetBase):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+        # Parse tag_data if present
+        if self.tag_data:
+            import json
+            try:
+                result["tag_data"] = json.loads(self.tag_data)
+            except:
+                result["tag_data"] = None
+        else:
+            result["tag_data"] = None
+
+        return result
 
 
 class TagDictionary(DatasetBase):
@@ -435,10 +463,15 @@ class TrainingRun(TrainingBase):
     
     # Status
     status = Column(String, default="pending", index=True)  # 'pending', 'running', 'paused', 'completed', 'failed'
-    progress = Column(Float, default=0.0)  # 0.0 - 1.0
+    progress = Column(Float, default=0.0)  # 0.0 - 100.0 (training phase progress)
     current_step = Column(Integer, default=0)
     total_steps = Column(Integer, nullable=False)
-    
+
+    # Phase tracking (for detailed progress during startup)
+    phase = Column(String, default="initializing")  # 'initializing', 'latent_cache', 'text_encoder_cache', 'training'
+    phase_progress = Column(Float, default=0.0)  # 0.0 - 100.0 (current phase progress)
+    phase_detail = Column(String, nullable=True)  # Detailed status message (e.g., "Processing 500/1000 images")
+
     # Performance metrics
     loss = Column(Float, nullable=True)
     learning_rate = Column(Float, nullable=True)
@@ -454,6 +487,8 @@ class TrainingRun(TrainingBase):
     # Timestamps
     created_at = Column(DateTime, default=get_local_now, index=True)
     started_at = Column(DateTime, nullable=True)
+    last_resumed_at = Column(DateTime, nullable=True)  # Last resume time (for accurate ETA calculation)
+    resumed_from_step = Column(Integer, nullable=True)  # Step at resume (for accurate ETA calculation)
     completed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -465,6 +500,24 @@ class TrainingRun(TrainingBase):
     def to_dict(self):
         # Get checkpoints from DB (sorted by step descending = newest first)
         checkpoint_paths = [ckpt.file_path for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)]
+
+        # Extract component-specific LRs from YAML config
+        unet_lr = None
+        text_encoder_lr = None
+        text_encoder_1_lr = None
+        text_encoder_2_lr = None
+
+        if self.config_yaml:
+            try:
+                import yaml
+                config = yaml.safe_load(self.config_yaml)
+                train_config = config.get('config', {}).get('process', [{}])[0].get('train', {})
+                unet_lr = train_config.get('unet_lr')
+                text_encoder_lr = train_config.get('text_encoder_lr')
+                text_encoder_1_lr = train_config.get('text_encoder_1_lr')
+                text_encoder_2_lr = train_config.get('text_encoder_2_lr')
+            except Exception:
+                pass  # Silently fail if YAML parsing fails
 
         return {
             "id": self.id,
@@ -479,16 +532,25 @@ class TrainingRun(TrainingBase):
             "progress": self.progress,
             "current_step": self.current_step,
             "total_steps": self.total_steps,
+            "phase": self.phase,
+            "phase_progress": self.phase_progress,
+            "phase_detail": self.phase_detail,
             "loss": self.loss,
             "learning_rate": self.learning_rate,
+            "unet_lr": unet_lr,
+            "text_encoder_lr": text_encoder_lr,
+            "text_encoder_1_lr": text_encoder_1_lr,
+            "text_encoder_2_lr": text_encoder_2_lr,
             "output_dir": self.output_dir,
             "checkpoint_paths": checkpoint_paths,  # From DB, sorted newest first
             "log_file": self.log_file,
             "error_message": self.error_message,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "created_at": self.created_at.isoformat() + 'Z' if self.created_at else None,
+            "started_at": self.started_at.isoformat() + 'Z' if self.started_at else None,
+            "last_resumed_at": self.last_resumed_at.isoformat() + 'Z' if self.last_resumed_at else None,
+            "resumed_from_step": self.resumed_from_step,
+            "completed_at": self.completed_at.isoformat() + 'Z' if self.completed_at else None,
+            "updated_at": self.updated_at.isoformat() + 'Z' if self.updated_at else None,
         }
 
 
@@ -563,16 +625,16 @@ class TrainingSample(TrainingBase):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     step = Column(Integer, nullable=False)
     prompt = Column(Text, nullable=False)
     image_path = Column(String, nullable=False)
-    
+
     created_at = Column(DateTime, default=get_local_now, index=True)
-    
+
     # Relationships
     run = relationship("TrainingRun", back_populates="samples")
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -581,4 +643,50 @@ class TrainingSample(TrainingBase):
             "prompt": self.prompt,
             "image_path": self.image_path,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TrainingMetrics(TrainingBase):
+    """Training metrics (loss, learning_rate, grad_norm) logged during training.
+
+    Features:
+    - Dual logging: TensorBoard (for external tools) + DB (for fast queries)
+    - UPSERT behavior: Same (run_id, step) will overwrite existing values
+    - Indexed for fast filtering: WHERE run_id=? AND step>?
+    """
+    __tablename__ = "training_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    step = Column(Integer, nullable=False)
+
+    # Metrics
+    loss = Column(Float, nullable=True)
+    recon_loss = Column(Float, nullable=True)
+    learning_rate = Column(Float, nullable=True)
+
+    # Gradient norms
+    grad_norm = Column(Float, nullable=True)  # Total gradient norm (all parameters)
+    grad_norm_text_encoder = Column(Float, nullable=True)  # Text encoder gradient norm
+    grad_norm_unet = Column(Float, nullable=True)  # U-Net/Transformer gradient norm
+
+    # Timestamp
+    timestamp = Column(DateTime, default=get_local_now)
+
+    # Composite unique constraint: (run_id, step) must be unique (UPSERT target)
+    __table_args__ = (
+        UniqueConstraint('run_id', 'step', name='uq_run_step'),
+        Index('idx_run_step', 'run_id', 'step'),  # Composite index for fast queries
+    )
+
+    def to_dict(self):
+        return {
+            "step": self.step,
+            "loss": self.loss,
+            "recon_loss": self.recon_loss,
+            "learning_rate": self.learning_rate,
+            "grad_norm": self.grad_norm,
+            "grad_norm_text_encoder": self.grad_norm_text_encoder,
+            "grad_norm_unet": self.grad_norm_unet,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

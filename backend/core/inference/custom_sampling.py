@@ -26,6 +26,42 @@ import math
 from math import pi, cos
 
 
+def vae_output_to_pil(image: torch.Tensor) -> Image.Image:
+    """Convert VAE decoder output tensor to PIL Image with robust nan/inf handling.
+
+    Args:
+        image: VAE decoder output tensor [B, C, H, W] in range [-1, 1]
+
+    Returns:
+        PIL Image
+
+    Note:
+        - nan values are replaced with gray (0.5)
+        - positive inf values are replaced with white (1.0)
+        - negative inf values are replaced with black (0.0)
+        - Valid pixels are preserved even if some pixels are invalid
+    """
+    # Scale from [-1, 1] to [0, 1]
+    image = (image / 2 + 0.5)
+
+    # Replace nan/inf with fallback values before clamping
+    if torch.isnan(image).any() or torch.isinf(image).any():
+        nan_count = torch.isnan(image).sum().item()
+        inf_count = torch.isinf(image).sum().item()
+        total_pixels = image.numel()
+        print(f"[VAE Decode] Warning: {nan_count} nan, {inf_count} inf out of {total_pixels} pixels ({(nan_count + inf_count) / total_pixels * 100:.2f}%)")
+
+        # Replace nan with gray (0.5), positive inf with white (1.0), negative inf with black (0.0)
+        image = torch.where(torch.isnan(image), torch.tensor(0.5, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isposinf(image), torch.tensor(1.0, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
+
+    image = image.clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).round().astype("uint8")
+    return Image.fromarray(image[0])
+
+
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
     """Calculate CFG metrics for developer mode visualization
 
@@ -253,6 +289,7 @@ def custom_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
+    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -283,11 +320,16 @@ def custom_sampling_loop(
     """
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -301,16 +343,21 @@ def custom_sampling_loop(
 
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
-    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
+    # This is required because DEUS has variable sequence length embeddings
+    if is_deus:
+        print(f"[CustomSampling] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
+
+    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+
+    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
 
     # Get components
     unet = pipeline.unet
-    vae = pipeline.vae
     scheduler = pipeline.scheduler
 
     # Check if ControlNet is present
@@ -402,10 +449,26 @@ def custom_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
+    # ============================================================
+    # DEBUG: Scheduler initialization (for comparison with training)
+    # ============================================================
+    print(f"\n[CustomSampling] [Debug] ========== SCHEDULER INITIALIZATION ==========")
+    print(f"[CustomSampling] [Debug] Scheduler timesteps (first 5): {scheduler.timesteps[:5].tolist()}")
+    print(f"[CustomSampling] [Debug] Scheduler timesteps (last 5): {scheduler.timesteps[-5:].tolist()}")
+    print(f"[CustomSampling] [Debug] init_noise_sigma: {scheduler.init_noise_sigma}")
+    print(f"[CustomSampling] [Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
+    print(f"[CustomSampling] [Debug] Latents AFTER init_noise_sigma scaling:")
+    print(f"[CustomSampling] [Debug]   - min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+
     print(f"[CustomSampling] Starting sampling loop with {num_inference_steps} steps")
     print(f"[CustomSampling] Actual timesteps: {len(timesteps)} (some schedulers like DPM2 use 2x steps)")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
     print(f"[CustomSampling] Prompt embeds shape: {prompt_embeds.shape}")
+
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
     # Get sigma_max for dynamic CFG scheduling
     sigma_max = 0.0
@@ -415,6 +478,7 @@ def custom_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
+    first_iteration_debug = True
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -470,47 +534,56 @@ def custom_sampling_loop(
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
 
-        # Prepare latent input: single batch if no CFG needed, double batch otherwise
-        if do_classifier_free_guidance:
+        # Prepare latent input based on CFG mode
+        if nag_active:
+            # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
             # NAG processors will apply guidance in attention space on positive batch
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
-            # Prepare prompt embeddings based on CFG and NAG configuration
+            # Prepare prompt embeddings for NAG
             # Official NAG implementation concatenates: [cfg_negative, cfg_positive] + [nag_negative]
-            if nag_active:
-                # NAG mode (following official implementation):
-                # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
-                # Pad NAG negative embeddings to match the longest sequence length
-                max_seq_len = max(
-                    current_negative_prompt_embeds.shape[1],
-                    current_prompt_embeds.shape[1],
-                    nag_negative_prompt_embeds.shape[1]
-                )
+            # NAG mode (following official implementation):
+            # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+            # Pad NAG negative embeddings to match the longest sequence length
+            max_seq_len = max(
+                current_negative_prompt_embeds.shape[1],
+                current_prompt_embeds.shape[1],
+                nag_negative_prompt_embeds.shape[1]
+            )
 
-                # Pad each embedding to max_seq_len with zeros
-                def pad_embeds(embeds, target_len):
-                    if embeds.shape[1] < target_len:
-                        pad_len = target_len - embeds.shape[1]
-                        padding = torch.zeros(
-                            embeds.shape[0], pad_len, embeds.shape[2],
-                            dtype=embeds.dtype, device=embeds.device
-                        )
-                        return torch.cat([embeds, padding], dim=1)
-                    return embeds
+            # Pad each embedding to max_seq_len with zeros
+            def pad_embeds(embeds, target_len):
+                if embeds.shape[1] < target_len:
+                    pad_len = target_len - embeds.shape[1]
+                    padding = torch.zeros(
+                        embeds.shape[0], pad_len, embeds.shape[2],
+                        dtype=embeds.dtype, device=embeds.device
+                    )
+                    return torch.cat([embeds, padding], dim=1)
+                return embeds
 
-                current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
-                current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
-                nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
+            current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
+            current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
+            nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
 
-                prompt_embeds_input = torch.cat([
-                    current_negative_prompt_embeds_padded,
-                    current_prompt_embeds_padded,
-                    nag_negative_prompt_embeds_padded
-                ], dim=0)
+            prompt_embeds_input = torch.cat([
+                current_negative_prompt_embeds_padded,
+                current_prompt_embeds_padded,
+                nag_negative_prompt_embeds_padded
+            ], dim=0)
+        elif do_classifier_free_guidance:
+            if is_deus:
+                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
+                # This is required because DEUS has variable sequence length embeddings
+                latent_model_input = scheduler.scale_model_input(latents, t)
+                # prompt_embeds_input is not used for DEUS (we use separate negative/positive passes)
+                prompt_embeds_input = None
             else:
-                # Standard CFG: [negative, positive] (batch=2)
+                # Standard CFG (SDXL/SD1.5): Use batch approach [negative, positive] (batch=2)
+                latent_model_input = torch.cat([latents] * 2)
+                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
                 prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
         else:
             # CFG = 1.0: only use conditional (positive) pass
@@ -529,7 +602,8 @@ def custom_sampling_loop(
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
-            if do_classifier_free_guidance:
+            if nag_active or do_classifier_free_guidance:
+                # NAG mode or standard CFG (SDXL/SD1.5): Use batch approach
                 # IMPORTANT: add_time_ids and add_text_embeds must match latent batch size (2)
                 # even when NAG is active, because they're used for timestep embedding
                 # Only prompt_embeds (encoder_hidden_states) can be batch=3 for NAG
@@ -543,14 +617,19 @@ def custom_sampling_loop(
                         add_text_embeds = None
                 else:
                     add_text_embeds = None
+
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
             else:
-                # CFG = 1.0: only use positive embeddings
+                # No CFG: Use single-batch
                 add_text_embeds = current_pooled_prompt_embeds
 
-            added_cond_kwargs = {
-                "text_embeds": add_text_embeds,
-                "time_ids": add_time_ids
-            }
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -627,39 +706,104 @@ def custom_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
-            unet_kwargs = {
-                "encoder_hidden_states": prompt_embeds_input,
-            }
-            if down_block_res_samples is not None:
-                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
-            if mid_block_res_sample is not None:
-                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
-
-            # Add SDXL-specific conditioning as a nested dict
-            if is_sdxl and added_cond_kwargs:
-                unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
-
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+
+            if is_deus and do_classifier_free_guidance:
+                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
+                # This is required because DEUS has variable sequence length embeddings
+                # that cannot be batch concatenated
+
+                # ============================================================
+                # DEBUG: First iteration details (DEUS 2-Pass CFG)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
+                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
+
+                # Pass 1: Unconditional (negative) prediction
+                unet_kwargs_uncond = {
+                    "encoder_hidden_states": current_negative_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction
+                unet_kwargs_cond = {
+                    "encoder_hidden_states": current_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            else:
+                # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
+                unet_kwargs = {
+                    "encoder_hidden_states": prompt_embeds_input,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+                # Add SDXL-specific conditioning as a nested dict
+                if is_sdxl and added_cond_kwargs:
+                    unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
+                # ============================================================
+                # DEBUG: First iteration details (for comparison with training)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred = unet(
+                            latent_model_input,
+                            t,
+                            **unet_kwargs
+                        ).sample
+                else:
                     noise_pred = unet(
                         latent_model_input,
                         t,
                         **unet_kwargs
                     ).sample
-            else:
-                noise_pred = unet(
-                    latent_model_input,
-                    t,
-                    **unet_kwargs
-                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            # NAG mode: noise_pred still has [negative, positive] batches
-            # NAG guidance was applied in attention space, but CFG is still applied here
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            if is_deus:
+                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+                pass  # Variables already set in the 2-Pass CFG block
+            else:
+                # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
+                # NAG guidance was applied in attention space, but CFG is still applied here
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
             # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
@@ -677,6 +821,13 @@ def custom_sampling_loop(
 
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
@@ -697,6 +848,15 @@ def custom_sampling_loop(
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+
+        # ============================================================
+        # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
+        # ============================================================
+        if first_iteration_debug:
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
+            first_iteration_debug = False
 
         # Progress callback
         # Note: Some schedulers (DPM2, DPM2a) create more timesteps than num_inference_steps
@@ -744,18 +904,17 @@ def custom_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    # Convert to PIL
-    image = (image / 2 + 0.5).clamp(0, 1)
-    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-    image = (image * 255).round().astype("uint8")
-    image = Image.fromarray(image[0])
+    # Convert to PIL with robust nan/inf handling
+    image = vae_output_to_pil(image)
 
     return image
 
@@ -782,6 +941,8 @@ def custom_img2img_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    width: Optional[int] = None,  # Target width (resizes init_image if specified)
+    height: Optional[int] = None,  # Target height (resizes init_image if specified)
     cfg_schedule_type: str = "constant",
     cfg_schedule_min: float = 1.0,
     cfg_schedule_max: Optional[float] = None,
@@ -797,6 +958,7 @@ def custom_img2img_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
+    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -824,11 +986,16 @@ def custom_img2img_sampling_loop(
     """
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -843,15 +1010,26 @@ def custom_img2img_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
+    if is_deus:
+        print(f"[CustomSampling] [img2img] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
+
+    print(f"[CustomSampling] [img2img] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+
+    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
 
     # Get components
     unet = pipeline.unet
-    vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Resize init_image if width/height are specified
+    if width is not None and height is not None:
+        if init_image.size != (width, height):
+            print(f"[CustomSampling] Resizing init_image from {init_image.size} to ({width}, {height})")
+            init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
 
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size
@@ -912,7 +1090,7 @@ def custom_img2img_sampling_loop(
 
     # Ensure VAE is on GPU for initial encoding
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
-    vae_device = next(vae.parameters()).device
+    vae_device = next(pipeline.vae.parameters()).device
     if vae_device.type != device:
         print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
         move_vae_to_gpu(pipeline)
@@ -924,11 +1102,15 @@ def custom_img2img_sampling_loop(
         init_image = init_image.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
         init_image = init_image * 2.0 - 1.0  # Normalize to [-1, 1]
 
+    # Use VAE's dtype for encoding (VAE may be FP32 even if U-Net is FP16)
+    vae_dtype = next(pipeline.vae.parameters()).dtype
     with torch.no_grad():
-        init_latents = vae.encode(
-            init_image.to(device=device, dtype=dtype)
+        init_latents = pipeline.vae.encode(
+            init_image.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * vae.config.scaling_factor
+        init_latents = init_latents * pipeline.vae.config.scaling_factor
+        # Convert latents back to U-Net dtype for denoising
+        init_latents = init_latents.to(dtype=dtype)
 
     # Move VAE back to CPU after initial encoding
     print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
@@ -973,6 +1155,12 @@ def custom_img2img_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
+    first_iteration_debug = True
+
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -1028,8 +1216,9 @@ def custom_img2img_sampling_loop(
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
 
-        # Prepare latent input: single batch if no CFG needed, double batch otherwise
-        if do_classifier_free_guidance:
+        # Prepare latent input based on CFG mode
+        if nag_active:
+            # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
             # NAG processors will apply guidance in attention space on positive batch
             latent_model_input = torch.cat([latents] * 2)
@@ -1037,39 +1226,47 @@ def custom_img2img_sampling_loop(
 
             # Prepare prompt embeddings based on CFG and NAG configuration
             # Official NAG implementation concatenates: [cfg_negative, cfg_positive] + [nag_negative]
-            if nag_active:
-                # NAG mode (following official implementation):
-                # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
-                # Pad NAG negative embeddings to match the longest sequence length
-                max_seq_len = max(
-                    current_negative_prompt_embeds.shape[1],
-                    current_prompt_embeds.shape[1],
-                    nag_negative_prompt_embeds.shape[1]
-                )
+            # NAG mode (following official implementation):
+            # prompt_embeds = [cfg_negative, cfg_positive, nag_negative] (batch=3)
+            # Pad NAG negative embeddings to match the longest sequence length
+            max_seq_len = max(
+                current_negative_prompt_embeds.shape[1],
+                current_prompt_embeds.shape[1],
+                nag_negative_prompt_embeds.shape[1]
+            )
 
-                # Pad each embedding to max_seq_len with zeros
-                def pad_embeds(embeds, target_len):
-                    if embeds.shape[1] < target_len:
-                        pad_len = target_len - embeds.shape[1]
-                        padding = torch.zeros(
-                            embeds.shape[0], pad_len, embeds.shape[2],
-                            dtype=embeds.dtype, device=embeds.device
-                        )
-                        return torch.cat([embeds, padding], dim=1)
-                    return embeds
+            # Pad each embedding to max_seq_len with zeros
+            def pad_embeds(embeds, target_len):
+                if embeds.shape[1] < target_len:
+                    pad_len = target_len - embeds.shape[1]
+                    padding = torch.zeros(
+                        embeds.shape[0], pad_len, embeds.shape[2],
+                        dtype=embeds.dtype, device=embeds.device
+                    )
+                    return torch.cat([embeds, padding], dim=1)
+                return embeds
 
-                current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
-                current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
-                nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
+            current_negative_prompt_embeds_padded = pad_embeds(current_negative_prompt_embeds, max_seq_len)
+            current_prompt_embeds_padded = pad_embeds(current_prompt_embeds, max_seq_len)
+            nag_negative_prompt_embeds_padded = pad_embeds(nag_negative_prompt_embeds, max_seq_len)
 
-                prompt_embeds_input = torch.cat([
-                    current_negative_prompt_embeds_padded,
-                    current_prompt_embeds_padded,
-                    nag_negative_prompt_embeds_padded
-                ], dim=0)
+            prompt_embeds_input = torch.cat([
+                current_negative_prompt_embeds_padded,
+                current_prompt_embeds_padded,
+                nag_negative_prompt_embeds_padded
+            ], dim=0)
+
+        elif do_classifier_free_guidance:
+            if is_deus:
+                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
+                latent_model_input = scheduler.scale_model_input(latents, t)
+                prompt_embeds_input = None
             else:
-                # Standard CFG: [negative, positive] (batch=2)
+                # Standard CFG (SDXL/SD1.5): Use batch approach [negative, positive] (batch=2)
+                latent_model_input = torch.cat([latents] * 2)
+                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
                 prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+
         else:
             # CFG = 1.0: only use conditional (positive) pass
             latent_model_input = latents
@@ -1087,7 +1284,8 @@ def custom_img2img_sampling_loop(
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
-            if do_classifier_free_guidance:
+            if nag_active or do_classifier_free_guidance:
+                # NAG mode or standard CFG (SDXL/SD1.5): Use batch approach
                 # IMPORTANT: add_time_ids and add_text_embeds must match latent batch size (2)
                 # even when NAG is active, because they're used for timestep embedding
                 # Only prompt_embeds (encoder_hidden_states) can be batch=3 for NAG
@@ -1101,14 +1299,19 @@ def custom_img2img_sampling_loop(
                         add_text_embeds = None
                 else:
                     add_text_embeds = None
-            else:
-                # CFG = 1.0: only use positive embeddings
-                add_text_embeds = current_pooled_prompt_embeds
 
-            added_cond_kwargs = {
-                "text_embeds": add_text_embeds,
-                "time_ids": add_time_ids
-            }
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
+
+            else:
+                # No CFG: Use single-batch
+                add_text_embeds = current_pooled_prompt_embeds
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -1183,39 +1386,100 @@ def custom_img2img_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
-            unet_kwargs = {
-                "encoder_hidden_states": prompt_embeds_input,
-            }
-            if down_block_res_samples is not None:
-                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
-            if mid_block_res_sample is not None:
-                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
-
-            # Add SDXL-specific conditioning as a nested dict
-            if is_sdxl and added_cond_kwargs:
-                unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
-
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+
+            if is_deus and do_classifier_free_guidance:
+                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
+
+                # ============================================================
+                # DEBUG: First iteration details (DEUS 2-Pass CFG)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
+                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
+
+                # Pass 1: Unconditional (negative) prediction
+                unet_kwargs_uncond = {
+                    "encoder_hidden_states": current_negative_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction
+                unet_kwargs_cond = {
+                    "encoder_hidden_states": current_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            else:
+                # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
+                unet_kwargs = {
+                    "encoder_hidden_states": prompt_embeds_input,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+                # Add SDXL-specific conditioning as a nested dict
+                if is_sdxl and added_cond_kwargs:
+                    unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
+                # ============================================================
+                # DEBUG: First iteration details (for comparison with training)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred = unet(
+                            latent_model_input,
+                            t,
+                            **unet_kwargs
+                        ).sample
+                else:
                     noise_pred = unet(
                         latent_model_input,
                         t,
                         **unet_kwargs
                     ).sample
-            else:
-                noise_pred = unet(
-                    latent_model_input,
-                    t,
-                    **unet_kwargs
-                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            # NAG mode: noise_pred still has [negative, positive] batches
-            # NAG guidance was applied in attention space, but CFG is still applied here
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            if is_deus:
+                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+                pass  # Variables already set in the 2-Pass CFG block
+            else:
+                # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
+                # NAG guidance was applied in attention space, but CFG is still applied here
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
             # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
@@ -1233,6 +1497,13 @@ def custom_img2img_sampling_loop(
 
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
@@ -1253,6 +1524,15 @@ def custom_img2img_sampling_loop(
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+
+        # ============================================================
+        # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
+        # ============================================================
+        if first_iteration_debug:
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
+            print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
+            first_iteration_debug = False
 
         # Progress callback
         if progress_callback is not None:
@@ -1298,18 +1578,17 @@ def custom_img2img_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    # Convert to PIL
-    image = (image / 2 + 0.5).clamp(0, 1)
-    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-    image = (image * 255).round().astype("uint8")
-    image = Image.fromarray(image[0])
+    # Convert to PIL with robust nan/inf handling
+    image = vae_output_to_pil(image)
 
     return image
 
@@ -1337,6 +1616,8 @@ def custom_inpaint_sampling_loop(
     controlnet_conditioning_scale: Optional[Union[float, List[float]]] = None,
     control_guidance_start: Optional[Union[float, List[float]]] = None,
     control_guidance_end: Optional[Union[float, List[float]]] = None,
+    width: Optional[int] = None,  # Target width (resizes init_image and mask if specified)
+    height: Optional[int] = None,  # Target height (resizes init_image and mask if specified)
     inpaint_fill_mode: str = "original",
     inpaint_fill_strength: float = 1.0,
     inpaint_blur_strength: float = 1.0,
@@ -1355,15 +1636,21 @@ def custom_inpaint_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
+    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
     # pipeline.device returns cpu after text encoders are offloaded
-    device = pipeline.unet.device if hasattr(pipeline, 'unet') else pipeline.device
+    if hasattr(pipeline, 'unet'):
+        # Get device from first parameter (nn.Module doesn't have .device attribute)
+        device = next(pipeline.unet.parameters()).device
+    else:
+        device = pipeline.device
 
     # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
     # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
-    unet_dtype = pipeline.unet.dtype
+    # nn.Module doesn't have .dtype, get from first parameter
+    unet_dtype = next(pipeline.unet.parameters()).dtype
     is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
     if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
@@ -1378,14 +1665,29 @@ def custom_inpaint_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # Use ancestral_generator for stochastic samplers, fallback to generator if not provided
-    step_generator = ancestral_generator if ancestral_generator is not None else generator
+    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
+    if is_deus:
+        print(f"[CustomSampling] [inpaint] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
+
+    print(f"[CustomSampling] [inpaint] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+
+    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
+    step_generator = ancestral_generator
     if ancestral_generator is not None:
-        print(f"[CustomSampling] Using separate ancestral generator for stochastic sampler")
+        print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
 
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Resize init_image and mask_image if width/height are specified
+    if width is not None and height is not None:
+        if init_image.size != (width, height):
+            print(f"[CustomSampling] Resizing init_image from {init_image.size} to ({width}, {height})")
+            init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
+        if mask_image.size != (width, height):
+            print(f"[CustomSampling] Resizing mask_image from {mask_image.size} to ({width}, {height})")
+            mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
 
     # Check if this is an inpaint-specific UNet (9 channels) or regular UNet (4 channels)
     # Regular UNets cannot accept concatenated mask+image, so we'll use img2img-style masking
@@ -1446,7 +1748,7 @@ def custom_inpaint_sampling_loop(
 
     # Ensure VAE is on GPU for initial encoding
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
-    vae_device = next(vae.parameters()).device
+    vae_device = next(pipeline.vae.parameters()).device
     if vae_device.type != device:
         print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
         move_vae_to_gpu(pipeline)
@@ -1465,11 +1767,15 @@ def custom_inpaint_sampling_loop(
     else:
         mask_tensor = mask_image
 
+    # Use VAE's dtype for encoding (VAE may be FP32 even if U-Net is FP16)
+    vae_dtype = next(pipeline.vae.parameters()).dtype
     with torch.no_grad():
-        init_latents = vae.encode(
-            init_image_tensor.to(device=device, dtype=dtype)
+        init_latents = pipeline.vae.encode(
+            init_image_tensor.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * vae.config.scaling_factor
+        init_latents = init_latents * pipeline.vae.config.scaling_factor
+        # Convert latents back to U-Net dtype for denoising
+        init_latents = init_latents.to(dtype=dtype)
 
     mask_latent = torch.nn.functional.interpolate(
         mask_tensor.to(device=device, dtype=dtype),
@@ -1503,7 +1809,7 @@ def custom_inpaint_sampling_loop(
             # Apply separable 2D gaussian blur
             # Number of iterations based on blur strength (1-5 iterations)
             blur_iterations = max(1, min(5, int(3 * inpaint_blur_strength)))
-            blurred = init_image_tensor.to(device=device, dtype=dtype)
+            blurred = init_image_tensor.to(device=device, dtype=vae_dtype)
             for _ in range(blur_iterations):
                 blurred = F.conv2d(blurred, kernel_1d.unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(0, kernel_size // 2), groups=3)
                 blurred = F.conv2d(blurred, kernel_1d.t().unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1), padding=(kernel_size // 2, 0), groups=3)
@@ -1511,8 +1817,9 @@ def custom_inpaint_sampling_loop(
             print(f"[CustomSampling] Blur applied: kernel_size={kernel_size}, iterations={blur_iterations}, strength={inpaint_blur_strength}")
 
             with torch.no_grad():
-                blurred_latents = vae.encode(blurred).latent_dist.sample(generator)
-                blurred_latents = blurred_latents * vae.config.scaling_factor
+                blurred_latents = pipeline.vae.encode(blurred).latent_dist.sample(generator)
+                blurred_latents = blurred_latents * pipeline.vae.config.scaling_factor
+                blurred_latents = blurred_latents.to(dtype=dtype)
 
             # Mix blurred latents into masked region (mask=1 is inpaint area)
             # Formula: original * (1-mask) + fill * mask * strength + original * mask * (1-strength)
@@ -1573,6 +1880,14 @@ def custom_inpaint_sampling_loop(
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
 
+    # Debug flag for first iteration logging (used throughout the loop)
+    first_iteration_debug = True
+
+    # Send initial noise preview (step 0) before denoising loop starts
+    if progress_callback is not None:
+        print(f"[CustomSampling] Sending initial noise preview (step 0)")
+        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
+
     for i, t in enumerate(timesteps):
         # Check for cancellation (only in inference context, not training)
         try:
@@ -1624,8 +1939,9 @@ def custom_inpaint_sampling_loop(
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
 
-        # Prepare latent input: single batch if no CFG needed, double batch otherwise
-        if do_classifier_free_guidance:
+        # Prepare latent input based on CFG mode
+        if nag_active:
+            # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
             # NAG processors will apply guidance in attention space on positive batch
             latent_model_input = torch.cat([latents] * 2)
@@ -1640,10 +1956,32 @@ def custom_inpaint_sampling_loop(
 
             # Prepare prompt embeddings: [negative, positive]
             # NAG mode: use NAG negative embeddings for cross-attention guidance
-            if nag_active:
-                prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+            prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
+
+        elif do_classifier_free_guidance:
+            if is_deus:
+                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
+                latent_model_input = scheduler.scale_model_input(latents, t)
+
+                # Only concatenate mask and masked image for inpaint-specific UNets
+                if is_inpaint_unet:
+                    masked_image_latents = image_latents * (1 - mask_latent)
+                    latent_model_input = torch.cat([latent_model_input, mask_latent, masked_image_latents], dim=1)
+
+                prompt_embeds_input = None
             else:
+                # Standard CFG (SDXL/SD1.5): Use batch approach [negative, positive] (batch=2)
+                latent_model_input = torch.cat([latents] * 2)
+                latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+
+                # Only concatenate mask and masked image for inpaint-specific UNets
+                if is_inpaint_unet:
+                    # Use original clean image latents, masked to show only non-inpaint regions
+                    masked_image_latents = image_latents * (1 - mask_latent)
+                    latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
+
                 prompt_embeds_input = torch.cat([current_negative_prompt_embeds, current_prompt_embeds])
+
         else:
             # CFG = 1.0: only use conditional (positive) pass
             latent_model_input = latents
@@ -1668,7 +2006,8 @@ def custom_inpaint_sampling_loop(
             add_time_ids = list(original_size + crops_coords_top_left + target_size)
             add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)
 
-            if do_classifier_free_guidance:
+            if nag_active or do_classifier_free_guidance:
+                # NAG mode or standard CFG (SDXL/SD1.5): Use batch approach
                 # IMPORTANT: add_time_ids and add_text_embeds must match latent batch size (2)
                 # even when NAG is active, because they're used for timestep embedding
                 # Only prompt_embeds (encoder_hidden_states) can be batch=3 for NAG
@@ -1682,14 +2021,19 @@ def custom_inpaint_sampling_loop(
                         add_text_embeds = None
                 else:
                     add_text_embeds = None
-            else:
-                # CFG = 1.0: only use positive embeddings
-                add_text_embeds = current_pooled_prompt_embeds
 
-            added_cond_kwargs = {
-                "text_embeds": add_text_embeds,
-                "time_ids": add_time_ids
-            }
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
+
+            else:
+                # No CFG: Use single-batch
+                add_text_embeds = current_pooled_prompt_embeds
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids
+                }
 
         # Get ControlNet residuals if present
         down_block_res_samples = None
@@ -1756,39 +2100,100 @@ def custom_inpaint_sampling_loop(
                             )
 
         with torch.no_grad():
-            unet_kwargs = {
-                "encoder_hidden_states": prompt_embeds_input,
-            }
-            if down_block_res_samples is not None:
-                unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
-            if mid_block_res_sample is not None:
-                unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
-
-            # Add SDXL-specific conditioning as a nested dict
-            if is_sdxl and added_cond_kwargs:
-                unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
-
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
             is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            if unet.dtype == torch.float8_e4m3fn or unet.dtype == torch.float8_e5m2 or is_uint_quantized:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+
+            if is_deus and do_classifier_free_guidance:
+                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
+
+                # ============================================================
+                # DEBUG: First iteration details (DEUS 2-Pass CFG)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
+                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
+
+                # Pass 1: Unconditional (negative) prediction
+                unet_kwargs_uncond = {
+                    "encoder_hidden_states": current_negative_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction
+                unet_kwargs_cond = {
+                    "encoder_hidden_states": current_prompt_embeds,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            else:
+                # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
+                unet_kwargs = {
+                    "encoder_hidden_states": prompt_embeds_input,
+                }
+                if down_block_res_samples is not None:
+                    unet_kwargs["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
+
+                # Add SDXL-specific conditioning as a nested dict
+                if is_sdxl and added_cond_kwargs:
+                    unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
+
+                # ============================================================
+                # DEBUG: First iteration details (for comparison with training)
+                # ============================================================
+                if first_iteration_debug:
+                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
+                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
+                    print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred = unet(
+                            latent_model_input,
+                            t,
+                            **unet_kwargs
+                        ).sample
+                else:
                     noise_pred = unet(
                         latent_model_input,
                         t,
                         **unet_kwargs
                     ).sample
-            else:
-                noise_pred = unet(
-                    latent_model_input,
-                    t,
-                    **unet_kwargs
-                ).sample
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            # NAG mode: noise_pred still has [negative, positive] batches
-            # NAG guidance was applied in attention space, but CFG is still applied here
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            if is_deus:
+                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+                pass  # Variables already set in the 2-Pass CFG block
+            else:
+                # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
+                # NAG guidance was applied in attention space, but CFG is still applied here
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
             # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
@@ -1806,6 +2211,13 @@ def custom_inpaint_sampling_loop(
 
             # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # ============================================================
+            # DEBUG: Noise prediction AFTER CFG (for comparison with training)
+            # ============================================================
+            if first_iteration_debug:
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
+                print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
             # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
@@ -1845,6 +2257,10 @@ def custom_inpaint_sampling_loop(
             # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
             latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
 
+        # Reset debug flag after first iteration
+        if first_iteration_debug:
+            first_iteration_debug = False
+
         if progress_callback is not None:
             # Calculate CFG metrics for developer mode
             cfg_metrics = None
@@ -1879,14 +2295,31 @@ def custom_inpaint_sampling_loop(
     log_device_status("Ready for VAE decode (inpaint)", pipeline)
 
     # Decode latents to image
-    latents = latents / vae.config.scaling_factor
+    latents = latents / pipeline.vae.config.scaling_factor
+    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
+    latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = vae.decode(latents).sample
+        image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    image = (image / 2 + 0.5).clamp(0, 1)
+    # Scale from [-1, 1] to [0, 1] with robust nan/inf handling
+    image = (image / 2 + 0.5)
+
+    # Replace nan/inf with fallback values before clamping
+    if torch.isnan(image).any() or torch.isinf(image).any():
+        nan_count = torch.isnan(image).sum().item()
+        inf_count = torch.isinf(image).sum().item()
+        total_pixels = image.numel()
+        print(f"[VAE Decode] Warning: {nan_count} nan, {inf_count} inf out of {total_pixels} pixels ({(nan_count + inf_count) / total_pixels * 100:.2f}%)")
+
+        # Replace nan with gray (0.5), positive inf with white (1.0), negative inf with black (0.0)
+        image = torch.where(torch.isnan(image), torch.tensor(0.5, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isposinf(image), torch.tensor(1.0, device=image.device, dtype=image.dtype), image)
+        image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
+
+    image = image.clamp(0, 1)
 
     # Apply pixel-space mask blending for non-inpaint UNets
     # This preserves the original image exactly in non-masked regions

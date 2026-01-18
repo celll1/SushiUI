@@ -71,8 +71,14 @@ def create_progress_callback_factory(
     taesd_manager,
     websocket_manager,
     is_sdxl: bool,
+    is_zimage: bool = False,
+    is_deus: bool = False,
+    is_zimage_sdxl_vae: bool = False,
+    is_flux2: bool = False,
     img2img_fix_steps: Optional[bool] = None,
-    steps: Optional[int] = None
+    steps: Optional[int] = None,
+    image_width: Optional[int] = None,
+    image_height: Optional[int] = None
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -83,8 +89,14 @@ def create_progress_callback_factory(
         taesd_manager: TAESD preview生成マネージャー
         websocket_manager: WebSocketマネージャー
         is_sdxl: SDXLモデルかどうか
+        is_zimage: Z-Imageモデルかどうか
+        is_deus: DEUSモデルかどうか
+        is_zimage_sdxl_vae: Z-ImageでSDXL VAE（4ch）を使用しているかどうか
+        is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
+        image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
+        image_height: 生成画像の高さ（FLUX.2プレビューのアスペクト比計算用）
 
     Returns:
         プログレスコールバック関数
@@ -96,27 +108,39 @@ def create_progress_callback_factory(
         else:
             display_total = total_steps
 
-        # Generate preview image from latent (every 5 steps to reduce overhead)
+        # Generate preview image from latent (every step for debugging)
         preview_image = None
         send_metrics = None
 
-        if step % 5 == 0 or step == total_steps - 1:
-            try:
-                preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl)
-                if preview_pil:
-                    buffered = BytesIO()
-                    preview_pil.save(buffered, format="JPEG", quality=85)
-                    preview_image = base64.b64encode(buffered.getvalue()).decode()
-            except Exception as e:
-                print(f"Preview generation error: {e}")
-            # Only send CFG metrics when preview is generated
-            send_metrics = cfg_metrics
+        # Always generate preview (every step)
+        try:
+            # Debug: Log model type being used for preview
+            if step == -1 or step == 0:
+                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}")
+            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2, image_width=image_width, image_height=image_height)
+            if preview_pil:
+                buffered = BytesIO()
+                preview_pil.save(buffered, format="JPEG", quality=85)
+                preview_image = base64.b64encode(buffered.getvalue()).decode()
+        except Exception as e:
+            print(f"Preview generation error: {e}")
+        # Always send CFG metrics with preview
+        send_metrics = cfg_metrics
+
+        # Handle step=-1 (initial noise) display
+        if step == -1:
+            # Initial noise: display as step 0
+            display_step = 0
+            status_text = f"Step 0/{display_total} (Initial Noise)"
+        else:
+            display_step = step + 1
+            status_text = f"Step {display_step}/{display_total}"
 
         # Send synchronously from callback thread
         websocket_manager.send_progress_sync(
-            step + 1,
+            display_step,
             display_total,
-            f"Step {step + 1}/{display_total}",
+            status_text,
             preview_image=preview_image,
             cfg_metrics=send_metrics
         )
@@ -168,13 +192,9 @@ def create_db_image_record(
         width = params.get("width", 512)
         height = params.get("height", 512)
 
-    # Calculate ancestral seed
+    # Get sampler and ancestral seed
     sampler = params.get("sampler", "euler")
-    ancestral_seed = params.get("ancestral_seed", -1)
-    if ancestral_seed != -1 and sampler in ["euler_a", "dpm2_a"]:
-        ancestral_seed_value = ancestral_seed
-    else:
-        ancestral_seed_value = None
+    ancestral_seed_value = params.get("ancestral_seed", -1)
 
     # Base record
     record = db_image_class(

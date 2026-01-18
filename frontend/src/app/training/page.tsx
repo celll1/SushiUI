@@ -20,7 +20,20 @@ function TrainingPageContent() {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [editRunId, setEditRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
+  const [showMobileDetail, setShowMobileDetail] = useState(false);
+
+  // Detect mobile screen size
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024); // lg breakpoint
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
 
   const loadRuns = useCallback(async () => {
     try {
@@ -43,7 +56,7 @@ function TrainingPageContent() {
 
   useEffect(() => {
     const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
-    console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
+    // console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
 
     // Clear existing interval
     if (pollingIntervalRef.current) {
@@ -52,20 +65,20 @@ function TrainingPageContent() {
     }
 
     if (!hasRunningTraining) {
-      console.log(`[TrainingPage] No running training, skipping poll`);
+      // console.log(`[TrainingPage] No running training, skipping poll`);
       return;
     }
 
-    console.log(`[TrainingPage] Starting list polling (every 3s)`);
+    // console.log(`[TrainingPage] Starting list polling (every 3s)`);
 
     pollingIntervalRef.current = setInterval(() => {
-      console.log(`[TrainingPage] Polling training runs list...`);
+      // console.log(`[TrainingPage] Polling training runs list...`);
       loadRuns();
     }, 3000); // Poll every 3 seconds
 
     return () => {
       if (pollingIntervalRef.current) {
-        console.log(`[TrainingPage] Stopping list polling`);
+        // console.log(`[TrainingPage] Stopping list polling`);
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
@@ -74,18 +87,40 @@ function TrainingPageContent() {
 
   const handleCreateRun = () => {
     setSelectedRunId(null);
+    setEditRunId(null); // Creating new run
     setShowConfig(true);
+  };
+
+  const handleEditRun = (runId: number) => {
+    console.log(`[TrainingPage] handleEditRun called for runId=${runId}`);
+    const startTime = performance.now();
+    setEditRunId(runId);
+    setShowConfig(true);
+    console.log(`[TrainingPage] State updated in ${performance.now() - startTime}ms`);
   };
 
   const handleRunCreated = (newRun: TrainingRun) => {
     setRuns([newRun, ...runs]);
     setShowConfig(false);
+    setEditRunId(null);
     setSelectedRunId(newRun.id);
+  };
+
+  const handleRunUpdated = (updatedRun: TrainingRun) => {
+    setRuns((prevRuns) =>
+      prevRuns.map((r) => (r.id === updatedRun.id ? updatedRun : r))
+    );
+    setShowConfig(false);
+    setEditRunId(null);
+    setSelectedRunId(updatedRun.id);
   };
 
   const handleSelectRun = (id: number) => {
     setSelectedRunId(id);
     setShowConfig(false);
+    if (isMobile) {
+      setShowMobileDetail(true);
+    }
   };
 
   const handleStatusChange = (updatedRun: TrainingRun) => {
@@ -108,20 +143,31 @@ function TrainingPageContent() {
         {/* Header */}
         <div className="flex-shrink-0 p-3 sm:p-4 border-b border-gray-700">
           <div className="flex items-center justify-between">
+            {/* Mobile: Back button when showing detail */}
+            {isMobile && showMobileDetail && (
+              <button
+                onClick={() => setShowMobileDetail(false)}
+                className="mr-2 text-gray-400 hover:text-white transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
             <h1 className="text-lg sm:text-xl font-bold">Training</h1>
             <button
               onClick={handleCreateRun}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors"
+              className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
             >
-              New Training Run
+              {isMobile ? "New" : "New Training Run"}
             </button>
           </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-hidden flex">
-          {/* Left: Training Runs List */}
-          <div className="w-80 flex-shrink-0 border-r border-gray-700 overflow-y-auto">
+          {/* Training Runs List - Hidden on mobile when detail is shown */}
+          <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
             <TrainingList
               runs={runs}
               selectedRunId={selectedRunId}
@@ -131,26 +177,40 @@ function TrainingPageContent() {
             />
           </div>
 
-          {/* Right: Config or Monitor */}
-          <div className="flex-1 overflow-y-auto">
+          {/* Config or Monitor - Hidden on mobile when list is shown */}
+          <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
             {showConfig ? (
               <TrainingConfig
-                onClose={() => setShowConfig(false)}
+                onClose={() => {
+                  setShowConfig(false);
+                  setEditRunId(null);
+                  if (isMobile) {
+                    setShowMobileDetail(false);
+                  }
+                }}
                 onRunCreated={handleRunCreated}
+                editRunId={editRunId}
+                onRunUpdated={handleRunUpdated}
               />
             ) : selectedRun ? (
               <TrainingMonitor
                 key={selectedRun.id}
                 run={selectedRun}
-                onClose={() => setSelectedRunId(null)}
+                onClose={() => {
+                  setSelectedRunId(null);
+                  if (isMobile) {
+                    setShowMobileDetail(false);
+                  }
+                }}
                 onStatusChange={handleStatusChange}
                 onDelete={() => handleDelete(selectedRun.id)}
+                onEditConfig={() => handleEditRun(selectedRun.id)}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400">
-                <div className="text-center">
-                  <p className="text-lg font-medium">No training run selected</p>
-                  <p className="text-sm mt-2">Select a run from the list or create a new one</p>
+                <div className="text-center p-4">
+                  <p className="text-base sm:text-lg font-medium">No training run selected</p>
+                  <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
                 </div>
               </div>
             )}

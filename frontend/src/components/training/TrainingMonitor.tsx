@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
+import GradNormChart from "./GradNormChart";
 import CheckpointList from "./CheckpointList";
 
 interface TrainingMonitorProps {
@@ -11,9 +12,10 @@ interface TrainingMonitorProps {
   onClose: () => void;
   onStatusChange: (updatedRun: TrainingRun) => void;
   onDelete?: () => void;
+  onEditConfig?: () => void;
 }
 
-export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete }: TrainingMonitorProps) {
+export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete, onEditConfig }: TrainingMonitorProps) {
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -26,6 +28,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [editedConfig, setEditedConfig] = useState<string>("");
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isReloadingConfig, setIsReloadingConfig] = useState(false);
 
   // Debug latents
   const [viewMode, setViewMode] = useState<"samples" | "debug">("samples");
@@ -33,6 +36,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [selectedDebugStep, setSelectedDebugStep] = useState<number | null>(null);
   const [debugVisualization, setDebugVisualization] = useState<DebugLatentVisualization | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
+  const [, setTimeTick] = useState(0); // Force re-render for time update
 
   // Poll training status
   useEffect(() => {
@@ -43,22 +47,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const interval = setInterval(async () => {
       try {
         const status = await getTrainingStatus(currentRun.id);
-        setCurrentRun((prev) => ({
-          ...prev,
-          progress: status.progress,
-          current_step: status.current_step,
-          loss: status.loss,
-          learning_rate: status.learning_rate,
-          status: status.status,
-        }));
-        onStatusChange({
+        const updatedRun = {
           ...currentRun,
           progress: status.progress,
           current_step: status.current_step,
           loss: status.loss,
           learning_rate: status.learning_rate,
           status: status.status,
-        });
+          phase: status.phase,
+          phase_progress: status.phase_progress,
+          phase_detail: status.phase_detail,
+        };
+        setCurrentRun(updatedRun);
+        onStatusChange(updatedRun);
       } catch (err) {
         console.error("[TrainingMonitor] Failed to fetch training status:", err);
       }
@@ -66,6 +67,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
     return () => clearInterval(interval);
   }, [currentRun.status, currentRun.id]);
+
+  // Update time display every second
+  useEffect(() => {
+    if (currentRun.status !== "running") {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTimeTick(prev => prev + 1); // Force re-render
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [currentRun.status]);
 
   // Load sample images
   useEffect(() => {
@@ -171,29 +185,82 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   };
 
+  // Calculate elapsed time and ETA
+  const calculateTimeInfo = () => {
+    if (!currentRun.started_at || currentRun.status === "pending") {
+      return { elapsed: "N/A", eta: "N/A" };
+    }
+
+    // Use last_resumed_at if available (resume case), otherwise use started_at (first start)
+    const referenceTime = currentRun.last_resumed_at || currentRun.started_at;
+    const startTime = new Date(referenceTime).getTime();
+    const now = Date.now();
+    const elapsedMs = now - startTime;
+
+    // Format elapsed time
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+    const elapsedHours = Math.floor(elapsedSeconds / 3600);
+    const elapsedMinutes = Math.floor((elapsedSeconds % 3600) / 60);
+    const elapsedSecs = elapsedSeconds % 60;
+    const elapsed = `${elapsedHours}h ${elapsedMinutes}m ${elapsedSecs}s`;
+
+    // Calculate ETA (only if training is running and progress > 0)
+    if (currentRun.status !== "running" || currentRun.progress <= 0 || currentRun.current_step === 0) {
+      return { elapsed, eta: "N/A" };
+    }
+
+    // Calculate progress based on steps completed since resume (or from start)
+    const startStep = currentRun.resumed_from_step ?? 0;  // Step at resume (or 0 if first start)
+    const stepsCompleted = currentRun.current_step - startStep;
+    const remainingSteps = currentRun.total_steps - currentRun.current_step;
+
+    if (stepsCompleted <= 0) {
+      return { elapsed, eta: "Calculating..." };
+    }
+
+    if (remainingSteps <= 0) {
+      return { elapsed, eta: "Completed" };
+    }
+
+    // ETA = (elapsed time / steps completed) * remaining steps
+    const msPerStep = elapsedMs / stepsCompleted;
+    const remainingMs = msPerStep * remainingSteps;
+
+    // Format ETA
+    const remainingSeconds = Math.floor(remainingMs / 1000);
+    const etaHours = Math.floor(remainingSeconds / 3600);
+    const etaMinutes = Math.floor((remainingSeconds % 3600) / 60);
+    const etaSecs = remainingSeconds % 60;
+    const eta = `${etaHours}h ${etaMinutes}m ${etaSecs}s`;
+
+    return { elapsed, eta };
+  };
+
+  const timeInfo = calculateTimeInfo();
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 shrink-0">
-        <h2 className="text-lg font-semibold">Training Monitor: {currentRun.run_name}</h2>
+      <div className="p-3 sm:p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 shrink-0">
+        <h2 className="text-base sm:text-lg font-semibold truncate mr-2">Training Monitor: {currentRun.run_name}</h2>
         <button
           onClick={onClose}
-          className="p-1.5 hover:bg-gray-700 rounded transition-colors"
+          className="p-1.5 hover:bg-gray-700 rounded transition-colors flex-shrink-0"
         >
           <X className="h-5 w-5" />
         </button>
       </div>
 
-      {/* Main Content - 2 Column Layout */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Main Content - Responsive Layout */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         {/* Left Panel - Training Info */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
           {/* Status */}
-          <div className="bg-gray-800 rounded-lg p-3">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-medium">Status</span>
+          <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-xs sm:text-sm font-medium">Status</span>
               <span
-                className={`px-2 py-1 rounded text-xs font-medium ${
+                className={`px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-xxs sm:text-xs font-medium ${
                   currentRun.status === "running"
                     ? "bg-green-900/50 text-green-400"
                     : currentRun.status === "completed"
@@ -209,43 +276,77 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
             {/* Progress Bar */}
             <div className="mb-2">
-              <div className="flex justify-between text-xs text-gray-400 mb-1">
+              <div className="flex justify-between text-xxs sm:text-xs text-gray-400 mb-1">
                 <span>
-                  Step {currentRun.current_step} / {currentRun.total_steps}
+                  {/* Phase-based display */}
+                  {currentRun.phase === "latent_cache" && "Latent Cache"}
+                  {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
+                  {currentRun.phase === "training" && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
+                  {currentRun.phase === "initializing" && "Initializing..."}
+                  {!currentRun.phase && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
                 </span>
-                <span>{currentRun.progress.toFixed(1)}%</span>
+                <span>
+                  {currentRun.phase === "training" || !currentRun.phase
+                    ? `${currentRun.progress.toFixed(1)}%`
+                    : `${(currentRun.phase_progress || 0).toFixed(1)}%`
+                  }
+                </span>
               </div>
+
+              {/* Detail message */}
+              {currentRun.phase_detail && currentRun.phase !== "training" && (
+                <div className="text-xs text-gray-500 mb-1">
+                  {currentRun.phase_detail}
+                </div>
+              )}
+
               <div className="w-full bg-gray-700 rounded-full h-2">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
-                  style={{ width: `${currentRun.progress}%` }}
+                  style={{
+                    width: currentRun.phase === "training" || !currentRun.phase
+                      ? `${currentRun.progress}%`
+                      : `${currentRun.phase_progress || 0}%`
+                  }}
                 />
               </div>
             </div>
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm mb-2">
               <div>
                 <span className="text-gray-400">Loss:</span>{" "}
-                <span className="font-mono">{currentRun.loss?.toFixed(6) || "N/A"}</span>
+                <span className="font-mono text-xs sm:text-sm">{currentRun.loss?.toFixed(6) || "N/A"}</span>
               </div>
               <div>
                 <span className="text-gray-400">LR:</span>{" "}
-                <span className="font-mono">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
+                <span className="font-mono text-xs sm:text-sm">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
+              </div>
+            </div>
+
+            {/* Time Info */}
+            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm">
+              <div>
+                <span className="text-gray-400">Elapsed:</span>{" "}
+                <span className="font-mono text-blue-400 text-xs sm:text-sm">{timeInfo.elapsed}</span>
+              </div>
+              <div>
+                <span className="text-gray-400">ETA:</span>{" "}
+                <span className="font-mono text-green-400 text-xs sm:text-sm">{timeInfo.eta}</span>
               </div>
             </div>
           </div>
 
           {/* Controls */}
-          <div className="flex space-x-3">
+          <div className="flex space-x-2 sm:space-x-3">
             {currentRun.status === "pending" || currentRun.status === "stopped" || currentRun.status === "failed" || currentRun.status === "completed" ? (
               <>
                 <button
                   onClick={handleStart}
                   disabled={isStarting}
-                  className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                  className="flex-1 px-3 sm:px-4 py-1.5 sm:py-2 bg-green-600 hover:bg-green-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1.5 sm:space-x-2"
                 >
-                  <Play className="h-4 w-4" />
+                  <Play className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                   <span>
                     {isStarting ? "Starting..." :
                      currentRun.status === "pending" ? "Start Training" : "Resume Training"}
@@ -254,9 +355,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <button
                   onClick={handleDelete}
                   disabled={isDeleting}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-red-600 hover:bg-red-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1.5 sm:space-x-2"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                   <span>{isDeleting ? "Deleting..." : "Delete"}</span>
                 </button>
               </>
@@ -264,29 +365,63 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <button
                 onClick={handleStop}
                 disabled={isStopping}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                className="flex-1 px-3 sm:px-4 py-1.5 sm:py-2 bg-red-600 hover:bg-red-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1.5 sm:space-x-2"
               >
-                <Square className="h-4 w-4" />
+                <Square className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                 <span>{isStopping ? "Stopping..." : "Stop Training"}</span>
               </button>
             ) : null}
           </div>
 
           {/* Configuration Info */}
-          <div className="bg-gray-800 rounded-lg p-3 space-y-2 text-sm">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="font-semibold">Configuration</h3>
-              <button
-                onClick={() => {
-                  setEditedConfig(currentRun.config_yaml || "");
-                  setShowConfigModal(true);
-                }}
-                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
-              >
-                View Full Config
-              </button>
+          <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3 space-y-2 text-xs sm:text-sm">
+            <div className="flex items-start justify-between mb-2 gap-2">
+              <h3 className="font-semibold text-sm flex-shrink-0">Configuration</h3>
+              <div className="flex flex-wrap gap-1.5 sm:gap-2 justify-end">
+                {onEditConfig && (
+                  <button
+                    onClick={onEditConfig}
+                    disabled={currentRun.status === "running" || currentRun.status === "starting"}
+                    className="text-xxs sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 bg-blue-700 hover:bg-blue-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                  >
+                    Edit Config
+                  </button>
+                )}
+                <button
+                  onClick={async () => {
+                    console.log("[TrainingMonitor] Reloading config from disk for run ID:", currentRun.id);
+                    setIsReloadingConfig(true);
+                    try {
+                      const response = await reloadTrainingConfig(currentRun.id);
+                      console.log("[TrainingMonitor] Config reload response:", response);
+                      setCurrentRun(response.run);
+                      onStatusChange(response.run);
+                      alert("Configuration reloaded from disk successfully!");
+                    } catch (err: any) {
+                      console.error("[TrainingMonitor] Failed to reload config:", err);
+                      console.error("[TrainingMonitor] Error response:", err.response);
+                      alert(err.response?.data?.detail || err.message || "Failed to reload configuration");
+                    } finally {
+                      setIsReloadingConfig(false);
+                    }
+                  }}
+                  disabled={isReloadingConfig || currentRun.status === "running" || currentRun.status === "starting"}
+                  className="text-xxs sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 bg-green-700 hover:bg-green-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  {isReloadingConfig ? "Reloading..." : "Reload"}
+                </button>
+                <button
+                  onClick={() => {
+                    setEditedConfig(currentRun.config_yaml || "");
+                    setShowConfigModal(true);
+                  }}
+                  className="text-xxs sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors whitespace-nowrap"
+                >
+                  View Full
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
               <div>
                 <span className="text-gray-400">Method:</span>{" "}
                 <span className="capitalize">{currentRun.training_method}</span>
@@ -307,10 +442,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
           {/* Loss Chart */}
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
-            <div className="bg-gray-800 rounded-lg p-3">
-              <h3 className="font-semibold mb-2 text-sm">Loss</h3>
-              <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
-            </div>
+            <>
+              <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+                <h3 className="font-semibold mb-2 text-xs sm:text-sm">Loss</h3>
+                <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+              </div>
+              <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+                <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
+                <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+              </div>
+            </>
           )}
 
           {/* Checkpoint List */}
@@ -319,13 +460,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           )}
         </div>
 
-        {/* Right Panel - Sample Images / Debug Latents */}
-        <div className="w-80 border-l border-gray-700 flex flex-col">
+        {/* Right Panel - Sample Images / Debug Latents - Stacked on mobile, side-by-side on desktop */}
+        <div className="w-full lg:w-80 border-t lg:border-t-0 lg:border-l border-gray-700 flex flex-col">
           {/* Tab Header */}
           <div className="flex border-b border-gray-700 bg-gray-900 sticky top-0 z-10">
             <button
               onClick={() => setViewMode("samples")}
-              className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${
                 viewMode === "samples"
                   ? "text-blue-400 border-b-2 border-blue-400"
                   : "text-gray-400 hover:text-gray-300"
@@ -335,7 +476,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </button>
             <button
               onClick={() => setViewMode("debug")}
-              className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium transition-colors ${
                 viewMode === "debug"
                   ? "text-blue-400 border-b-2 border-blue-400"
                   : "text-gray-400 hover:text-gray-300"
@@ -346,18 +487,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           </div>
 
           {/* Tab Content */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3">
             {viewMode === "samples" ? (
               <>
                 {samples.length === 0 ? (
-                  <div className="text-gray-500 text-sm text-center py-8">
+                  <div className="text-gray-500 text-xs sm:text-sm text-center py-8">
                     No samples generated yet
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-2.5 sm:space-y-3">
                     {/* Step Selector */}
                     <div>
-                      <label className="block text-xs text-gray-400 mb-1.5">Training Step</label>
+                      <label className="block text-xxs sm:text-xs text-gray-400 mb-1.5">Training Step</label>
                       <input
                         type="range"
                         min="0"
@@ -455,7 +596,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
                           <div><span className="text-gray-400">Step:</span> {debugVisualization.step}</div>
                           <div><span className="text-gray-400">Timestep:</span> {debugVisualization.timestep}</div>
-                          <div><span className="text-gray-400">Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
+                          <div><span className="text-gray-400">Prediction Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
+                          {debugVisualization.recon_loss !== undefined && (
+                            <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>
+                          )}
                           {debugVisualization.caption && (
                             <div className="pt-1 border-t border-gray-700">
                               <div className="text-gray-400 mb-0.5">Caption (processed):</div>
@@ -576,7 +720,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       {/* Fullscreen Image Modal */}
       {selectedImage && (
         <div
-          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-2 sm:p-4"
           onClick={() => setSelectedImage(null)}
         >
           <div className="relative max-w-full max-h-full">
@@ -587,9 +731,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             />
             <button
               onClick={() => setSelectedImage(null)}
-              className="absolute top-2 right-2 p-2 bg-gray-900/80 hover:bg-gray-800 rounded-full transition-colors"
+              className="absolute top-1 right-1 sm:top-2 sm:right-2 p-1.5 sm:p-2 bg-gray-900/80 hover:bg-gray-800 rounded-full transition-colors"
             >
-              <X className="h-5 w-5" />
+              <X className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
           </div>
         </div>
@@ -597,11 +741,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
       {/* Config Modal */}
       {showConfigModal && (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-2 sm:p-4">
           <div className="bg-gray-900 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Training Configuration</h3>
+            <div className="p-3 sm:p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-base sm:text-lg font-semibold">Training Configuration</h3>
               <button
                 onClick={() => setShowConfigModal(false)}
                 className="p-1.5 hover:bg-gray-700 rounded transition-colors"
@@ -611,22 +755,22 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
               <div className="space-y-3">
                 {/* Read-only view for running training */}
                 {(currentRun.status === "running" || currentRun.status === "starting") ? (
                   <div>
-                    <div className="text-sm text-gray-400 mb-2">
+                    <div className="text-xs sm:text-sm text-gray-400 mb-2">
                       Configuration is read-only while training is running.
                     </div>
-                    <pre className="bg-gray-800 p-4 rounded text-xs font-mono overflow-x-auto">
+                    <pre className="bg-gray-800 p-3 sm:p-4 rounded text-xxs sm:text-xs font-mono overflow-x-auto">
                       {currentRun.config_yaml || "No configuration available"}
                     </pre>
                   </div>
                 ) : (
                   // Editable view for stopped/failed training
                   <div>
-                    <div className="text-sm text-gray-400 mb-2">
+                    <div className="text-xs sm:text-sm text-gray-400 mb-2">
                       {currentRun.status === "pending"
                         ? "Edit configuration before starting training:"
                         : "Edit configuration and resume training:"}
@@ -634,13 +778,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                     <textarea
                       value={editedConfig}
                       onChange={(e) => setEditedConfig(e.target.value)}
-                      className="w-full h-96 bg-gray-800 p-4 rounded text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full h-64 sm:h-96 bg-gray-800 p-3 sm:p-4 rounded text-xxs sm:text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                       placeholder="YAML configuration..."
                     />
-                    <div className="mt-3 flex justify-end space-x-3">
+                    <div className="mt-3 flex flex-col sm:flex-row justify-end gap-2 sm:gap-3">
                       <button
                         onClick={() => setShowConfigModal(false)}
-                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                        className="px-3 sm:px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm transition-colors"
                       >
                         Cancel
                       </button>
@@ -665,7 +809,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                           }
                         }}
                         disabled={isSavingConfig}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isSavingConfig ? "Saving..." : "Save Configuration"}
                       </button>

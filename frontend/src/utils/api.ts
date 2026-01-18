@@ -106,6 +106,14 @@ const loadControlNetImages = async (
   return loadedControlnets;
 };
 
+export interface ModelInfo {
+  source_type: string;
+  source: string;
+  type: "sd15" | "sdxl" | "zimage" | "deus" | "flux2";
+  is_v_prediction: boolean;
+  model_hash: string;
+}
+
 export interface LoRAConfig {
   path: string;
   strength: number;
@@ -172,11 +180,19 @@ export interface GenerationParams {
   nag_negative_prompt?: string;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // Text Encoder Quantization (Z-Image only)
+  text_encoder_quantization?: string | null;
   // torch.compile optimization
   use_torch_compile?: boolean;
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
+  // Z-Image specific
+  max_sequence_length?: number;
+  // Block Swap (Z-Image Transformer offloading)
+  enable_block_swap?: boolean;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -257,7 +273,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -285,13 +301,12 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
 
-  // Debug log for quantization
-  console.log('[API] txt2img unet_quantization:', paramsWithImages.unet_quantization);
+  // Quantization
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
-    console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
-  } else {
-    console.log('[API] No quantization or "none" selected');
+  }
+  if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
+    formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
   }
 
   // torch.compile optimization
@@ -300,6 +315,11 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // Block Swap (Z-Image Transformer offloading)
+  formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
+  formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
+  formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
 
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -337,7 +357,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("sampler", paramsWithImages.sampler || "euler");
@@ -428,7 +448,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("prompt", paramsWithImages.prompt);
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
-  formData.append("cfg_scale", String(paramsWithImages.cfg_scale || 7.0));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("mask_blur", String(paramsWithImages.mask_blur || 4));
@@ -734,6 +754,7 @@ export interface TIPOGenerateRequest {
   ban_tags?: string;  // Comma-separated tags to exclude from generation
   category_order?: string[];
   enabled_categories?: Record<string, boolean>;
+  treat_as_nl?: boolean;  // Treat input as natural language instead of tags
 }
 
 export interface TIPOParsedOutput {
@@ -860,6 +881,27 @@ export const unloadTaggerModel = async () => {
   return response.data;
 };
 
+export const addTagToCategory = async (
+  tag: string,
+  category: string,
+  count: number = 1
+): Promise<{
+  status: string;
+  message: string;
+  tag: string;
+  category: string;
+  count: number;
+  json_updated: boolean;
+  updated_datasets: number;
+}> => {
+  const response = await api.post("/tag-category/add", {
+    tag,
+    category,
+    count
+  });
+  return response.data;
+};
+
 export interface GPUStats {
   index: number;
   name: string;
@@ -889,6 +931,7 @@ export default api;
 // ============================================================
 
 export interface CaptionProcessingConfig {
+  caption_types?: string[];  // Caption types to use for training (e.g., ["tags", "natural_language"]). Empty = auto-select.
   normalize_tags?: boolean;  // Normalize tags to standard format (default: true)
   category_order?: string[];  // Category order (e.g., ["Rating", "Quality", "Character", ...])
   caption_dropout_rate?: number;
@@ -1125,9 +1168,14 @@ export interface DatasetCaptionData {
   item_id: number;
   caption_type: string;
   content: string;
+  field_category?: 'training' | 'metadata'; // Field category: training or metadata
+  is_tags_format?: boolean; // True if tags format (Danbooru), false if natural language
+  tag_match_rate?: number; // Tag match rate (0.0-1.0) for tags format detection
+  source_field?: string; // JSON field path (e.g., "metrics.likes", "author")
   source: string;
   created_at: string;
   updated_at: string;
+  tag_data?: Array<{ tag: string; category: string }>; // Pre-categorized tags
 }
 
 export interface DatasetItemListResponse {
@@ -1156,6 +1204,18 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export const getAllDatasetItemIds = async (
+  datasetId: number,
+  search?: string,
+  tags?: string
+): Promise<{ item_ids: number[]; total: number }> => {
+  const params: any = {};
+  if (search) params.search = search;
+  if (tags) params.tags = tags;
+  const response = await api.get(`/datasets/${datasetId}/items/ids`, { params });
+  return response.data;
+};
+
 export const getDatasetTags = async (datasetId: number): Promise<string[]> => {
   const response = await api.get(`/datasets/${datasetId}/tags`);
   return response.data.tags;
@@ -1169,6 +1229,10 @@ export interface CaptionSubtype {
 export interface CaptionTypeInfo {
   caption_type: string;
   total_count: number;
+  field_category: 'training' | 'metadata';
+  is_tags_format: boolean;
+  avg_match_rate: number;
+  source_field?: string;
   subtypes: CaptionSubtype[];
 }
 
@@ -1216,6 +1280,9 @@ export interface TrainingRun {
   progress: number;
   current_step: number;
   total_steps: number;
+  phase?: string;  // "initializing", "latent_cache", "text_encoder_cache", "training"
+  phase_progress?: number;  // 0-100
+  phase_detail?: string;  // Detailed status message
   loss?: number;
   learning_rate?: number;
   output_dir: string;
@@ -1224,6 +1291,8 @@ export interface TrainingRun {
   error_message?: string;
   created_at: string;
   started_at?: string;
+  last_resumed_at?: string;  // Last resume time (for accurate ETA calculation)
+  resumed_from_step?: number;  // Step at resume (for accurate ETA calculation)
   completed_at?: string;
   updated_at: string;
 }
@@ -1273,6 +1342,26 @@ export interface TrainingRunCreateRequest {
   text_encoder_lr?: number | null;
   text_encoder_1_lr?: number | null;
   text_encoder_2_lr?: number | null;
+  weight_dtype?: string;
+  training_dtype?: string;
+  output_dtype?: string;
+  vae_dtype?: string;
+  mixed_precision?: boolean;
+  use_flash_attention?: boolean;
+  min_snr_gamma?: number;
+  text_encoding_mode?: string;
+  text_encoding_swap_interval?: number;
+  latent_encoding_mode?: string;
+  latent_encoding_swap_interval?: number;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
+  num_optimizer_groups?: number;
+  multi_noise_timesteps?: number;
+  multi_noise_mode?: string;
+  trajectory_blend_alpha?: number;
+  timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
+  cache_latents_to_disk?: boolean;
+  force_recache?: boolean;
 }
 
 export interface TrainingRunListResponse {
@@ -1304,6 +1393,16 @@ export const getTrainingRun = async (id: number): Promise<TrainingRun> => {
   return response.data;
 };
 
+export const getTrainingRunParams = async (id: number): Promise<TrainingRunCreateRequest & { run_id: number }> => {
+  const response = await api.get(`/training/runs/${id}/params`);
+  return response.data;
+};
+
+export const updateTrainingRun = async (id: number, request: TrainingRunCreateRequest): Promise<TrainingRun> => {
+  const response = await api.put(`/training/runs/${id}`, request);
+  return response.data;
+};
+
 export const deleteTrainingRun = async (id: number): Promise<void> => {
   await api.delete(`/training/runs/${id}`);
 };
@@ -1327,6 +1426,11 @@ export const stopTrainingRun = async (id: number): Promise<{ message: string; ru
 
 export const updateTrainingConfig = async (id: number, configYaml: string): Promise<{ message: string; run: TrainingRun }> => {
   const response = await api.patch(`/training/runs/${id}/config`, { config_yaml: configYaml });
+  return response.data;
+};
+
+export const reloadTrainingConfig = async (id: number): Promise<{ message: string; run: TrainingRun }> => {
+  const response = await api.post(`/training/runs/${id}/config/reload`);
   return response.data;
 };
 
@@ -1366,19 +1470,20 @@ export interface MetricPoint {
 
 export interface TrainingMetrics {
   loss: MetricPoint[];
+  recon_loss: MetricPoint[];
   learning_rate: MetricPoint[];
+  grad_norm: MetricPoint[];
+  grad_norm_text_encoder: MetricPoint[];
+  grad_norm_unet: MetricPoint[];
 }
 
 export const getTrainingMetrics = async (
   runId: number,
-  sinceStep?: number,
   maxPoints: number = 1000
 ): Promise<TrainingMetrics> => {
   const params: any = { max_points: maxPoints };
-  if (sinceStep !== undefined) {
-    params.since_step = sinceStep;
-  }
-  const response = await api.get(`/training/runs/${runId}/metrics`, { params });
+  // Use new DB endpoint with uniform sampling (backend handles sampling)
+  const response = await api.get(`/training/runs/${runId}/metrics_db`, { params });
   return response.data;
 };
 
@@ -1416,6 +1521,7 @@ export interface DebugLatentVisualization {
   step: number;
   timestep: number;
   loss: number;
+  recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   latents_image?: string;  // base64
   noisy_latents_image?: string;  // base64
@@ -1500,6 +1606,7 @@ export const deleteTrainingPreset = async (id: number): Promise<void> => {
 export interface CaptionUpdateRequest {
   caption_type: string;
   content: string;
+  tag_data?: Array<{ tag: string; category: string }>;
 }
 
 export const updateItemCaption = async (
@@ -1507,6 +1614,70 @@ export const updateItemCaption = async (
   data: CaptionUpdateRequest
 ): Promise<{ status: string; caption: DatasetCaptionData }> => {
   const response = await api.patch(`/datasets/items/${itemId}/captions`, data);
+  return response.data;
+};
+
+// ============================================================
+// Batch Operations API
+// ============================================================
+
+export interface BatchTaggerRequest {
+  item_ids: number[];
+  gen_threshold?: number;
+  char_threshold?: number;
+  thresholds?: Record<string, number>;
+  model_version?: string;
+  remove_below_threshold?: boolean;
+  merge_with_existing?: boolean;
+}
+
+export interface BatchReorderTagsRequest {
+  item_ids: number[];
+  category_order: string[];
+}
+
+export interface BatchReplaceTagRequest {
+  item_ids: number[];
+  from_tag: string;
+  to_tag: string;
+  normalize_match?: boolean;
+}
+
+export interface BatchOperationResponse {
+  status: string;
+  processed_count: number;
+  updated_count: number;
+  skipped_count: number;
+  failed_count: number;
+  message: string;
+}
+
+export const batchTaggerInference = async (
+  datasetId: number,
+  request: BatchTaggerRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-tagger`, request);
+  return response.data;
+};
+
+export const batchReorderTags = async (
+  datasetId: number,
+  request: BatchReorderTagsRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-reorder-tags`, request);
+  return response.data;
+};
+
+export const batchReplaceTag = async (
+  datasetId: number,
+  request: BatchReplaceTagRequest
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-replace-tag`, request);
+  return response.data;
+};
+
+export const cancelBatchOperation = async (datasetId: number): Promise<{ message: string }> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-cancel`);
   return response.data;
 };
 

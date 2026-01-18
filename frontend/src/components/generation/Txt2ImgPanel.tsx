@@ -67,6 +67,7 @@ const DEFAULT_PARAMS: GenerationParams = {
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
 const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
+const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
@@ -300,6 +301,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         console.error('Failed to parse loop generation config:', e);
       }
     }
+
+    // Load reference images (FLUX.2 Image Edit)
+    const loadRefImages = async () => {
+      const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
+      if (savedRefImageRefs) {
+        try {
+          const refRefs: string[] = JSON.parse(savedRefImageRefs);
+          console.log(`[Txt2Img] Loading ${refRefs.length} reference images from storage`);
+
+          const loadedPreviews: string[] = [];
+          for (const ref of refRefs) {
+            try {
+              const imageData = await loadTempImage(ref);
+              if (imageData) {
+                loadedPreviews.push(imageData);
+              }
+            } catch (error) {
+              console.error(`[Txt2Img] Failed to load reference image ${ref}:`, error);
+            }
+          }
+
+          if (loadedPreviews.length > 0) {
+            setRefImagePreviews(loadedPreviews);
+            console.log(`[Txt2Img] Restored ${loadedPreviews.length} reference images`);
+          }
+        } catch (error) {
+          console.error('[Txt2Img] Failed to parse reference images storage:', error);
+        }
+      }
+    };
+    loadRefImages();
 
   }, []);
 
@@ -623,14 +655,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     const newFiles = Array.from(files).slice(0, 10 - refImages.length); // Max 10 total
     const newPreviews: string[] = [];
+    const newRefs: string[] = [];
 
     for (const file of newFiles) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          newPreviews.push(event.target.result as string);
+          const base64Data = event.target.result as string;
+          newPreviews.push(base64Data);
+
+          // Save to tempImageStorage
+          try {
+            const ref = await saveTempImage(base64Data);
+            newRefs.push(ref);
+          } catch (error) {
+            console.error("[Txt2Img] Failed to save reference image to temp storage:", error);
+          }
+
           if (newPreviews.length === newFiles.length) {
             setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+
+            // Update localStorage with refs
+            const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
+            const existingRefs = savedRefImageRefs ? JSON.parse(savedRefImageRefs) : [];
+            const allRefs = [...existingRefs, ...newRefs];
+            localStorage.setItem(REF_IMAGES_STORAGE_KEY, JSON.stringify(allRefs));
+            console.log(`[Txt2Img] Saved ${newRefs.length} reference images to storage`);
           }
         }
       };
@@ -643,11 +693,28 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const handleRemoveRefImage = (index: number) => {
     setRefImages(refImages.filter((_, i) => i !== index));
     setRefImagePreviews(refImagePreviews.filter((_, i) => i !== index));
+
+    // Remove from localStorage
+    const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
+    if (savedRefImageRefs) {
+      try {
+        const refRefs: string[] = JSON.parse(savedRefImageRefs);
+        const updatedRefs = refRefs.filter((_, i) => i !== index);
+        localStorage.setItem(REF_IMAGES_STORAGE_KEY, JSON.stringify(updatedRefs));
+        console.log(`[Txt2Img] Removed reference image ${index} from storage`);
+      } catch (error) {
+        console.error("[Txt2Img] Failed to update reference images storage:", error);
+      }
+    }
   };
 
   const handleClearAllRefImages = () => {
     setRefImages([]);
     setRefImagePreviews([]);
+
+    // Clear localStorage
+    localStorage.removeItem(REF_IMAGES_STORAGE_KEY);
+    console.log("[Txt2Img] Cleared all reference images from storage");
   };
 
   const handleRefImageDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -664,13 +731,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     if (imageFiles.length === 0) return;
 
     const newPreviews: string[] = [];
+    const newRefs: string[] = [];
+
     for (const file of imageFiles) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          newPreviews.push(event.target.result as string);
+          const base64Data = event.target.result as string;
+          newPreviews.push(base64Data);
+
+          // Save to tempImageStorage
+          try {
+            const ref = await saveTempImage(base64Data);
+            newRefs.push(ref);
+          } catch (error) {
+            console.error("[Txt2Img] Failed to save reference image to temp storage:", error);
+          }
+
           if (newPreviews.length === imageFiles.length) {
             setRefImagePreviews([...refImagePreviews, ...newPreviews]);
+
+            // Update localStorage with refs
+            const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
+            const existingRefs = savedRefImageRefs ? JSON.parse(savedRefImageRefs) : [];
+            const allRefs = [...existingRefs, ...newRefs];
+            localStorage.setItem(REF_IMAGES_STORAGE_KEY, JSON.stringify(allRefs));
+            console.log(`[Txt2Img] Saved ${newRefs.length} reference images to storage (D&D)`);
           }
         }
       };

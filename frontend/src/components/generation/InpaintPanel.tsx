@@ -2000,7 +2000,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         onDragOver={handleRefImageDragOver}
                         onDragLeave={handleRefImageDragLeave}
                         onDrop={handleRefImageDrop}
-                        className={`aspect-square bg-gray-800 rounded-lg border-2 border-dashed transition-colors flex items-center justify-center ${
+                        className={`bg-gray-800 rounded-lg border-2 border-dashed transition-colors flex items-center justify-center ${
                           isRefImageDragging
                             ? 'border-blue-500 bg-gray-700'
                             : 'border-gray-600'
@@ -2008,7 +2008,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         title="Drop more images here"
                         style={{
                           gridColumn: refImages.length % 5 === 0 ? 'span 5' : `span ${5 - (refImages.length % 5)}`,
-                          aspectRatio: refImages.length % 5 === 0 ? '5/1' : '1/1'
+                          aspectRatio: '1'
                         }}
                       >
                         <p className="text-gray-400 text-center text-sm px-2">

@@ -80,6 +80,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [showSDXL, setShowSDXL] = useState(true);
   const [showZImage, setShowZImage] = useState(true);
   const [showDEUS, setShowDEUS] = useState(true);
+  const [showFlux2, setShowFlux2] = useState(true);
+
+  // Flag to prevent dtype reset on edit mode
+  const [isLoadingEditParams, setIsLoadingEditParams] = useState(false);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -221,7 +225,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
-  // Helper: Detect if model is Z-Image (architecture-based)
+  // Helper: Detect model architecture
   const isZImageModel = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "zimage";
@@ -232,12 +236,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "deus";
   };
 
+  const isFlux2Model = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "flux2";
+  };
+
+  const getModelArchitecture = (modelPath: string): string | undefined => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture;
+  };
+
   // Filter models by architecture
   const filteredModels = availableModels.filter((model) => {
     if (model.architecture === "sd15" && !showSD15) return false;
     if (model.architecture === "sdxl" && !showSDXL) return false;
     if (model.architecture === "zimage" && !showZImage) return false;
     if (model.architecture === "deus" && !showDEUS) return false;
+    if (model.architecture === "flux2" && !showFlux2) return false;
     return true;
   });
 
@@ -245,6 +260,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const loadTrainingRunParams = useCallback(async (runId: number) => {
     const startTime = performance.now();
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
+
+    // Set flag to prevent dtype reset when baseModelPath changes
+    setIsLoadingEditParams(true);
+
     try {
       const apiStartTime = performance.now();
       const params = await getTrainingRunParams(runId);
@@ -394,6 +413,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.error("[TrainingConfig] Error details:", err.response?.data);
       console.error("[TrainingConfig] Error message:", err.message);
       setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      // Clear the flag after a short delay to ensure all state updates are processed
+      setTimeout(() => {
+        setIsLoadingEditParams(false);
+      }, 100);
     }
   }, []);
 
@@ -417,27 +441,38 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes
+  // Skip when loading edit parameters to preserve saved dtype settings
   useEffect(() => {
     if (!baseModelPath) return;
 
-    const isZImage = isZImageModel(baseModelPath);
+    // Don't reset dtype settings when loading edit parameters
+    if (isLoadingEditParams) {
+      console.log("[TrainingConfig] Skipping dtype preset - loading edit params");
+      return;
+    }
 
-    if (isZImage) {
-      // Z-Image defaults: bf16 for weights/training/output, fp32 for VAE
+    const arch = getModelArchitecture(baseModelPath);
+    console.log(`[TrainingConfig] Setting dtype presets for architecture: ${arch}`);
+
+    // Dtype presets based on architecture:
+    // - SD1.5/SDXL/DEUS: VAE=fp16, weight=fp32, training=fp16, save=fp16
+    // - Z-Image/FLUX.2: VAE=fp32, weight=bf16, training=bf16, save=bf16
+    if (arch === "zimage" || arch === "flux2") {
+      // Z-Image/FLUX.2: bf16 for weights/training/output, fp32 for VAE
       setWeightDtype("bf16");
       setTrainingDtype("bf16");
       setOutputDtype("bf16");
       setVaeDtype("fp32");
-      // Z-Image: Cannot train text encoder (frozen)
+      // Z-Image/FLUX.2: Cannot train text encoder (frozen)
       setTrainTextEncoder(false);
     } else {
-      // SD/SDXL defaults: fp16 for all
-      setWeightDtype("fp16");
+      // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
+      setWeightDtype("fp32");
       setTrainingDtype("fp16");
       setOutputDtype("fp16");
       setVaeDtype("fp16");
     }
-  }, [baseModelPath]);
+  }, [baseModelPath, isLoadingEditParams]);
 
   // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {
@@ -1111,6 +1146,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-3.5 h-3.5"
               />
               <span className="text-gray-300">DEUS</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showFlux2}
+                onChange={(e) => setShowFlux2(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">FLUX.2</span>
             </label>
           </div>
 
@@ -1860,11 +1904,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                  disabled={isZImageModel(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
-                  Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${(isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)) ? 'text-gray-500' : 'text-gray-300'}`}>
+                  Train Text Encoder {(isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)) && '(Not supported for Z-Image/FLUX.2)'}
                 </label>
               </div>
 

@@ -884,6 +884,23 @@ export default function ImageGrid() {
                     </button>
                   </div>
                 )}
+                {selectedImage.ref_images && selectedImage.ref_images.length > 0 && (
+                  <div>
+                    <span className="text-gray-400">Reference Images ({selectedImage.ref_images.length}): </span>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {selectedImage.ref_images.map((hash: string, index: number) => (
+                        <button
+                          key={index}
+                          onClick={() => handleSourceImageClick(hash)}
+                          className="text-xs text-blue-400 hover:text-blue-300 font-mono underline break-all"
+                          title={`Click to view reference image ${index + 1}\n${hash}`}
+                        >
+                          ref{index + 1}: {hash.substring(0, 12)}...
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
               </div>
               </Card>

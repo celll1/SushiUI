@@ -239,6 +239,7 @@ export interface GeneratedImage {
   lora_names?: string;
   model_hash?: string;
   unet_quantization?: string;
+  ref_images?: string[]; // FLUX.2 Image Edit: Reference image hashes
   // Advanced CFG parameters
   cfg_schedule_type?: string;
   cfg_schedule_min?: string;

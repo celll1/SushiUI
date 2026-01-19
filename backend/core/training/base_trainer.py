@@ -3731,6 +3731,7 @@ class BaseTrainer(ABC):
         txt_ids: torch.Tensor,
         timesteps: Optional[torch.Tensor] = None,
         guidance: Optional[torch.Tensor] = None,
+        reference_latents: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
@@ -3746,6 +3747,7 @@ class BaseTrainer(ABC):
             txt_ids: Text position IDs [B, text_seq_len, 4] for RoPE
             timesteps: Timesteps for this batch [B]. If None, sampled uniformly from [0, 1]
             guidance: Guidance values [B]. If None, uses default 3.5
+            reference_latents: Reference image latents for conditioning [B, C, H, W]. If None, no conditioning.
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
@@ -3791,6 +3793,31 @@ class BaseTrainer(ABC):
             timesteps=timesteps,
         )
 
+        # ============================================================
+        # Reference Image Conditioning (Latent Concatenation)
+        # ============================================================
+        # If reference latents are provided, pack them and concatenate with noisy latents
+        # This allows the model to condition on reference images during training
+        # Shape: noisy_latents [B, seq_len, C] + ref_latents [B, ref_seq_len, C]
+        #        -> concatenated [B, seq_len + ref_seq_len, C]
+        # img_ids are also extended with reference position IDs
+        packed_reference_latents = None
+        if reference_latents is not None:
+            # Pack reference latents: (B, C, H, W) -> (B, H*W, C)
+            packed_reference_latents = self._flux2_pack_latents(reference_latents)
+            packed_reference_latents = packed_reference_latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
+            # Concatenate reference latents with noisy latents along sequence dimension
+            # This effectively doubles the sequence length
+            noisy_latents = torch.cat([noisy_latents, packed_reference_latents], dim=1)
+
+            # Prepare position IDs for reference latents and concatenate with img_ids
+            ref_img_ids = self._flux2_prepare_latent_ids(reference_latents).to(self.device)
+            # Add offset to reference IDs to distinguish them from target latents
+            # Using large offset ensures no position collision
+            ref_img_ids = ref_img_ids + 1000  # Position offset for reference tokens
+            img_ids = torch.cat([img_ids, ref_img_ids], dim=1)
+
         if profile_vram:
             print_vram_usage("[train_step_flux2] Before Transformer forward")
 
@@ -3821,6 +3848,18 @@ class BaseTrainer(ABC):
 
         if profile_vram:
             print_vram_usage("[train_step_flux2] After Transformer forward")
+
+        # ============================================================
+        # Slice output to remove reference latent predictions
+        # ============================================================
+        # If we concatenated reference latents, the model output contains predictions
+        # for both target + reference. We only want predictions for the target latents.
+        original_seq_len = latents.shape[1]  # Original target latent sequence length
+        if packed_reference_latents is not None:
+            # Slice to keep only predictions for target latents
+            model_pred = model_pred[:, :original_seq_len, :]
+            # Also slice noisy_latents for consistency in loss computation
+            noisy_latents = noisy_latents[:, :original_seq_len, :]
 
         # Get target using unified framework
         target = get_target_unified(
@@ -5636,6 +5675,7 @@ class BaseTrainer(ABC):
         text_encoding_swap_interval: int = 256,
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
+        use_reference_images: bool = False,
     ):
         """
         Main training loop.
@@ -5663,6 +5703,7 @@ class BaseTrainer(ABC):
                 - "pre_encoded_cache": Use pre-encoded disk cache (NOT recommended for large datasets)
                 - "onthefly_gpu": Encode on-the-fly on GPU without cache (NOT recommended for Z-Image)
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
+            use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
         """
         print(f"{self.log_prefix} Starting training...")
         print(f"{self.log_prefix} Datasets: {len(datasets)}")
@@ -5670,6 +5711,8 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batch size: {batch_size}")
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+        if use_reference_images:
+            print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
 
         # Validate text_encoding_mode when Text Encoder is trainable
         # Check if any Text Encoder has trainable parameters (works for both LoRA and full fine-tune)
@@ -6453,6 +6496,7 @@ class BaseTrainer(ABC):
                     latents_list = []
                     text_embeddings_list = []
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
+                    reference_latents_list = []  # FLUX.2 reference image conditioning
 
                     for item, dataset in batch:
                         # BucketManager stores bucket_width/bucket_height, not width/height
@@ -6569,6 +6613,34 @@ class BaseTrainer(ABC):
                             text_embeddings_list.append(embeddings)
                             auxiliary_data_list.append(auxiliary)
 
+                        # ============================================================
+                        # Reference Image Latent Encoding (FLUX.2 only)
+                        # ============================================================
+                        if use_reference_images and self.is_flux2:
+                            reference_images = item.get("reference_images", [])
+                            if reference_images:
+                                # Encode first reference image (multiple reference support can be added later)
+                                ref_image_path = reference_images[0]
+                                try:
+                                    ref_image = Image.open(ref_image_path)
+                                    # Use same bucket dimensions as target image
+                                    ref_latent = self.encode_image(
+                                        image=ref_image,
+                                        target_width=width,
+                                        target_height=height,
+                                        bucket_strategy=bucket_strategy
+                                    )
+                                    reference_latents_list.append(ref_latent.to(self.device))
+                                except Exception as e:
+                                    print(f"{self.log_prefix} WARNING: Failed to encode reference image {ref_image_path}: {e}")
+                                    # Use zero tensor as placeholder (no conditioning)
+                                    zero_latent = torch.zeros(1, self.vae_latent_channels, height // 8, width // 8, device=self.device)
+                                    reference_latents_list.append(zero_latent)
+                            else:
+                                # No reference images for this item - use zero tensor
+                                zero_latent = torch.zeros(1, self.vae_latent_channels, height // 8, width // 8, device=self.device)
+                                reference_latents_list.append(zero_latent)
+
                     # Stack batch with size validation
                     # Filter out latents with mismatched spatial dimensions (rare edge case)
                     if len(latents_list) > 1:
@@ -6586,6 +6658,8 @@ class BaseTrainer(ABC):
                             latents_list = [latents_list[i] for i in valid_indices]
                             text_embeddings_list = [text_embeddings_list[i] for i in valid_indices]
                             auxiliary_data_list = [auxiliary_data_list[i] for i in valid_indices]
+                            if reference_latents_list:
+                                reference_latents_list = [reference_latents_list[i] for i in valid_indices]
 
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
@@ -6632,8 +6706,15 @@ class BaseTrainer(ABC):
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
+                    # Prepare reference latents for FLUX.2 conditioning
+                    reference_latents = None
+                    if use_reference_images and self.is_flux2 and reference_latents_list:
+                        reference_latents = torch.cat(reference_latents_list, dim=0)
+
                     # Free individual item lists (no longer needed, batch tensors are created)
                     del latents_list, text_embeddings_list, auxiliary_data_list
+                    if reference_latents_list:
+                        del reference_latents_list
 
                     # Collect batch captions for debug (done once, outside MNT loop)
                     batch_captions = [item.get("caption", "") for item, dataset in batch]
@@ -6764,6 +6845,11 @@ class BaseTrainer(ABC):
                             # Prepare text IDs from embeddings
                             txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
 
+                            # Prepare reference latents for conditioning (if enabled)
+                            mnt_reference_latents = None
+                            if reference_latents is not None:
+                                mnt_reference_latents = reference_latents.detach()
+
                             loss, pred_loss, recon_loss = self.train_step_flux2(
                                 latents=packed_latents,
                                 prompt_embeds=mnt_text_embeddings,
@@ -6771,6 +6857,7 @@ class BaseTrainer(ABC):
                                 txt_ids=txt_ids,
                                 timesteps=timesteps,
                                 guidance=None,  # Klein doesn't use guidance embedding
+                                reference_latents=mnt_reference_latents,  # Reference image conditioning
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions if debug_save_path else None,
                                 profile_vram=self.debug_vram,
@@ -6935,6 +7022,8 @@ class BaseTrainer(ABC):
                         del attention_mask
                     if pooled_embeddings is not None:
                         del pooled_embeddings
+                    if reference_latents is not None:
+                        del reference_latents
 
                     # ============================================================
                     # Post-batch processing (Sequential MNT: optimizer step done in loop)

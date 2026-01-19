@@ -1040,6 +1040,9 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
+            # Get reference image settings
+            use_reference_images = train_config.get('use_reference_images', False)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -1078,6 +1081,7 @@ def main():
                 multi_noise_mode=multi_noise_mode,
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
+                use_reference_images=use_reference_images,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -1388,6 +1392,9 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
+            # Get reference image settings
+            use_reference_images = train_config.get('use_reference_images', False)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -1426,6 +1433,7 @@ def main():
                 multi_noise_mode=multi_noise_mode,
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
+                use_reference_images=use_reference_images,
             )
 
             print("[TrainRunner] Training completed successfully!")

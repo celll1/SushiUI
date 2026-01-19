@@ -6974,10 +6974,29 @@ class BaseTrainer(ABC):
 
                     # Generate sample
                     # Also generate at step 0 to verify base model output
-                    should_generate_sample = (
-                        (global_step == 0 and sample_every_n_steps > 0) or
-                        (global_step > 0 and global_step % sample_every_n_steps == 0)
-                    )
+                    # With MNT > 1, check if any step in the batch's MNT range contains a sample interval
+                    # batch range: [global_step - multi_noise_timesteps + 1, global_step] (inclusive)
+                    should_generate_sample = False
+                    sample_step = global_step  # Default: use current global_step for filename
+
+                    if sample_every_n_steps > 0:
+                        batch_start_step = global_step - multi_noise_timesteps + 1
+                        batch_end_step = global_step
+
+                        # Check step 0 (only if batch starts at 0)
+                        if batch_start_step == 0:
+                            should_generate_sample = True
+                            sample_step = 0
+                        else:
+                            # Check if any multiple of sample_every_n_steps falls within [batch_start, batch_end]
+                            next_sample_step = ((batch_start_step // sample_every_n_steps) + 1) * sample_every_n_steps
+                            if batch_start_step % sample_every_n_steps == 0:
+                                should_generate_sample = True
+                                sample_step = batch_start_step
+                            elif next_sample_step <= batch_end_step:
+                                should_generate_sample = True
+                                sample_step = next_sample_step
+
                     if should_generate_sample:
                         print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
                         if self.is_flux2:
@@ -7011,7 +7030,8 @@ class BaseTrainer(ABC):
                             )
 
                         # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
-                        sample_path = self.output_dir / "samples" / f"step_{global_step:06d}_sample_0.png"
+                        # Use sample_step (which accounts for MNT batch range) for consistent naming
+                        sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_0.png"
                         sample_path.parent.mkdir(parents=True, exist_ok=True)
                         sample.save(sample_path)
                         print(f"{self.log_prefix} Saved sample to {sample_path}")
@@ -7019,7 +7039,7 @@ class BaseTrainer(ABC):
                         # Log to TensorBoard (same as stable version)
                         import torchvision
                         image_tensor = torchvision.transforms.ToTensor()(sample)
-                        self.writer.add_image("samples/sample_0", image_tensor, global_step=global_step)
+                        self.writer.add_image("samples/sample_0", image_tensor, global_step=sample_step)
 
                         # Free sample-related tensors and clear VRAM cache
                         del sample, image_tensor

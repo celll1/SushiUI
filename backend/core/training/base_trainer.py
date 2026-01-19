@@ -5713,6 +5713,8 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
         if use_reference_images:
             print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
+            if not self.is_flux2:
+                print(f"{self.log_prefix} WARNING: use_reference_images is only supported for FLUX.2, will be ignored")
 
         # Validate text_encoding_mode when Text Encoder is trainable
         # Check if any Text Encoder has trainable parameters (works for both LoRA and full fine-tune)
@@ -6616,6 +6618,9 @@ class BaseTrainer(ABC):
                         # ============================================================
                         # Reference Image Latent Encoding (FLUX.2 only)
                         # ============================================================
+                        # Note: Only items WITH reference images are conditioned.
+                        # If an item has no reference images, we append None to maintain list alignment.
+                        # Later, if ANY item in batch has no reference, we skip conditioning for entire batch.
                         if use_reference_images and self.is_flux2:
                             reference_images = item.get("reference_images", [])
                             if reference_images:
@@ -6633,13 +6638,11 @@ class BaseTrainer(ABC):
                                     reference_latents_list.append(ref_latent.to(self.device))
                                 except Exception as e:
                                     print(f"{self.log_prefix} WARNING: Failed to encode reference image {ref_image_path}: {e}")
-                                    # Use zero tensor as placeholder (no conditioning)
-                                    zero_latent = torch.zeros(1, self.vae_latent_channels, height // 8, width // 8, device=self.device)
-                                    reference_latents_list.append(zero_latent)
+                                    # Mark as None - batch will skip conditioning
+                                    reference_latents_list.append(None)
                             else:
-                                # No reference images for this item - use zero tensor
-                                zero_latent = torch.zeros(1, self.vae_latent_channels, height // 8, width // 8, device=self.device)
-                                reference_latents_list.append(zero_latent)
+                                # No reference images for this item - mark as None
+                                reference_latents_list.append(None)
 
                     # Stack batch with size validation
                     # Filter out latents with mismatched spatial dimensions (rare edge case)
@@ -6707,9 +6710,16 @@ class BaseTrainer(ABC):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
                     # Prepare reference latents for FLUX.2 conditioning
+                    # Only apply conditioning if ALL items in batch have valid reference latents
                     reference_latents = None
                     if use_reference_images and self.is_flux2 and reference_latents_list:
-                        reference_latents = torch.cat(reference_latents_list, dim=0)
+                        # Check if any item is missing reference latent (None)
+                        if all(lat is not None for lat in reference_latents_list):
+                            reference_latents = torch.cat(reference_latents_list, dim=0)
+                        else:
+                            # Mixed batch (some with, some without reference) - skip conditioning
+                            # This ensures consistent training behavior
+                            pass
 
                     # Free individual item lists (no longer needed, batch tensors are created)
                     del latents_list, text_embeddings_list, auxiliary_data_list

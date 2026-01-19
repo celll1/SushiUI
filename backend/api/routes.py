@@ -2996,7 +2996,51 @@ async def scan_dataset(
 
         print(f"[Dataset Scan] Scanning directory: {dir_path} ({len(entries)} entries)")
 
-        # Group files by base name
+        # Get reference image settings from dataset
+        reference_suffixes = dataset.reference_suffixes or []
+        target_suffixes = dataset.target_suffixes or []
+        caption_suffixes_for_ref = dataset.caption_suffixes_for_reference or []
+
+        # Check if reference image mode is enabled
+        use_reference_mode = bool(reference_suffixes and target_suffixes)
+        if use_reference_mode:
+            print(f"[Dataset Scan] Reference mode enabled: ref_suffixes={reference_suffixes}, target_suffixes={target_suffixes}")
+
+        # Helper function to strip suffix and get base group name
+        def get_group_name_and_type(filename):
+            """
+            For reference mode: extract group name and file type from filename.
+            Example with suffixes ["_source"] and ["_target"]:
+              - "20251026_01k8e370_01k8e370_source.webp" -> ("20251026_01k8e370_01k8e370", "reference")
+              - "20251026_01k8e370_01k8e370_target.webp" -> ("20251026_01k8e370_01k8e370", "target")
+              - "20251026_01k8e370_01k8e370_instruction.txt" -> ("20251026_01k8e370_01k8e370", "caption")
+              - "normal_image.png" -> ("normal_image", "normal")
+            """
+            base_name, ext = os.path.splitext(filename)
+
+            if use_reference_mode:
+                # Check reference suffixes (e.g., "_source")
+                for suffix in reference_suffixes:
+                    if base_name.endswith(suffix):
+                        group_name = base_name[:-len(suffix)]
+                        return group_name, "reference"
+
+                # Check target suffixes (e.g., "_target")
+                for suffix in target_suffixes:
+                    if base_name.endswith(suffix):
+                        group_name = base_name[:-len(suffix)]
+                        return group_name, "target"
+
+                # Check caption suffixes for reference mode (e.g., "_instruction")
+                for suffix in caption_suffixes_for_ref:
+                    if base_name.endswith(suffix):
+                        group_name = base_name[:-len(suffix)]
+                        return group_name, "caption"
+
+            # Normal mode: use base_name as group name
+            return base_name, "normal"
+
+        # Group files by group name
         file_groups = {}
         entries_processed = 0
         for entry in entries:
@@ -3009,15 +3053,29 @@ async def scan_dataset(
             if os.path.isfile(entry_path):
                 base_name, ext = os.path.splitext(entry)
                 ext_lower = ext.lower()
+                group_name, file_type = get_group_name_and_type(entry)
+
+                if group_name not in file_groups:
+                    file_groups[group_name] = {
+                        "images": [],       # Normal images (no suffix)
+                        "captions": [],     # Normal captions (no suffix)
+                        "reference": [],    # Reference images (_source suffix)
+                        "target": [],       # Target images (_target suffix)
+                        "ref_captions": [], # Reference mode captions (_instruction suffix)
+                    }
 
                 if ext_lower in image_exts:
-                    if base_name not in file_groups:
-                        file_groups[base_name] = {"images": [], "captions": []}
-                    file_groups[base_name]["images"].append(entry_path)
+                    if file_type == "reference":
+                        file_groups[group_name]["reference"].append(entry_path)
+                    elif file_type == "target":
+                        file_groups[group_name]["target"].append(entry_path)
+                    else:
+                        file_groups[group_name]["images"].append(entry_path)
                 elif ext_lower in caption_exts:
-                    if base_name not in file_groups:
-                        file_groups[base_name] = {"images": [], "captions": []}
-                    file_groups[base_name]["captions"].append(entry_path)
+                    if file_type == "caption":
+                        file_groups[group_name]["ref_captions"].append(entry_path)
+                    else:
+                        file_groups[group_name]["captions"].append(entry_path)
 
             elif os.path.isdir(entry_path) and dataset.recursive:
                 max_depth = dataset.max_depth if dataset.max_depth else float('inf')
@@ -3033,11 +3091,27 @@ async def scan_dataset(
             # Log progress every 1k groups
             if groups_processed % 1000 == 0:
                 print(f"[Dataset Scan] Processed {groups_processed}/{len(file_groups)} file groups in {dir_path}")
-            if not files["images"]:
+
+            # Determine which image to use as main and which as reference
+            main_images = []
+            reference_images = []
+            caption_files = []
+
+            if use_reference_mode:
+                # Reference mode: use target as main, reference as related
+                main_images = files["target"]
+                reference_images = files["reference"]
+                caption_files = files["ref_captions"] if files["ref_captions"] else files["captions"]
+            else:
+                # Normal mode: use images as main, no reference
+                main_images = files["images"]
+                caption_files = files["captions"]
+
+            if not main_images:
                 continue
 
             # Use first image as primary
-            image_path = files["images"][0]
+            image_path = main_images[0]
 
             try:
                 # Read image metadata (with warning suppression for corrupt EXIF)
@@ -3081,16 +3155,24 @@ async def scan_dataset(
                         )
                     continue  # Skip duplicate
 
+                # Build related_images for reference mode
+                related_images_data = {}
+                if use_reference_mode and reference_images:
+                    # Store all reference image paths in related_images["reference"]
+                    related_images_data["reference"] = reference_images
+                    print(f"[Dataset Scan] Group '{base_name}': {len(reference_images)} reference image(s)")
+
                 # Create dataset item
                 item = DatasetItem(
                     dataset_id=dataset_id,
-                    item_type="single",
+                    item_type="reference" if use_reference_mode else "single",
                     base_name=base_name,
                     image_path=image_path,
                     width=width,
                     height=height,
                     file_size=file_size,
-                    image_hash=image_hash
+                    image_hash=image_hash,
+                    related_images=related_images_data if related_images_data else None
                 )
                 db.add(item)
                 db.flush()  # Get item.id
@@ -3106,7 +3188,7 @@ async def scan_dataset(
                     )
 
                 # Process captions (TXT/JSON files)
-                for caption_path in files["captions"]:
+                for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
                         ext_lower = ext.lower()
@@ -3597,6 +3679,142 @@ async def update_item_caption(
             db.commit()
 
     return {"status": "success", "caption": caption.to_dict()}
+
+
+# ============================================================
+# Dataset Item Reference Images API
+# ============================================================
+
+class ReferenceImagesUpdateRequest(BaseModel):
+    reference_images: List[str]  # List of file paths to reference images
+
+@router.patch("/datasets/items/{item_id}/reference-images")
+async def update_item_reference_images(
+    item_id: int,
+    request: ReferenceImagesUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Update reference images for a dataset item"""
+    import os
+
+    # Get item
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Validate all paths exist
+    invalid_paths = []
+    for path in request.reference_images:
+        if not os.path.exists(path):
+            invalid_paths.append(path)
+
+    if invalid_paths:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid reference image paths: {', '.join(invalid_paths)}"
+        )
+
+    # Update related_images with reference key
+    related_images = item.related_images or {}
+    related_images["reference"] = request.reference_images
+
+    # Use SQL update to handle JSON properly
+    item.related_images = related_images
+    item.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(item)
+
+    print(f"[Dataset] Updated reference images for item {item_id}: {len(request.reference_images)} images")
+
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "reference_images": request.reference_images
+    }
+
+@router.post("/datasets/items/{item_id}/reference-images/add")
+async def add_item_reference_image(
+    item_id: int,
+    image_path: str = Form(...),
+    db: Session = Depends(get_datasets_db)
+):
+    """Add a reference image to a dataset item"""
+    import os
+
+    # Get item
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Validate path exists
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=400, detail=f"Image file not found: {image_path}")
+
+    # Get current reference images
+    related_images = item.related_images or {}
+    reference_list = related_images.get("reference", [])
+
+    # Check for duplicates
+    if image_path in reference_list:
+        return {"status": "already_exists", "item_id": item_id, "reference_images": reference_list}
+
+    # Add new reference image
+    reference_list.append(image_path)
+    related_images["reference"] = reference_list
+
+    item.related_images = related_images
+    item.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(item)
+
+    print(f"[Dataset] Added reference image to item {item_id}: {image_path}")
+
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "reference_images": reference_list
+    }
+
+@router.delete("/datasets/items/{item_id}/reference-images")
+async def remove_item_reference_image(
+    item_id: int,
+    image_path: str,
+    db: Session = Depends(get_datasets_db)
+):
+    """Remove a reference image from a dataset item"""
+    # Get item
+    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+
+    # Get current reference images
+    related_images = item.related_images or {}
+    reference_list = related_images.get("reference", [])
+
+    # Check if image exists in list
+    if image_path not in reference_list:
+        raise HTTPException(status_code=404, detail=f"Reference image not found: {image_path}")
+
+    # Remove the reference image
+    reference_list.remove(image_path)
+    related_images["reference"] = reference_list
+
+    item.related_images = related_images
+    item.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(item)
+
+    print(f"[Dataset] Removed reference image from item {item_id}: {image_path}")
+
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "reference_images": reference_list
+    }
+
 
 @router.post("/datasets/items/{item_id}/save-to-txt")
 async def save_item_caption_to_txt(

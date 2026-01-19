@@ -295,6 +295,8 @@ class TrainingConfigGenerator:
                             "num_optimizer_groups": num_optimizer_groups,
                             "text_encoding_mode": text_encoding_mode,
                             "text_encoding_swap_interval": text_encoding_swap_interval,
+                            # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
+                            "use_reference_images": use_reference_images,
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
                             "multi_noise_timesteps": multi_noise_timesteps,
@@ -311,8 +313,6 @@ class TrainingConfigGenerator:
                             "energy_timestep_adaptive": energy_timestep_adaptive,
                             "energy_penalty_mode": energy_penalty_mode,
                             "energy_normalize_by_pixels": energy_normalize_by_pixels,
-                            # Reference image settings
-                            "use_reference_images": use_reference_images,
                         },
                         "model": {
                             "name_or_path": base_model_path,
@@ -495,6 +495,8 @@ class TrainingConfigGenerator:
             "num_optimizer_groups": num_optimizer_groups,
             "text_encoding_mode": text_encoding_mode,
             "text_encoding_swap_interval": text_encoding_swap_interval,
+            # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
+            "use_reference_images": use_reference_images,
             "latent_encoding_mode": latent_encoding_mode,
             "latent_encoding_swap_interval": latent_encoding_swap_interval,
             "debug_latents": debug_latents,
@@ -517,8 +519,6 @@ class TrainingConfigGenerator:
             "noise_process": noise_process,
             "prediction_target": prediction_target,
             "strict_validation": strict_validation,
-            # Reference image settings
-            "use_reference_images": use_reference_images,
         }
 
         # Add component-specific learning rates if specified

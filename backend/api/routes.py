@@ -4193,6 +4193,9 @@ class TrainingRunCreateRequest(BaseModel):
     prediction_target: str = "auto"  # "auto", "epsilon", "velocity", "sample"
     strict_validation: bool = False  # Abort training if mismatch detected
 
+    # Reference image conditioning (FLUX.2 only)
+    use_reference_images: bool = False  # Enable reference image latent conditioning during training
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -4370,6 +4373,7 @@ async def create_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
+                use_reference_images=request.use_reference_images,  # Reference image conditioning
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4448,6 +4452,7 @@ async def create_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
+                use_reference_images=request.use_reference_images,  # Reference image conditioning
             )
 
         # Save config file
@@ -4669,6 +4674,8 @@ async def get_training_run_params(
         "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
         "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
         "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
+        # Reference image conditioning
+        "use_reference_images": training_params.get("use_reference_images", False),
     }
 
     print(f"[get_training_run_params] Total time: {time.time() - start_time:.3f}s")
@@ -4801,6 +4808,7 @@ async def update_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
+                use_reference_images=request.use_reference_images,  # Reference image conditioning
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4879,6 +4887,7 @@ async def update_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
+                use_reference_images=request.use_reference_images,  # Reference image conditioning
             )
 
         # Update config_yaml and base_model_path in database

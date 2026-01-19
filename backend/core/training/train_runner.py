@@ -342,12 +342,19 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             processed_caption = raw_caption
             print(f"[TrainRunner] Natural language caption (skipping tag processing): {raw_caption[:50]}...")
 
-        dataset_items.append({
+        # Build dataset item dict
+        item_dict = {
             "image_path": item.image_path,
             "caption": processed_caption,
             "width": item.width,
             "height": item.height,
-        })
+        }
+
+        # Add reference images if available
+        if item.related_images and "reference" in item.related_images:
+            item_dict["reference_images"] = item.related_images["reference"]
+
+        dataset_items.append(item_dict)
 
     # Mark dataset loading as complete
     update_phase_progress("initializing", 100.0, f"Loaded {total_items}/{total_items} items")

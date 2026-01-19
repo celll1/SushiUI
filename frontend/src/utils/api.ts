@@ -1185,6 +1185,10 @@ export interface DatasetItem {
   created_at: string;
   updated_at: string;
   captions?: DatasetCaptionData[];
+  related_images?: {
+    reference?: string[];  // Reference image paths for training
+    [key: string]: string[] | undefined;  // Extensible for future use
+  };
 }
 
 export interface DatasetCaptionData {
@@ -1638,6 +1642,46 @@ export const updateItemCaption = async (
   data: CaptionUpdateRequest
 ): Promise<{ status: string; caption: DatasetCaptionData }> => {
   const response = await api.patch(`/datasets/items/${itemId}/captions`, data);
+  return response.data;
+};
+
+// ============================================================
+// Reference Images API
+// ============================================================
+
+export interface ReferenceImagesResponse {
+  status: string;
+  item_id: number;
+  reference_images: string[];
+}
+
+export const updateItemReferenceImages = async (
+  itemId: number,
+  referenceImages: string[]
+): Promise<ReferenceImagesResponse> => {
+  const response = await api.patch(`/datasets/items/${itemId}/reference-images`, {
+    reference_images: referenceImages
+  });
+  return response.data;
+};
+
+export const addItemReferenceImage = async (
+  itemId: number,
+  imagePath: string
+): Promise<ReferenceImagesResponse> => {
+  const formData = new FormData();
+  formData.append("image_path", imagePath);
+  const response = await api.post(`/datasets/items/${itemId}/reference-images/add`, formData);
+  return response.data;
+};
+
+export const removeItemReferenceImage = async (
+  itemId: number,
+  imagePath: string
+): Promise<ReferenceImagesResponse> => {
+  const response = await api.delete(`/datasets/items/${itemId}/reference-images`, {
+    params: { image_path: imagePath }
+  });
   return response.data;
 };
 

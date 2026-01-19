@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Undo2, Redo2, Copy, Clipboard, Sparkles, Settings } from "lucide-react";
+import { Undo2, Redo2, Copy, Clipboard, Sparkles, Settings, X } from "lucide-react";
 import {
   getDatasetItem,
   DatasetItem,
@@ -9,6 +9,7 @@ import {
   saveItemCaptionToTxt,
   predictTags,
   TaggerPredictionsResponse,
+  removeItemReferenceImage,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
@@ -558,8 +559,77 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
             <div className="text-[10px] text-gray-400 truncate" title={item.image_path}>
               {item.image_path}
             </div>
+            {/* Item type badge */}
+            {detailedItem?.item_type === "reference" && (
+              <div className="mt-1">
+                <span className="text-[10px] px-1.5 py-0.5 bg-purple-600 rounded text-white">
+                  Reference Mode
+                </span>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Reference Images Section */}
+        {detailedItem?.related_images?.reference && detailedItem.related_images.reference.length > 0 && (
+          <div className="flex-shrink-0 bg-gray-800 rounded p-2">
+            <div className="text-xs font-semibold mb-2 flex items-center gap-1">
+              <span>Reference Images</span>
+              <span className="text-gray-400">({detailedItem.related_images.reference.length})</span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {detailedItem.related_images.reference.map((refPath, idx) => (
+                <div
+                  key={idx}
+                  className="relative w-20 h-20 bg-gray-900 rounded overflow-hidden group"
+                >
+                  <img
+                    src={`/api/serve-image?path=${encodeURIComponent(refPath)}`}
+                    alt={`Reference ${idx + 1}`}
+                    className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                    onClick={() => {
+                      // Open reference image in expanded view
+                      const img = new Image();
+                      img.src = `/api/serve-image?path=${encodeURIComponent(refPath)}`;
+                      const win = window.open('', '_blank', 'width=800,height=600');
+                      if (win) {
+                        win.document.write(`
+                          <html>
+                            <head><title>Reference Image ${idx + 1}</title></head>
+                            <body style="margin:0;display:flex;align-items:center;justify-content:center;background:#111;height:100vh;">
+                              <img src="${img.src}" style="max-width:100%;max-height:100%;object-fit:contain;" />
+                            </body>
+                          </html>
+                        `);
+                      }
+                    }}
+                    title={`Reference ${idx + 1}: ${refPath.split(/[\\/]/).pop()}\nClick to expand`}
+                  />
+                  {/* Delete button */}
+                  <button
+                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (confirm(`Remove reference image?\n${refPath.split(/[\\/]/).pop()}`)) {
+                        try {
+                          await removeItemReferenceImage(detailedItem.id, refPath);
+                          // Refresh item details
+                          loadItemDetails();
+                        } catch (err) {
+                          console.error("Failed to remove reference image:", err);
+                          alert("Failed to remove reference image");
+                        }
+                      }
+                    }}
+                    title="Remove reference image"
+                  >
+                    <X className="w-2.5 h-2.5 text-white" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Field Switcher - Individual buttons for training fields, single button for metadata */}
         <div className="flex-shrink-0 flex gap-1 flex-wrap">

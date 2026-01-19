@@ -179,6 +179,13 @@ class Dataset(DatasetBase):
     # Image pair settings
     image_suffixes = Column(JSON, default=list)
 
+    # Reference image settings (for training with reference images)
+    # When scanning, files with these suffixes are treated as reference images
+    # Example: ["_source", "_ref"] -> image_source.png is reference for image_target.png
+    reference_suffixes = Column(JSON, default=list)  # ["_source", "_ref"]
+    target_suffixes = Column(JSON, default=list)  # ["_target"] - main training images
+    caption_suffixes_for_reference = Column(JSON, default=list)  # ["_instruction"] - captions for target images
+
     # Scanning settings
     recursive = Column(Boolean, default=True)
     max_depth = Column(Integer, nullable=True)
@@ -216,6 +223,9 @@ class Dataset(DatasetBase):
             "default_caption_type": self.default_caption_type,
             "caption_processing": self.caption_processing or {},
             "image_suffixes": self.image_suffixes or [],
+            "reference_suffixes": self.reference_suffixes or [],
+            "target_suffixes": self.target_suffixes or [],
+            "caption_suffixes_for_reference": self.caption_suffixes_for_reference or [],
             "recursive": self.recursive,
             "max_depth": self.max_depth,
             "file_extensions": self.file_extensions or [],

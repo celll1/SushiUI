@@ -147,6 +147,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [debugLatents, setDebugLatents] = useState(false);
   const [debugLatentsEvery, setDebugLatentsEvery] = useState(50);
 
+  // Reference image conditioning (FLUX.2 only)
+  const [useReferenceImages, setUseReferenceImages] = useState(false);
+
   // Bucketing options
   const [enableBucketing, setEnableBucketing] = useState(false);
   const [baseResolutions, setBaseResolutions] = useState<number[]>([1024]);
@@ -745,6 +748,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sampleSeed !== undefined) setSampleSeed(config.sampleSeed);
     if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
     if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
+    if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
     if (config.enableBucketing !== undefined) setEnableBucketing(config.enableBucketing);
     if (config.baseResolutions !== undefined) setBaseResolutions(config.baseResolutions);
     if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
@@ -887,6 +891,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       reconstruction_loss_weight: reconstructionLossWeight,
       text_encoding_mode: textEncodingMode,
       text_encoding_swap_interval: textEncodingSwapInterval,
+      use_reference_images: useReferenceImages,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
       blocks_to_swap: blocksToSwap,
@@ -2620,6 +2625,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Saves noisy latents, predicted latents, and timestep info to debug/ folder for debugging training issues
               </p>
             </div>
+          )}
+
+          {/* Reference Image Conditioning (FLUX.2 only) */}
+          <div className="flex items-center space-x-3 pt-2 border-t border-gray-700">
+            <input
+              type="checkbox"
+              id="use-reference-images"
+              checked={useReferenceImages}
+              onChange={(e) => setUseReferenceImages(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="use-reference-images" className="text-sm text-gray-400">
+              Use reference images for conditioning (FLUX.2 only)
+            </label>
+          </div>
+          {useReferenceImages && (
+            <p className="text-xs text-gray-500 ml-7">
+              Enables reference image conditioning during training. Dataset items must have reference images configured
+              (e.g., _source/_ref suffixes). Only applies to FLUX.2 models.
+            </p>
           )}
         </div>
 

@@ -1390,6 +1390,7 @@ export interface TrainingRunCreateRequest {
   timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;
+  use_reference_images?: boolean;
 }
 
 export interface TrainingRunListResponse {

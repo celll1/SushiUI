@@ -966,14 +966,31 @@ class ModelLoader:
             print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
 
             # Detect state_dict format and convert if needed
+            # FLUX.2 state_dict can be in 3 formats:
+            # 1. BFL/Comfy format: double_blocks.*, single_blocks.* (original BFL weights)
+            # 2. Diffusers format: time_guidance_embed.*, double_stream_modulation_*, single_transformer_blocks.*
+            # 3. SushiUI/musubi training format: model.diffusion_model.* prefix (ComfyUI-style but with diffusers keys inside)
             sample_keys = list(transformer_state_dict.keys())[:5]
             is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())
+            is_sushiui_format = any(k.startswith('model.diffusion_model.') for k in transformer_state_dict.keys())
 
             if is_bfl_format:
                 print(f"[ModelLoader] Detected BFL/Comfy format state_dict, converting to diffusers format...")
                 from diffusers.loaders.single_file_utils import convert_flux2_transformer_checkpoint_to_diffusers
                 transformer_state_dict = convert_flux2_transformer_checkpoint_to_diffusers(transformer_state_dict)
                 print(f"[ModelLoader] Converted to diffusers format ({len(transformer_state_dict)} tensors)")
+            elif is_sushiui_format:
+                # SushiUI/musubi training saves with "model.diffusion_model." prefix
+                # Extract only transformer keys (skip VAE "first_stage_model.*" and TE "text_encoders.*")
+                print(f"[ModelLoader] Detected SushiUI/musubi training format state_dict, stripping prefix...")
+                original_count = len(transformer_state_dict)
+                new_state_dict = {}
+                for key, value in transformer_state_dict.items():
+                    if key.startswith('model.diffusion_model.'):
+                        new_key = key.replace('model.diffusion_model.', '', 1)
+                        new_state_dict[new_key] = value
+                transformer_state_dict = new_state_dict
+                print(f"[ModelLoader] Extracted {len(transformer_state_dict)} transformer tensors from {original_count} total tensors")
             else:
                 print(f"[ModelLoader] State dict is already in diffusers format")
 

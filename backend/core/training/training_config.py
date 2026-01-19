@@ -110,6 +110,8 @@ class TrainingConfigGenerator:
         noise_process: str = "auto",  # "auto", "ddpm", "flow"
         prediction_target: str = "auto",  # "auto", "epsilon", "velocity", "sample"
         strict_validation: bool = False,  # If True, error on mismatch; if False, warn only
+        # Reference image settings
+        use_reference_images: bool = False,  # Enable reference image conditioning during training
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -309,6 +311,8 @@ class TrainingConfigGenerator:
                             "energy_timestep_adaptive": energy_timestep_adaptive,
                             "energy_penalty_mode": energy_penalty_mode,
                             "energy_normalize_by_pixels": energy_normalize_by_pixels,
+                            # Reference image settings
+                            "use_reference_images": use_reference_images,
                         },
                         "model": {
                             "name_or_path": base_model_path,
@@ -428,6 +432,8 @@ class TrainingConfigGenerator:
         noise_process: str = "add_noise",
         prediction_target: str = "auto",
         strict_validation: bool = True,
+        # Reference image settings
+        use_reference_images: bool = False,  # Enable reference image conditioning during training
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.
@@ -511,6 +517,8 @@ class TrainingConfigGenerator:
             "noise_process": noise_process,
             "prediction_target": prediction_target,
             "strict_validation": strict_validation,
+            # Reference image settings
+            "use_reference_images": use_reference_images,
         }
 
         # Add component-specific learning rates if specified

@@ -7,9 +7,13 @@ Based on ai-toolkit implementation with enhancements:
 - Random bucket assignment for multi-resolution
 """
 
-from typing import List, Dict, Tuple, Optional, Literal
+from typing import List, Dict, Tuple, Optional, Literal, Union
 from dataclasses import dataclass
 import math
+
+
+# Type alias for bucket keys: either just resolution, or (resolution, has_reference)
+BucketKey = Union["BucketResolution", Tuple["BucketResolution", bool]]
 
 
 @dataclass
@@ -198,6 +202,7 @@ class BucketManager:
     Manages aspect ratio bucketing for training datasets.
 
     Supports multiple resolutions with configurable assignment strategies.
+    Optionally separates items by reference image availability.
     """
 
     def __init__(
@@ -205,7 +210,8 @@ class BucketManager:
         base_resolutions: List[int],
         divisibility: int = 8,
         strategy: Literal["resize", "crop", "random_crop"] = "resize",
-        multi_resolution_mode: Literal["max", "random"] = "max"
+        multi_resolution_mode: Literal["max", "random"] = "max",
+        separate_by_reference: bool = False
     ):
         """
         Initialize bucket manager.
@@ -217,11 +223,16 @@ class BucketManager:
             multi_resolution_mode: How to assign images to resolutions when multiple specified
                 - "max": Use largest resolution that fits the image (default)
                 - "random": Randomly select from available resolutions
+            separate_by_reference: If True, separate items with/without reference images
+                into different buckets. This ensures batches contain either all items
+                with reference images or all items without, enabling proper reference
+                image conditioning during training.
         """
         self.base_resolutions = sorted(base_resolutions)
         self.divisibility = divisibility
         self.strategy = strategy
         self.multi_resolution_mode = multi_resolution_mode
+        self.separate_by_reference = separate_by_reference
 
         # Generate bucket lists for each resolution
         self.bucket_lists: Dict[int, List[BucketResolution]] = {}
@@ -229,7 +240,9 @@ class BucketManager:
             self.bucket_lists[res] = get_bucket_sizes(res, divisibility)
 
         # Track which images go to which buckets
-        self.buckets: Dict[BucketResolution, List[Dict]] = {}
+        # Key is BucketResolution when separate_by_reference=False
+        # Key is (BucketResolution, has_reference) when separate_by_reference=True
+        self.buckets: Dict[BucketKey, List[Dict]] = {}
 
     def assign_image_to_bucket(
         self,
@@ -238,8 +251,9 @@ class BucketManager:
         height: int,
         caption: str = "",
         target_resolution: Optional[int] = None,
-        dataset_unique_id: Optional[str] = None
-    ) -> Tuple[BucketResolution, Dict]:
+        dataset_unique_id: Optional[str] = None,
+        has_reference: bool = False
+    ) -> Tuple[BucketKey, Dict]:
         """
         Assign an image to the best bucket.
 
@@ -249,9 +263,12 @@ class BucketManager:
             height: Image height
             caption: Image caption
             target_resolution: Specific resolution to use (or None for auto)
+            dataset_unique_id: Unique ID for dataset (for cache management)
+            has_reference: Whether this item has reference images (only used if separate_by_reference=True)
 
         Returns:
-            Tuple of (bucket_resolution, image_info)
+            Tuple of (bucket_key, image_info)
+            bucket_key is BucketResolution or (BucketResolution, has_reference)
         """
         # Determine which resolution to use
         if target_resolution is not None:
@@ -310,25 +327,40 @@ class BucketManager:
             "bucket_width": bucket.width,
             "bucket_height": bucket.height,
             "target_resolution": target_resolution,
+            "has_reference": has_reference,  # Track reference status
         }
 
         # Add dataset_unique_id if provided (for cache management)
         if dataset_unique_id is not None:
             image_info["dataset_unique_id"] = dataset_unique_id
 
-        # Add to bucket
-        if bucket not in self.buckets:
-            self.buckets[bucket] = []
-        self.buckets[bucket].append(image_info)
+        # Determine bucket key based on separate_by_reference setting
+        if self.separate_by_reference:
+            bucket_key: BucketKey = (bucket, has_reference)
+        else:
+            bucket_key = bucket
 
-        return bucket, image_info
+        # Add to bucket
+        if bucket_key not in self.buckets:
+            self.buckets[bucket_key] = []
+        self.buckets[bucket_key].append(image_info)
+
+        return bucket_key, image_info
 
     def get_bucket_counts(self) -> Dict[str, int]:
         """Get count of images in each bucket."""
-        return {
-            f"{bucket.width}x{bucket.height}": len(images)
-            for bucket, images in self.buckets.items()
-        }
+        result = {}
+        for bucket_key, images in self.buckets.items():
+            if isinstance(bucket_key, tuple):
+                # (BucketResolution, has_reference)
+                bucket, has_ref = bucket_key
+                ref_suffix = "+ref" if has_ref else ""
+                key = f"{bucket.width}x{bucket.height}{ref_suffix}"
+            else:
+                # BucketResolution only
+                key = f"{bucket_key.width}x{bucket_key.height}"
+            result[key] = len(images)
+        return result
 
     def get_all_items(self) -> List[Dict]:
         """Get all items across all buckets (shuffled)."""
@@ -339,7 +371,7 @@ class BucketManager:
         random.shuffle(all_items)
         return all_items
 
-    def get_items_by_bucket(self) -> Dict[BucketResolution, List[Dict]]:
+    def get_items_by_bucket(self) -> Dict[BucketKey, List[Dict]]:
         """Get items grouped by bucket."""
         return self.buckets.copy()
 
@@ -355,6 +387,7 @@ class BucketManager:
 
         Groups items from the same bucket into batches of batch_size.
         This ensures all items in a batch have the same resolution.
+        When separate_by_reference=True, batches also have uniform reference status.
 
         Args:
             batch_size: Number of items per batch
@@ -365,7 +398,8 @@ class BucketManager:
         batch_list = []
 
         # Process each bucket separately
-        for bucket, items in self.buckets.items():
+        # Bucket key is either BucketResolution or (BucketResolution, has_reference)
+        for bucket_key, items in self.buckets.items():
             # Split items in this bucket into batches
             for start_idx in range(0, len(items), batch_size):
                 end_idx = min(start_idx + batch_size, len(items))
@@ -377,3 +411,35 @@ class BucketManager:
         random.shuffle(batch_list)
 
         return batch_list
+
+    def get_reference_statistics(self) -> Dict[str, int]:
+        """
+        Get statistics about reference image distribution.
+
+        Returns:
+            Dict with keys: 'with_reference', 'without_reference', 'total'
+        """
+        with_ref = 0
+        without_ref = 0
+
+        for bucket_key, items in self.buckets.items():
+            if isinstance(bucket_key, tuple):
+                # (BucketResolution, has_reference) - can directly check key
+                _, has_ref = bucket_key
+                if has_ref:
+                    with_ref += len(items)
+                else:
+                    without_ref += len(items)
+            else:
+                # BucketResolution only - check individual items
+                for item in items:
+                    if item.get("has_reference", False):
+                        with_ref += 1
+                    else:
+                        without_ref += 1
+
+        return {
+            "with_reference": with_ref,
+            "without_reference": without_ref,
+            "total": with_ref + without_ref
+        }

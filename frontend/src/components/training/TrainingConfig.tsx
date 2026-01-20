@@ -2293,6 +2293,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         </div>
 
+        {/* Reference Image Conditioning (FLUX.2 only) */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Reference Image Conditioning</h3>
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="use-reference-images"
+              checked={useReferenceImages}
+              onChange={(e) => setUseReferenceImages(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="use-reference-images" className="text-sm text-gray-400">
+              Enable reference image conditioning (FLUX.2 only)
+            </label>
+          </div>
+          <div className="text-xs text-gray-500 space-y-1">
+            <p>Uses reference images from dataset to condition the model during training via latent concatenation.</p>
+            <p>Dataset items must have reference images configured (e.g., <code className="bg-gray-800 px-1 rounded">image_ref.png</code> suffix).</p>
+            <p className="text-yellow-500/80">⚠️ Only supported for FLUX.2 models. Will be ignored for other architectures.</p>
+          </div>
+        </div>
+
         {/* Latent Encoding Mode */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
@@ -2625,26 +2647,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Saves noisy latents, predicted latents, and timestep info to debug/ folder for debugging training issues
               </p>
             </div>
-          )}
-
-          {/* Reference Image Conditioning (FLUX.2 only) */}
-          <div className="flex items-center space-x-3 pt-2 border-t border-gray-700">
-            <input
-              type="checkbox"
-              id="use-reference-images"
-              checked={useReferenceImages}
-              onChange={(e) => setUseReferenceImages(e.target.checked)}
-              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-            />
-            <label htmlFor="use-reference-images" className="text-sm text-gray-400">
-              Use reference images for conditioning (FLUX.2 only)
-            </label>
-          </div>
-          {useReferenceImages && (
-            <p className="text-xs text-gray-500 ml-7">
-              Enables reference image conditioning during training. Dataset items must have reference images configured
-              (e.g., _source/_ref suffixes). Only applies to FLUX.2 models.
-            </p>
           )}
         </div>
 

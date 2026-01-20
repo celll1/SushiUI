@@ -51,6 +51,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           ...currentRun,
           progress: status.progress,
           current_step: status.current_step,
+          total_steps: status.total_steps,  // Update total_steps (may change on MNT change)
           loss: status.loss,
           learning_rate: status.learning_rate,
           status: status.status,

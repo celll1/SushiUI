@@ -5763,13 +5763,19 @@ class BaseTrainer(ABC):
             if base_resolutions is None:
                 base_resolutions = [1024]
 
+            # Enable reference separation when use_reference_images is enabled for FLUX.2
+            separate_by_reference = use_reference_images and self.is_flux2
+
             bucket_manager = BucketManager(
                 base_resolutions=base_resolutions,
                 divisibility=8,
                 strategy=bucket_strategy,
-                multi_resolution_mode=multi_resolution_mode
+                multi_resolution_mode=multi_resolution_mode,
+                separate_by_reference=separate_by_reference
             )
             print(f"{self.log_prefix} Bucketing enabled: base_resolutions={base_resolutions}, strategy={bucket_strategy}, mode={multi_resolution_mode}")
+            if separate_by_reference:
+                print(f"{self.log_prefix} Reference separation enabled: batches will be separated by reference image availability")
         else:
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")
@@ -5853,12 +5859,17 @@ class BaseTrainer(ABC):
                 for item in dataset.items:
                     width = item.get("width", 1024)
                     height = item.get("height", 1024)
-                    bucket, image_info = bucket_manager.assign_image_to_bucket(
+                    # Check if item has reference images
+                    reference_images = item.get("reference_images", [])
+                    has_reference = len(reference_images) > 0
+
+                    bucket_key, image_info = bucket_manager.assign_image_to_bucket(
                         image_path=item["image_path"],
                         width=width,
                         height=height,
                         caption=item.get("caption", ""),
-                        dataset_unique_id=dataset.unique_id
+                        dataset_unique_id=dataset.unique_id,
+                        has_reference=has_reference
                     )
                     # Update item with bucket dimensions
                     item["width"] = image_info["bucket_width"]
@@ -5869,6 +5880,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Bucket distribution:")
             for bucket_size, count in sorted(bucket_counts.items()):
                 print(f"  {bucket_size}: {count} images")
+
+            # Print reference image statistics if separation is enabled
+            if bucket_manager.separate_by_reference:
+                ref_stats = bucket_manager.get_reference_statistics()
+                print(f"{self.log_prefix} Reference image distribution:")
+                print(f"  With reference: {ref_stats['with_reference']} images")
+                print(f"  Without reference: {ref_stats['without_reference']} images")
 
         # Setup latent caches (mode-dependent)
         latent_caches = None

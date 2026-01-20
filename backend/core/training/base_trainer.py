@@ -1735,7 +1735,7 @@ class BaseTrainer(ABC):
         """
         raise NotImplementedError("load_checkpoint() must be implemented by subclass")
 
-    def save_training_state(self, step: int, epoch: int, batch_idx: int):
+    def save_training_state(self, step: int, epoch: int, batch_idx: int, multi_noise_timesteps: int = 1):
         """
         Save training state (epoch progress, batch index, random state) to JSON file.
 
@@ -1746,6 +1746,7 @@ class BaseTrainer(ABC):
             step: Current global step
             epoch: Current epoch (0-indexed)
             batch_idx: Current batch index within epoch (next batch to process)
+            multi_noise_timesteps: MNT value at checkpoint time (for MNT-change detection on resume)
         """
         import json
         import random
@@ -1757,6 +1758,7 @@ class BaseTrainer(ABC):
             "global_step": step,
             "epoch": epoch,
             "batch_idx": batch_idx,
+            "multi_noise_timesteps": multi_noise_timesteps,  # Save MNT for resume calculation
             "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
         }
 
@@ -6115,6 +6117,59 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
 
+        # ============================================================
+        # MNT Change Detection and total_steps Recalculation
+        # ============================================================
+        # When MNT changes between runs, we need to recalculate total_steps:
+        # - global_step (from checkpoint) = already completed steps
+        # - remaining_steps = (remaining batches) * new_mnt
+        # - new_total_steps = global_step + remaining_steps
+        #
+        # This ensures training continues for the correct duration regardless
+        # of MNT changes during resume.
+        if resume_training_state is not None and global_step > 0:
+            checkpoint_mnt = resume_training_state.get('multi_noise_timesteps', 1)
+
+            if checkpoint_mnt != multi_noise_timesteps:
+                print(f"{self.log_prefix} MNT changed: {checkpoint_mnt} -> {multi_noise_timesteps}")
+
+                # Calculate remaining batches from current position
+                remaining_batches_in_epoch = batches_per_epoch - resume_batch_idx
+                remaining_full_epochs = num_epochs - start_epoch - 1
+                remaining_full_epoch_batches = remaining_full_epochs * batches_per_epoch
+                total_remaining_batches = remaining_batches_in_epoch + remaining_full_epoch_batches
+
+                # Calculate remaining steps with NEW MNT value
+                remaining_steps = total_remaining_batches * multi_noise_timesteps
+
+                # New total_steps = already completed + remaining
+                new_actual_total_steps = global_step + remaining_steps
+
+                print(f"{self.log_prefix} Recalculating total_steps due to MNT change:")
+                print(f"{self.log_prefix}   Completed steps (from checkpoint): {global_step}")
+                print(f"{self.log_prefix}   Remaining batches: {total_remaining_batches}")
+                print(f"{self.log_prefix}   Remaining steps (with new MNT={multi_noise_timesteps}): {remaining_steps}")
+                print(f"{self.log_prefix}   Old total_steps: {actual_total_steps}")
+                print(f"{self.log_prefix}   New total_steps: {new_actual_total_steps}")
+
+                actual_total_steps = new_actual_total_steps
+
+                # Update DB with corrected total_steps
+                if update_total_steps_callback is not None:
+                    update_total_steps_callback(actual_total_steps)
+
+                # Note: LR scheduler was already fast-forwarded to global_step
+                # It will continue from there with the remaining steps
+                # No need to reinitialize optimizer/scheduler since global_step is preserved
+                #
+                # Warning: For non-constant LR schedulers (cosine, etc.), the scheduler's
+                # total_steps was set to the old value. This may cause incorrect LR decay.
+                # For constant scheduler, this is not an issue.
+                if lr_scheduler_type.lower() != "constant":
+                    print(f"{self.log_prefix} WARNING: MNT change with {lr_scheduler_type} LR scheduler")
+                    print(f"{self.log_prefix} WARNING: LR scheduler was initialized with old total_steps")
+                    print(f"{self.log_prefix} WARNING: LR decay curve may be affected. Consider using 'constant' scheduler for MNT experiments.")
+
         # Clean up future steps in database (old data from previous interrupted training)
         # This prevents duplicate metrics when training resumes from an earlier step
         if self.run_id is not None:
@@ -7073,7 +7128,7 @@ class BaseTrainer(ABC):
                     if global_step % save_every_n_steps == 0:
                         self.save_checkpoint(step=global_step, epoch=epoch)
                         # Save training state (epoch progress) for mid-epoch resume
-                        self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
+                        self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
                         # Save optimizer state (momentum, variance, etc.)
                         self.save_optimizer_state(step=global_step)
                         # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
@@ -7169,9 +7224,10 @@ class BaseTrainer(ABC):
                     # Note: Progress callback is now called per-MNT-iteration (above)
                     # for real-time frontend updates during MNT training.
 
-                    # Check if total_steps reached (step-based training)
-                    if total_steps is not None and global_step >= total_steps:
-                        print(f"\n{self.log_prefix} Reached target steps ({total_steps}), stopping training")
+                    # Check if total_steps reached
+                    # Use actual_total_steps (which may be recalculated on MNT change during resume)
+                    if global_step >= actual_total_steps:
+                        print(f"\n{self.log_prefix} Reached target steps ({actual_total_steps}), stopping training")
                         return  # Exit training loop
 
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
@@ -7197,7 +7253,7 @@ class BaseTrainer(ABC):
             # This is acceptable as MNT iterations are gradient accumulation (can skip partial progress)
             state_saved = False
             try:
-                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1)
+                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
                 state_saved = True
                 print(f"{self.log_prefix} Training state saved successfully")
             except Exception as e:

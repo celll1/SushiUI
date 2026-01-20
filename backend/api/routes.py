@@ -1343,13 +1343,17 @@ async def get_current_model():
 
 @router.get("/samplers")
 async def get_samplers():
-    """Get available samplers (depends on current model type: SD/SDXL vs Z-Image)"""
+    """Get available samplers (depends on current model type: SD/SDXL/DEUS vs Flow Matching models)"""
     try:
-        # Check if current model is Z-Image
-        is_zimage = pipeline_manager.is_zimage_model
+        # Check if current model is Flow Matching (Z-Image, FLUX.2)
+        # Note: DEUS uses SDXL-like architecture with standard diffusion, NOT Flow Matching
+        is_flow_matching = (
+            pipeline_manager.is_zimage_model or
+            pipeline_manager.is_flux2_model
+        )
 
-        if is_zimage:
-            # Z-Image (Flow Matching) samplers
+        if is_flow_matching:
+            # Flow Matching samplers (Z-Image, FLUX.2)
             # Only Euler and Heun are truly different; other names map to Euler
             samplers_list = [
                 {"id": "euler", "name": "Euler (Flow Match)"},
@@ -1357,7 +1361,7 @@ async def get_samplers():
                 {"id": "heun", "name": "Heun (Flow Match)"},
             ]
         else:
-            # SD/SDXL samplers (standard diffusion)
+            # SD/SDXL/DEUS samplers (standard diffusion)
             samplers = get_available_samplers()
             display_names = get_sampler_display_names()
             samplers_list = [
@@ -1367,7 +1371,7 @@ async def get_samplers():
 
         return {
             "samplers": samplers_list,
-            "is_zimage": is_zimage
+            "is_flow_matching": is_flow_matching
         }
     except Exception as e:
         print(f"[ERROR] Failed to get samplers: {e}")

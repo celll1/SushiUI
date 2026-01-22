@@ -257,23 +257,37 @@ def _is_person_count_tag(tag: str) -> bool:
     """
     Check if a tag is a person count tag (e.g., "1girl", "2boys").
 
+    IMPORTANT: This must match PERSON_COUNT_TAGS in tag_group_utils.py.
+    Do NOT use .endswith() as it incorrectly matches "magical girl", "sailor girl", etc.
+
     Args:
         tag: Tag string
 
     Returns:
         True if tag is a person count tag
     """
-    tag_lower = tag.lower().strip()
+    # Normalize: lowercase, underscores to spaces
+    tag_normalized = tag.lower().strip().replace('_', ' ')
 
-    # 人数タグのパターン
-    # 例: 1girl, 2girls, 1boy, 2boys, 3girls, multiple_girls, solo, etc.
-    person_count_patterns = [
-        'solo', 'multiple_girls', 'multiple_boys',
+    # Person count tags (must match tag_group_utils.PERSON_COUNT_TAGS)
+    # These are special tags that indicate person count or focus
+    PERSON_COUNT_TAGS = {
+        'no humans', 'no_humans',
+        'solo',
+        'group',
+        'still life', 'still_life',
+        'multiple girls', 'multiple_girls',
+        'multiple boys', 'multiple_boys',
+        'multiple others', 'multiple_others',
+        'solo focus', 'solo_focus',
+        'male focus', 'male_focus',
+        'other focus', 'other_focus',
         '1girl', '2girls', '3girls', '4girls', '5girls', '6+girls',
         '1boy', '2boys', '3boys', '4boys', '5boys', '6+boys',
-    ]
+        '1other', '2others', '3others', '4others', '5others', '6+others',
+    }
 
-    return tag_lower in person_count_patterns
+    return tag_normalized in PERSON_COUNT_TAGS
 
 
 def get_default_caption_processing_config() -> Dict[str, any]:
@@ -368,7 +382,7 @@ def process_caption_with_tag_data(
                 continue
 
             # Exclude person count tags if enabled
-            if tag_dropout_exclude_person_count and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
+            if tag_dropout_exclude_person_count and _is_person_count_tag(tag):
                 filtered_tags.append((tag, category))
                 continue
 
@@ -408,7 +422,7 @@ def process_caption_with_tag_data(
 
             for tag, category in tags_to_shuffle:
                 # Exclude person count tags if enabled (will be placed at the start of General group)
-                if exclude_person_count_from_shuffle and category == "General" and tag.endswith(("girl", "girls", "boy", "boys", "other", "others")):
+                if exclude_person_count_from_shuffle and category == "General" and _is_person_count_tag(tag):
                     person_count_tags.append((tag, category))
                 elif category in shuffle_tag_groups_set:
                     groups_dict[category].append((tag, category))

@@ -198,6 +198,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
   const [timestepMin, setTimestepMin] = useState<number>(0.0);
   const [timestepMax, setTimestepMax] = useState<number>(1.0);
+  // Distribution-specific parameters
+  const [timestepMean, setTimestepMean] = useState<number>(0.0);  // For logit_normal/normal
+  const [timestepStd, setTimestepStd] = useState<number>(1.0);    // For logit_normal/normal
+  const [timestepAlpha, setTimestepAlpha] = useState<number>(2.0); // For beta
+  const [timestepBeta, setTimestepBeta] = useState<number>(2.0);   // For beta
 
   // Regularization settings (prevent overbaking)
   const [regularizationType, setRegularizationType] = useState<string>("none");  // Deprecated, kept for API compatibility
@@ -358,6 +363,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
         if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
         if (params.timestep_sampling.max_timestep !== undefined) setTimestepMax(params.timestep_sampling.max_timestep);
+        // Distribution-specific parameters
+        if (params.timestep_sampling.mean !== undefined) setTimestepMean(params.timestep_sampling.mean);
+        if (params.timestep_sampling.std !== undefined) setTimestepStd(params.timestep_sampling.std);
+        if (params.timestep_sampling.alpha !== undefined) setTimestepAlpha(params.timestep_sampling.alpha);
+        if (params.timestep_sampling.beta !== undefined) setTimestepBeta(params.timestep_sampling.beta);
       }
 
       // Regularization
@@ -780,6 +790,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
     if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
     if (config.timestepMax !== undefined) setTimestepMax(config.timestepMax);
+    if (config.timestepMean !== undefined) setTimestepMean(config.timestepMean);
+    if (config.timestepStd !== undefined) setTimestepStd(config.timestepStd);
+    if (config.timestepAlpha !== undefined) setTimestepAlpha(config.timestepAlpha);
+    if (config.timestepBeta !== undefined) setTimestepBeta(config.timestepBeta);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -904,6 +918,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         distribution: timestepDistribution,
         min_timestep: timestepMin,
         max_timestep: timestepMax,
+        // Distribution-specific parameters (only include if relevant)
+        ...(timestepDistribution === "logit_normal" || timestepDistribution === "lognormal" || timestepDistribution === "normal" ? {
+          mean: timestepMean,
+          std: timestepStd,
+        } : {}),
+        ...(timestepDistribution === "beta" ? {
+          alpha: timestepAlpha,
+          beta: timestepBeta,
+        } : {}),
       },
       // Regularization settings
       regularization_type: regularizationType !== "none" ? regularizationType : null,
@@ -1366,8 +1389,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                   >
                     <option value="uniform">Uniform (Default)</option>
+                    <option value="logit_normal">Logit-Normal (FLUX/SD3)</option>
                     <option value="normal">Normal (Gaussian)</option>
-                    <option value="lognormal">Log-Normal</option>
                     <option value="beta">Beta Distribution</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
@@ -1404,6 +1427,77 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <p className="text-xs text-gray-500">
                   Timestep range for sampling (0.0 = clean, 1.0 = fully noised)
                 </p>
+
+                {/* Distribution-specific parameters: Mean/Std for logit_normal and normal */}
+                {(timestepDistribution === "logit_normal" || timestepDistribution === "lognormal" || timestepDistribution === "normal") && (
+                  <div className="grid grid-cols-2 gap-4 mt-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Mean {timestepDistribution === "normal" ? "(center)" : "(bias)"}
+                      </label>
+                      <input
+                        type="number"
+                        value={timestepMean}
+                        onChange={(e) => setTimestepMean(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMean(timestepDistribution === "normal" ? 0.5 : 0.0); }}
+                        step="0.1"
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Std (spread)</label>
+                      <input
+                        type="number"
+                        value={timestepStd}
+                        onChange={(e) => setTimestepStd(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepStd(1.0); }}
+                        min="0.01"
+                        step="0.1"
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <p className="col-span-2 text-xs text-gray-500">
+                      {timestepDistribution === "normal" ? (
+                        <>Mean: center of distribution (0.0-1.0). Std: spread (smaller = more concentrated)</>
+                      ) : (
+                        <>Mean: positive = high timesteps (noisy), negative = low timesteps (clean). Std: spread</>
+                      )}
+                    </p>
+                  </div>
+                )}
+
+                {/* Distribution-specific parameters: Alpha/Beta for beta distribution */}
+                {timestepDistribution === "beta" && (
+                  <div className="grid grid-cols-2 gap-4 mt-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Alpha</label>
+                      <input
+                        type="number"
+                        value={timestepAlpha}
+                        onChange={(e) => setTimestepAlpha(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepAlpha(2.0); }}
+                        min="0.1"
+                        step="0.5"
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Beta</label>
+                      <input
+                        type="number"
+                        value={timestepBeta}
+                        onChange={(e) => setTimestepBeta(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepBeta(2.0); }}
+                        min="0.1"
+                        step="0.5"
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <p className="col-span-2 text-xs text-gray-500">
+                      α=β=1: uniform, α=β=2: bell-shaped, α&gt;β: bias to high timesteps, α&lt;β: bias to low timesteps
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 

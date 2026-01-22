@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
+import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -1498,6 +1499,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </p>
                   </div>
                 )}
+
+                {/* Distribution Preview Graph */}
+                <div className="mt-4">
+                  <label className="block text-xs text-gray-400 mb-2">Distribution Preview</label>
+                  <TimestepDistributionGraph
+                    distribution={timestepDistribution}
+                    minTimestep={timestepMin}
+                    maxTimestep={timestepMax}
+                    mean={timestepMean}
+                    std={timestepStd}
+                    alpha={timestepAlpha}
+                    beta={timestepBeta}
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1 text-center">
+                    X-axis: Timestep (0=clean, 1=noisy) | Y-axis: Sampling probability
+                  </p>
+                </div>
               </div>
             </div>
 

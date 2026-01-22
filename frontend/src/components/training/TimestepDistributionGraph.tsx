@@ -94,8 +94,33 @@ export default function TimestepDistributionGraph({
   width = 300,
   height = 80,
 }: TimestepDistributionGraphProps) {
+  // Validate and sanitize numeric inputs
+  const safeNum = (val: any, fallback: number): number => {
+    const num = typeof val === 'string' ? parseFloat(val) : val;
+    return typeof num === 'number' && isFinite(num) ? num : fallback;
+  };
+
+  const safeMean = safeNum(mean, 0.0);
+  const safeStd = safeNum(std, 1.0);
+  const safeAlpha = safeNum(alpha, 2.0);
+  const safeBeta = safeNum(beta, 2.0);
+  const safeMinTimestep = safeNum(minTimestep, 0.0);
+  const safeMaxTimestep = safeNum(maxTimestep, 1.0);
+
+  // Check if we have valid parameters for rendering
+  const isValidForRender =
+    safeMinTimestep < safeMaxTimestep &&
+    safeStd > 0 &&
+    safeAlpha > 0 &&
+    safeBeta > 0;
+
   // Generate points for the distribution curve
   const { path, maxY, points } = useMemo(() => {
+    // Return empty if invalid parameters
+    if (!isValidForRender) {
+      return { path: "", maxY: 1, points: [] };
+    }
+
     const numPoints = 100;
     const pts: { x: number; y: number }[] = [];
 
@@ -106,25 +131,25 @@ export default function TimestepDistributionGraph({
       switch (distribution) {
         case "uniform":
           // Uniform within [minTimestep, maxTimestep]
-          if (t >= minTimestep && t <= maxTimestep) {
+          if (t >= safeMinTimestep && t <= safeMaxTimestep) {
             y = 1;
           }
           break;
 
         case "logit_normal":
         case "lognormal":
-          y = logitNormalPdf(t, mean, std);
+          y = logitNormalPdf(t, safeMean, safeStd);
           break;
 
         case "normal":
           // Normal distribution clamped to [0, 1]
-          if (t >= minTimestep && t <= maxTimestep) {
-            y = normalPdf(t, mean, std);
+          if (t >= safeMinTimestep && t <= safeMaxTimestep) {
+            y = normalPdf(t, safeMean, safeStd);
           }
           break;
 
         case "beta":
-          y = betaPdf(t, alpha, beta);
+          y = betaPdf(t, safeAlpha, safeBeta);
           break;
 
         default:
@@ -154,35 +179,51 @@ export default function TimestepDistributionGraph({
     });
 
     return { path: pathStr, maxY: maxYVal, points: pts };
-  }, [distribution, minTimestep, maxTimestep, mean, std, alpha, beta, width, height]);
+  }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, width, height]);
 
   // Calculate mean timestep for the indicator
   const expectedMean = useMemo(() => {
+    if (!isValidForRender) return 0.5;
+
     switch (distribution) {
       case "uniform":
-        return (minTimestep + maxTimestep) / 2;
+        return (safeMinTimestep + safeMaxTimestep) / 2;
       case "logit_normal":
       case "lognormal":
         // Approximate: sigmoid(mean) gives the mode, not mean
         // For visualization, use sigmoid(mean) as indicator
-        return 1 / (1 + Math.exp(-mean));
+        return 1 / (1 + Math.exp(-safeMean));
       case "normal":
-        return Math.max(minTimestep, Math.min(maxTimestep, mean));
+        return Math.max(safeMinTimestep, Math.min(safeMaxTimestep, safeMean));
       case "beta":
-        return alpha / (alpha + beta);
+        return safeAlpha / (safeAlpha + safeBeta);
       default:
         return 0.5;
     }
-  }, [distribution, minTimestep, maxTimestep, mean, alpha, beta]);
+  }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeAlpha, safeBeta]);
 
   const padding = 4;
   const graphWidth = width - padding * 2;
   const graphHeight = height - padding * 2 - 15;
 
   // Min/max range indicator positions
-  const minX = padding + minTimestep * graphWidth;
-  const maxX = padding + maxTimestep * graphWidth;
+  const minX = padding + safeMinTimestep * graphWidth;
+  const maxX = padding + safeMaxTimestep * graphWidth;
   const meanX = padding + expectedMean * graphWidth;
+
+  // Show placeholder if invalid parameters
+  if (!isValidForRender) {
+    return (
+      <div className="bg-gray-900 rounded p-2">
+        <svg width={width} height={height} className="w-full">
+          <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="#1f2937" />
+          <text x={width / 2} y={height / 2} fontSize="10" fill="#6b7280" textAnchor="middle">
+            Enter valid parameters
+          </text>
+        </svg>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-gray-900 rounded p-2">
@@ -262,11 +303,11 @@ export default function TimestepDistributionGraph({
         {/* Legend */}
         <text x={padding + graphWidth - 2} y={padding + 10} fontSize="8" fill="#9ca3af" textAnchor="end">
           {distribution === "logit_normal" || distribution === "lognormal"
-            ? `logit-normal(${mean.toFixed(1)}, ${std.toFixed(1)})`
+            ? `logit-normal(${safeMean.toFixed(1)}, ${safeStd.toFixed(1)})`
             : distribution === "normal"
-            ? `normal(${mean.toFixed(2)}, ${std.toFixed(2)})`
+            ? `normal(${safeMean.toFixed(2)}, ${safeStd.toFixed(2)})`
             : distribution === "beta"
-            ? `beta(${alpha.toFixed(1)}, ${beta.toFixed(1)})`
+            ? `beta(${safeAlpha.toFixed(1)}, ${safeBeta.toFixed(1)})`
             : "uniform"}
         </text>
       </svg>

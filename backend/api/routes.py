@@ -4651,11 +4651,12 @@ async def get_training_run_params(
         "text_encoder_lr": training_params.get("text_encoder_lr"),
         "text_encoder_1_lr": training_params.get("text_encoder_1_lr"),
         "text_encoder_2_lr": training_params.get("text_encoder_2_lr"),
-        # Parse dtype config (YAML structure: dtype.weight, dtype.training, dtype.save, dtype.vae)
-        "weight_dtype": training_params.get("dtype", {}).get("weight", "fp16") if isinstance(training_params.get("dtype"), dict) else training_params.get("weight_dtype", "fp16"),
-        "training_dtype": training_params.get("dtype", {}).get("training", "fp16") if isinstance(training_params.get("dtype"), dict) else training_params.get("training_dtype", "fp16"),
-        "output_dtype": training_params.get("dtype", {}).get("save", "fp32") if isinstance(training_params.get("dtype"), dict) else training_params.get("output_dtype", "fp32"),
-        "vae_dtype": training_params.get("dtype", {}).get("vae", "fp16") if isinstance(training_params.get("dtype"), dict) else process_config.get("model", {}).get("vae_dtype", "fp16"),
+        # Parse dtype config (YAML structure: process_config.dtype.weight/training/save/vae)
+        # Note: dtype is at process_config level, NOT inside train section
+        "weight_dtype": process_config.get("dtype", {}).get("weight", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
+        "training_dtype": process_config.get("dtype", {}).get("training", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
+        "output_dtype": process_config.get("dtype", {}).get("save", "fp32") if isinstance(process_config.get("dtype"), dict) else "fp32",
+        "vae_dtype": process_config.get("dtype", {}).get("vae", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
         "mixed_precision": training_params.get("mixed_precision", True),
         "use_flash_attention": training_params.get("use_flash_attention", False),
         "min_snr_gamma": training_params.get("min_snr_gamma", 5.0),

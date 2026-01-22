@@ -83,10 +83,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [showDEUS, setShowDEUS] = useState(true);
   const [showFlux2, setShowFlux2] = useState(true);
 
-  // Flag to prevent dtype reset on edit mode
-  const [isLoadingEditParams, setIsLoadingEditParams] = useState(false);
-  // Synchronous ref for immediate flag check (useState is async and batched)
-  const isLoadingEditParamsRef = useRef(false);
+  // Flag to track if dtype settings have been explicitly set (from YAML or user)
+  // When true, baseModelPath changes will NOT override dtype settings
+  const dtypeExplicitlySetRef = useRef(false);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -272,10 +271,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const startTime = performance.now();
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
 
-    // Set flag to prevent dtype reset when baseModelPath changes
-    // Use ref for synchronous check (useState is async and may not be updated before useEffect fires)
-    isLoadingEditParamsRef.current = true;
-    setIsLoadingEditParams(true);
+    // Mark dtype as explicitly set before loading params
+    // This prevents baseModelPath useEffect from overriding YAML values
+    dtypeExplicitlySetRef.current = true;
 
     try {
       const apiStartTime = performance.now();
@@ -432,11 +430,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.error("[TrainingConfig] Error message:", err.message);
       setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
     } finally {
-      // Clear the flag after a short delay to ensure all state updates are processed
-      setTimeout(() => {
-        isLoadingEditParamsRef.current = false;
-        setIsLoadingEditParams(false);
-      }, 100);
+      // dtypeExplicitlySetRef stays true - we don't reset it
+      // This ensures dtype settings are never overwritten by baseModelPath changes
     }
   }, []);
 
@@ -460,14 +455,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes
-  // Skip when loading edit parameters to preserve saved dtype settings
+  // Auto-configure precision settings when model changes (only if not explicitly set)
   useEffect(() => {
     if (!baseModelPath) return;
 
-    // Don't reset dtype settings when loading edit parameters
-    // Use ref for synchronous check since useState updates are batched
-    if (isLoadingEditParams || isLoadingEditParamsRef.current) {
-      console.log("[TrainingConfig] Skipping dtype preset - loading edit params (ref:", isLoadingEditParamsRef.current, ", state:", isLoadingEditParams, ")");
+    // Skip if dtype was explicitly set (from YAML load or user change)
+    if (dtypeExplicitlySetRef.current) {
+      console.log("[TrainingConfig] Skipping dtype preset - explicitly set from YAML or user");
       return;
     }
 
@@ -492,7 +486,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setOutputDtype("fp16");
       setVaeDtype("fp16");
     }
-  }, [baseModelPath, isLoadingEditParams]);
+  }, [baseModelPath]);
 
   // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {

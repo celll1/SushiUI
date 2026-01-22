@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
@@ -85,6 +85,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Flag to prevent dtype reset on edit mode
   const [isLoadingEditParams, setIsLoadingEditParams] = useState(false);
+  // Synchronous ref for immediate flag check (useState is async and batched)
+  const isLoadingEditParamsRef = useRef(false);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -271,6 +273,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
 
     // Set flag to prevent dtype reset when baseModelPath changes
+    // Use ref for synchronous check (useState is async and may not be updated before useEffect fires)
+    isLoadingEditParamsRef.current = true;
     setIsLoadingEditParams(true);
 
     try {
@@ -430,6 +434,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     } finally {
       // Clear the flag after a short delay to ensure all state updates are processed
       setTimeout(() => {
+        isLoadingEditParamsRef.current = false;
         setIsLoadingEditParams(false);
       }, 100);
     }
@@ -460,8 +465,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (!baseModelPath) return;
 
     // Don't reset dtype settings when loading edit parameters
-    if (isLoadingEditParams) {
-      console.log("[TrainingConfig] Skipping dtype preset - loading edit params");
+    // Use ref for synchronous check since useState updates are batched
+    if (isLoadingEditParams || isLoadingEditParamsRef.current) {
+      console.log("[TrainingConfig] Skipping dtype preset - loading edit params (ref:", isLoadingEditParamsRef.current, ", state:", isLoadingEditParams, ")");
       return;
     }
 

@@ -1387,7 +1387,16 @@ export interface TrainingRunCreateRequest {
   multi_noise_timesteps?: number;
   multi_noise_mode?: string;
   trajectory_blend_alpha?: number;
-  timestep_sampling?: { distribution: string; min_timestep: number; max_timestep: number };
+  timestep_sampling?: {
+    distribution: string;
+    min_timestep: number;
+    max_timestep: number;
+    // Distribution-specific parameters
+    mean?: number;   // For logit_normal/normal
+    std?: number;    // For logit_normal/normal
+    alpha?: number;  // For beta
+    beta?: number;   // For beta
+  };
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;
   use_reference_images?: boolean;

@@ -5800,6 +5800,11 @@ class BaseTrainer(ABC):
         timestep_sampler = TimestepSampler.from_config(timestep_sampling_config)
         print(f"{self.log_prefix} Timestep sampler: {timestep_sampler.__class__.__name__}")
         print(f"{self.log_prefix} Timestep range: [{timestep_sampler.min_timestep:.3f}, {timestep_sampler.max_timestep:.3f}]")
+        # Log distribution-specific parameters
+        if hasattr(timestep_sampler, 'mean') and hasattr(timestep_sampler, 'std'):
+            print(f"{self.log_prefix} Timestep params: mean={timestep_sampler.mean:.2f}, std={timestep_sampler.std:.2f}")
+        elif hasattr(timestep_sampler, 'alpha') and hasattr(timestep_sampler, 'beta'):
+            print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
         # Cache alphas_cumprod on GPU to avoid repeated .to(device) calls in compute_snr()

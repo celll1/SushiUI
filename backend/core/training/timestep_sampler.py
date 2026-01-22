@@ -2,13 +2,24 @@
 Timestep Sampling Strategies for Diffusion Training.
 
 This module provides an extensible framework for sampling timesteps during training.
-Currently implements uniform sampling, with support for future distributions.
 
-Future extensions:
-- NormalTimestepSampler: Sample from normal distribution
-- LogNormalTimestepSampler: Sample from log-normal distribution
-- BetaTimestepSampler: Sample from beta distribution
-- CustomTimestepSampler: Sample from custom weighted distribution
+Supported distributions:
+- UniformTimestepSampler: Standard uniform distribution [min, max]
+- NormalTimestepSampler: Gaussian distribution, clamped to [min, max]
+- LogitNormalTimestepSampler: Logit-normal (sigmoid of normal), used in FLUX/SD3
+- BetaTimestepSampler: Beta distribution for flexible shape control
+- CustomTimestepSampler: Arbitrary weighted distribution
+
+NOTE on terminology:
+- "logit_normal" / "lognormal" in this codebase refers to sigmoid(normal(mean, std))
+- This matches sd-scripts, ai-toolkit, and diffusers implementations
+- It is NOT the mathematical log-normal distribution (exp of normal)
+
+Timestep interpretation (Flow Matching):
+- t=0: Clean image (no noise)
+- t=1: Pure noise
+- "High timestep" = early denoising (more noise to remove)
+- "Low timestep" = late denoising (mostly clean, fine details)
 """
 
 from abc import ABC, abstractmethod
@@ -101,10 +112,10 @@ class TimestepSampler(ABC):
             mean = config.get("mean", 0.5)
             std = config.get("std", 0.2)
             return NormalTimestepSampler(min_timestep, max_timestep, mean, std)
-        elif distribution == "lognormal":
+        elif distribution in ("lognormal", "logit_normal", "logit-normal", "logitnormal"):
             mean = config.get("mean", 0.0)
             std = config.get("std", 1.0)
-            return LogNormalTimestepSampler(min_timestep, max_timestep, mean, std)
+            return LogitNormalTimestepSampler(min_timestep, max_timestep, mean, std)
         elif distribution == "beta":
             alpha = config.get("alpha", 2.0)
             beta = config.get("beta", 2.0)
@@ -115,7 +126,7 @@ class TimestepSampler(ABC):
         else:
             raise ValueError(
                 f"Unknown timestep distribution: '{distribution}'. "
-                f"Supported: 'uniform', 'normal', 'lognormal', 'beta', 'custom'"
+                f"Supported: 'uniform', 'normal', 'logit_normal' (or 'lognormal'), 'beta', 'custom'"
             )
 
 
@@ -183,11 +194,35 @@ class NormalTimestepSampler(TimestepSampler):
         return timesteps
 
 
-class LogNormalTimestepSampler(TimestepSampler):
+class LogitNormalTimestepSampler(TimestepSampler):
     """
-    Sample timesteps from log-normal distribution.
+    Sample timesteps from logit-normal distribution (sd-scripts/ai-toolkit/diffusers style).
 
-    Useful for emphasizing early or late timesteps depending on parameters.
+    This is the standard "logit_normal" distribution used in FLUX/SD3 training.
+    It applies sigmoid to a normal distribution to get values in [0, 1].
+
+    Formula: timestep = sigmoid(normal(mean, std))
+
+    Parameter effects:
+    - mean=0, std=1: Centered around 0.5, smooth bell curve
+    - mean=-1, std=1: Biased toward LOW timesteps (cleaner images, later denoising)
+    - mean=1, std=1: Biased toward HIGH timesteps (noisier images, early denoising)
+    - mean=0, std=0.5: Very concentrated around 0.5
+    - mean=0, std=2: Spread out but still [0,1] bounded
+
+    Note: "High timestep" = more noise = early in denoising process
+          "Low timestep" = less noise = later in denoising process (cleaner)
+
+    Example:
+        >>> # Focus on high-noise (early denoising) timesteps
+        >>> sampler = LogitNormalTimestepSampler(mean=1.0, std=1.0)
+        >>> timesteps = sampler.sample(1000, torch.device("cpu"))
+        >>> print(f"Mean: {timesteps.mean():.3f}")  # ~0.73
+
+        >>> # Focus on low-noise (late denoising) timesteps
+        >>> sampler = LogitNormalTimestepSampler(mean=-1.0, std=1.0)
+        >>> timesteps = sampler.sample(1000, torch.device("cpu"))
+        >>> print(f"Mean: {timesteps.mean():.3f}")  # ~0.27
     """
 
     def __init__(
@@ -202,12 +237,31 @@ class LogNormalTimestepSampler(TimestepSampler):
         self.std = std
 
     def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Sample from log-normal distribution, scaled to [min, max]."""
-        timesteps = torch.exp(torch.randn(batch_size, device=device) * self.std + self.mean)
-        # Normalize to [0, 1] then scale to [min, max]
-        timesteps = (timesteps - timesteps.min()) / (timesteps.max() - timesteps.min())
+        """
+        Sample from logit-normal distribution.
+
+        Process:
+        1. Sample from normal distribution N(mean, std)
+        2. Apply sigmoid to get [0, 1]
+        3. Scale to [min_timestep, max_timestep]
+
+        Returns:
+            Timesteps in [min_timestep, max_timestep]
+        """
+        # Sample from normal distribution
+        u = torch.randn(batch_size, device=device) * self.std + self.mean
+
+        # Apply sigmoid to get [0, 1] - this is the "logit-normal" transformation
+        timesteps = torch.sigmoid(u)
+
+        # Scale to [min_timestep, max_timestep]
         timesteps = timesteps * (self.max_timestep - self.min_timestep) + self.min_timestep
+
         return timesteps
+
+
+# Alias for backward compatibility (config may use "lognormal")
+LogNormalTimestepSampler = LogitNormalTimestepSampler
 
 
 class BetaTimestepSampler(TimestepSampler):

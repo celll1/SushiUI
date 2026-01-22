@@ -436,37 +436,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
 
   useEffect(() => {
-    console.log("[TrainingConfig] Initial useEffect running...");
-    const startTime = performance.now();
-
     // If in edit mode, load YAML parameters first (fast)
     if (editRunId) {
-      console.log(`[TrainingConfig] Edit mode detected, loading YAML parameters first...`);
       loadTrainingRunParams(editRunId);
     }
 
-    // Then load datasets/models/etc (slow, 数分)
+    // Then load datasets/models/etc (slow)
     loadDatasets();
     loadModels();
     loadSamplers();
     loadScheduleTypes();
     loadPresets();
-    console.log(`[TrainingConfig] All load functions called in ${performance.now() - startTime}ms`);
   }, [editRunId, loadTrainingRunParams]);
 
-  // Auto-configure precision settings when model changes
   // Auto-configure precision settings when model changes (only if not explicitly set)
   useEffect(() => {
     if (!baseModelPath) return;
 
     // Skip if dtype was explicitly set (from YAML load or user change)
-    if (dtypeExplicitlySetRef.current) {
-      console.log("[TrainingConfig] Skipping dtype preset - explicitly set from YAML or user");
-      return;
-    }
+    if (dtypeExplicitlySetRef.current) return;
 
     const arch = getModelArchitecture(baseModelPath);
-    console.log(`[TrainingConfig] Setting dtype presets for architecture: ${arch}`);
 
     // Dtype presets based on architecture:
     // - SD1.5/SDXL/DEUS: VAE=fp16, weight=fp32, training=fp16, save=fp16

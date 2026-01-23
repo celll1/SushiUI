@@ -4242,14 +4242,15 @@ async def create_training_run(
         else:
             raise HTTPException(status_code=400, detail="Either dataset_id or dataset_configs must be provided")
 
-        # Build dataset_configs_for_yaml (with path, caption_processing, and caption_types)
+        # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
+        # NOTE: caption_processing is NOT saved to YAML - read from database at training time
         dataset_configs_for_yaml = []
         for config in dataset_configs:
             dataset = datasets_db.query(Dataset).filter(Dataset.id == config["dataset_id"]).first()
             if dataset:
                 yaml_config = {
+                    "dataset_id": config["dataset_id"],  # Include dataset_id for YAML editing support
                     "path": dataset.path,
-                    "caption_processing": dataset.caption_processing or {}
                 }
                 # Add caption_types if specified
                 if config.get("caption_types"):
@@ -4705,6 +4706,7 @@ async def update_training_run(
 
     try:
         # Get dataset configs
+        # NOTE: caption_processing is NOT saved to YAML - read from database at training time
         dataset_configs = []
         dataset_configs_for_yaml = []
         if request.dataset_configs:
@@ -4715,12 +4717,12 @@ async def update_training_run(
                     "caption_types": config.caption_types,
                     "filters": {}
                 })
-                # Build YAML format
+                # Build YAML format (with dataset_id for YAML editing support)
                 dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
                 if dataset:
                     yaml_config = {
+                        "dataset_id": config.dataset_id,  # Include dataset_id for YAML editing support
                         "path": dataset.path,
-                        "caption_processing": dataset.caption_processing or {}
                     }
                     if config.caption_types:
                         yaml_config["caption_types"] = config.caption_types

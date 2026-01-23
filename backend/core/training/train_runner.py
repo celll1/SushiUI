@@ -557,11 +557,44 @@ def main():
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
             sys.exit(1)
 
-        # Get dataset configs (support multiple datasets)
-        dataset_configs = run.dataset_configs or []
+        # Get dataset configs from YAML (priority) or database (fallback)
+        # This ensures YAML edits are reflected in training
+        process_config_for_datasets = config['config']['process'][0]
+        yaml_datasets = process_config_for_datasets.get('datasets', [])
+
+        dataset_configs = []
+        if yaml_datasets:
+            # Build dataset_configs from YAML datasets section
+            for yaml_ds in yaml_datasets:
+                ds_config = {
+                    "dataset_id": yaml_ds.get("dataset_id"),
+                    "caption_types": yaml_ds.get("caption_types", []),
+                    "filters": {}
+                }
+                # If dataset_id is missing in YAML, try to resolve from folder_path
+                if not ds_config["dataset_id"] and yaml_ds.get("folder_path"):
+                    folder_path = yaml_ds.get("folder_path")
+                    dataset_by_path = datasets_db.query(Dataset).filter(Dataset.path == folder_path).first()
+                    if dataset_by_path:
+                        ds_config["dataset_id"] = dataset_by_path.id
+                        print(f"[TrainRunner] Resolved dataset_id={dataset_by_path.id} from folder_path={folder_path}")
+                    else:
+                        print(f"[TrainRunner] WARNING: Could not resolve dataset from folder_path={folder_path}")
+                        continue
+                if ds_config["dataset_id"]:
+                    dataset_configs.append(ds_config)
+            print(f"[TrainRunner] Loaded {len(dataset_configs)} dataset(s) from YAML")
+
+        # Fallback to database if YAML has no datasets
+        if not dataset_configs:
+            dataset_configs = run.dataset_configs or []
+            if dataset_configs:
+                print(f"[TrainRunner] Loaded {len(dataset_configs)} dataset(s) from database (fallback)")
+
+        # Fallback to legacy single dataset
         if not dataset_configs and run.dataset_id:
-            # Fallback to legacy single dataset
             dataset_configs = [{"dataset_id": run.dataset_id, "caption_types": [], "filters": {}}]
+            print(f"[TrainRunner] Using legacy single dataset_id={run.dataset_id}")
 
         if not dataset_configs:
             print("[TrainRunner] ERROR: No datasets configured")

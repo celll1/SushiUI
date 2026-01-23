@@ -1279,7 +1279,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   value={totalSteps}
                   onChange={(e) => setTotalSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTotalSteps(1000); }}
                   min="1"
-                  max="50000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1291,7 +1290,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   value={epochs}
                   onChange={(e) => setEpochs(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setEpochs(10); }}
                   min="1"
-                  max="1000"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1304,7 +1302,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={batchSize}
                 onChange={(e) => setBatchSize(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBatchSize(4); }}
                 min="1"
-                max="16"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1318,7 +1315,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={multiNoiseTimesteps}
                 onChange={(e) => setMultiNoiseTimesteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setMultiNoiseTimesteps(1); }}
                 min="1"
-                max="10"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
               <p className="text-xs text-gray-500 mt-1">
@@ -2288,7 +2284,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={blocksToSwap}
                 onChange={(e) => setBlocksToSwap(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBlocksToSwap(0); }}
                 min={0}
-                max={29}
                 step={1}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
               />
@@ -2781,8 +2776,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    [256, 512, 768],
-                    [1024, 1280, 1536],
+                    [256, 512, 768, 1024],
+                    [1280, 1536, 1792, 2048],
                   ].map((resGroup, groupIdx) => (
                     <div key={groupIdx} className="space-y-2">
                       {resGroup.map(res => (

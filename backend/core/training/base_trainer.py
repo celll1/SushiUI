@@ -1735,6 +1735,81 @@ class BaseTrainer(ABC):
         """
         raise NotImplementedError("load_checkpoint() must be implemented by subclass")
 
+    def _compute_dataset_fingerprint(self, datasets: List[Any]) -> dict:
+        """
+        Compute a fingerprint of the dataset structure for change detection on resume.
+
+        This fingerprint is used to detect if the dataset has changed between training sessions.
+        If the dataset changes, the saved random_state (shuffle order) becomes invalid.
+
+        IMPORTANT: Only image file information is included in the fingerprint.
+        Caption changes do NOT invalidate the shuffle state because:
+        - Captions don't affect the order of images in batches
+        - Users may want to edit captions without losing training progress
+
+        Args:
+            datasets: List of dataset objects
+
+        Returns:
+            Dict containing:
+                - dataset_ids: List of dataset unique_ids
+                - total_item_count: Total number of items across all datasets
+                - image_paths_hash: Hash of sorted image paths (to detect additions/removals)
+        """
+        import hashlib
+
+        dataset_ids = []
+        all_image_paths = []
+
+        for dataset in datasets:
+            dataset_ids.append(dataset.unique_id)
+            for item in dataset.items:
+                # Only include image_path - captions are intentionally excluded
+                all_image_paths.append(item.get("image_path", ""))
+
+        # Sort paths for consistent hashing (order within dataset matters, but we hash sorted for detection)
+        # Actually, we want to detect if the SET of images changed, not their order
+        sorted_paths = sorted(all_image_paths)
+        paths_str = "\n".join(sorted_paths)
+        paths_hash = hashlib.md5(paths_str.encode('utf-8')).hexdigest()
+
+        return {
+            "dataset_ids": dataset_ids,
+            "total_item_count": len(all_image_paths),
+            "image_paths_hash": paths_hash,
+        }
+
+    def _check_dataset_fingerprint_changed(self, saved_fingerprint: Optional[dict], current_fingerprint: dict) -> bool:
+        """
+        Check if the dataset fingerprint has changed since the checkpoint was saved.
+
+        Args:
+            saved_fingerprint: Fingerprint from saved training state (may be None for old checkpoints)
+            current_fingerprint: Current dataset fingerprint
+
+        Returns:
+            True if dataset has changed (shuffle state should be invalidated)
+        """
+        if saved_fingerprint is None:
+            # Old checkpoint without fingerprint - assume unchanged for backward compatibility
+            print(f"{self.log_prefix} No dataset fingerprint in saved state (old checkpoint format)")
+            return False
+
+        # Check if any key component changed
+        if saved_fingerprint.get("total_item_count") != current_fingerprint.get("total_item_count"):
+            print(f"{self.log_prefix} Dataset item count changed: {saved_fingerprint.get('total_item_count')} -> {current_fingerprint.get('total_item_count')}")
+            return True
+
+        if saved_fingerprint.get("image_paths_hash") != current_fingerprint.get("image_paths_hash"):
+            print(f"{self.log_prefix} Dataset image paths changed (hash mismatch)")
+            return True
+
+        if saved_fingerprint.get("dataset_ids") != current_fingerprint.get("dataset_ids"):
+            print(f"{self.log_prefix} Dataset IDs changed: {saved_fingerprint.get('dataset_ids')} -> {current_fingerprint.get('dataset_ids')}")
+            return True
+
+        return False
+
     def save_training_state(self, step: int, epoch: int, batch_idx: int, multi_noise_timesteps: int = 1):
         """
         Save training state (epoch progress, batch index, random state) to JSON file.
@@ -1760,6 +1835,8 @@ class BaseTrainer(ABC):
             "batch_idx": batch_idx,
             "multi_noise_timesteps": multi_noise_timesteps,  # Save MNT for resume calculation
             "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
+            # Dataset fingerprint for change detection on resume
+            "dataset_fingerprint": getattr(self, '_dataset_fingerprint', None),
         }
 
         with open(state_file, 'w') as f:
@@ -1783,7 +1860,7 @@ class BaseTrainer(ABC):
             step: Step number to load state for
 
         Returns:
-            Dict with keys: global_step, epoch, batch_idx, random_state
+            Dict with keys: global_step, epoch, batch_idx, random_state, dataset_fingerprint
             None if state file not found
         """
         import json
@@ -5713,6 +5790,13 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batch size: {batch_size}")
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+
+        # Compute dataset fingerprint for change detection on resume
+        # This is stored in training state and compared when resuming
+        # IMPORTANT: Only image paths are included - caption changes do NOT invalidate shuffle state
+        self._dataset_fingerprint = self._compute_dataset_fingerprint(datasets)
+        print(f"{self.log_prefix} Dataset fingerprint: {self._dataset_fingerprint['total_item_count']} items, hash={self._dataset_fingerprint['image_paths_hash'][:8]}...")
+
         if use_reference_images:
             print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
             if not self.is_flux2:
@@ -6251,8 +6335,20 @@ class BaseTrainer(ABC):
                 # This ensures batches are shuffled in the same order as the interrupted run
                 if epoch == start_epoch and resume_training_state is not None:
                     import random
-                    print(f"{self.log_prefix} Restoring random state for mid-epoch resume...")
-                    random.setstate(resume_training_state['random_state'])
+
+                    # Check if dataset has changed since checkpoint was saved
+                    # If changed, the saved random_state is invalid and should NOT be restored
+                    saved_fingerprint = resume_training_state.get('dataset_fingerprint')
+                    dataset_changed = self._check_dataset_fingerprint_changed(saved_fingerprint, self._dataset_fingerprint)
+
+                    if dataset_changed:
+                        print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
+                        print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
+                        print(f"{self.log_prefix} Training will continue from step {global_step}, but batch order will differ")
+                        # Do NOT restore random state - let it use current random state
+                    else:
+                        print(f"{self.log_prefix} Dataset unchanged - restoring random state for mid-epoch resume...")
+                        random.setstate(resume_training_state['random_state'])
 
                 # Create batches
                 if bucket_manager:

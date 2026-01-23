@@ -5074,11 +5074,13 @@ class BaseTrainer(ABC):
         dtype = self.text_encoder.dtype
 
         # Apply chat template
+        # IMPORTANT: Must match pipeline.py _flux2_encode_prompt() exactly
         messages = [{"role": "user", "content": prompt}]
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
 
         # Tokenize
@@ -5090,21 +5092,27 @@ class BaseTrainer(ABC):
             return_tensors="pt"
         )
         input_ids = text_inputs.input_ids.to(device)
+        attention_mask = text_inputs.attention_mask.to(device)
 
         # Forward pass with hidden states
+        # IMPORTANT: Must match pipeline.py _flux2_encode_prompt() exactly
         with torch.no_grad():
             outputs = self.text_encoder(
                 input_ids=input_ids,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
-                return_dict=True
+                use_cache=False,
             )
 
-        # Extract and concatenate hidden states from specified layers
-        hidden_states_list = []
-        for layer_idx in hidden_states_layers:
-            hidden_states_list.append(outputs.hidden_states[layer_idx])
-        prompt_embeds = torch.cat(hidden_states_list, dim=-1)
-        prompt_embeds = prompt_embeds.to(dtype=dtype)
+        # Extract and stack hidden states from specified layers
+        # IMPORTANT: Must match pipeline.py _flux2_encode_prompt() exactly
+        # Use stack + permute + reshape (NOT simple cat) for correct tensor structure
+        out = torch.stack([outputs.hidden_states[k] for k in hidden_states_layers], dim=1)
+        out = out.to(dtype=dtype, device=device)
+
+        # Reshape: (B, num_layers, seq_len, hidden_dim) -> (B, seq_len, num_layers * hidden_dim)
+        batch_size, num_channels, seq_len, hidden_dim = out.shape
+        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
 
         # Generate text IDs for RoPE
         batch_size, seq_len = prompt_embeds.shape[:2]

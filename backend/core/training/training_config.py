@@ -164,29 +164,22 @@ class TrainingConfigGenerator:
             raise ValueError("Cannot specify both total_steps and epochs")
 
         # Build datasets array
+        # NOTE: caption_processing settings are NOT saved to YAML
+        # They are read from the database (Dataset.caption_processing) at training time
+        # This ensures Dataset Management page settings are always used
         datasets_array = []
         if dataset_configs:
             # Use multiple datasets
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
-                ds_caption_processing = ds_config.get("caption_processing", {})
                 ds_caption_types = ds_config.get("caption_types", [])
+                ds_dataset_id = ds_config.get("dataset_id")  # Include dataset_id for YAML editing support
 
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
-                    # Legacy caption settings (kept for backward compatibility)
-                    "caption_dropout_rate": ds_caption_processing.get("caption_dropout_rate", 0.0),
-                    "shuffle_tokens": ds_caption_processing.get("shuffle_tokens", False),
-                    # Caption processing settings (SushiUI extended)
-                    "token_dropout_rate": ds_caption_processing.get("token_dropout_rate", 0.0),
-                    "keep_tokens": ds_caption_processing.get("keep_tokens", 0),
-                    "shuffle_per_epoch": ds_caption_processing.get("shuffle_per_epoch", False),
-                    "shuffle_keep_first_n": ds_caption_processing.get("shuffle_keep_first_n", 0),
-                    "tag_dropout_rate": ds_caption_processing.get("tag_dropout_rate", 0.0),
-                    "tag_dropout_per_epoch": ds_caption_processing.get("tag_dropout_per_epoch", False),
-                    "tag_dropout_keep_first_n": ds_caption_processing.get("tag_dropout_keep_first_n", 0),
-                    "tag_dropout_exclude_person_count": ds_caption_processing.get("tag_dropout_exclude_person_count", False),
+                    # Dataset ID for resolving dataset from YAML edits (required for train_runner.py)
+                    **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                     # Other settings
                     "cache_latents_to_disk": cache_latents_to_disk,
                     "resolution": base_resolutions or [512, 768, 1024],
@@ -199,22 +192,10 @@ class TrainingConfigGenerator:
                 datasets_array.append(dataset_entry)
         else:
             # Fallback: use single dataset_path (backward compatibility)
+            # NOTE: caption_processing is NOT saved - read from database at training time
             dataset_entry = {
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
-                # Legacy caption settings (kept for backward compatibility)
-                "caption_dropout_rate": caption_processing.get("caption_dropout_rate", 0.0) if caption_processing else 0.0,
-                "shuffle_tokens": caption_processing.get("shuffle_tokens", False) if caption_processing else False,
-                # Caption processing settings (SushiUI extended)
-                "token_dropout_rate": caption_processing.get("token_dropout_rate", 0.0) if caption_processing else 0.0,
-                "keep_tokens": caption_processing.get("keep_tokens", 0) if caption_processing else 0,
-                "shuffle_per_epoch": caption_processing.get("shuffle_per_epoch", False) if caption_processing else False,
-                "shuffle_keep_first_n": caption_processing.get("shuffle_keep_first_n", 0) if caption_processing else 0,
-                "tag_dropout_rate": caption_processing.get("tag_dropout_rate", 0.0) if caption_processing else 0.0,
-                "tag_dropout_per_epoch": caption_processing.get("tag_dropout_per_epoch", False) if caption_processing else False,
-                "tag_dropout_keep_first_n": caption_processing.get("tag_dropout_keep_first_n", 0) if caption_processing else 0,
-                "tag_dropout_exclude_person_count": caption_processing.get("tag_dropout_exclude_person_count", False) if caption_processing else False,
-                # Other settings
                 "cache_latents_to_disk": cache_latents_to_disk,
                 "resolution": base_resolutions or [512, 768, 1024],
             }
@@ -541,23 +522,24 @@ class TrainingConfigGenerator:
             train_config["multi_resolution_mode"] = multi_resolution_mode
 
         # Build datasets array
+        # NOTE: caption_processing settings are NOT saved to YAML
+        # They are read from the database (Dataset.caption_processing) at training time
+        # This ensures Dataset Management page settings are always used
         datasets_array = []
         if dataset_configs:
             # Use multiple datasets
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
-                ds_caption_processing = ds_config.get("caption_processing", {})
                 ds_caption_types = ds_config.get("caption_types", [])
+                ds_dataset_id = ds_config.get("dataset_id")  # Include dataset_id for YAML editing support
 
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     "cache_latents_to_disk": cache_latents_to_disk,
+                    # Dataset ID for resolving dataset from YAML edits (required for train_runner.py)
+                    **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
-
-                # Add caption processing if provided
-                if ds_caption_processing:
-                    dataset_entry["caption_processing"] = ds_caption_processing
 
                 # Add caption_types if specified
                 if ds_caption_types:
@@ -566,15 +548,12 @@ class TrainingConfigGenerator:
                 datasets_array.append(dataset_entry)
         else:
             # Fallback: use single dataset_path (backward compatibility)
+            # NOTE: caption_processing is NOT saved - read from database at training time
             dataset_config = {
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
             }
-
-            # Add caption processing config if provided
-            if caption_processing:
-                dataset_config["caption_processing"] = caption_processing
 
             datasets_array.append(dataset_config)
 

@@ -4178,6 +4178,9 @@ class BaseTrainer(ABC):
         FLUX.2 Klein uses Qwen3 with hidden states from layers 9, 18, 27.
         Output is concatenated: (B, seq_len, 3 * hidden_dim)
 
+        IMPORTANT: This must match pipeline.py _flux2_encode_prompt() exactly,
+        including chat template application, attention_mask, and use_cache settings.
+
         Args:
             prompt: Text prompt
             max_sequence_length: Maximum sequence length
@@ -4185,9 +4188,18 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (prompt_embeds, text_ids)
         """
+        # Apply chat template (must match inference exactly)
+        messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
         # Tokenize
         text_inputs = self.tokenizer(
-            prompt,
+            text,
             padding="max_length",
             max_length=max_sequence_length,
             truncation=True,
@@ -4195,13 +4207,15 @@ class BaseTrainer(ABC):
         )
 
         input_ids = text_inputs.input_ids.to(self.device)
+        attention_mask = text_inputs.attention_mask.to(self.device)
 
-        # Forward through text encoder
+        # Forward through text encoder (must match inference exactly)
         with torch.no_grad():
             output = self.text_encoder(
                 input_ids,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
-                return_dict=True,
+                use_cache=False,
             )
 
         # Extract hidden states from specified layers (9, 18, 27 for Klein 4B)

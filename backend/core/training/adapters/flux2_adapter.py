@@ -384,6 +384,36 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         if trainer.train_unet and trainer.transformer is not None:
             print(f"[FLUX2FullParameterAdapter] Collecting Transformer weights...")
             transformer_state = trainer.transformer.state_dict()
+
+            # DEBUG: Check if weights have changed from base model
+            # Compare a few key tensors to verify training is affecting the saved weights
+            debug_keys = [
+                "transformer_blocks.0.attn.to_q.weight",
+                "single_transformer_blocks.0.attn.to_qkv.weight",
+                "proj_out.weight",
+            ]
+            print(f"[FLUX2FullParameterAdapter] DEBUG: Checking weight statistics before save...")
+            for debug_key in debug_keys:
+                if debug_key in transformer_state:
+                    t = transformer_state[debug_key]
+                    print(f"[FLUX2FullParameterAdapter]   {debug_key}: "
+                          f"mean={t.float().mean().item():.8f}, "
+                          f"std={t.float().std().item():.8f}, "
+                          f"min={t.float().min().item():.6f}, "
+                          f"max={t.float().max().item():.6f}, "
+                          f"dtype={t.dtype}, device={t.device}")
+
+            # DEBUG: Also check optimizer state to verify gradients are being accumulated
+            if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                opt_state = trainer.optimizer.state_dict()
+                num_params_with_state = len(opt_state.get('state', {}))
+                print(f"[FLUX2FullParameterAdapter] DEBUG: Optimizer has state for {num_params_with_state} parameters")
+                # Check first param's step count
+                if opt_state.get('state'):
+                    first_param_state = next(iter(opt_state['state'].values()))
+                    if 'step' in first_param_state:
+                        print(f"[FLUX2FullParameterAdapter] DEBUG: Optimizer step count: {first_param_state['step']}")
+
             for key, value in transformer_state.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 

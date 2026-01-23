@@ -1025,14 +1025,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {/* Run Name */}
         <div className="break-inside-avoid">
           <label className="block text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
-            Run Name <span className="text-gray-500 text-xxs sm:text-xs font-normal">(optional, auto-generated if empty)</span>
+            Run Name {editRunId ? (
+              <span className="text-gray-500 text-xxs sm:text-xs font-normal">(cannot be changed after creation)</span>
+            ) : (
+              <span className="text-gray-500 text-xxs sm:text-xs font-normal">(optional, auto-generated if empty)</span>
+            )}
           </label>
           <input
             type="text"
             value={runName}
             onChange={(e) => setRunName(e.target.value)}
             placeholder="Leave empty for auto-generated name (e.g., 20251130_174523_a1b2c3d4)"
-            className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500"
+            className={`w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500 ${editRunId ? 'opacity-50 cursor-not-allowed' : ''}`}
+            disabled={!!editRunId}
           />
         </div>
 

@@ -3810,7 +3810,7 @@ class BaseTrainer(ABC):
         txt_ids: torch.Tensor,
         timesteps: Optional[torch.Tensor] = None,
         guidance: Optional[torch.Tensor] = None,
-        reference_latents: Optional[torch.Tensor] = None,
+        reference_latents_nested: Optional[List[List[torch.Tensor]]] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         profile_vram: bool = False,
@@ -3826,7 +3826,10 @@ class BaseTrainer(ABC):
             txt_ids: Text position IDs [B, text_seq_len, 4] for RoPE
             timesteps: Timesteps for this batch [B]. If None, sampled uniformly from [0, 1]
             guidance: Guidance values [B]. If None, uses default 3.5
-            reference_latents: Reference image latents for conditioning [B, C, H, W]. If None, no conditioning.
+            reference_latents_nested: Reference image latents for conditioning.
+                List of length B, where each element is a list of latents [C, H, W] for that batch item.
+                Example: [[ref1_lat, ref2_lat], [ref1_lat], [ref1_lat, ref2_lat, ref3_lat]]
+                T coordinates applied: 10, 20, 30... per reference image within each batch item.
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
             profile_vram: If True, print VRAM usage
@@ -3877,28 +3880,66 @@ class BaseTrainer(ABC):
         # ============================================================
         # If reference latents are provided, pack them and concatenate with noisy latents
         # This allows the model to condition on reference images during training
+        #
+        # Multiple reference images per batch item:
+        # - reference_latents_nested is List[List[Tensor]] where each inner list contains
+        #   reference latents for one batch item
+        # - Each reference image gets T coordinate offset: 10, 20, 30, ...
+        # - All reference latents are packed and concatenated per batch item
+        #
         # Shape: noisy_latents [B, seq_len, C] + ref_latents [B, ref_seq_len, C]
         #        -> concatenated [B, seq_len + ref_seq_len, C]
         # img_ids are also extended with reference position IDs
         packed_reference_latents = None
-        if reference_latents is not None:
-            # Pack reference latents: (B, C, H, W) -> (B, H*W, C)
-            packed_reference_latents = self._flux2_pack_latents(reference_latents)
-            packed_reference_latents = packed_reference_latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        if reference_latents_nested is not None and len(reference_latents_nested) > 0:
+            # Process each batch item's reference images
+            all_packed_refs = []
+            all_ref_ids = []
 
-            # Concatenate reference latents with noisy latents along sequence dimension
-            # This effectively doubles the sequence length
-            noisy_latents = torch.cat([noisy_latents, packed_reference_latents], dim=1)
+            for batch_idx, item_ref_latents in enumerate(reference_latents_nested):
+                item_packed_refs = []
+                item_ref_ids = []
 
-            # Prepare position IDs for reference latents and concatenate with img_ids
-            # IMPORTANT: Must match inference-time encoding in pipeline.encode_flux2_image_refs()
-            # Inference uses time offset: t = scale + scale * idx (scale=10) -> t = 10, 20, 30, ...
-            # For single reference image (idx=0): t = 10
-            ref_img_ids = self._flux2_prepare_latent_ids(reference_latents).to(self.device)
-            # Add time offset to T coordinate (index 0) to match inference behavior
-            # For training, we use single reference image at a time, so offset = 10 (scale=10, idx=0)
-            ref_img_ids[..., 0] = ref_img_ids[..., 0] + 10  # T coordinate offset for reference tokens
-            img_ids = torch.cat([img_ids, ref_img_ids], dim=1)
+                for ref_idx, ref_latent in enumerate(item_ref_latents):
+                    # ref_latent shape: [1, C, H, W] (single reference image)
+                    # Pack: (1, C, H, W) -> (1, H*W, C)
+                    packed_ref = self._flux2_pack_latents(ref_latent)
+                    packed_ref = packed_ref.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+                    item_packed_refs.append(packed_ref)
+
+                    # Prepare position IDs for this reference image
+                    ref_img_id = self._flux2_prepare_latent_ids(ref_latent).to(self.device)
+                    # Apply T coordinate offset: T = scale + scale * ref_idx (scale=10)
+                    # ref_idx 0 -> T=10, ref_idx 1 -> T=20, ref_idx 2 -> T=30, etc.
+                    t_offset = 10 + 10 * ref_idx
+                    ref_img_id[..., 0] = ref_img_id[..., 0] + t_offset
+                    item_ref_ids.append(ref_img_id)
+
+                # Concatenate all reference latents for this batch item
+                # Shape: (1, total_ref_seq_len, C)
+                item_packed_concat = torch.cat(item_packed_refs, dim=1)
+                item_ids_concat = torch.cat(item_ref_ids, dim=1)
+
+                all_packed_refs.append(item_packed_concat)
+                all_ref_ids.append(item_ids_concat)
+
+            # Stack across batch dimension
+            # All batch items must have same total reference sequence length
+            # (This is guaranteed if all items have same number of reference images with same dimensions)
+            # If dimensions vary, we need padding - for now, assume consistent structure
+            try:
+                packed_reference_latents = torch.cat(all_packed_refs, dim=0)  # [B, ref_seq_len, C]
+                ref_img_ids = torch.cat(all_ref_ids, dim=0)  # [B, ref_seq_len, 4]
+
+                # Concatenate reference latents with noisy latents along sequence dimension
+                noisy_latents = torch.cat([noisy_latents, packed_reference_latents], dim=1)
+
+                # Concatenate reference position IDs with image position IDs
+                img_ids = torch.cat([img_ids, ref_img_ids], dim=1)
+            except RuntimeError as e:
+                # Handle dimension mismatch (different reference image counts/sizes per batch item)
+                print(f"{self.log_prefix} WARNING: Reference latent dimension mismatch in batch, skipping reference conditioning: {e}")
+                packed_reference_latents = None
 
         if profile_vram:
             print_vram_usage("[train_step_flux2] Before Transformer forward")
@@ -6820,24 +6861,38 @@ class BaseTrainer(ABC):
                         # Note: Only items WITH reference images are conditioned.
                         # If an item has no reference images, we append None to maintain list alignment.
                         # Later, if ANY item in batch has no reference, we skip conditioning for entire batch.
+                        #
+                        # Multiple reference images per item:
+                        # - Each item can have multiple reference images (up to 10)
+                        # - reference_latents_list contains List[List[Tensor]] or List[None]
+                        # - Each inner list has latents for that item's reference images
+                        # - train_step applies T=10, 20, 30... to each reference image
                         if use_reference_images and self.is_flux2:
                             reference_images = item.get("reference_images", [])
                             if reference_images:
-                                # Encode first reference image (multiple reference support can be added later)
-                                ref_image_path = reference_images[0]
-                                try:
-                                    ref_image = Image.open(ref_image_path)
-                                    # Use same bucket dimensions as target image
-                                    ref_latent = self.encode_image(
-                                        image=ref_image,
-                                        target_width=width,
-                                        target_height=height,
-                                        bucket_strategy=bucket_strategy
-                                    )
-                                    reference_latents_list.append(ref_latent.to(self.device))
-                                except Exception as e:
-                                    print(f"{self.log_prefix} WARNING: Failed to encode reference image {ref_image_path}: {e}")
-                                    # Mark as None - batch will skip conditioning
+                                # Encode all reference images for this item (max 10)
+                                item_ref_latents = []
+                                for ref_idx, ref_image_path in enumerate(reference_images[:10]):
+                                    try:
+                                        ref_image = Image.open(ref_image_path)
+                                        # Use same bucket dimensions as target image
+                                        ref_latent = self.encode_image(
+                                            image=ref_image,
+                                            target_width=width,
+                                            target_height=height,
+                                            bucket_strategy=bucket_strategy
+                                        )
+                                        item_ref_latents.append(ref_latent.to(self.device))
+                                    except Exception as e:
+                                        print(f"{self.log_prefix} WARNING: Failed to encode reference image {ref_image_path}: {e}")
+                                        # Skip this reference image, continue with others
+                                        continue
+
+                                if item_ref_latents:
+                                    # Successfully encoded at least one reference image
+                                    reference_latents_list.append(item_ref_latents)
+                                else:
+                                    # All reference images failed - mark as None
                                     reference_latents_list.append(None)
                             else:
                                 # No reference images for this item - mark as None
@@ -6910,11 +6965,15 @@ class BaseTrainer(ABC):
 
                     # Prepare reference latents for FLUX.2 conditioning
                     # Only apply conditioning if ALL items in batch have valid reference latents
-                    reference_latents = None
+                    # reference_latents_list is now List[List[Tensor]] or List[None]
+                    # We pass the nested structure to train_step which handles T coordinates
+                    reference_latents_nested = None
                     if use_reference_images and self.is_flux2 and reference_latents_list:
                         # Check if any item is missing reference latent (None)
                         if all(lat is not None for lat in reference_latents_list):
-                            reference_latents = torch.cat(reference_latents_list, dim=0)
+                            # Pass nested list structure to train_step
+                            # train_step will apply T=10, 20, 30... per reference image
+                            reference_latents_nested = reference_latents_list
                         else:
                             # Mixed batch (some with, some without reference) - skip conditioning
                             # This ensures consistent training behavior
@@ -7055,9 +7114,14 @@ class BaseTrainer(ABC):
                             txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
 
                             # Prepare reference latents for conditioning (if enabled)
-                            mnt_reference_latents = None
-                            if reference_latents is not None:
-                                mnt_reference_latents = reference_latents.detach()
+                            # reference_latents_nested is List[List[Tensor]] - one list per batch item
+                            mnt_reference_latents_nested = None
+                            if reference_latents_nested is not None:
+                                # Detach each tensor in nested structure
+                                mnt_reference_latents_nested = [
+                                    [lat.detach() for lat in item_lats]
+                                    for item_lats in reference_latents_nested
+                                ]
 
                             loss, pred_loss, recon_loss = self.train_step_flux2(
                                 latents=packed_latents,
@@ -7066,7 +7130,7 @@ class BaseTrainer(ABC):
                                 txt_ids=txt_ids,
                                 timesteps=timesteps,
                                 guidance=None,  # Klein doesn't use guidance embedding
-                                reference_latents=mnt_reference_latents,  # Reference image conditioning
+                                reference_latents_nested=mnt_reference_latents_nested,  # Reference image conditioning (nested)
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions if debug_save_path else None,
                                 profile_vram=self.debug_vram,
@@ -7231,8 +7295,8 @@ class BaseTrainer(ABC):
                         del attention_mask
                     if pooled_embeddings is not None:
                         del pooled_embeddings
-                    if reference_latents is not None:
-                        del reference_latents
+                    if reference_latents_nested is not None:
+                        del reference_latents_nested
 
                     # ============================================================
                     # Post-batch processing (Sequential MNT: optimizer step done in loop)

@@ -1020,6 +1020,10 @@ class BaseTrainer(ABC):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
 
+        # Setup Flash Attention if enabled
+        if self.use_flash_attention:
+            self._setup_flash_attention_flux2()
+
         # Freeze all base weights (full parameter training will unfreeze specific layers later)
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
@@ -1220,6 +1224,10 @@ class BaseTrainer(ABC):
             if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
+
+            # Setup Flash Attention if enabled (FLUX.2 checkpoint resume)
+            if self.use_flash_attention:
+                self._setup_flash_attention_flux2()
 
             # Freeze all base weights (full parameter training will unfreeze specific layers later)
             self.vae.requires_grad_(False)
@@ -1696,6 +1704,38 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [OK] Flash Attention enabled for UNet")
         except Exception as e:
             print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
+
+    def _setup_flash_attention_flux2(self):
+        """Setup Flash Attention for FLUX.2 models.
+
+        Uses diffusers' dispatch_attention_fn with the 'flash' backend,
+        which requires the flash-attn package (>= 2.0).
+
+        The 'flash' backend is set via FluxAttnProcessor._attention_backend class variable,
+        or via transformer.set_attention_backend() method.
+        """
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            return
+
+        try:
+            # Method 1: Use transformer.set_attention_backend() (diffusers ModelMixin method)
+            if hasattr(self.transformer, 'set_attention_backend'):
+                print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 Transformer...")
+                self.transformer.set_attention_backend("flash")
+                print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
+            else:
+                # Method 2: Set FluxAttnProcessor class variable directly
+                from diffusers.models.transformers.transformer_flux import FluxAttnProcessor
+                print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 (direct)...")
+                FluxAttnProcessor._attention_backend = "flash"
+                print(f"{self.log_prefix} [OK] Flash Attention enabled: FluxAttnProcessor._attention_backend = 'flash'")
+
+        except ImportError as e:
+            print(f"{self.log_prefix} WARNING: Failed to import FluxAttnProcessor: {e}")
+            print(f"{self.log_prefix} Flash Attention not enabled for FLUX.2")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for FLUX.2: {e}")
 
     # ============================================================
     # Abstract Methods (must be implemented by subclasses)

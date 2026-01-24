@@ -505,6 +505,13 @@ def process_caption_with_tag_data(
     # Extract tags only (discard categories)
     tags = [tag for tag, _ in tags_with_categories]
 
+    # Step: Tag normalization (normalize tags to standard format)
+    # This converts underscores to spaces and escapes parentheses
+    normalize_tags = caption_config.get("normalize_tags", True)
+    if normalize_tags:
+        from core.training.tag_group_utils import normalize_tag_for_output
+        tags = [normalize_tag_for_output(tag) for tag in tags]
+
     # Apply caption dropout
     caption_dropout_rate = caption_config.get("caption_dropout_rate", 0.0)
     if caption_dropout_rate > 0 and random.random() < caption_dropout_rate:

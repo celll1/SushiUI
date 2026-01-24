@@ -3891,10 +3891,13 @@ class BaseTrainer(ABC):
             noisy_latents = torch.cat([noisy_latents, packed_reference_latents], dim=1)
 
             # Prepare position IDs for reference latents and concatenate with img_ids
+            # IMPORTANT: Must match inference-time encoding in pipeline.encode_flux2_image_refs()
+            # Inference uses time offset: t = scale + scale * idx (scale=10) -> t = 10, 20, 30, ...
+            # For single reference image (idx=0): t = 10
             ref_img_ids = self._flux2_prepare_latent_ids(reference_latents).to(self.device)
-            # Add offset to reference IDs to distinguish them from target latents
-            # Using large offset ensures no position collision
-            ref_img_ids = ref_img_ids + 1000  # Position offset for reference tokens
+            # Add time offset to T coordinate (index 0) to match inference behavior
+            # For training, we use single reference image at a time, so offset = 10 (scale=10, idx=0)
+            ref_img_ids[..., 0] = ref_img_ids[..., 0] + 10  # T coordinate offset for reference tokens
             img_ids = torch.cat([img_ids, ref_img_ids], dim=1)
 
         if profile_vram:

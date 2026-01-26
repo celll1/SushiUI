@@ -39,6 +39,15 @@ SD15_BLOCK_MAPPING = {
     ("down", 2, 1): 8,   # down_blocks[2].attentions[1] → input_blocks_8 (1280ch)
 }
 
+# kohya-ss cumulative index mapping for SDXL
+# Same attention blocks as SD1.5 (down_blocks[1].attentions[0] skips [1] due to channel mismatch)
+# down_blocks[1].attentions[1] has 1280ch in UNet but kohya-ss input_blocks_5 expects 640ch → skip
+SDXL_BLOCK_MAPPING = {
+    ("down", 1, 0): 4,   # down_blocks[1].attentions[0] → input_blocks_4 (640ch)
+    ("down", 2, 0): 7,   # down_blocks[2].attentions[0] → input_blocks_7 (1280ch)
+    ("down", 2, 1): 8,   # down_blocks[2].attentions[1] → input_blocks_8 (1280ch)
+}
+
 
 class LLLiteConditioningEncoder(nn.Module):
     """
@@ -245,7 +254,7 @@ class LLLiteModule(nn.Module):
             Initialized LLLiteModule with modules for all compatible layers
         """
         module = cls()
-        block_mapping = SD15_BLOCK_MAPPING  # SDXL mapping added in Phase 3
+        block_mapping = SDXL_BLOCK_MAPPING if is_sdxl else SD15_BLOCK_MAPPING
 
         # Create modules for down blocks
         for (block_type, block_idx, attn_idx), kohya_idx in block_mapping.items():
@@ -394,8 +403,13 @@ class LLLiteModule(nn.Module):
         """
         layer_map = {}
 
+        # Determine block mapping by checking UNet structure
+        # Use both mappings to ensure compatibility (they produce the same kohya indices)
+        is_sdxl = hasattr(unet.config, "addition_embed_type") if hasattr(unet, "config") else False
+        block_mapping = SDXL_BLOCK_MAPPING if is_sdxl else SD15_BLOCK_MAPPING
+
         # Down blocks
-        for (block_type, block_idx, attn_idx), kohya_idx in SD15_BLOCK_MAPPING.items():
+        for (block_type, block_idx, attn_idx), kohya_idx in block_mapping.items():
             if block_type != "down":
                 continue
             try:

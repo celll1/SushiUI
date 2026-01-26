@@ -13,6 +13,7 @@ from .deus_adapter import DEUSLoRAAdapter, DEUSFullParameterAdapter
 from .flux2_adapter import FLUX2LoRAAdapter, FLUX2FullParameterAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
+from .controlnet_sdxl_adapter import ControlNetSDXLAdapter
 
 __all__ = [
     "BaseLoRAAdapter",
@@ -29,4 +30,5 @@ __all__ = [
     "FLUX2FullParameterAdapter",
     "BaseControlNetAdapter",
     "ControlNetSD15Adapter",
+    "ControlNetSDXLAdapter",
 ]

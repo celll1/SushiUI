@@ -95,8 +95,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Available caption types for each dataset
   // Caption types selection moved to Dataset Management > Caption Processing page
 
-  const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune">("lora");
+  const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune" | "controlnet">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
+
+  // ControlNet parameters
+  const [controlnetType, setControlnetType] = useState<"standard" | "lllite">("standard");
+  const [controlnetPretrainedPath, setControlnetPretrainedPath] = useState("");
+  const [controlnetInitFromUnet, setControlnetInitFromUnet] = useState(true);
+  const [llliteConditioningChannels, setLlliteConditioningChannels] = useState(32);
+  const [llliteRank, setLlliteRank] = useState(64);
+  const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
+  const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
 
   // Training parameters
   const [useEpochs, setUseEpochs] = useState(false);
@@ -387,6 +396,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
       if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
       if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
+
+      // ControlNet parameters
+      if (params.controlnet_type !== undefined) setControlnetType(params.controlnet_type as "standard" | "lllite");
+      if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setControlnetPretrainedPath(params.controlnet_pretrained_path);
+      if (params.controlnet_init_from_unet !== undefined) setControlnetInitFromUnet(params.controlnet_init_from_unet);
+      if (params.lllite_conditioning_channels !== undefined) setLlliteConditioningChannels(params.lllite_conditioning_channels);
+      if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
+      if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
+      if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
 
       // Sample Generation
       if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
@@ -684,6 +702,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       timestepDistribution,
       timestepMin,
       timestepMax,
+      // ControlNet parameters
+      controlnetType,
+      controlnetPretrainedPath,
+      controlnetInitFromUnet,
+      llliteConditioningChannels,
+      llliteRank,
+      conditionPreprocessors,
+      conditionCacheMode,
     };
   };
 
@@ -786,6 +812,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.timestepAlpha !== undefined) setTimestepAlpha(config.timestepAlpha);
     if (config.timestepBeta !== undefined) setTimestepBeta(config.timestepBeta);
 
+    // ControlNet parameters
+    if (config.controlnetType !== undefined) setControlnetType(config.controlnetType);
+    if (config.controlnetPretrainedPath !== undefined) setControlnetPretrainedPath(config.controlnetPretrainedPath);
+    if (config.controlnetInitFromUnet !== undefined) setControlnetInitFromUnet(config.controlnetInitFromUnet);
+    if (config.llliteConditioningChannels !== undefined) setLlliteConditioningChannels(config.llliteConditioningChannels);
+    if (config.llliteRank !== undefined) setLlliteRank(config.llliteRank);
+    if (config.conditionPreprocessors !== undefined) setConditionPreprocessors(config.conditionPreprocessors);
+    if (config.conditionCacheMode !== undefined) setConditionCacheMode(config.conditionCacheMode);
+
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
 
@@ -824,8 +859,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       return;
     }
 
-    // Validate that at least one component is being trained
-    if (!trainUnet && !trainTextEncoder) {
+    // Validate that at least one component is being trained (not applicable for ControlNet)
+    if (trainingMethod !== "controlnet" && !trainUnet && !trainTextEncoder) {
       setError("At least one component (U-Net or Text Encoder) must be trained");
       return;
     }
@@ -932,6 +967,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       noise_process: noiseProcess,
       prediction_target: predictionTarget,
       strict_validation: strictValidation,
+      // ControlNet-specific parameters
+      controlnet_type: trainingMethod === "controlnet" ? controlnetType : undefined,
+      controlnet_pretrained_path: trainingMethod === "controlnet" && controlnetPretrainedPath ? controlnetPretrainedPath : undefined,
+      controlnet_init_from_unet: trainingMethod === "controlnet" ? controlnetInitFromUnet : undefined,
+      lllite_conditioning_channels: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteConditioningChannels : undefined,
+      lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
+      condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
+      condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1123,6 +1166,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-sm">Full Fine-tune</span>
             </label>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="radio"
+                name="training_method"
+                value="controlnet"
+                checked={trainingMethod === "controlnet"}
+                onChange={() => setTrainingMethod("controlnet")}
+                className="text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm">ControlNet (SD1.5/SDXL)</span>
+            </label>
           </div>
         </div>
 
@@ -1246,6 +1300,118 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="fp16">FP16 (Half Precision)</option>
               </select>
             </div>
+          </div>
+        )}
+
+        {/* ControlNet Settings */}
+        {trainingMethod === "controlnet" && (
+          <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
+            <h3 className="text-sm font-semibold">ControlNet Settings</h3>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">ControlNet Type</label>
+              <select
+                value={controlnetType}
+                onChange={(e) => setControlnetType(e.target.value as "standard" | "lllite")}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="standard">Standard (diffusers ControlNetModel)</option>
+                <option value="lllite">LLLite (kohya-ss sd-scripts compatible)</option>
+              </select>
+            </div>
+
+            {controlnetType === "standard" && (
+              <div>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={controlnetInitFromUnet}
+                    onChange={(e) => setControlnetInitFromUnet(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm">Initialize from UNet weights</span>
+                </label>
+                <p className="text-xs text-gray-500 mt-1">Copy UNet encoder weights to ControlNet for faster convergence</p>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Pretrained ControlNet Path (optional)</label>
+              <input
+                type="text"
+                value={controlnetPretrainedPath}
+                onChange={(e) => setControlnetPretrainedPath(e.target.value)}
+                placeholder="Path to existing checkpoint for resume..."
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            {controlnetType === "lllite" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Conditioning Channels</label>
+                  <input
+                    type="number"
+                    value={llliteConditioningChannels}
+                    onChange={(e) => setLlliteConditioningChannels(parseInt(e.target.value) || 32)}
+                    min="8"
+                    max="128"
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Rank</label>
+                  <input
+                    type="number"
+                    value={llliteRank}
+                    onChange={(e) => setLlliteRank(parseInt(e.target.value) || 64)}
+                    min="4"
+                    max="256"
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Condition Image Preprocessors</label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {["canny", "hed", "lineart", "lineart_anime", "depth_midas", "depth_zoe", "normal_bae", "openpose", "pidi", "shuffle", "teed", "anyline"].map((pp) => (
+                  <label key={pp} className="flex items-center space-x-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={conditionPreprocessors.includes(pp)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setConditionPreprocessors([...conditionPreprocessors, pp]);
+                        } else {
+                          setConditionPreprocessors(conditionPreprocessors.filter(p => p !== pp));
+                        }
+                      }}
+                      className="w-3.5 h-3.5"
+                    />
+                    <span className="text-xs text-gray-300">{pp}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Auto-generate condition images when reference images are not provided. Multiple selections = random per image.</p>
+            </div>
+
+            {conditionPreprocessors.length > 0 && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Cache Mode</label>
+                <select
+                  value={conditionCacheMode}
+                  onChange={(e) => setConditionCacheMode(e.target.value as "on_the_fly" | "pre_generate")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="on_the_fly">On-the-fly (generate during training)</option>
+                  <option value="pre_generate">Pre-generate (cache before training)</option>
+                </select>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-500">ControlNet training freezes UNet/VAE/Text Encoder. Only the ControlNet module is trained.</p>
           </div>
         )}
 

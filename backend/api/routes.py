@@ -4200,6 +4200,15 @@ class TrainingRunCreateRequest(BaseModel):
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training
 
+    # ControlNet-specific parameters
+    controlnet_type: str = "standard"  # "standard" (diffusers ControlNetModel) or "lllite" (sd-scripts compatible)
+    controlnet_pretrained_path: Optional[str] = None  # Path to existing ControlNet checkpoint for resume
+    controlnet_init_from_unet: bool = True  # Initialize ControlNet from base UNet weights (standard only)
+    lllite_conditioning_channels: int = 32  # Conditioning channels for LLLite
+    lllite_rank: int = 64  # Rank for LLLite linear layers
+    condition_preprocessors: Optional[List[str]] = None  # controlnet-aux preprocessor types (e.g., ["canny", "hed"])
+    condition_cache_mode: str = "on_the_fly"  # "pre_generate" or "on_the_fly"
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -4379,6 +4388,84 @@ async def create_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,  # Reference image conditioning
+            )
+        elif request.training_method == "controlnet":
+            config_yaml = config_generator.generate_controlnet_config(
+                run_name=run_name,
+                dataset_path=primary_dataset.path,  # Kept for backward compatibility
+                base_model_path=request.base_model_path,
+                output_dir=output_dir_str,
+                dataset_configs=dataset_configs_for_yaml,  # New: multiple datasets
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                unet_lr=request.unet_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,
+                caption_processing=primary_dataset.caption_processing,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                noise_process=request.noise_process,
+                prediction_target=request.prediction_target,
+                strict_validation=request.strict_validation,
+                # ControlNet-specific parameters
+                controlnet_type=request.controlnet_type,
+                controlnet_pretrained_path=request.controlnet_pretrained_path,
+                controlnet_init_from_unet=request.controlnet_init_from_unet,
+                lllite_conditioning_channels=request.lllite_conditioning_channels,
+                lllite_rank=request.lllite_rank,
+                condition_preprocessors=request.condition_preprocessors,
+                condition_cache_mode=request.condition_cache_mode,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4566,6 +4653,8 @@ async def get_training_run_params(
     network_config = process_config.get("network", {})
     if network_config.get("type") == "lora":
         job = "lora"
+    elif network_config.get("type") == "controlnet":
+        job = "controlnet"
     elif not network_config:  # No network section means full fine-tune
         job = "full_finetune"
     # Otherwise keep job from config.job
@@ -4605,7 +4694,7 @@ async def get_training_run_params(
         "run_id": run.id,  # Add run_id for edit mode
         "dataset_configs": dataset_configs if dataset_configs else None,
         "run_name": run.run_name,
-        "training_method": "lora" if job == "lora" else "full_finetune",
+        "training_method": "lora" if job == "lora" else ("controlnet" if job == "controlnet" else "full_finetune"),
         "base_model_path": process_config.get("model", {}).get("name_or_path", run.base_model_path),
         "total_steps": training_params.get("steps"),
         "epochs": training_params.get("epochs"),
@@ -4682,6 +4771,14 @@ async def get_training_run_params(
         "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
         # Reference image conditioning
         "use_reference_images": training_params.get("use_reference_images", False),
+        # ControlNet-specific parameters
+        "controlnet_type": network_config.get("controlnet", {}).get("type", "standard") if job == "controlnet" else "standard",
+        "controlnet_pretrained_path": network_config.get("controlnet", {}).get("pretrained_path") if job == "controlnet" else None,
+        "controlnet_init_from_unet": network_config.get("controlnet", {}).get("init_from_unet", True) if job == "controlnet" else True,
+        "lllite_conditioning_channels": network_config.get("controlnet", {}).get("lllite_conditioning_channels", 32) if job == "controlnet" else 32,
+        "lllite_rank": network_config.get("controlnet", {}).get("lllite_rank", 64) if job == "controlnet" else 64,
+        "condition_preprocessors": network_config.get("controlnet", {}).get("condition_preprocessors") if job == "controlnet" else None,
+        "condition_cache_mode": network_config.get("controlnet", {}).get("condition_cache_mode", "on_the_fly") if job == "controlnet" else "on_the_fly",
     }
 
     print(f"[get_training_run_params] Total time: {time.time() - start_time:.3f}s")
@@ -4816,6 +4913,84 @@ async def update_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,  # Reference image conditioning
+            )
+        elif request.training_method == "controlnet":
+            config_yaml = config_generator.generate_controlnet_config(
+                run_name=run.run_name,
+                dataset_path=primary_dataset.path if primary_dataset else "",
+                base_model_path=request.base_model_path,
+                output_dir=run.output_dir,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                sample_every=request.sample_every,
+                sample_prompts=request.sample_prompts or [],
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                unet_lr=request.unet_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=request.resume_from_checkpoint,
+                caption_processing=primary_dataset.caption_processing if primary_dataset else None,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                timestep_sampling_config=request.timestep_sampling,
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                noise_process=request.noise_process,
+                prediction_target=request.prediction_target,
+                strict_validation=request.strict_validation,
+                # ControlNet-specific parameters
+                controlnet_type=request.controlnet_type,
+                controlnet_pretrained_path=request.controlnet_pretrained_path,
+                controlnet_init_from_unet=request.controlnet_init_from_unet,
+                lllite_conditioning_channels=request.lllite_conditioning_channels,
+                lllite_rank=request.lllite_rank,
+                condition_preprocessors=request.condition_preprocessors,
+                condition_cache_mode=request.condition_cache_mode,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

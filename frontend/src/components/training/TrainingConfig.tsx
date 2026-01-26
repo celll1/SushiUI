@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets } from "@/utils/api";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -102,6 +102,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [controlnetType, setControlnetType] = useState<"standard" | "lllite">("standard");
   const [controlnetPretrainedPath, setControlnetPretrainedPath] = useState("");
   const [controlnetInitFromUnet, setControlnetInitFromUnet] = useState(true);
+  const [availableControlNets, setAvailableControlNets] = useState<{path: string; name: string}[]>([]);
   const [llliteConditioningChannels, setLlliteConditioningChannels] = useState(32);
   const [llliteRank, setLlliteRank] = useState(64);
   const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
@@ -465,6 +466,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     loadSamplers();
     loadScheduleTypes();
     loadPresets();
+    loadControlNets();
   }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes (only if not explicitly set)
@@ -583,6 +585,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setPresets(response.presets);
     } catch (error) {
       console.error("Failed to load presets:", error);
+    }
+  };
+
+  // Helper function: Load available ControlNet models from API
+  const loadControlNets = async () => {
+    try {
+      const response = await getControlNets();
+      setAvailableControlNets(response.controlnets || []);
+    } catch (error) {
+      console.error("Failed to load ControlNet models:", error);
     }
   };
 
@@ -1336,14 +1348,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Pretrained ControlNet Path (optional)</label>
-              <input
-                type="text"
+              <label className="block text-xs text-gray-400 mb-1">Pretrained ControlNet (optional)</label>
+              <select
                 value={controlnetPretrainedPath}
                 onChange={(e) => setControlnetPretrainedPath(e.target.value)}
-                placeholder="Path to existing checkpoint for resume..."
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              />
+              >
+                <option value="">None (initialize from scratch)</option>
+                {availableControlNets.map((cn) => (
+                  <option key={cn.path} value={cn.path}>{cn.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Select an existing ControlNet checkpoint to resume training from</p>
             </div>
 
             {controlnetType === "lllite" && (

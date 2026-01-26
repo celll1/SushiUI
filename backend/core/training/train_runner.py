@@ -1592,8 +1592,106 @@ def main():
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
-            # Timestep sampling configuration
-            timestep_sampling_config = train_config.get('timestep_sampling')
+            # Determine epochs or steps
+            num_epochs = train_config.get('epochs', None)
+            total_steps_config = train_config.get('steps', None)
+
+            if num_epochs:
+                print(f"[TrainRunner] Training for {num_epochs} epochs")
+            elif total_steps_config:
+                num_epochs = None  # Will be calculated by trainer
+                print(f"[TrainRunner] Training for {total_steps_config} steps (epochs will be calculated by trainer)")
+            else:
+                num_epochs = 1
+
+            # Progress callback (update DB only)
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+                lr = None
+                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                    lr = trainer.optimizer.param_groups[0]['lr']
+                    if phase == "training" and step % 100 == 0:
+                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+
+            # Total steps callback
+            def update_total_steps_callback(total_steps: int):
+                print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
+                run.total_steps = total_steps
+                training_db.commit()
+
+            # Update status to running
+            run.status = "running"
+            training_db.commit()
+            print("[TrainRunner] Status updated to 'running'")
+
+            # Prepare sample configuration
+            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
+
+            # Convert sample_prompts to single sample_prompt
+            sample_prompt = "a beautiful landscape"
+            if sample_prompts and len(sample_prompts) > 0:
+                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
+
+            # Get sample generation settings
+            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
+            sample_steps = process_config['sample'].get('sample_steps', 28)
+            sample_width = process_config['sample'].get('width', 1024)
+            sample_height = process_config['sample'].get('height', 1024)
+            sample_seed = process_config['sample'].get('seed', -1)
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
+
+            # Get debug parameters from config
+            debug_latents = train_config.get('debug_latents', False)
+            debug_latents_every = train_config.get('debug_latents_every', 50)
+
+            # Get bucketing parameters from config
+            enable_bucketing = train_config.get('enable_bucketing', False)
+            base_resolutions = train_config.get('base_resolutions', [1024])
+
+            # Get latent caching parameters
+            cache_latents_to_disk = True  # Default
+            force_recache = False  # Default
+            if 'datasets' in process_config and len(process_config['datasets']) > 0:
+                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+                force_recache = process_config['datasets'][0].get('force_recache', False)
+
+            # Convert save_every parameters to new interface (save_every_n_steps)
+            save_every_unit = process_config['save'].get('save_every_unit', 'steps')
+            save_every = process_config['save'].get('save_every', 100)
+            max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+
+            if save_every_unit == 'epochs':
+                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
+                save_every_n_steps = save_every * steps_per_epoch
+                print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
+            else:
+                save_every_n_steps = save_every
+
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+
+            # Get resume from checkpoint setting
+            resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+            if resume_from_checkpoint:
+                print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
+
+            # Log force_recache setting
+            if force_recache:
+                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
+
+            # Get text encoding mode
+            text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
+            text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+
+            # Get latent encoding mode
+            latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
+            latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
+
+            # Get Multi Noise-Timestep (MNT) settings
+            multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            multi_noise_mode = train_config.get('multi_noise_mode', 'independent')
+            trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
+            timestep_sampling_config = train_config.get('timestep_sampling', None)
 
             # Start training
             trainer.train(
@@ -1622,6 +1720,7 @@ def main():
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
+                resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,

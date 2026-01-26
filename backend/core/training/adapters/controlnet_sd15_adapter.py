@@ -8,7 +8,7 @@ Supports:
 Author: Claude (2026-01-26)
 """
 
-import re
+
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import torch
@@ -326,23 +326,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         print(f"[ControlNetSD15] Loaded LLLite checkpoint from {path} (step={step})")
 
         return step
-
-    def _extract_step_from_path(self, path: Path) -> int:
-        """Extract training step number from checkpoint path name."""
-        # Try patterns like: *_step_001000, *_step001000, *_s001000
-        name = path.stem if path.is_file() else path.name
-
-        # Pattern: step_NNNN or step-NNNN
-        match = re.search(r'step[_-](\d+)', name, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-
-        # Pattern: sNNNN
-        match = re.search(r's(\d+)', name, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-
-        return 0
 
     def controlnet_forward(
         self,

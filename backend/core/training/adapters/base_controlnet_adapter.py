@@ -8,6 +8,7 @@ Supports two ControlNet types:
 Author: Claude (2026-01-26)
 """
 
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Union
@@ -141,3 +142,19 @@ class BaseControlNetAdapter(ABC):
             LLLite: None (patches applied directly to UNet)
         """
         pass
+
+    def _extract_step_from_path(self, path: Path) -> int:
+        """Extract training step number from checkpoint path name."""
+        name = path.stem if path.is_file() else path.name
+
+        # Pattern: step_NNNN or step-NNNN
+        match = re.search(r'step[_-](\d+)', name, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+        # Pattern: sNNNN
+        match = re.search(r's(\d+)', name, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+        return 0

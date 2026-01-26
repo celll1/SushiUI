@@ -3144,7 +3144,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <div className="flex items-center gap-2 mb-1">
                           <h4 className="font-medium">{preset.name}</h4>
                           <span className="text-xs px-2 py-0.5 bg-blue-600 rounded">
-                            {preset.training_method === "lora" ? "LoRA" : "Full Finetune"}
+                            {preset.training_method === "lora" ? "LoRA" : preset.training_method === "controlnet" ? "ControlNet" : "Full Finetune"}
                           </span>
                         </div>
                         {preset.description && (

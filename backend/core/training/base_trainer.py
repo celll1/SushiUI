@@ -6146,6 +6146,7 @@ class BaseTrainer(ABC):
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
+        sample_condition_image_path: Optional[str] = None,
     ):
         """
         Main training loop.
@@ -6174,7 +6175,12 @@ class BaseTrainer(ABC):
                 - "onthefly_gpu": Encode on-the-fly on GPU without cache (NOT recommended for Z-Image)
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
             use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
+            sample_condition_image_path: Path to condition image for ControlNet sample generation (optional)
         """
+        # Store references for subclass access (e.g., ControlNetTrainer sample condition image)
+        self._training_datasets = datasets
+        self._sample_condition_image_path = sample_condition_image_path
+
         print(f"{self.log_prefix} Starting training...")
         print(f"{self.log_prefix} Datasets: {len(datasets)}")
         print(f"{self.log_prefix} Epochs: {num_epochs}")

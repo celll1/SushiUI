@@ -700,6 +700,8 @@ class TrainingConfigGenerator:
         # Condition generation parameters (Phase 4)
         condition_preprocessors: Optional[List[str]] = None,
         condition_cache_mode: str = "on_the_fly",
+        # Sample condition image path (Phase 7)
+        sample_condition_image_path: Optional[str] = None,
     ) -> str:
         """
         Generate ControlNet training configuration YAML.
@@ -879,6 +881,7 @@ class TrainingConfigGenerator:
                             "seed": sample_seed,
                             "guidance_scale": sample_cfg_scale,
                             "sample_steps": sample_steps,
+                            **({"sample_condition_image_path": sample_condition_image_path} if sample_condition_image_path else {}),
                         },
                         "prompt_chunking_mode": prompt_chunking_mode,
                         "max_prompt_chunks": max_prompt_chunks,

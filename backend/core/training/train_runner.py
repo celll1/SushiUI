@@ -1693,6 +1693,9 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
+            # Get sample condition image path (ControlNet sample generation)
+            sample_condition_image_path = process_config['sample'].get('sample_condition_image_path')
+
             # Start training
             trainer.train(
                 datasets=training_datasets,
@@ -1731,6 +1734,7 @@ def main():
                 multi_noise_mode=multi_noise_mode,
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
+                sample_condition_image_path=sample_condition_image_path,
             )
 
             print("[TrainRunner] Training completed successfully!")

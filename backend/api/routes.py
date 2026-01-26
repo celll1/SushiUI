@@ -4208,6 +4208,7 @@ class TrainingRunCreateRequest(BaseModel):
     lllite_rank: int = 64  # Rank for LLLite linear layers
     condition_preprocessors: Optional[List[str]] = None  # controlnet-aux preprocessor types (e.g., ["canny", "hed"])
     condition_cache_mode: str = "on_the_fly"  # "pre_generate" or "on_the_fly"
+    sample_condition_image_path: Optional[str] = None  # Path to condition image for ControlNet sample generation
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -4466,6 +4467,7 @@ async def create_training_run(
                 lllite_rank=request.lllite_rank,
                 condition_preprocessors=request.condition_preprocessors,
                 condition_cache_mode=request.condition_cache_mode,
+                sample_condition_image_path=request.sample_condition_image_path,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4991,6 +4993,7 @@ async def update_training_run(
                 lllite_rank=request.lllite_rank,
                 condition_preprocessors=request.condition_preprocessors,
                 condition_cache_mode=request.condition_cache_mode,
+                sample_condition_image_path=request.sample_condition_image_path,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(

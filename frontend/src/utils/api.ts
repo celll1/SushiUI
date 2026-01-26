@@ -1301,7 +1301,7 @@ export interface TrainingRun {
   dataset_id: number;
   run_id: string;  // UUID
   run_name: string;
-  training_method: "lora" | "full_finetune";
+  training_method: "lora" | "full_finetune" | "controlnet";
   base_model_path: string;
   config_yaml?: string;
   status: "pending" | "running" | "paused" | "completed" | "failed" | "starting";
@@ -1335,7 +1335,7 @@ export interface TrainingRunCreateRequest {
   dataset_id?: number;  // Deprecated - use dataset_configs instead
   dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
   run_name?: string;  // Optional - will use UUID if not provided
-  training_method: "lora" | "full_finetune";
+  training_method: "lora" | "full_finetune" | "controlnet";
   base_model_path: string;
   total_steps?: number;  // Mutually exclusive with epochs
   epochs?: number;  // Mutually exclusive with total_steps
@@ -1400,6 +1400,14 @@ export interface TrainingRunCreateRequest {
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;
   use_reference_images?: boolean;
+  // ControlNet-specific parameters
+  controlnet_type?: string;
+  controlnet_pretrained_path?: string | null;
+  controlnet_init_from_unet?: boolean;
+  lllite_conditioning_channels?: number;
+  lllite_rank?: number;
+  condition_preprocessors?: string[] | null;
+  condition_cache_mode?: string;
 }
 
 export interface TrainingRunListResponse {
@@ -1590,7 +1598,7 @@ export interface TrainingPreset {
   id: number;
   name: string;
   description?: string;
-  training_method: "lora" | "full_finetune";
+  training_method: "lora" | "full_finetune" | "controlnet";
   config: Record<string, any>;  // Training parameters (excluding dataset and model path)
   created_at: string;
   updated_at: string;
@@ -1603,7 +1611,7 @@ export interface TrainingPresetsResponse {
 export interface TrainingPresetCreateRequest {
   name: string;
   description?: string;
-  training_method: "lora" | "full_finetune";
+  training_method: "lora" | "full_finetune" | "controlnet";
   config: Record<string, any>;
 }
 

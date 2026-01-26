@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from .base_trainer import BaseTrainer
-from .adapters import ControlNetSD15Adapter
+from .adapters import ControlNetSD15Adapter, ControlNetSDXLAdapter
 
 
 class ControlNetTrainer(BaseTrainer):
@@ -142,11 +142,8 @@ class ControlNetTrainer(BaseTrainer):
     def _create_adapter(self):
         """Create model-specific ControlNet adapter based on detected model type."""
         if self.is_sdxl:
-            # Phase 3: SDXL adapter
-            raise NotImplementedError(
-                "SDXL ControlNet training is not yet implemented (Phase 3). "
-                "Currently only SD1.5 is supported."
-            )
+            self.adapter = ControlNetSDXLAdapter(self, self.controlnet_type)
+            print(f"{self.log_prefix} Using ControlNetSDXLAdapter ({self.controlnet_type})")
         else:
             self.adapter = ControlNetSD15Adapter(self, self.controlnet_type)
             print(f"{self.log_prefix} Using ControlNetSD15Adapter ({self.controlnet_type})")

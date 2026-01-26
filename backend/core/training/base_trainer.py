@@ -3624,6 +3624,273 @@ class BaseTrainer(ABC):
 
         return loss, pred_loss_value, recon_loss_value
 
+    def train_step_controlnet(
+        self,
+        latents: torch.Tensor,
+        text_embeddings: torch.Tensor,
+        condition_images: torch.Tensor,
+        pooled_embeddings: torch.Tensor = None,
+        timesteps: Optional[torch.Tensor] = None,
+        profile_vram: bool = False,
+        alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """
+        Perform single ControlNet training step (SD1.5/SDXL).
+
+        Standard ControlNet:
+        1. ControlNet forward: condition_images + noisy_latents -> residuals
+        2. UNet forward with residuals injected -> model_pred
+        3. Loss = MSE(model_pred, target)
+
+        UNet is frozen but runs with gradients enabled so that gradient
+        flows back through the residual additions to the ControlNet.
+
+        Args:
+            latents: Image latents [B, C, H, W]
+            text_embeddings: Text prompt embeddings
+            condition_images: Condition image tensor [B, 3, H, W] in [0, 1] range
+            pooled_embeddings: Pooled text embeddings (SDXL only)
+            timesteps: Optional timesteps tensor
+            profile_vram: If True, print VRAM usage
+            alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU
+
+        Returns:
+            (loss_tensor, pred_loss_value, recon_loss_value)
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_controlnet] Start")
+
+        # Move tensors to GPU
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        condition_images = condition_images.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+
+        # Sample noise
+        noise = torch.randn_like(latents)
+        batch_size = latents.shape[0]
+
+        # Sample timesteps (DDPM)
+        noise_process = getattr(self, 'noise_process', 'ddpm')
+
+        if timesteps is None:
+            if noise_process == "ddpm":
+                if self.timestep_sampler is not None:
+                    timesteps_continuous = self.timestep_sampler.sample(batch_size, self.device)
+                    timesteps = ((1.0 - timesteps_continuous) * self.noise_scheduler.config.num_train_timesteps).long()
+                    timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+                else:
+                    timesteps = torch.randint(
+                        0, self.noise_scheduler.config.num_train_timesteps,
+                        (batch_size,), device=self.device,
+                    ).long()
+            elif noise_process == "flow":
+                if self.timestep_sampler is not None:
+                    timesteps = self.timestep_sampler.sample(batch_size, self.device)
+                else:
+                    timesteps = torch.rand((batch_size,), device=self.device)
+        else:
+            if noise_process == "ddpm":
+                timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
+
+        # Add noise to latents
+        noisy_latents = add_noise_unified(
+            noise_process=noise_process,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        # Prepare added_cond_kwargs for SDXL
+        added_cond_kwargs = None
+        if self.is_sdxl and pooled_embeddings is not None:
+            latent_height, latent_width = latents.shape[2], latents.shape[3]
+            image_height, image_width = latent_height * 8, latent_width * 8
+
+            add_time_ids = torch.tensor([[
+                image_height, image_width, 0, 0, image_height, image_width
+            ]], dtype=pooled_embeddings.dtype, device=self.device)
+            add_time_ids = add_time_ids.repeat(batch_size, 1)
+
+            added_cond_kwargs = {
+                "text_embeds": pooled_embeddings,
+                "time_ids": add_time_ids,
+            }
+
+        if profile_vram:
+            print_vram_usage("[train_step_controlnet] Before ControlNet forward")
+
+        # Enable gradients for gradient checkpointing (ControlNet needs grad flow)
+        noisy_latents.requires_grad_(True)
+        text_embeddings.requires_grad_(True)
+        if pooled_embeddings is not None:
+            pooled_embeddings.requires_grad_(True)
+
+        # ControlNet forward pass (trainable)
+        # Get adapter from ControlNetTrainer
+        controlnet_adapter = self.adapter
+        controlnet_module = self.controlnet
+        is_lllite = getattr(self, 'controlnet_type', 'standard') == 'lllite'
+
+        if is_lllite:
+            # LLLite mode: apply patches to UNet attention layers before forward
+            controlnet_module.apply_patches(self.unet, condition_images)
+            controlnet_output = None
+        else:
+            # Standard ControlNet: get residuals from ControlNet forward
+            if self.mixed_precision:
+                with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                    controlnet_output = controlnet_adapter.controlnet_forward(
+                        controlnet=controlnet_module,
+                        noisy_latents=noisy_latents,
+                        timesteps=timesteps,
+                        text_embeddings=text_embeddings,
+                        condition_images=condition_images,
+                        added_cond_kwargs=added_cond_kwargs,
+                    )
+            else:
+                controlnet_output = controlnet_adapter.controlnet_forward(
+                    controlnet=controlnet_module,
+                    noisy_latents=noisy_latents,
+                    timesteps=timesteps,
+                    text_embeddings=text_embeddings,
+                    condition_images=condition_images,
+                    added_cond_kwargs=added_cond_kwargs,
+                )
+
+        if profile_vram:
+            print_vram_usage("[train_step_controlnet] After ControlNet forward")
+
+        # UNet forward pass
+        try:
+            if controlnet_output is not None:
+                # Standard ControlNet: inject residuals into UNet
+                down_block_res_samples, mid_block_res_sample = controlnet_output
+
+                # UNet is frozen but we need gradients to flow through residual additions
+                if self.mixed_precision:
+                    with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                        if self.is_sdxl and added_cond_kwargs is not None:
+                            model_pred = self.unet(
+                                noisy_latents,
+                                timesteps,
+                                text_embeddings,
+                                added_cond_kwargs=added_cond_kwargs,
+                                down_block_additional_residuals=down_block_res_samples,
+                                mid_block_additional_residual=mid_block_res_sample,
+                            ).sample
+                        else:
+                            model_pred = self.unet(
+                                noisy_latents,
+                                timesteps,
+                                text_embeddings,
+                                down_block_additional_residuals=down_block_res_samples,
+                                mid_block_additional_residual=mid_block_res_sample,
+                            ).sample
+                else:
+                    if self.is_sdxl and added_cond_kwargs is not None:
+                        model_pred = self.unet(
+                            noisy_latents,
+                            timesteps,
+                            text_embeddings,
+                            added_cond_kwargs=added_cond_kwargs,
+                            down_block_additional_residuals=down_block_res_samples,
+                            mid_block_additional_residual=mid_block_res_sample,
+                        ).sample
+                    else:
+                        model_pred = self.unet(
+                            noisy_latents,
+                            timesteps,
+                            text_embeddings,
+                            down_block_additional_residuals=down_block_res_samples,
+                            mid_block_additional_residual=mid_block_res_sample,
+                        ).sample
+            else:
+                # LLLite mode: patches already applied, normal UNet forward
+                if self.mixed_precision:
+                    with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                        if self.is_sdxl and added_cond_kwargs is not None:
+                            model_pred = self.unet(
+                                noisy_latents, timesteps, text_embeddings,
+                                added_cond_kwargs=added_cond_kwargs,
+                            ).sample
+                        else:
+                            model_pred = self.unet(
+                                noisy_latents, timesteps, text_embeddings,
+                            ).sample
+                else:
+                    if self.is_sdxl and added_cond_kwargs is not None:
+                        model_pred = self.unet(
+                            noisy_latents, timesteps, text_embeddings,
+                            added_cond_kwargs=added_cond_kwargs,
+                        ).sample
+                    else:
+                        model_pred = self.unet(
+                            noisy_latents, timesteps, text_embeddings,
+                        ).sample
+        finally:
+            # Remove LLLite patches after UNet forward (must always run)
+            if is_lllite:
+                controlnet_module.remove_patches(self.unet)
+
+        if profile_vram:
+            print_vram_usage("[train_step_controlnet] After UNet forward")
+
+        # Get prediction target
+        prediction_target = getattr(self, 'prediction_target', 'epsilon')
+        target = get_target_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=self.noise_scheduler,
+            latents=latents,
+            noise=noise,
+            timesteps=timesteps,
+        )
+
+        # Calculate loss (always in fp32)
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        loss_per_sample = loss_per_element.mean([1, 2, 3])
+
+        # Apply Min-SNR gamma weighting
+        if self.min_snr_gamma > 0 and prediction_target == "epsilon":
+            loss_per_sample_weighted = apply_snr_weight(
+                loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma,
+                alphas_cumprod_cached=alphas_cumprod_cached
+            )
+        else:
+            loss_per_sample_weighted = loss_per_sample
+
+        mse_loss = loss_per_sample_weighted.mean()
+        loss = mse_loss
+
+        # Reconstruction loss (monitoring only, no gradients for ControlNet training)
+        with torch.no_grad():
+            predicted_latent = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=self.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
+            recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
+            recon_loss = recon_loss_per_element.mean()
+
+        if profile_vram:
+            print_vram_usage("[train_step_controlnet] After loss calculation")
+
+        pred_loss_value = mse_loss.item()
+        recon_loss_value = recon_loss.item()
+
+        # Cleanup
+        del noise, noisy_latents, model_pred, target, recon_loss, predicted_latent
+        if controlnet_output is not None:
+            del down_block_res_samples, mid_block_res_sample
+        if added_cond_kwargs is not None:
+            del added_cond_kwargs
+
+        return loss, pred_loss_value, recon_loss_value
+
     def train_step_zimage(
         self,
         latents: torch.Tensor,
@@ -6797,6 +7064,7 @@ class BaseTrainer(ABC):
                     text_embeddings_list = []
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
+                    condition_images_list = []  # ControlNet condition images [B, 3, H, W]
 
                     for item, dataset in batch:
                         # BucketManager stores bucket_width/bucket_height, not width/height
@@ -6956,6 +7224,28 @@ class BaseTrainer(ABC):
                                 # No reference images for this item - mark as None
                                 reference_latents_list.append(None)
 
+                        # ControlNet: Load condition images from reference_images[0]
+                        # Condition images stay in pixel space [0, 1] (not VAE-encoded)
+                        use_condition_images = getattr(self, 'use_condition_images', False)
+                        if use_condition_images:
+                            reference_images = item.get("reference_images", [])
+                            if reference_images:
+                                try:
+                                    # Use first reference image only
+                                    cond_image = Image.open(reference_images[0]).convert("RGB")
+                                    # Resize to match target dimensions
+                                    cond_image = cond_image.resize((width, height), Image.LANCZOS)
+                                    # Convert to tensor [0, 1] range: [1, 3, H, W]
+                                    import torchvision.transforms.functional as TF
+                                    cond_tensor = TF.to_tensor(cond_image).unsqueeze(0)  # [1, 3, H, W]
+                                    condition_images_list.append(cond_tensor)
+                                except Exception as e:
+                                    print(f"{self.log_prefix} WARNING: Failed to load condition image {reference_images[0]}: {e}")
+                                    condition_images_list.append(None)
+                            else:
+                                # No reference image - mark as None (will skip this item)
+                                condition_images_list.append(None)
+
                     # Stack batch with size validation
                     # Filter out latents with mismatched spatial dimensions (rare edge case)
                     if len(latents_list) > 1:
@@ -6975,6 +7265,8 @@ class BaseTrainer(ABC):
                             auxiliary_data_list = [auxiliary_data_list[i] for i in valid_indices]
                             if reference_latents_list:
                                 reference_latents_list = [reference_latents_list[i] for i in valid_indices]
+                            if condition_images_list:
+                                condition_images_list = [condition_images_list[i] for i in valid_indices]
 
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
@@ -7037,10 +7329,28 @@ class BaseTrainer(ABC):
                             # This ensures consistent training behavior
                             pass
 
+                    # Prepare condition images batch for ControlNet training
+                    condition_images_batch = None
+                    use_condition_images = getattr(self, 'use_condition_images', False)
+                    if use_condition_images and condition_images_list:
+                        # Only use batch if ALL items have valid condition images
+                        if all(ci is not None for ci in condition_images_list):
+                            condition_images_batch = torch.cat(condition_images_list, dim=0)  # [B, 3, H, W]
+                        else:
+                            # Mixed batch (some without condition images) - skip this batch
+                            print(f"{self.log_prefix} WARNING: Some items in batch missing condition images, skipping batch")
+                            del latents_list, text_embeddings_list, auxiliary_data_list
+                            if reference_latents_list:
+                                del reference_latents_list
+                            del condition_images_list
+                            continue
+
                     # Free individual item lists (no longer needed, batch tensors are created)
                     del latents_list, text_embeddings_list, auxiliary_data_list
                     if reference_latents_list:
                         del reference_latents_list
+                    if condition_images_list:
+                        del condition_images_list
 
                     # Collect batch captions for debug (done once, outside MNT loop)
                     batch_captions = [item.get("caption", "") for item, dataset in batch]
@@ -7191,6 +7501,18 @@ class BaseTrainer(ABC):
                                 reference_latents_nested=mnt_reference_latents_nested,  # Reference image conditioning (nested)
                                 debug_save_path=debug_save_path,
                                 debug_captions=batch_captions if debug_save_path else None,
+                                profile_vram=self.debug_vram,
+                                alphas_cumprod_cached=alphas_cumprod_cached,
+                            )
+                        elif use_condition_images and condition_images_batch is not None:
+                            # ControlNet training step
+                            mnt_condition_images = condition_images_batch.detach()
+                            loss, pred_loss, recon_loss = self.train_step_controlnet(
+                                latents=mnt_latents,
+                                text_embeddings=mnt_text_embeddings,
+                                condition_images=mnt_condition_images,
+                                pooled_embeddings=mnt_pooled_embeddings,
+                                timesteps=timesteps,
                                 profile_vram=self.debug_vram,
                                 alphas_cumprod_cached=alphas_cumprod_cached,
                             )

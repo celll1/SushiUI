@@ -1962,6 +1962,7 @@ class DiffusionPipelineManager:
 
             # FLUX.2 parameters
             prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
             height = params.get("height", 1024)
             width = params.get("width", 1024)
             num_inference_steps = params.get("steps", 50)
@@ -1999,7 +2000,7 @@ class DiffusionPipelineManager:
 
             if do_classifier_free_guidance:
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, "", max_sequence_length
+                    text_encoder, tokenizer, negative_prompt, max_sequence_length
                 )
             else:
                 negative_prompt_embeds = None
@@ -2652,6 +2653,7 @@ class DiffusionPipelineManager:
 
             # Parameters
             prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
             denoising_strength = params.get("denoising_strength", 0.75)
             num_inference_steps = params.get("steps", 50)
             guidance_scale = params.get("cfg_scale", 4.0)
@@ -2699,7 +2701,7 @@ class DiffusionPipelineManager:
 
             if do_classifier_free_guidance:
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, "", max_sequence_length
+                    text_encoder, tokenizer, negative_prompt, max_sequence_length
                 )
             else:
                 negative_prompt_embeds = None
@@ -3065,6 +3067,7 @@ class DiffusionPipelineManager:
 
             # Parameters
             prompt = params.get("prompt", "")
+            negative_prompt = params.get("negative_prompt", "")
             denoising_strength = params.get("denoising_strength", 1.0)
             num_inference_steps = params.get("steps", 50)
             guidance_scale = params.get("cfg_scale", 4.0)
@@ -3118,7 +3121,7 @@ class DiffusionPipelineManager:
 
             if do_classifier_free_guidance:
                 negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, "", max_sequence_length
+                    text_encoder, tokenizer, negative_prompt, max_sequence_length
                 )
             else:
                 negative_prompt_embeds = None

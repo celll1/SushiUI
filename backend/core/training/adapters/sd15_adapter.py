@@ -17,6 +17,11 @@ from safetensors.torch import save_file
 import math
 
 from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .state_dict_converter import (
+    convert_unet_state_dict_to_original,
+    convert_vae_state_dict_to_original,
+    convert_openai_text_enc_to_original,
+)
 
 
 # ============================================================
@@ -342,26 +347,28 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save U-Net weights with ComfyUI prefix
+        # Save U-Net weights: convert diffusers -> CompVis/LDM format
         if trainer.train_unet and trainer.unet is not None:
-            print(f"[SD15FullParameterAdapter] Collecting U-Net weights...")
+            print(f"[SD15FullParameterAdapter] Collecting U-Net weights (diffusers -> CompVis)...")
             unet_state = trainer.unet.state_dict()
-            for key, value in unet_state.items():
+            converted_unet = convert_unet_state_dict_to_original(unet_state)
+            for key, value in converted_unet.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights with ComfyUI prefix
+        # Save VAE weights: convert diffusers -> CompVis/LDM format
         if trainer.vae is not None:
-            print(f"[SD15FullParameterAdapter] Collecting VAE weights...")
+            print(f"[SD15FullParameterAdapter] Collecting VAE weights (diffusers -> CompVis)...")
             vae_state = trainer.vae.state_dict()
-            for key, value in vae_state.items():
+            converted_vae = convert_vae_state_dict_to_original(vae_state)
+            for key, value in converted_vae.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        # Save Text Encoder weights with ComfyUI prefix
+        # Save Text Encoder weights (CLIP ViT-L, no conversion needed)
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             print(f"[SD15FullParameterAdapter] Collecting Text Encoder weights...")
             te_state = trainer.text_encoder.state_dict()
-            for key, value in te_state.items():
-                # SD1.5 uses cond_stage_model.transformer prefix
+            converted_te = convert_openai_text_enc_to_original(te_state)
+            for key, value in converted_te.items():
                 combined_state_dict[f"cond_stage_model.transformer.{key}"] = value.cpu()
 
         # Save to safetensors with metadata

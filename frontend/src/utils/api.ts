@@ -1408,6 +1408,7 @@ export interface TrainingRunCreateRequest {
   lllite_rank?: number;
   condition_preprocessors?: string[] | null;
   condition_cache_mode?: string;
+  sample_condition_image_path?: string | null;
 }
 
 export interface TrainingRunListResponse {

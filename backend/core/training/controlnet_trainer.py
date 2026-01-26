@@ -17,11 +17,11 @@ Author: Claude (2026-01-26)
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 import torch
 import torch.nn as nn
 
-from .base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer, log_verbose
 from .adapters import ControlNetSD15Adapter, ControlNetSDXLAdapter
 
 
@@ -207,3 +207,532 @@ class ControlNetTrainer(BaseTrainer):
         step = self.adapter.load_checkpoint(self.controlnet, checkpoint_path)
         print(f"{self.log_prefix} Loaded checkpoint from step {step}")
         return step
+
+    # ============================================================
+    # Sample Generation (ControlNet-aware)
+    # ============================================================
+
+    def _load_sample_condition_image(self) -> "Optional[Image.Image]":
+        """
+        Load condition image for sample generation during training.
+
+        Priority:
+        1. User-specified path (self._sample_condition_image_path)
+        2. First dataset item's reference_images[0]
+
+        Returns:
+            PIL Image or None if no condition image available
+        """
+        from PIL import Image
+
+        # Option 1: User-specified path
+        path = getattr(self, '_sample_condition_image_path', None)
+        if path:
+            p = Path(path)
+            if p.exists():
+                try:
+                    img = Image.open(str(p)).convert("RGB")
+                    print(f"{self.log_prefix} [Sample] Loaded condition image from config: {p}")
+                    return img
+                except Exception as e:
+                    print(f"{self.log_prefix} [Sample] Failed to load condition image from {p}: {e}")
+            else:
+                print(f"{self.log_prefix} [Sample] Condition image path not found: {p}")
+
+        # Option 2: First dataset item's reference image
+        datasets = getattr(self, '_training_datasets', None)
+        if datasets:
+            for ds in datasets:
+                items = ds.get("items", [])
+                for item in items:
+                    ref_images = item.get("reference_images", [])
+                    if ref_images:
+                        ref_path = Path(ref_images[0])
+                        if ref_path.exists():
+                            try:
+                                img = Image.open(str(ref_path)).convert("RGB")
+                                print(f"{self.log_prefix} [Sample] Loaded condition image from dataset: {ref_path}")
+                                return img
+                            except Exception as e:
+                                print(f"{self.log_prefix} [Sample] Failed to load {ref_path}: {e}")
+
+        print(f"{self.log_prefix} [Sample] WARNING: No condition image found for sample generation")
+        return None
+
+    def generate_sample(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 3.5,
+        seed: int = -1,
+        current_step: int = 0,
+        schedule_type: str = "uniform",
+    ) -> "Image.Image":
+        """
+        Generate sample image during ControlNet training.
+
+        Overrides BaseTrainer.generate_sample() to apply the trained ControlNet
+        during sample generation, allowing visual verification of training progress.
+
+        Standard ControlNet: Sets pipeline.controlnet and passes controlnet_images
+        LLLite: Applies patches to UNet before sampling, removes after
+        """
+        # Load condition image (lazy, cached)
+        if not hasattr(self, '_cached_sample_condition') or self._cached_sample_condition is None:
+            self._cached_sample_condition = self._load_sample_condition_image()
+
+        # No condition image available: fall back to base (no ControlNet)
+        if self._cached_sample_condition is None:
+            print(f"{self.log_prefix} [Sample] No condition image, falling back to base generate_sample()")
+            return super().generate_sample(
+                prompt=prompt, height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale, seed=seed,
+                current_step=current_step, schedule_type=schedule_type,
+            )
+
+        # Dispatch to type-specific implementation
+        if self.controlnet_type == "standard":
+            return self._generate_sample_standard(
+                prompt=prompt, height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale, seed=seed,
+                current_step=current_step, schedule_type=schedule_type,
+            )
+        elif self.controlnet_type == "lllite":
+            return self._generate_sample_lllite(
+                prompt=prompt, height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale, seed=seed,
+                current_step=current_step, schedule_type=schedule_type,
+            )
+        else:
+            # Unknown type: fall back to base
+            return super().generate_sample(
+                prompt=prompt, height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale, seed=seed,
+                current_step=current_step, schedule_type=schedule_type,
+            )
+
+    def _generate_sample_standard(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 3.5,
+        seed: int = -1,
+        current_step: int = 0,
+        schedule_type: str = "uniform",
+    ) -> "Image.Image":
+        """
+        Generate sample with Standard ControlNet (ControlNetModel).
+
+        Sets pipeline.controlnet and passes controlnet_images to custom_sampling_loop().
+        """
+        from PIL import Image
+        import random
+
+        print(f"{self.log_prefix} [Sample] Generating with Standard ControlNet: {prompt[:50]}...")
+
+        from core.inference.custom_sampling import custom_sampling_loop
+        from core.inference.schedulers import get_scheduler
+
+        # Resize condition image to sample dimensions
+        condition_image = self._cached_sample_condition.resize((width, height), Image.LANCZOS)
+
+        # Set models to eval mode
+        self.unet.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.eval()
+        self.controlnet.eval()
+
+        try:
+            # ========================================
+            # STEP 1: Create Temporary Pipeline with ControlNet
+            # ========================================
+            class TempPipeline:
+                def __init__(self, unet, vae, text_encoder, text_encoder_2,
+                             scheduler, tokenizer, tokenizer_2, controlnet):
+                    self.unet = unet
+                    self.vae = vae
+                    self.text_encoder = text_encoder
+                    self.text_encoder_2 = text_encoder_2
+                    self.scheduler = scheduler
+                    self.tokenizer = tokenizer
+                    self.tokenizer_2 = tokenizer_2
+                    self.controlnet = controlnet
+                    self.vae_scale_factor = 8
+                    self.image_processor = None
+
+            # Map schedule_type
+            schedule_type_mapped = schedule_type
+            if schedule_type == "sgm_uniform":
+                schedule_type_mapped = "uniform"
+
+            class SchedulerContainer:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+            scheduler_container = SchedulerContainer(self.original_scheduler)
+            scheduler = get_scheduler(
+                pipeline=scheduler_container,
+                sampler="euler",
+                schedule_type=schedule_type_mapped
+            )
+
+            pipeline = TempPipeline(
+                unet=self.unet,
+                vae=self.vae,
+                text_encoder=self.text_encoder,
+                text_encoder_2=getattr(self, 'text_encoder_2', None),
+                scheduler=scheduler,
+                tokenizer=self.tokenizer,
+                tokenizer_2=getattr(self, 'tokenizer_2', None),
+                controlnet=self.controlnet,
+            )
+
+            # ========================================
+            # STEP 2: Text Encoding
+            # ========================================
+            self.move_text_encoder_to_gpu()
+
+            if self.is_sdxl:
+                prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt("", requires_grad=False)
+            else:
+                prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                pooled_prompt_embeds = None
+                negative_pooled_prompt_embeds = None
+
+            # Pad negative embeddings to match positive (prompt chunking)
+            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
+                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
+                padding = torch.zeros(
+                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
+                    dtype=negative_prompt_embeds.dtype,
+                    device=negative_prompt_embeds.device
+                )
+                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
+
+            # ========================================
+            # STEP 3: Create Generator
+            # ========================================
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # ========================================
+            # STEP 4: Call custom_sampling_loop with ControlNet
+            # ========================================
+            self.move_main_model_to_gpu()
+            self.move_vae_to_gpu()
+
+            is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
+            guidance_rescale = 0.7 if is_v_prediction else 0.0
+
+            log_verbose(f"{self.log_prefix} [Sample] Standard ControlNet active, condition_scale=1.0")
+
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                image = custom_sampling_loop(
+                    pipeline=pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    pooled_prompt_embeds=pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    guidance_rescale=guidance_rescale,
+                    width=width,
+                    height=height,
+                    generator=generator,
+                    ancestral_generator=None,
+                    latents=None,
+                    prompt_embeds_callback=None,
+                    progress_callback=None,
+                    step_callback=None,
+                    developer_mode=False,
+                    cfg_schedule_type="constant",
+                    cfg_schedule_min=1.0,
+                    cfg_schedule_max=None,
+                    cfg_schedule_power=2.0,
+                    cfg_rescale_snr_alpha=0.0,
+                    dynamic_threshold_percentile=0.0,
+                    dynamic_threshold_mimic_scale=1.0,
+                    nag_enable=False,
+                    nag_scale=5.0,
+                    nag_tau=3.5,
+                    nag_alpha=0.25,
+                    nag_sigma_end=0.0,
+                    nag_negative_prompt_embeds=None,
+                    nag_negative_pooled_prompt_embeds=None,
+                    attention_type="normal",
+                    # ControlNet parameters
+                    controlnet_images=[condition_image],
+                    controlnet_conditioning_scale=1.0,
+                    control_guidance_start=0.0,
+                    control_guidance_end=1.0,
+                )
+
+                self.move_main_model_to_cpu()
+                self.move_vae_to_cpu()
+                torch.cuda.empty_cache()
+
+                log_verbose(f"{self.log_prefix} [Sample] Standard ControlNet sample generated (seed: {actual_seed})")
+                return image
+
+        except Exception as e:
+            print(f"{self.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
+            print(f"{self.log_prefix} [Sample] Sample generation failed - training will continue")
+
+            from PIL import Image
+            placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
+            return placeholder
+
+        finally:
+            # Restore training mode
+            self.unet.train()
+            self.vae.train()
+            self.text_encoder.train()
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.train()
+            self.controlnet.train()
+            self.move_main_model_to_gpu()
+
+    def _generate_sample_lllite(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 3.5,
+        seed: int = -1,
+        current_step: int = 0,
+        schedule_type: str = "uniform",
+    ) -> "Image.Image":
+        """
+        Generate sample with LLLite ControlNet.
+
+        Applies LLLite patches to UNet before sampling, removes after.
+        """
+        from PIL import Image
+        import random
+        import torchvision.transforms.functional as TF
+
+        print(f"{self.log_prefix} [Sample] Generating with LLLite ControlNet: {prompt[:50]}...")
+
+        from core.inference.custom_sampling import custom_sampling_loop
+        from core.inference.schedulers import get_scheduler
+
+        # Resize condition image to sample dimensions
+        condition_image = self._cached_sample_condition.resize((width, height), Image.LANCZOS)
+
+        # Set models to eval mode
+        self.unet.eval()
+        self.vae.eval()
+        self.text_encoder.eval()
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.eval()
+        self.controlnet.eval()
+
+        lllite_patched = False
+
+        try:
+            # ========================================
+            # STEP 1: Create Temporary Pipeline (no controlnet attr)
+            # ========================================
+            if self.is_sdxl:
+                class TempPipeline:
+                    def __init__(self, unet, vae, text_encoder, text_encoder_2,
+                                 scheduler, tokenizer, tokenizer_2):
+                        self.unet = unet
+                        self.vae = vae
+                        self.text_encoder = text_encoder
+                        self.text_encoder_2 = text_encoder_2
+                        self.scheduler = scheduler
+                        self.tokenizer = tokenizer
+                        self.tokenizer_2 = tokenizer_2
+                        self.vae_scale_factor = 8
+                        self.image_processor = None
+            else:
+                class TempPipeline:
+                    def __init__(self, unet, vae, text_encoder, scheduler, tokenizer):
+                        self.unet = unet
+                        self.vae = vae
+                        self.text_encoder = text_encoder
+                        self.scheduler = scheduler
+                        self.tokenizer = tokenizer
+                        self.vae_scale_factor = 8
+                        self.image_processor = None
+
+            schedule_type_mapped = schedule_type
+            if schedule_type == "sgm_uniform":
+                schedule_type_mapped = "uniform"
+
+            class SchedulerContainer:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+            scheduler_container = SchedulerContainer(self.original_scheduler)
+            scheduler = get_scheduler(
+                pipeline=scheduler_container,
+                sampler="euler",
+                schedule_type=schedule_type_mapped
+            )
+
+            if self.is_sdxl:
+                pipeline = TempPipeline(
+                    unet=self.unet,
+                    vae=self.vae,
+                    text_encoder=self.text_encoder,
+                    text_encoder_2=self.text_encoder_2,
+                    scheduler=scheduler,
+                    tokenizer=self.tokenizer,
+                    tokenizer_2=self.tokenizer_2,
+                )
+            else:
+                pipeline = TempPipeline(
+                    unet=self.unet,
+                    vae=self.vae,
+                    text_encoder=self.text_encoder,
+                    scheduler=scheduler,
+                    tokenizer=self.tokenizer,
+                )
+
+            # ========================================
+            # STEP 2: Text Encoding
+            # ========================================
+            self.move_text_encoder_to_gpu()
+
+            if self.is_sdxl:
+                prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt("", requires_grad=False)
+            else:
+                prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
+                negative_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                pooled_prompt_embeds = None
+                negative_pooled_prompt_embeds = None
+
+            # Pad negative embeddings to match positive (prompt chunking)
+            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
+                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
+                padding = torch.zeros(
+                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
+                    dtype=negative_prompt_embeds.dtype,
+                    device=negative_prompt_embeds.device
+                )
+                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
+
+            # ========================================
+            # STEP 3: Create Generator
+            # ========================================
+            if seed < 0:
+                actual_seed = random.randint(0, 2**32 - 1)
+            else:
+                actual_seed = seed
+
+            generator = torch.Generator(device=self.device).manual_seed(actual_seed)
+
+            # ========================================
+            # STEP 4: Apply LLLite patches and call custom_sampling_loop
+            # ========================================
+            self.move_main_model_to_gpu()
+            self.move_vae_to_gpu()
+
+            # Prepare condition tensor [1, 3, H, W] in [0, 1] range
+            cond_tensor = TF.to_tensor(condition_image).unsqueeze(0).to(
+                device=self.device, dtype=self.training_dtype
+            )
+
+            # Apply LLLite patches to UNet
+            self.controlnet.apply_patches(self.unet, cond_tensor)
+            lllite_patched = True
+            log_verbose(f"{self.log_prefix} [Sample] LLLite patches applied to UNet")
+
+            is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
+            guidance_rescale = 0.7 if is_v_prediction else 0.0
+
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                image = custom_sampling_loop(
+                    pipeline=pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    pooled_prompt_embeds=pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    guidance_rescale=guidance_rescale,
+                    width=width,
+                    height=height,
+                    generator=generator,
+                    ancestral_generator=None,
+                    latents=None,
+                    prompt_embeds_callback=None,
+                    progress_callback=None,
+                    step_callback=None,
+                    developer_mode=False,
+                    cfg_schedule_type="constant",
+                    cfg_schedule_min=1.0,
+                    cfg_schedule_max=None,
+                    cfg_schedule_power=2.0,
+                    cfg_rescale_snr_alpha=0.0,
+                    dynamic_threshold_percentile=0.0,
+                    dynamic_threshold_mimic_scale=1.0,
+                    nag_enable=False,
+                    nag_scale=5.0,
+                    nag_tau=3.5,
+                    nag_alpha=0.25,
+                    nag_sigma_end=0.0,
+                    nag_negative_prompt_embeds=None,
+                    nag_negative_pooled_prompt_embeds=None,
+                    attention_type="normal",
+                    # No controlnet params for LLLite (patches already applied)
+                )
+
+                # Remove LLLite patches
+                self.controlnet.remove_patches(self.unet)
+                lllite_patched = False
+
+                self.move_main_model_to_cpu()
+                self.move_vae_to_cpu()
+                torch.cuda.empty_cache()
+
+                log_verbose(f"{self.log_prefix} [Sample] LLLite ControlNet sample generated (seed: {actual_seed})")
+                return image
+
+        except Exception as e:
+            print(f"{self.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
+            print(f"{self.log_prefix} [Sample] Sample generation failed - training will continue")
+
+            from PIL import Image
+            placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
+            return placeholder
+
+        finally:
+            # Remove LLLite patches if still applied
+            if lllite_patched and hasattr(self.controlnet, '_is_patched') and self.controlnet._is_patched:
+                self.controlnet.remove_patches(self.unet)
+
+            # Restore training mode
+            self.unet.train()
+            self.vae.train()
+            self.text_encoder.train()
+            if self.text_encoder_2 is not None:
+                self.text_encoder_2.train()
+            self.controlnet.train()
+            self.move_main_model_to_gpu()

@@ -107,6 +107,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [llliteRank, setLlliteRank] = useState(64);
   const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
   const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
+  const [sampleConditionImagePath, setSampleConditionImagePath] = useState("");
 
   // Training parameters
   const [useEpochs, setUseEpochs] = useState(false);
@@ -406,6 +407,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
       if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
       if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
+      if (params.sample_condition_image_path !== undefined && params.sample_condition_image_path !== null) setSampleConditionImagePath(params.sample_condition_image_path);
 
       // Sample Generation
       if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
@@ -722,6 +724,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       llliteRank,
       conditionPreprocessors,
       conditionCacheMode,
+      sampleConditionImagePath,
     };
   };
 
@@ -832,6 +835,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.llliteRank !== undefined) setLlliteRank(config.llliteRank);
     if (config.conditionPreprocessors !== undefined) setConditionPreprocessors(config.conditionPreprocessors);
     if (config.conditionCacheMode !== undefined) setConditionCacheMode(config.conditionCacheMode);
+    if (config.sampleConditionImagePath !== undefined) setSampleConditionImagePath(config.sampleConditionImagePath);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -987,6 +991,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
       condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
+      sample_condition_image_path: trainingMethod === "controlnet" && sampleConditionImagePath ? sampleConditionImagePath : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1426,6 +1431,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </select>
               </div>
             )}
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Sample Condition Image Path</label>
+              <input
+                type="text"
+                value={sampleConditionImagePath}
+                onChange={(e) => setSampleConditionImagePath(e.target.value)}
+                placeholder="(Optional) Uses first dataset reference image if empty"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">Condition image used for sample generation during training. If empty, the first reference image from the dataset is used.</p>
+            </div>
 
             <p className="text-xs text-gray-500">ControlNet training freezes UNet/VAE/Text Encoder. Only the ControlNet module is trained.</p>
           </div>

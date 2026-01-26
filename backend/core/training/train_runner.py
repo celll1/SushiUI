@@ -1476,6 +1476,171 @@ def main():
             run.completed_at = datetime.utcnow()
             training_db.commit()
 
+        elif network_type == 'controlnet':
+            print("[TrainRunner] Training method: ControlNet")
+            from core.training.controlnet_trainer import ControlNetTrainer
+
+            # Get dtype settings from unified dtype section
+            dtype_config = process_config.get('dtype', {})
+            weight_dtype = dtype_config.get('weight', 'fp16')
+            training_dtype = dtype_config.get('training', 'fp16')
+            output_dtype = dtype_config.get('save', 'fp32')
+            vae_dtype = dtype_config.get('vae', 'fp16')
+
+            mixed_precision = train_config.get('mixed_precision', True)
+            debug_vram = train_config.get('debug_vram', False)
+            use_flash_attention = train_config.get('use_flash_attention', False)
+            min_snr_gamma = train_config.get('min_snr_gamma', 5.0)
+
+            # ControlNet-specific parameters
+            controlnet_config = network_config.get('controlnet', {})
+            controlnet_type = controlnet_config.get('type', 'standard')
+            controlnet_pretrained_path = controlnet_config.get('pretrained_path')
+            init_from_unet = controlnet_config.get('init_from_unet', True)
+            lllite_conditioning_channels = controlnet_config.get('lllite_conditioning_channels', 32)
+            lllite_rank = controlnet_config.get('lllite_rank', 64)
+
+            # Condition generation parameters
+            condition_preprocessors = controlnet_config.get('condition_preprocessors')
+            condition_cache_mode = controlnet_config.get('condition_cache_mode', 'on_the_fly')
+
+            # Prompt chunking settings
+            prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
+            max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
+
+            # Get component-specific learning rates
+            unet_lr = train_config.get('unet_lr')
+
+            # Get optimizer options and hyperparameters
+            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
+            optimizer_cautious = train_config.get('optimizer_cautious', False)
+            optimizer_beta1 = train_config.get('optimizer_beta1')
+            optimizer_beta2 = train_config.get('optimizer_beta2')
+            optimizer_epsilon = train_config.get('optimizer_epsilon')
+            optimizer_weight_decay = train_config.get('optimizer_weight_decay')
+
+            # Schedule-Free optimizer options
+            optimizer_schedule_free = train_config.get('optimizer_schedule_free', False)
+            optimizer_warmup_steps = train_config.get('optimizer_warmup_steps', 0)
+            optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
+            optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
+            optimizer_use_radam = train_config.get('optimizer_use_radam', False)
+
+            # Initialize ControlNet trainer
+            trainer = ControlNetTrainer(
+                model_path=run.base_model_path,
+                output_dir=run.output_dir,
+                run_name=run.run_name,
+                run_id=run_id,
+                controlnet_type=controlnet_type,
+                controlnet_pretrained_path=controlnet_pretrained_path,
+                init_from_unet=init_from_unet,
+                lllite_conditioning_channels=lllite_conditioning_channels,
+                lllite_rank=lllite_rank,
+                condition_preprocessors=condition_preprocessors,
+                condition_cache_mode=condition_cache_mode,
+                learning_rate=train_config.get('lr', 1e-4),
+                weight_dtype=weight_dtype,
+                training_dtype=training_dtype,
+                output_dtype=output_dtype,
+                vae_dtype=vae_dtype,
+                mixed_precision=mixed_precision,
+                debug_vram=debug_vram,
+                use_flash_attention=use_flash_attention,
+                min_snr_gamma=min_snr_gamma,
+                # Component-specific learning rates
+                unet_lr=unet_lr,
+                # Optimizer options and hyperparameters
+                optimizer_is_paged=optimizer_is_paged,
+                optimizer_cautious=optimizer_cautious,
+                optimizer_beta1=optimizer_beta1,
+                optimizer_beta2=optimizer_beta2,
+                optimizer_epsilon=optimizer_epsilon,
+                optimizer_weight_decay=optimizer_weight_decay,
+                # Schedule-Free optimizer options
+                optimizer_schedule_free=optimizer_schedule_free,
+                optimizer_warmup_steps=optimizer_warmup_steps,
+                optimizer_schedule_free_r=optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=optimizer_use_radam,
+                # Prompt chunking settings
+                prompt_chunking_mode=prompt_chunking_mode,
+                max_prompt_chunks=max_prompt_chunks,
+            )
+
+            # Get optimizer settings
+            optimizer_type = train_config.get('optimizer', 'adamw8bit')
+            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
+
+            # Validate Prediction Configuration
+            from core.model_loader import ModelLoader
+            model_type = ModelLoader.detect_model_type(run.base_model_path)
+            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
+
+            print(f"[TrainRunner] Model prediction configuration:")
+            print(f"  Noise Process: {model_pred_config['noise_process']}")
+            print(f"  Prediction Target: {model_pred_config['prediction_target']}")
+
+            training_noise_process = train_config.get('noise_process', 'auto')
+            training_prediction_target = train_config.get('prediction_target', 'auto')
+
+            if training_noise_process == 'auto':
+                training_noise_process = model_pred_config['noise_process']
+            if training_prediction_target == 'auto':
+                training_prediction_target = model_pred_config['prediction_target']
+
+            trainer.noise_process = training_noise_process
+            trainer.prediction_target = training_prediction_target
+
+            # Timestep sampling configuration
+            timestep_sampling_config = train_config.get('timestep_sampling')
+
+            # Start training
+            trainer.train(
+                datasets=training_datasets,
+                num_epochs=num_epochs if num_epochs else 1,
+                total_steps=total_steps_config,
+                batch_size=train_config.get('batch_size', 1),
+                save_every_n_steps=save_every_n_steps,
+                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_prompt=sample_prompt,
+                sample_guidance_scale=sample_guidance_scale,
+                sample_steps=sample_steps,
+                sample_width=sample_width,
+                sample_height=sample_height,
+                sample_seed=sample_seed,
+                optimizer_type=optimizer_type,
+                lr_scheduler_type=lr_scheduler_type,
+                enable_bucketing=enable_bucketing,
+                base_resolutions=base_resolutions,
+                bucket_strategy="resize",
+                multi_resolution_mode="max",
+                gradient_accumulation_steps=1,
+                max_grad_norm=1.0,
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
+                progress_callback=progress_callback,
+                update_total_steps_callback=update_total_steps_callback,
+                run_id=run_id,
+                force_recache=force_recache,
+                max_step_saves_to_keep=max_step_saves_to_keep,
+                text_encoding_mode=text_encoding_mode,
+                text_encoding_swap_interval=text_encoding_swap_interval,
+                latent_encoding_mode=latent_encoding_mode,
+                latent_encoding_swap_interval=latent_encoding_swap_interval,
+                multi_noise_timesteps=multi_noise_timesteps,
+                multi_noise_mode=multi_noise_mode,
+                trajectory_blend_alpha=trajectory_blend_alpha,
+                timestep_sampling_config=timestep_sampling_config,
+            )
+
+            print("[TrainRunner] Training completed successfully!")
+
+            # Update run status
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            training_db.commit()
+
         else:
             print(f"[TrainRunner] ERROR: Unsupported network type: {network_type}")
             sys.exit(1)

@@ -983,6 +983,9 @@ export interface Dataset {
   recursive: boolean;
   read_exif: boolean;
   caption_processing?: CaptionProcessingConfig;
+  reference_suffixes?: string[];
+  target_suffixes?: string[];
+  caption_suffixes_for_reference?: string[];
   total_items: number;
   total_captions: number;
   total_tags: number;
@@ -1031,6 +1034,18 @@ export const updateCaptionProcessing = async (
   const response = await api.patch(`/datasets/${id}/caption-processing`, {
     caption_processing: captionProcessing,
   });
+  return response.data;
+};
+
+export const updateDatasetSuffixConfig = async (
+  id: number,
+  config: {
+    reference_suffixes?: string[];
+    target_suffixes?: string[];
+    caption_suffixes_for_reference?: string[];
+  }
+): Promise<Dataset> => {
+  const response = await api.patch(`/datasets/${id}/suffix-config`, config);
   return response.data;
 };
 
@@ -1117,10 +1132,26 @@ export const deleteCaptionProcessingPreset = async (id: number): Promise<void> =
   await api.delete(`/caption-processing-presets/${id}`);
 };
 
+export interface StructureDetectionResult {
+  structure_type: "normal" | "paired";
+  reference_suffixes: string[];
+  target_suffixes: string[];
+  caption_suffixes_for_reference: string[];
+  confidence: number;
+  unknown_suffixes?: string[];
+  stats: {
+    total_files_sampled: number;
+    suffix_counts: Record<string, number>;
+    paired_groups: number;
+    unpaired_files: number;
+  };
+}
+
 export interface DatasetScanResponse {
   items_found: number;
   captions_found: number;
   dataset: Dataset;
+  structure_detection?: StructureDetectionResult;
 }
 
 export const scanDataset = async (id: number): Promise<DatasetScanResponse> => {

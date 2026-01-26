@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Folder, AlertCircle } from "lucide-react";
-import { createDataset, scanDataset, Dataset } from "@/utils/api";
+import { createDataset, scanDataset, Dataset, StructureDetectionResult } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface CreateDatasetModalProps {
@@ -21,6 +21,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
   const [error, setError] = useState<string | null>(null);
   const [scanningProgress, setScanningProgress] = useState<number | null>(null);
   const [scanningMessage, setScanningMessage] = useState<string>("");
+  const [detectionResult, setDetectionResult] = useState<StructureDetectionResult | null>(null);
 
   // WebSocket progress handler
   useEffect(() => {
@@ -80,8 +81,15 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
         setScanningProgress(100);
         setScanningMessage("Scan complete!");
 
-        // Small delay to show completion
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Show detection result if paired structure was found
+        if (scanResult.structure_detection?.structure_type === "paired") {
+          setDetectionResult(scanResult.structure_detection);
+          // Longer delay to let user see the detection result
+          await new Promise(resolve => setTimeout(resolve, 2500));
+        } else {
+          // Small delay to show completion
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
 
         onCreate(scanResult.dataset); // Return scanned dataset with updated counts
       } catch (scanErr) {
@@ -225,6 +233,40 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
               <p className="text-xs text-gray-400 mt-2">
                 {scanningMessage || "Scanning images and captions in the dataset directory..."}
               </p>
+            </div>
+          )}
+
+          {/* Structure Detection Result */}
+          {detectionResult && detectionResult.structure_type === "paired" && (
+            <div className="bg-green-900/20 border border-green-700 rounded p-3">
+              <p className="text-sm text-green-300 font-medium mb-2">
+                Paired dataset structure detected (confidence: {Math.round(detectionResult.confidence * 100)}%)
+              </p>
+              <div className="text-xs text-green-400 space-y-1">
+                <p>
+                  <span className="text-gray-400">Target suffixes:</span>{" "}
+                  {detectionResult.target_suffixes.map(s => (
+                    <code key={s} className="bg-green-900/50 px-1 rounded mr-1">{s}</code>
+                  ))}
+                </p>
+                <p>
+                  <span className="text-gray-400">Reference suffixes:</span>{" "}
+                  {detectionResult.reference_suffixes.map(s => (
+                    <code key={s} className="bg-green-900/50 px-1 rounded mr-1">{s}</code>
+                  ))}
+                </p>
+                {detectionResult.caption_suffixes_for_reference.length > 0 && (
+                  <p>
+                    <span className="text-gray-400">Caption suffixes:</span>{" "}
+                    {detectionResult.caption_suffixes_for_reference.map(s => (
+                      <code key={s} className="bg-green-900/50 px-1 rounded mr-1">{s}</code>
+                    ))}
+                  </p>
+                )}
+                <p className="text-gray-500 mt-1">
+                  {detectionResult.stats.paired_groups} paired groups found from {detectionResult.stats.total_files_sampled} files
+                </p>
+              </div>
             </div>
           )}
 

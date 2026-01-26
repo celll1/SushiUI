@@ -2679,6 +2679,35 @@ async def update_caption_processing(
     return dataset.to_dict()
 
 
+class DatasetSuffixUpdateRequest(BaseModel):
+    reference_suffixes: Optional[List[str]] = None
+    target_suffixes: Optional[List[str]] = None
+    caption_suffixes_for_reference: Optional[List[str]] = None
+
+@router.patch("/datasets/{dataset_id}/suffix-config")
+async def update_dataset_suffix_config(
+    dataset_id: int,
+    request: DatasetSuffixUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Update suffix configuration for dataset structure (reference/target pairing)"""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if request.reference_suffixes is not None:
+        dataset.reference_suffixes = request.reference_suffixes
+    if request.target_suffixes is not None:
+        dataset.target_suffixes = request.target_suffixes
+    if request.caption_suffixes_for_reference is not None:
+        dataset.caption_suffixes_for_reference = request.caption_suffixes_for_reference
+
+    db.commit()
+    db.refresh(dataset)
+
+    return dataset.to_dict()
+
+
 # ============================================================
 # Caption Processing Presets API
 # ============================================================
@@ -2938,6 +2967,35 @@ async def scan_dataset(
 
     if not os.path.exists(dataset.path):
         raise HTTPException(status_code=400, detail=f"Directory not found: {dataset.path}")
+
+    # Auto-detect dataset structure before scanning
+    from utils.dataset_structure_detector import detect_dataset_structure
+
+    structure_detection_result = None
+    if not dataset.reference_suffixes and not dataset.target_suffixes:
+        print(f"[Dataset Scan] Auto-detecting dataset structure...")
+        structure_detection_result = detect_dataset_structure(
+            dataset.path,
+            recursive=dataset.recursive,
+            max_depth=dataset.max_depth if hasattr(dataset, 'max_depth') and dataset.max_depth else None,
+        )
+
+        if structure_detection_result["structure_type"] == "paired":
+            dataset.reference_suffixes = structure_detection_result["reference_suffixes"]
+            dataset.target_suffixes = structure_detection_result["target_suffixes"]
+            dataset.caption_suffixes_for_reference = structure_detection_result.get("caption_suffixes_for_reference", [])
+            db.commit()
+            db.refresh(dataset)
+            print(f"[Dataset Scan] Detected paired structure: "
+                  f"ref={structure_detection_result['reference_suffixes']}, "
+                  f"target={structure_detection_result['target_suffixes']}, "
+                  f"caption={structure_detection_result.get('caption_suffixes_for_reference', [])}, "
+                  f"confidence={structure_detection_result['confidence']:.3f}")
+        else:
+            print(f"[Dataset Scan] Normal dataset structure detected")
+    else:
+        print(f"[Dataset Scan] Using existing suffix configuration: "
+              f"ref={dataset.reference_suffixes}, target={dataset.target_suffixes}")
 
     # Supported image extensions
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
@@ -3316,11 +3374,17 @@ async def scan_dataset(
     db.commit()
     db.refresh(dataset)
 
-    return {
+    response = {
         "items_found": items_found,
         "captions_found": captions_found,
-        "dataset": dataset.to_dict()
+        "dataset": dataset.to_dict(),
     }
+
+    # Include auto-detection result if detection was performed
+    if structure_detection_result is not None:
+        response["structure_detection"] = structure_detection_result
+
+    return response
 
 @router.get("/datasets/{dataset_id}/items")
 async def list_dataset_items(

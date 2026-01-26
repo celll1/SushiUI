@@ -41,6 +41,8 @@ tags:
     description: System control and monitoring
   - name: auth
     description: Authentication (if enabled)
+  - name: datasets
+    description: Dataset management, scanning, and structure detection
 
 paths:
   /generate/txt2img:
@@ -1070,6 +1072,42 @@ paths:
                 type: string
                 format: binary
 
+  /datasets/{dataset_id}/suffix-config:
+    patch:
+      tags: [datasets]
+      summary: Update dataset suffix configuration
+      description: |
+        Update the suffix configuration for dataset structure detection.
+        Controls how files are grouped into reference/target pairs during scanning.
+
+        After updating, re-scan the dataset to apply the new configuration.
+      operationId: updateDatasetSuffixConfig
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasetSuffixUpdateRequest'
+      responses:
+        '200':
+          description: Suffix configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1490,3 +1528,174 @@ components:
           type: integer
           description: Maximum tokens allowed
           example: 75
+
+    DatasetSuffixUpdateRequest:
+      type: object
+      description: Update suffix configuration for dataset structure detection
+      properties:
+        reference_suffixes:
+          type: array
+          items:
+            type: string
+          description: Suffixes identifying reference/source images (e.g., ["_source", "_depth"])
+          example: ["_source"]
+        target_suffixes:
+          type: array
+          items:
+            type: string
+          description: Suffixes identifying target/main training images (e.g., ["_target"])
+          example: ["_target"]
+        caption_suffixes_for_reference:
+          type: array
+          items:
+            type: string
+          description: Suffixes identifying caption/instruction files in reference mode (e.g., ["_instruction"])
+          example: ["_instruction"]
+
+    Dataset:
+      type: object
+      required:
+        - id
+        - name
+        - path
+      properties:
+        id:
+          type: integer
+          description: Dataset ID
+          example: 1
+        name:
+          type: string
+          description: Dataset name
+          example: "Instruct_NL"
+        path:
+          type: string
+          description: Directory path
+          example: "D:\\datasets\\instruct_nl"
+        description:
+          type: string
+          nullable: true
+          description: Optional description
+        recursive:
+          type: boolean
+          description: Whether subdirectories are scanned
+          default: true
+        read_exif:
+          type: boolean
+          description: Whether EXIF metadata is extracted
+          default: false
+        reference_suffixes:
+          type: array
+          items:
+            type: string
+          description: Configured reference image suffixes
+          example: ["_source"]
+        target_suffixes:
+          type: array
+          items:
+            type: string
+          description: Configured target image suffixes
+          example: ["_target"]
+        caption_suffixes_for_reference:
+          type: array
+          items:
+            type: string
+          description: Configured caption suffixes for reference mode
+          example: ["_instruction"]
+        total_items:
+          type: integer
+          description: Total number of dataset items
+          example: 986
+        total_captions:
+          type: integer
+          description: Total number of captions
+          example: 986
+        total_tags:
+          type: integer
+          description: Total number of unique tags
+          example: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_scanned_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    StructureDetectionResult:
+      type: object
+      description: Result of automatic dataset structure detection
+      required:
+        - structure_type
+      properties:
+        structure_type:
+          type: string
+          enum: ["normal", "paired"]
+          description: Detected dataset structure type
+          example: "paired"
+        reference_suffixes:
+          type: array
+          items:
+            type: string
+          description: Detected reference image suffixes
+          example: ["_source"]
+        target_suffixes:
+          type: array
+          items:
+            type: string
+          description: Detected target image suffixes
+          example: ["_target"]
+        caption_suffixes_for_reference:
+          type: array
+          items:
+            type: string
+          description: Detected caption suffixes
+          example: ["_instruction"]
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Detection confidence (ratio of fully paired groups)
+          example: 0.95
+        unknown_suffixes:
+          type: array
+          items:
+            type: string
+          description: Suffixes detected as paired but not classifiable
+        stats:
+          type: object
+          properties:
+            total_files_sampled:
+              type: integer
+            suffix_counts:
+              type: object
+              additionalProperties:
+                type: integer
+            paired_groups:
+              type: integer
+            unpaired_files:
+              type: integer
+
+    DatasetScanResponse:
+      type: object
+      required:
+        - items_found
+        - captions_found
+        - dataset
+      properties:
+        items_found:
+          type: integer
+          description: Number of items found during scan
+          example: 986
+        captions_found:
+          type: integer
+          description: Number of captions found during scan
+          example: 986
+        dataset:
+          $ref: '#/components/schemas/Dataset'
+        structure_detection:
+          $ref: '#/components/schemas/StructureDetectionResult'
+          description: Auto-detection result (only present when detection was performed)

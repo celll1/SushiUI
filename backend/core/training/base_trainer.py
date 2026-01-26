@@ -1696,12 +1696,30 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
 
     def _setup_flash_attention_sd_sdxl(self):
-        """Setup Flash Attention for SD/SDXL models."""
+        """Setup Flash Attention for SD/SDXL models.
+
+        Uses diffusers' set_attention_backend('flash') as the primary method,
+        which requires the flash-attn package (>= 2.0).
+
+        Falls back to AttnProcessor2_0 (PyTorch 2.0 SDPA) if set_attention_backend
+        is not available (older diffusers versions).
+        """
+        if self.unet is None:
+            print(f"{self.log_prefix} WARNING: UNet not loaded, skipping Flash Attention setup")
+            return
+
         try:
-            from diffusers.models.attention_processor import AttnProcessor2_0
-            print(f"{self.log_prefix} Setting Flash Attention for SD/SDXL UNet...")
-            self.unet.set_attn_processor(AttnProcessor2_0())
-            print(f"{self.log_prefix} [OK] Flash Attention enabled for UNet")
+            # Primary: Use set_attention_backend('flash') (diffusers ModelMixin method)
+            if hasattr(self.unet, 'set_attention_backend'):
+                print(f"{self.log_prefix} Setting Flash Attention backend for SD/SDXL UNet...")
+                self.unet.set_attention_backend("flash")
+                print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
+            else:
+                # Fallback: Use AttnProcessor2_0 (PyTorch 2.0 SDPA, older diffusers)
+                from diffusers.models.attention_processor import AttnProcessor2_0
+                print(f"{self.log_prefix} Setting Flash Attention for SD/SDXL UNet (fallback: AttnProcessor2_0)...")
+                self.unet.set_attn_processor(AttnProcessor2_0())
+                print(f"{self.log_prefix} [OK] Flash Attention enabled via AttnProcessor2_0")
         except Exception as e:
             print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
 

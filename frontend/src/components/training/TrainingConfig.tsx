@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
+import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -107,7 +108,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [llliteRank, setLlliteRank] = useState(64);
   const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
   const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
-  const [sampleConditionImagePath, setSampleConditionImagePath] = useState("");
 
   // Training parameters
   const [useEpochs, setUseEpochs] = useState(false);
@@ -145,7 +145,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
 
   // Sample generation
-  const [samplePrompts, setSamplePrompts] = useState<Array<{positive: string, negative: string}>>([
+  const [samplePrompts, setSamplePrompts] = useState<SamplePrompt[]>([
     { positive: "", negative: "" }
   ]);
   const [sampleWidth, setSampleWidth] = useState(1024);
@@ -155,6 +155,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [sampleSampler, setSampleSampler] = useState("euler");
   const [sampleScheduleType, setSampleScheduleType] = useState("uniform");
   const [sampleSeed, setSampleSeed] = useState(-1);
+  const [conditionImagePreviews, setConditionImagePreviews] = useState<Record<number, string>>({});
+  const conditionImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // Debug options
   const [debugLatents, setDebugLatents] = useState(false);
@@ -407,7 +409,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
       if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
       if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
-      if (params.sample_condition_image_path !== undefined && params.sample_condition_image_path !== null) setSampleConditionImagePath(params.sample_condition_image_path);
+      // Legacy: sample_condition_image_path is now per-prompt (ignored here)
 
       // Sample Generation
       if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
@@ -623,6 +625,65 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
   };
 
+  // Condition image handlers for per-prompt ControlNet sample generation
+  const handleConditionImageUpload = async (promptIndex: number, file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string;
+      if (!base64) return;
+      try {
+        const reference = await saveTempImage(base64);
+        const updated = [...samplePrompts];
+        updated[promptIndex] = { ...updated[promptIndex], condition_image_path: reference };
+        setSamplePrompts(updated);
+        setConditionImagePreviews(prev => ({ ...prev, [promptIndex]: base64 }));
+      } catch (err) {
+        console.error("Failed to save condition image:", err);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleConditionImageRemove = async (promptIndex: number) => {
+    const currentPath = samplePrompts[promptIndex]?.condition_image_path;
+    if (currentPath) {
+      await deleteTempImageRef(currentPath);
+    }
+    const updated = [...samplePrompts];
+    updated[promptIndex] = { ...updated[promptIndex], condition_image_path: "" };
+    setSamplePrompts(updated);
+    setConditionImagePreviews(prev => {
+      const next = { ...prev };
+      delete next[promptIndex];
+      return next;
+    });
+  };
+
+  const handleConditionImageDrop = (promptIndex: number, e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0 && files[0].type.startsWith("image/")) {
+      handleConditionImageUpload(promptIndex, files[0]);
+    }
+  };
+
+  // Load condition image previews when samplePrompts have condition_image_path
+  useEffect(() => {
+    samplePrompts.forEach(async (prompt, index) => {
+      if (prompt.condition_image_path && !conditionImagePreviews[index]) {
+        try {
+          const dataUrl = await loadTempImage(prompt.condition_image_path);
+          if (dataUrl) {
+            setConditionImagePreviews(prev => ({ ...prev, [index]: dataUrl }));
+          }
+        } catch {
+          // Ignore load errors for previews
+        }
+      }
+    });
+  }, [samplePrompts]);
+
   // Helper function: Import params from txt2img panel
   const handleImportFromGeneration = () => {
     // Try to read from localStorage where generation panels store their params
@@ -724,7 +785,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       llliteRank,
       conditionPreprocessors,
       conditionCacheMode,
-      sampleConditionImagePath,
     };
   };
 
@@ -835,7 +895,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.llliteRank !== undefined) setLlliteRank(config.llliteRank);
     if (config.conditionPreprocessors !== undefined) setConditionPreprocessors(config.conditionPreprocessors);
     if (config.conditionCacheMode !== undefined) setConditionCacheMode(config.conditionCacheMode);
-    if (config.sampleConditionImagePath !== undefined) setSampleConditionImagePath(config.sampleConditionImagePath);
+    // Legacy: sampleConditionImagePath is now per-prompt (ignored here)
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -991,7 +1051,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
       condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
-      sample_condition_image_path: trainingMethod === "controlnet" && sampleConditionImagePath ? sampleConditionImagePath : undefined,
+      // condition_image_path is now embedded in each sample_prompts entry
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -1432,17 +1492,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Sample Condition Image Path</label>
-              <input
-                type="text"
-                value={sampleConditionImagePath}
-                onChange={(e) => setSampleConditionImagePath(e.target.value)}
-                placeholder="(Optional) Uses first dataset reference image if empty"
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              />
-              <p className="text-xs text-gray-500 mt-1">Condition image used for sample generation during training. If empty, the first reference image from the dataset is used.</p>
-            </div>
+            {/* Condition image for sample generation is now configured per-prompt in the Sample Generation section */}
 
             <p className="text-xs text-gray-500">ControlNet training freezes UNet/VAE/Text Encoder. Only the ControlNet module is trained.</p>
           </div>
@@ -2807,6 +2857,65 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       placeholder="Enter negative prompt..."
                     />
                   </div>
+                  {trainingMethod === "controlnet" && (
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Condition Image</label>
+                      <div
+                        className={`relative border border-dashed rounded p-2 text-center transition-colors ${
+                          conditionImagePreviews[index]
+                            ? "border-green-600 bg-green-900/10"
+                            : "border-gray-600 hover:border-blue-500 bg-gray-900/50"
+                        }`}
+                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        onDrop={(e) => handleConditionImageDrop(index, e)}
+                      >
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          ref={(el) => { conditionImageInputRefs.current[index] = el; }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleConditionImageUpload(index, file);
+                            e.target.value = "";
+                          }}
+                        />
+                        {conditionImagePreviews[index] ? (
+                          <div className="flex items-center space-x-2">
+                            <img
+                              src={conditionImagePreviews[index]}
+                              alt="Condition"
+                              className="h-16 w-16 object-cover rounded border border-gray-700"
+                            />
+                            <div className="flex-1 text-left">
+                              <p className="text-xs text-green-400">Condition image set</p>
+                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
+                                {prompt.condition_image_path?.replace("temp_img://", "") || ""}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleConditionImageRemove(index)}
+                              className="text-red-400 hover:text-red-300 text-xs px-2 py-1"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => conditionImageInputRefs.current[index]?.click()}
+                            className="w-full py-2 text-xs text-gray-400 hover:text-gray-300"
+                          >
+                            Click to select or drag & drop condition image
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        If empty, the first reference image from the dataset is used.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

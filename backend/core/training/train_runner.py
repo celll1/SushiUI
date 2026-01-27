@@ -1037,10 +1037,9 @@ def main():
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
-            # Convert sample_prompts to single sample_prompt
-            sample_prompt = "a beautiful landscape"
-            if sample_prompts and len(sample_prompts) > 0:
-                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
+            # Ensure sample_prompts is a list of dicts with at least one entry
+            if not sample_prompts or len(sample_prompts) == 0:
+                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
 
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
@@ -1084,7 +1083,7 @@ def main():
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
-                sample_prompt=sample_prompt,
+                sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
@@ -1389,10 +1388,9 @@ def main():
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
-            # Convert sample_prompts to single sample_prompt
-            sample_prompt = "a beautiful landscape"
-            if sample_prompts and len(sample_prompts) > 0:
-                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
+            # Ensure sample_prompts is a list of dicts with at least one entry
+            if not sample_prompts or len(sample_prompts) == 0:
+                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
 
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
@@ -1436,7 +1434,7 @@ def main():
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
-                sample_prompt=sample_prompt,
+                sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
@@ -1628,10 +1626,18 @@ def main():
             # Prepare sample configuration
             sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
 
-            # Convert sample_prompts to single sample_prompt
-            sample_prompt = "a beautiful landscape"
-            if sample_prompts and len(sample_prompts) > 0:
-                sample_prompt = sample_prompts[0].get('positive', 'a beautiful landscape')
+            # Ensure sample_prompts is a list of dicts with at least one entry
+            if not sample_prompts or len(sample_prompts) == 0:
+                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
+
+            # Legacy migration: if old-style sample_condition_image_path exists at sample level,
+            # apply it to all prompts that don't have their own condition_image_path
+            legacy_condition_path = process_config['sample'].get('sample_condition_image_path')
+            if legacy_condition_path:
+                print(f"[TrainRunner] Migrating legacy sample_condition_image_path to per-prompt format: {legacy_condition_path}")
+                for prompt in sample_prompts:
+                    if isinstance(prompt, dict) and not prompt.get('condition_image_path'):
+                        prompt['condition_image_path'] = legacy_condition_path
 
             # Get sample generation settings
             sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
@@ -1693,9 +1699,6 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
-            # Get sample condition image path (ControlNet sample generation)
-            sample_condition_image_path = process_config['sample'].get('sample_condition_image_path')
-
             # Start training
             trainer.train(
                 datasets=training_datasets,
@@ -1704,7 +1707,7 @@ def main():
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
                 sample_every_n_steps=process_config['sample'].get('sample_every', 100),
-                sample_prompt=sample_prompt,
+                sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
@@ -1734,7 +1737,6 @@ def main():
                 multi_noise_mode=multi_noise_mode,
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
-                sample_condition_image_path=sample_condition_image_path,
             )
 
             print("[TrainRunner] Training completed successfully!")

@@ -4189,7 +4189,7 @@ class TrainingRunCreateRequest(BaseModel):
     save_every: int = 100
     save_every_unit: str = "steps"  # "steps" or "epochs"
     sample_every: int = 100
-    sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str}
+    sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
 
     # Debug
@@ -4272,7 +4272,7 @@ class TrainingRunCreateRequest(BaseModel):
     lllite_rank: int = 64  # Rank for LLLite linear layers
     condition_preprocessors: Optional[List[str]] = None  # controlnet-aux preprocessor types (e.g., ["canny", "hed"])
     condition_cache_mode: str = "on_the_fly"  # "pre_generate" or "on_the_fly"
-    sample_condition_image_path: Optional[str] = None  # Path to condition image for ControlNet sample generation
+    # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -4369,6 +4369,21 @@ async def create_training_run(
         # Get resume setting from request
         resume_from_checkpoint = request.resume_from_checkpoint
 
+        # Resolve temp_img:// references in sample_prompts condition_image_path
+        resolved_sample_prompts = []
+        for sp in (request.sample_prompts or []):
+            prompt_dict = dict(sp) if not isinstance(sp, dict) else sp.copy()
+            cip = prompt_dict.get("condition_image_path", "")
+            if cip and cip.startswith("temp_img://"):
+                image_id = cip[len("temp_img://"):]
+                resolved_path = os.path.join(TEMP_DIR, image_id)
+                if os.path.exists(resolved_path):
+                    prompt_dict["condition_image_path"] = resolved_path
+                else:
+                    print(f"[Training] WARNING: temp image not found: {resolved_path}")
+                    prompt_dict["condition_image_path"] = ""
+            resolved_sample_prompts.append(prompt_dict)
+
         # Generate YAML config
         config_generator = TrainingConfigGenerator()
 
@@ -4402,7 +4417,7 @@ async def create_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,
@@ -4481,7 +4496,7 @@ async def create_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,
@@ -4531,7 +4546,6 @@ async def create_training_run(
                 lllite_rank=request.lllite_rank,
                 condition_preprocessors=request.condition_preprocessors,
                 condition_cache_mode=request.condition_cache_mode,
-                sample_condition_image_path=request.sample_condition_image_path,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -4560,7 +4574,7 @@ async def create_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,
@@ -4895,6 +4909,21 @@ async def update_training_run(
         primary_dataset_id = request.dataset_configs[0].dataset_id if request.dataset_configs else None
         primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first() if primary_dataset_id else None
 
+        # Resolve temp_img:// references in sample_prompts condition_image_path
+        resolved_sample_prompts = []
+        for sp in (request.sample_prompts or []):
+            prompt_dict = dict(sp) if not isinstance(sp, dict) else sp.copy()
+            cip = prompt_dict.get("condition_image_path", "")
+            if cip and cip.startswith("temp_img://"):
+                image_id = cip[len("temp_img://"):]
+                resolved_path = os.path.join(TEMP_DIR, image_id)
+                if os.path.exists(resolved_path):
+                    prompt_dict["condition_image_path"] = resolved_path
+                else:
+                    print(f"[Training] WARNING: temp image not found: {resolved_path}")
+                    prompt_dict["condition_image_path"] = ""
+            resolved_sample_prompts.append(prompt_dict)
+
         # Generate YAML config (same as create)
         config_generator = TrainingConfigGenerator()
 
@@ -4928,7 +4957,7 @@ async def update_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,
@@ -5007,7 +5036,7 @@ async def update_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,
@@ -5057,7 +5086,6 @@ async def update_training_run(
                 lllite_rank=request.lllite_rank,
                 condition_preprocessors=request.condition_preprocessors,
                 condition_cache_mode=request.condition_cache_mode,
-                sample_condition_image_path=request.sample_condition_image_path,
             )
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(
@@ -5086,7 +5114,7 @@ async def update_training_run(
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
                 sample_every=request.sample_every,
-                sample_prompts=request.sample_prompts or [],
+                sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
                 debug_latents_every=request.debug_latents_every,
                 enable_bucketing=request.enable_bucketing,

@@ -1362,6 +1362,12 @@ export interface DatasetConfigItem {
   filters: Record<string, any>;  // Filter configuration
 }
 
+export interface SamplePrompt {
+  positive: string;
+  negative: string;
+  condition_image_path?: string;
+}
+
 export interface TrainingRunCreateRequest {
   dataset_id?: number;  // Deprecated - use dataset_configs instead
   dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
@@ -1380,7 +1386,7 @@ export interface TrainingRunCreateRequest {
   save_every?: number;
   save_every_unit?: string;
   sample_every?: number;
-  sample_prompts?: Array<{positive: string, negative: string}>;
+  sample_prompts?: SamplePrompt[];
   resume_from_checkpoint?: string | null;
   sample_width?: number;
   sample_height?: number;
@@ -1439,7 +1445,6 @@ export interface TrainingRunCreateRequest {
   lllite_rank?: number;
   condition_preprocessors?: string[] | null;
   condition_cache_mode?: string;
-  sample_condition_image_path?: string | null;
 }
 
 export interface TrainingRunListResponse {

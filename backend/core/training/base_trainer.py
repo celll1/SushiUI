@@ -4619,6 +4619,7 @@ class BaseTrainer(ABC):
         seed: int = -1,
         current_step: int = 0,
         schedule_type: str = "uniform",
+        condition_image_path: Optional[str] = None,
     ) -> "Image.Image":
         """
         Generate sample image during training (SD/SDXL).
@@ -6114,7 +6115,7 @@ class BaseTrainer(ABC):
         batch_size: int = 1,
         save_every_n_steps: int = 500,
         sample_every_n_steps: int = 500,
-        sample_prompt: str = "a beautiful landscape",
+        sample_prompts: Optional[List[Dict[str, str]]] = None,
         sample_guidance_scale: float = 3.5,
         sample_steps: int = 28,
         sample_width: int = 1024,
@@ -6146,7 +6147,6 @@ class BaseTrainer(ABC):
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
-        sample_condition_image_path: Optional[str] = None,
     ):
         """
         Main training loop.
@@ -6157,7 +6157,7 @@ class BaseTrainer(ABC):
             batch_size: Batch size per step
             save_every_n_steps: Save checkpoint every N steps
             sample_every_n_steps: Generate sample every N steps
-            sample_prompt: Prompt for sample generation
+            sample_prompts: List of sample prompt dicts [{positive, negative, condition_image_path?}, ...]
             optimizer_type: Optimizer type
             lr_scheduler_type: LR scheduler type
             enable_bucketing: Enable resolution bucketing
@@ -6175,11 +6175,10 @@ class BaseTrainer(ABC):
                 - "onthefly_gpu": Encode on-the-fly on GPU without cache (NOT recommended for Z-Image)
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
             use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
-            sample_condition_image_path: Path to condition image for ControlNet sample generation (optional)
         """
-        # Store references for subclass access (e.g., ControlNetTrainer sample condition image)
+        # Store references for subclass access
         self._training_datasets = datasets
-        self._sample_condition_image_path = sample_condition_image_path
+        self._sample_prompts = sample_prompts or [{"positive": "a beautiful landscape", "negative": ""}]
 
         print(f"{self.log_prefix} Starting training...")
         print(f"{self.log_prefix} Datasets: {len(datasets)}")
@@ -7746,51 +7745,58 @@ class BaseTrainer(ABC):
                                 sample_step = next_sample_step
 
                     if should_generate_sample:
-                        print(f"{self.log_prefix} Generating sample with width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-                        if self.is_flux2:
-                            sample = self._generate_sample_flux2(
-                                prompt=sample_prompt,
-                                width=sample_width,
-                                height=sample_height,
-                                num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale,
-                                seed=sample_seed
-                            )
-                        elif self.is_zimage:
-                            sample = self._generate_sample_zimage(
-                                prompt=sample_prompt,
-                                width=sample_width,
-                                height=sample_height,
-                                num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale,
-                                seed=sample_seed
-                            )
-                        else:
-                            sample = self.generate_sample(
-                                prompt=sample_prompt,
-                                width=sample_width,
-                                height=sample_height,
-                                num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale,
-                                seed=sample_seed,
-                                current_step=global_step,
-                                schedule_type=sample_schedule_type
-                            )
-
-                        # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
-                        # Use sample_step (which accounts for MNT batch range) for consistent naming
-                        sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_0.png"
-                        sample_path.parent.mkdir(parents=True, exist_ok=True)
-                        sample.save(sample_path)
-                        print(f"{self.log_prefix} Saved sample to {sample_path}")
-
-                        # Log to TensorBoard (same as stable version)
                         import torchvision
-                        image_tensor = torchvision.transforms.ToTensor()(sample)
-                        self.writer.add_image("samples/sample_0", image_tensor, global_step=sample_step)
 
-                        # Free sample-related tensors and clear VRAM cache
-                        del sample, image_tensor
+                        for sample_idx, prompt_config in enumerate(self._sample_prompts):
+                            positive = prompt_config.get('positive', 'a beautiful landscape')
+                            condition_image_path = prompt_config.get('condition_image_path') or None
+
+                            print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+                            if self.is_flux2:
+                                sample = self._generate_sample_flux2(
+                                    prompt=positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=sample_seed
+                                )
+                            elif self.is_zimage:
+                                sample = self._generate_sample_zimage(
+                                    prompt=positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=sample_seed
+                                )
+                            else:
+                                sample = self.generate_sample(
+                                    prompt=positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=sample_seed,
+                                    current_step=global_step,
+                                    schedule_type=sample_schedule_type,
+                                    condition_image_path=condition_image_path,
+                                )
+
+                            # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
+                            # Use sample_step (which accounts for MNT batch range) for consistent naming
+                            sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_{sample_idx}.png"
+                            sample_path.parent.mkdir(parents=True, exist_ok=True)
+                            sample.save(sample_path)
+                            print(f"{self.log_prefix} Saved sample to {sample_path}")
+
+                            # Log to TensorBoard
+                            image_tensor = torchvision.transforms.ToTensor()(sample)
+                            self.writer.add_image(f"samples/sample_{sample_idx}", image_tensor, global_step=sample_step)
+
+                            # Free sample-related tensors
+                            del sample, image_tensor
+
                         torch.cuda.empty_cache()
 
                         # onthefly_gpu mode: Restore text encoders to GPU after sample generation

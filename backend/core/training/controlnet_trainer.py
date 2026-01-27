@@ -212,34 +212,51 @@ class ControlNetTrainer(BaseTrainer):
     # Sample Generation (ControlNet-aware)
     # ============================================================
 
-    def _load_sample_condition_image(self) -> "Optional[Image.Image]":
+    def _load_sample_condition_image(self, condition_image_path: "Optional[str]" = None) -> "Optional[Image.Image]":
         """
         Load condition image for sample generation during training.
 
         Priority:
-        1. User-specified path (self._sample_condition_image_path)
-        2. First dataset item's reference_images[0]
+        1. Per-prompt condition_image_path argument
+        2. First dataset item's reference_images[0] (fallback)
+
+        Uses path-based caching to avoid reloading the same image across calls.
+
+        Args:
+            condition_image_path: Path to condition image (per-prompt, optional)
 
         Returns:
             PIL Image or None if no condition image available
         """
         from PIL import Image
 
-        # Option 1: User-specified path
-        path = getattr(self, '_sample_condition_image_path', None)
-        if path:
-            p = Path(path)
+        # Initialize path-based cache
+        if not hasattr(self, '_condition_image_cache'):
+            self._condition_image_cache = {}  # path -> PIL.Image
+
+        # Option 1: Per-prompt condition image path
+        if condition_image_path:
+            # Check cache
+            if condition_image_path in self._condition_image_cache:
+                return self._condition_image_cache[condition_image_path]
+
+            p = Path(condition_image_path)
             if p.exists():
                 try:
                     img = Image.open(str(p)).convert("RGB")
-                    print(f"{self.log_prefix} [Sample] Loaded condition image from config: {p}")
+                    print(f"{self.log_prefix} [Sample] Loaded condition image from per-prompt path: {p}")
+                    self._condition_image_cache[condition_image_path] = img
                     return img
                 except Exception as e:
                     print(f"{self.log_prefix} [Sample] Failed to load condition image from {p}: {e}")
             else:
                 print(f"{self.log_prefix} [Sample] Condition image path not found: {p}")
 
-        # Option 2: First dataset item's reference image
+        # Option 2: First dataset item's reference image (fallback)
+        fallback_key = "__dataset_fallback__"
+        if fallback_key in self._condition_image_cache:
+            return self._condition_image_cache[fallback_key]
+
         datasets = getattr(self, '_training_datasets', None)
         if datasets:
             for ds in datasets:
@@ -252,11 +269,14 @@ class ControlNetTrainer(BaseTrainer):
                             try:
                                 img = Image.open(str(ref_path)).convert("RGB")
                                 print(f"{self.log_prefix} [Sample] Loaded condition image from dataset: {ref_path}")
+                                self._condition_image_cache[fallback_key] = img
                                 return img
                             except Exception as e:
                                 print(f"{self.log_prefix} [Sample] Failed to load {ref_path}: {e}")
 
         print(f"{self.log_prefix} [Sample] WARNING: No condition image found for sample generation")
+        # Cache None for fallback to avoid repeated warnings
+        self._condition_image_cache[fallback_key] = None
         return None
 
     def generate_sample(
@@ -269,6 +289,7 @@ class ControlNetTrainer(BaseTrainer):
         seed: int = -1,
         current_step: int = 0,
         schedule_type: str = "uniform",
+        condition_image_path: "Optional[str]" = None,
     ) -> "Image.Image":
         """
         Generate sample image during ControlNet training.
@@ -276,15 +297,18 @@ class ControlNetTrainer(BaseTrainer):
         Overrides BaseTrainer.generate_sample() to apply the trained ControlNet
         during sample generation, allowing visual verification of training progress.
 
+        Args:
+            condition_image_path: Per-prompt condition image path (optional).
+                If not provided, falls back to dataset's first reference image.
+
         Standard ControlNet: Sets pipeline.controlnet and passes controlnet_images
         LLLite: Applies patches to UNet before sampling, removes after
         """
-        # Load condition image (lazy, cached)
-        if not hasattr(self, '_cached_sample_condition') or self._cached_sample_condition is None:
-            self._cached_sample_condition = self._load_sample_condition_image()
+        # Load condition image (per-prompt path or fallback to dataset)
+        loaded_condition = self._load_sample_condition_image(condition_image_path)
 
         # No condition image available: fall back to base (no ControlNet)
-        if self._cached_sample_condition is None:
+        if loaded_condition is None:
             print(f"{self.log_prefix} [Sample] No condition image, falling back to base generate_sample()")
             return super().generate_sample(
                 prompt=prompt, height=height, width=width,
@@ -300,6 +324,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 current_step=current_step, schedule_type=schedule_type,
+                condition_image=loaded_condition,
             )
         elif self.controlnet_type == "lllite":
             return self._generate_sample_lllite(
@@ -307,6 +332,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 current_step=current_step, schedule_type=schedule_type,
+                condition_image=loaded_condition,
             )
         else:
             # Unknown type: fall back to base
@@ -327,11 +353,15 @@ class ControlNetTrainer(BaseTrainer):
         seed: int = -1,
         current_step: int = 0,
         schedule_type: str = "uniform",
+        condition_image: "Optional[Image.Image]" = None,
     ) -> "Image.Image":
         """
         Generate sample with Standard ControlNet (ControlNetModel).
 
         Sets pipeline.controlnet and passes controlnet_images to custom_sampling_loop().
+
+        Args:
+            condition_image: Pre-loaded PIL Image for conditioning.
         """
         from PIL import Image
         import random
@@ -342,7 +372,7 @@ class ControlNetTrainer(BaseTrainer):
         from core.inference.schedulers import get_scheduler
 
         # Resize condition image to sample dimensions
-        condition_image = self._cached_sample_condition.resize((width, height), Image.LANCZOS)
+        condition_image = condition_image.resize((width, height), Image.LANCZOS)
 
         # Set models to eval mode
         self.unet.eval()
@@ -521,11 +551,15 @@ class ControlNetTrainer(BaseTrainer):
         seed: int = -1,
         current_step: int = 0,
         schedule_type: str = "uniform",
+        condition_image: "Optional[Image.Image]" = None,
     ) -> "Image.Image":
         """
         Generate sample with LLLite ControlNet.
 
         Applies LLLite patches to UNet before sampling, removes after.
+
+        Args:
+            condition_image: Pre-loaded PIL Image for conditioning.
         """
         from PIL import Image
         import random
@@ -537,7 +571,7 @@ class ControlNetTrainer(BaseTrainer):
         from core.inference.schedulers import get_scheduler
 
         # Resize condition image to sample dimensions
-        condition_image = self._cached_sample_condition.resize((width, height), Image.LANCZOS)
+        condition_image = condition_image.resize((width, height), Image.LANCZOS)
 
         # Set models to eval mode
         self.unet.eval()

@@ -1699,3 +1699,118 @@ components:
         structure_detection:
           $ref: '#/components/schemas/StructureDetectionResult'
           description: Auto-detection result (only present when detection was performed)
+
+    # ========================================
+    # Training Schemas
+    # ========================================
+
+    TrainingRunCreateRequest:
+      type: object
+      required:
+        - training_method
+        - base_model_path
+        - dataset_ids
+      properties:
+        training_method:
+          type: string
+          enum: ["lora", "relora", "full_finetune", "controlnet"]
+          description: Training method to use
+          example: "lora"
+        base_model_path:
+          type: string
+          description: Path to the base model file
+          example: "M:/models/animagine-xl-3.1.safetensors"
+        dataset_ids:
+          type: array
+          items:
+            type: integer
+          description: List of dataset IDs to use for training
+          example: [1, 2]
+        learning_rate:
+          type: number
+          format: float
+          default: 0.0001
+          description: Base learning rate
+          example: 0.0001
+        total_steps:
+          type: integer
+          default: 1000
+          description: Total training steps (when use_epochs is false)
+          example: 1000
+        epochs:
+          type: integer
+          default: 10
+          description: Number of epochs (when use_epochs is true)
+          example: 10
+        use_epochs:
+          type: boolean
+          default: false
+          description: Whether to use epoch-based training
+        batch_size:
+          type: integer
+          default: 1
+          description: Training batch size
+          example: 1
+        optimizer:
+          type: string
+          default: "adamw"
+          description: Optimizer type
+          example: "adamw"
+        lr_scheduler:
+          type: string
+          default: "constant"
+          description: Learning rate scheduler type
+          example: "cosine"
+        lr_warmup_steps:
+          type: integer
+          default: 0
+          description: Number of LR warmup steps
+          example: 100
+        # LoRA parameters (used by lora and relora methods)
+        lora_rank:
+          type: integer
+          default: 16
+          description: LoRA rank (used when training_method is lora or relora)
+          example: 16
+        lora_alpha:
+          type: integer
+          default: 16
+          description: LoRA alpha (used when training_method is lora or relora)
+          example: 16
+        lora_dtype:
+          type: string
+          enum: ["fp32", "fp16", "bf16"]
+          default: "fp32"
+          description: LoRA weight dtype
+          example: "fp32"
+        # ReLoRA-specific parameters
+        relora_merge_every:
+          type: integer
+          default: 500
+          description: Interval between merge-reinit cycles (in steps or epochs)
+          example: 500
+        relora_merge_unit:
+          type: string
+          enum: ["steps", "epochs"]
+          default: "steps"
+          description: Unit for merge interval
+          example: "steps"
+        restart_warmup_steps:
+          type: integer
+          default: 100
+          description: Number of LR warmup steps after each merge-reinit cycle
+          example: 100
+        optimizer_reset_strategy:
+          type: string
+          enum: ["full_reset", "magnitude_pruning", "random_pruning"]
+          default: "full_reset"
+          description: Strategy for resetting optimizer state after merge
+          example: "full_reset"
+        optimizer_pruning_ratio:
+          type: number
+          format: float
+          default: 0.9
+          minimum: 0.0
+          maximum: 1.0
+          description: Fraction of optimizer state to prune (for pruning strategies)
+          example: 0.9

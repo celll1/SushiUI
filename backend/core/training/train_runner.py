@@ -1123,6 +1123,351 @@ def main():
             run.completed_at = datetime.utcnow()
             training_db.commit()
 
+        elif network_type == 'relora':
+            print("[TrainRunner] Training method: ReLoRA (Reinitialized Low-Rank Adaptation)")
+            from core.training.relora_trainer import ReLoRATrainer
+
+            # Get dtype settings from unified dtype section
+            dtype_config = process_config.get('dtype', {})
+            weight_dtype = dtype_config.get('weight', 'fp16')
+            training_dtype = dtype_config.get('training', 'fp16')
+            output_dtype = dtype_config.get('save', 'fp32')
+            vae_dtype = dtype_config.get('vae', 'fp16')
+
+            # Z-Image requires BFloat16 for numerical stability (trained with bf16)
+            if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
+                print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+
+            mixed_precision = train_config.get('mixed_precision', True)
+            debug_vram = train_config.get('debug_vram', False)
+            use_flash_attention = train_config.get('use_flash_attention', False)
+            min_snr_gamma = train_config.get('min_snr_gamma', 5.0)
+            reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)
+
+            # Component-specific learning rates
+            unet_lr = train_config.get('unet_lr')
+            text_encoder_lr = train_config.get('text_encoder_lr')
+            text_encoder_1_lr = train_config.get('text_encoder_1_lr')
+            text_encoder_2_lr = train_config.get('text_encoder_2_lr')
+
+            # Optimizer options and hyperparameters
+            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
+            optimizer_cautious = train_config.get('optimizer_cautious', False)
+            optimizer_beta1 = train_config.get('optimizer_beta1')
+            optimizer_beta2 = train_config.get('optimizer_beta2')
+            optimizer_epsilon = train_config.get('optimizer_epsilon')
+            optimizer_weight_decay = train_config.get('optimizer_weight_decay')
+
+            # Schedule-Free optimizer options (RingBuffer optimizers only)
+            optimizer_schedule_free = train_config.get('optimizer_schedule_free', False)
+            optimizer_warmup_steps = train_config.get('optimizer_warmup_steps', 0)
+            optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
+            optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
+            optimizer_use_radam = train_config.get('optimizer_use_radam', False)
+
+            # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
+            prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
+            max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
+
+            # Training scope control
+            train_text_encoder = train_config.get('train_text_encoder', False)
+
+            # ReLoRA-specific settings
+            relora_config = network_config.get('relora', {})
+            relora_merge_every = relora_config.get('merge_every', 500)
+            relora_merge_unit = relora_config.get('merge_unit', 'steps')
+            restart_warmup_steps = relora_config.get('restart_warmup_steps', 100)
+            optimizer_reset_strategy = relora_config.get('optimizer_reset_strategy', 'full_reset')
+            optimizer_pruning_ratio = relora_config.get('optimizer_pruning_ratio', 0.9)
+
+            print(f"[TrainRunner] ReLoRA config: merge_every={relora_merge_every} {relora_merge_unit}, "
+                  f"restart_warmup={restart_warmup_steps}, reset_strategy={optimizer_reset_strategy}")
+
+            # Initialize ReLoRA trainer
+            trainer = ReLoRATrainer(
+                # Base model settings
+                model_path=run.base_model_path,
+                output_dir=run.output_dir,
+                run_name=run.run_name,
+                run_id=run_id,
+                # LoRA settings (inherited)
+                lora_rank=network_config.get('linear', 16),
+                lora_alpha=network_config.get('linear_alpha', 16),
+                lora_dtype=network_config.get('lora_dtype', 'fp32'),
+                learning_rate=train_config.get('lr', 1e-4),
+                # Dtype settings
+                weight_dtype=weight_dtype,
+                training_dtype=training_dtype,
+                output_dtype=output_dtype,
+                vae_dtype=vae_dtype,
+                mixed_precision=mixed_precision,
+                debug_vram=debug_vram,
+                use_flash_attention=use_flash_attention,
+                min_snr_gamma=min_snr_gamma,
+                reconstruction_loss_weight=reconstruction_loss_weight,
+                # Component-specific learning rates
+                unet_lr=unet_lr,
+                text_encoder_lr=text_encoder_lr,
+                text_encoder_1_lr=text_encoder_1_lr,
+                text_encoder_2_lr=text_encoder_2_lr,
+                # Optimizer options and hyperparameters
+                optimizer_is_paged=optimizer_is_paged,
+                optimizer_cautious=optimizer_cautious,
+                optimizer_beta1=optimizer_beta1,
+                optimizer_beta2=optimizer_beta2,
+                optimizer_epsilon=optimizer_epsilon,
+                optimizer_weight_decay=optimizer_weight_decay,
+                # Schedule-Free optimizer options
+                optimizer_schedule_free=optimizer_schedule_free,
+                optimizer_warmup_steps=optimizer_warmup_steps,
+                optimizer_schedule_free_r=optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=optimizer_use_radam,
+                # Prompt chunking settings
+                prompt_chunking_mode=prompt_chunking_mode,
+                max_prompt_chunks=max_prompt_chunks,
+                # Training scope control
+                train_text_encoder=train_text_encoder,
+                # ReLoRA-specific settings
+                relora_merge_every=relora_merge_every,
+                relora_merge_unit=relora_merge_unit,
+                restart_warmup_steps=restart_warmup_steps,
+                optimizer_reset_strategy=optimizer_reset_strategy,
+                optimizer_pruning_ratio=optimizer_pruning_ratio,
+            )
+
+            # Get optimizer settings
+            optimizer_type = train_config.get('optimizer', 'adamw8bit')
+            lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
+
+            # ============================================================
+            # Validate Prediction Configuration (same as LoRA)
+            # ============================================================
+            from core.model_loader import ModelLoader
+
+            model_type = ModelLoader.detect_model_type(run.base_model_path)
+            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
+
+            print(f"[TrainRunner] Model prediction configuration detected:")
+            print(f"  Noise Process: {model_pred_config['noise_process']}")
+            print(f"  Prediction Target: {model_pred_config['prediction_target']}")
+            print(f"  Detection Source: {model_pred_config['source']}")
+
+            training_noise_process = train_config.get('noise_process', 'auto')
+            training_prediction_target = train_config.get('prediction_target', 'auto')
+            strict_validation = train_config.get('strict_validation', False)
+
+            if training_noise_process == 'auto':
+                training_noise_process = model_pred_config['noise_process']
+                print(f"[TrainRunner] noise_process='auto' -> using model's config: {training_noise_process}")
+
+            if training_prediction_target == 'auto':
+                training_prediction_target = model_pred_config['prediction_target']
+                print(f"[TrainRunner] prediction_target='auto' -> using model's config: {training_prediction_target}")
+
+            mismatch_warnings = []
+            if training_noise_process != model_pred_config['noise_process']:
+                mismatch_warnings.append(
+                    f"noise_process mismatch: model={model_pred_config['noise_process']}, training={training_noise_process}"
+                )
+            if training_prediction_target != model_pred_config['prediction_target']:
+                mismatch_warnings.append(
+                    f"prediction_target mismatch: model={model_pred_config['prediction_target']}, training={training_prediction_target}"
+                )
+
+            if mismatch_warnings:
+                print(f"\n{'='*60}")
+                print(f"[TrainRunner] PREDICTION CONFIG MISMATCH DETECTED")
+                print(f"{'='*60}")
+                for warning in mismatch_warnings:
+                    print(f"  - {warning}")
+                print(f"\nThis may cause training instability or poor convergence.")
+                if strict_validation:
+                    print(f"\nstrict_validation=True: Aborting training due to mismatch.")
+                    print(f"{'='*60}\n")
+                    sys.exit(1)
+                else:
+                    print(f"\nstrict_validation=False: Continuing with warning.")
+                    print(f"{'='*60}\n")
+            else:
+                print(f"[TrainRunner] Prediction configuration validated successfully")
+
+            trainer.noise_process = training_noise_process
+            trainer.prediction_target = training_prediction_target
+
+            # ============================================================
+            # Setup Regularization Loss (same as LoRA)
+            # ============================================================
+            regularization_type = train_config.get('regularization_type', None)
+            if regularization_type:
+                print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
+                trainer.config = train_config
+
+                if regularization_type.lower() == 'snr':
+                    from core.training.losses.snr_regularization import create_snr_regularization_loss
+                    trainer.snr_regularization_loss = create_snr_regularization_loss(train_config)
+                elif regularization_type.lower() == 'energy':
+                    from core.training.losses.energy_regularization import create_energy_regularization_loss
+                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                else:
+                    print(f"[TrainRunner] WARNING: Unknown regularization type '{regularization_type}', skipping")
+            else:
+                print(f"[TrainRunner] Regularization disabled (regularization_type not set)")
+
+            # Determine epochs or steps
+            num_epochs = train_config.get('epochs', None)
+            total_steps_config = train_config.get('steps', None)
+
+            if num_epochs:
+                print(f"[TrainRunner] Training for {num_epochs} epochs")
+            elif total_steps_config:
+                num_epochs = None
+                print(f"[TrainRunner] Training for {total_steps_config} steps (epochs will be calculated by trainer)")
+            else:
+                num_epochs = 1
+
+            # Progress callback
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+                lr = None
+                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                    lr = trainer.optimizer.param_groups[0]['lr']
+                    if phase == "training" and step % 100 == 0:
+                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+
+            def update_total_steps_callback(total_steps: int):
+                print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
+                run.total_steps = total_steps
+                training_db.commit()
+
+            # Update status to running
+            run.status = "running"
+            training_db.commit()
+            print("[TrainRunner] Status updated to 'running'")
+
+            # Prepare sample configuration
+            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
+            sample_config = {
+                'width': process_config['sample'].get('width', 1024),
+                'height': process_config['sample'].get('height', 1024),
+                'steps': process_config['sample'].get('sample_steps', 20),
+                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
+                'sampler': process_config['sample'].get('sampler', 'euler'),
+                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
+                'seed': process_config['sample'].get('seed', -1),
+            }
+
+            # Get debug parameters
+            debug_latents = train_config.get('debug_latents', False)
+            debug_latents_every = train_config.get('debug_latents_every', 50)
+
+            # Get bucketing parameters
+            enable_bucketing = train_config.get('enable_bucketing', False)
+            base_resolutions = train_config.get('base_resolutions', [1024])
+
+            # Get latent caching parameters
+            cache_latents_to_disk = True
+            force_recache = False
+            if 'datasets' in process_config and len(process_config['datasets']) > 0:
+                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
+                force_recache = process_config['datasets'][0].get('force_recache', False)
+
+            # Save settings
+            save_every_unit = process_config['save'].get('save_every_unit', 'steps')
+            save_every = process_config['save'].get('save_every', 100)
+            max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+
+            if save_every_unit == 'epochs':
+                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
+                save_every_n_steps = save_every * steps_per_epoch
+                print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
+            else:
+                save_every_n_steps = save_every
+
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+
+            if not sample_prompts or len(sample_prompts) == 0:
+                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
+
+            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
+            sample_steps = process_config['sample'].get('sample_steps', 28)
+            sample_width = process_config['sample'].get('width', 1024)
+            sample_height = process_config['sample'].get('height', 1024)
+            sample_seed = process_config['sample'].get('seed', -1)
+
+            resume_from_checkpoint = train_config.get('resume_from_checkpoint')
+            if resume_from_checkpoint:
+                print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
+
+            if force_recache:
+                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
+
+            # Text/Latent encoding modes
+            text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
+            text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+            latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
+            latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
+
+            # Multi Noise Timestep (MNT) settings
+            multi_noise_timesteps = train_config.get('multi_noise_timesteps', 1)
+            multi_noise_mode = train_config.get('multi_noise_mode', 'independent')
+            trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
+            timestep_sampling_config = train_config.get('timestep_sampling', None)
+
+            # Reference image settings
+            use_reference_images = train_config.get('use_reference_images', False)
+
+            # Start ReLoRA training
+            trainer.train(
+                datasets=training_datasets,
+                num_epochs=num_epochs if num_epochs else 1,
+                total_steps=total_steps_config,
+                batch_size=train_config.get('batch_size', 1),
+                save_every_n_steps=save_every_n_steps,
+                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_prompts=sample_prompts,
+                sample_guidance_scale=sample_guidance_scale,
+                sample_steps=sample_steps,
+                sample_width=sample_width,
+                sample_height=sample_height,
+                sample_seed=sample_seed,
+                optimizer_type=optimizer_type,
+                lr_scheduler_type=lr_scheduler_type,
+                enable_bucketing=enable_bucketing,
+                base_resolutions=base_resolutions,
+                bucket_strategy="resize",
+                multi_resolution_mode="max",
+                gradient_accumulation_steps=1,
+                max_grad_norm=1.0,
+                debug_latents=debug_latents,
+                debug_latents_every=debug_latents_every,
+                progress_callback=progress_callback,
+                update_total_steps_callback=update_total_steps_callback,
+                run_id=run_id,
+                resume_from_checkpoint=resume_from_checkpoint,
+                force_recache=force_recache,
+                max_step_saves_to_keep=max_step_saves_to_keep,
+                text_encoding_mode=text_encoding_mode,
+                text_encoding_swap_interval=text_encoding_swap_interval,
+                latent_encoding_mode=latent_encoding_mode,
+                latent_encoding_swap_interval=latent_encoding_swap_interval,
+                multi_noise_timesteps=multi_noise_timesteps,
+                multi_noise_mode=multi_noise_mode,
+                trajectory_blend_alpha=trajectory_blend_alpha,
+                timestep_sampling_config=timestep_sampling_config,
+                use_reference_images=use_reference_images,
+            )
+
+            print("[TrainRunner] ReLoRA training completed successfully!")
+
+            # Update run status
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            training_db.commit()
+
         elif network_type == 'full_finetune':
             print("[TrainRunner] Training method: Full Parameter Fine-Tuning")
             from core.training.full_parameter_trainer import FullParameterTrainer

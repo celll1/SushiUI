@@ -2359,7 +2359,7 @@ class BaseTrainer(ABC):
         self.lr_scheduler = get_diffusers_scheduler(
             lr_scheduler_type,
             optimizer=self.optimizer,
-            num_warmup_steps=0,
+            num_warmup_steps=self.optimizer_warmup_steps,
             num_training_steps=total_steps,
         )
 
@@ -2510,7 +2510,7 @@ class BaseTrainer(ABC):
             lr_scheduler = get_diffusers_scheduler(
                 lr_scheduler_type,
                 optimizer=optimizer,
-                num_warmup_steps=0,
+                num_warmup_steps=self.optimizer_warmup_steps,
                 num_training_steps=total_steps,
             )
             lr_schedulers.append(lr_scheduler)
@@ -6467,6 +6467,10 @@ class BaseTrainer(ABC):
                             print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}")
 
                         print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}, step {global_step}")
+
+                        # Restore ReLoRA-specific state (merge_count, etc.)
+                        if hasattr(self, '_restore_relora_state'):
+                            self._restore_relora_state(resume_training_state)
                     else:
                         # No training state file, fall back to epoch-level resume
                         start_epoch = global_step // steps_per_epoch
@@ -6550,6 +6554,10 @@ class BaseTrainer(ABC):
                             print(f"{self.log_prefix} Loaded training state: epoch={start_epoch}, batch_idx={resume_batch_idx}")
 
                         print(f"{self.log_prefix} Mid-epoch resume: epoch {start_epoch + 1}, batch {resume_batch_idx}, step {global_step}")
+
+                        # Restore ReLoRA-specific state (merge_count, etc.)
+                        if hasattr(self, '_restore_relora_state'):
+                            self._restore_relora_state(resume_training_state)
                     else:
                         # No training state file, fall back to epoch-level resume
                         start_epoch = global_step // steps_per_epoch
@@ -7667,6 +7675,13 @@ class BaseTrainer(ABC):
                                     grad_norm_text_encoder=grad_norm_te,
                                     grad_norm_unet=grad_norm_unet
                                 )
+
+                            # ReLoRA merge-reinit cycle hook
+                            # Only active for ReLoRATrainer (has should_merge method)
+                            if hasattr(self, 'should_merge'):
+                                is_first_batch = (batch_idx == 0 and mnt_idx == 0)
+                                if self.should_merge(global_step, epoch, is_first_batch):
+                                    self.perform_merge_reinit_cycle(global_step, epoch)
 
                         # Force CUDA memory cleanup between MNT iterations to prevent
                         # VRAM fragmentation and accumulation. Skip on last iteration

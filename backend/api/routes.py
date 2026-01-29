@@ -4264,6 +4264,13 @@ class TrainingRunCreateRequest(BaseModel):
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training
 
+    # ReLoRA-specific parameters
+    relora_merge_every: int = 500  # Steps/epochs between merge-reinit cycles
+    relora_merge_unit: str = "steps"  # "steps" or "epochs"
+    restart_warmup_steps: int = 100  # Warmup steps after each merge cycle
+    optimizer_reset_strategy: str = "full_reset"  # "full_reset", "magnitude_pruning", "random_pruning"
+    optimizer_pruning_ratio: float = 0.9  # Pruning ratio for pruning strategies (0.0-1.0)
+
     # ControlNet-specific parameters
     controlnet_type: str = "standard"  # "standard" (diffusers ControlNetModel) or "lllite" (sd-scripts compatible)
     controlnet_pretrained_path: Optional[str] = None  # Path to existing ControlNet checkpoint for resume
@@ -4468,6 +4475,101 @@ async def create_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,  # Reference image conditioning
+            )
+        elif request.training_method == "relora":
+            config_yaml = config_generator.generate_relora_config(
+                run_name=run_name,
+                dataset_path=primary_dataset.path,
+                base_model_path=request.base_model_path,
+                output_dir=output_dir_str,
+                dataset_configs=dataset_configs_for_yaml,
+                total_steps=request.total_steps,
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                learning_rate=request.learning_rate,
+                lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=0,
+                optimizer=request.optimizer,
+                optimizer_is_paged=request.optimizer_is_paged,
+                optimizer_cautious=request.optimizer_cautious,
+                optimizer_beta1=request.optimizer_beta1,
+                optimizer_beta2=request.optimizer_beta2,
+                optimizer_epsilon=request.optimizer_epsilon,
+                optimizer_weight_decay=request.optimizer_weight_decay,
+                optimizer_schedule_free=request.optimizer_schedule_free,
+                optimizer_schedule_free_r=request.optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=request.optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=request.optimizer_use_radam,
+                optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
+                lora_rank=request.lora_rank,
+                lora_alpha=request.lora_alpha,
+                lora_dtype=request.lora_dtype,
+                save_every=request.save_every,
+                save_every_unit=request.save_every_unit,
+                max_step_saves_to_keep=request.max_step_saves_to_keep,
+                sample_every=request.sample_every,
+                sample_prompts=resolved_sample_prompts or None,
+                debug_latents=request.debug_latents,
+                debug_latents_every=request.debug_latents_every,
+                enable_bucketing=request.enable_bucketing,
+                base_resolutions=request.base_resolutions,
+                bucket_strategy=request.bucket_strategy,
+                multi_resolution_mode=request.multi_resolution_mode,
+                train_unet=request.train_unet,
+                train_text_encoder=request.train_text_encoder,
+                unet_lr=request.unet_lr,
+                text_encoder_lr=request.text_encoder_lr,
+                text_encoder_1_lr=request.text_encoder_1_lr,
+                text_encoder_2_lr=request.text_encoder_2_lr,
+                cache_latents_to_disk=request.cache_latents_to_disk,
+                weight_dtype=request.weight_dtype,
+                training_dtype=request.training_dtype,
+                output_dtype=request.output_dtype,
+                vae_dtype=request.vae_dtype,
+                mixed_precision=request.mixed_precision,
+                use_flash_attention=request.use_flash_attention,
+                min_snr_gamma=request.min_snr_gamma,
+                reconstruction_loss_weight=request.reconstruction_loss_weight,
+                blocks_to_swap=request.blocks_to_swap,
+                use_pinned_memory=request.use_pinned_memory,
+                num_optimizer_groups=request.num_optimizer_groups,
+                text_encoding_mode=request.text_encoding_mode,
+                text_encoding_swap_interval=request.text_encoding_swap_interval,
+                latent_encoding_mode=request.latent_encoding_mode,
+                latent_encoding_swap_interval=request.latent_encoding_swap_interval,
+                prompt_chunking_mode=request.prompt_chunking_mode,
+                max_prompt_chunks=request.max_prompt_chunks,
+                multi_noise_timesteps=request.multi_noise_timesteps,
+                multi_noise_mode=getattr(request, 'multi_noise_mode', 'independent'),
+                trajectory_blend_alpha=getattr(request, 'trajectory_blend_alpha', 0.7),
+                timestep_sampling_config=getattr(request, 'timestep_sampling', None),
+                regularization_type=request.regularization_type,
+                snr_regularization_weight=request.snr_regularization_weight,
+                snr_timestep_adaptive=request.snr_timestep_adaptive,
+                snr_penalty_mode=request.snr_penalty_mode,
+                energy_regularization_weight=request.energy_regularization_weight,
+                energy_timestep_adaptive=request.energy_timestep_adaptive,
+                energy_penalty_mode=request.energy_penalty_mode,
+                energy_normalize_by_pixels=request.energy_normalize_by_pixels,
+                sample_width=request.sample_width,
+                sample_height=request.sample_height,
+                sample_steps=request.sample_steps,
+                sample_cfg_scale=request.sample_cfg_scale,
+                sample_sampler=request.sample_sampler,
+                sample_schedule_type=request.sample_schedule_type,
+                sample_seed=request.sample_seed,
+                resume_from_checkpoint=resume_from_checkpoint,
+                caption_processing=primary_dataset.caption_processing,
+                noise_process=request.noise_process,
+                prediction_target=request.prediction_target,
+                strict_validation=request.strict_validation,
+                use_reference_images=request.use_reference_images,
+                # ReLoRA-specific parameters
+                relora_merge_every=request.relora_merge_every,
+                relora_merge_unit=request.relora_merge_unit,
+                restart_warmup_steps=request.restart_warmup_steps,
+                optimizer_reset_strategy=request.optimizer_reset_strategy,
+                optimizer_pruning_ratio=request.optimizer_pruning_ratio,
             )
         elif request.training_method == "controlnet":
             config_yaml = config_generator.generate_controlnet_config(

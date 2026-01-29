@@ -96,7 +96,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Available caption types for each dataset
   // Caption types selection moved to Dataset Management > Caption Processing page
 
-  const [trainingMethod, setTrainingMethod] = useState<"lora" | "full_finetune" | "controlnet">("lora");
+  const [trainingMethod, setTrainingMethod] = useState<"lora" | "relora" | "full_finetune" | "controlnet">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
 
   // ControlNet parameters
@@ -108,6 +108,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [llliteRank, setLlliteRank] = useState(64);
   const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
   const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
+
+  // ReLoRA parameters
+  const [reloraMergeEvery, setReloraMergeEvery] = useState(500);
+  const [reloraMergeUnit, setReloraMergeUnit] = useState<"steps" | "epochs">("steps");
+  const [restartWarmupSteps, setRestartWarmupSteps] = useState(100);
+  const [optimizerResetStrategy, setOptimizerResetStrategy] = useState<"full_reset" | "magnitude_pruning" | "random_pruning">("full_reset");
+  const [optimizerPruningRatio, setOptimizerPruningRatio] = useState(0.9);
 
   // Training parameters
   const [useEpochs, setUseEpochs] = useState(false);
@@ -785,6 +792,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       llliteRank,
       conditionPreprocessors,
       conditionCacheMode,
+      // ReLoRA parameters
+      reloraMergeEvery,
+      reloraMergeUnit,
+      restartWarmupSteps,
+      optimizerResetStrategy,
+      optimizerPruningRatio,
     };
   };
 
@@ -897,6 +910,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.conditionCacheMode !== undefined) setConditionCacheMode(config.conditionCacheMode);
     // Legacy: sampleConditionImagePath is now per-prompt (ignored here)
 
+    // ReLoRA parameters
+    if (config.reloraMergeEvery !== undefined) setReloraMergeEvery(config.reloraMergeEvery);
+    if (config.reloraMergeUnit !== undefined) setReloraMergeUnit(config.reloraMergeUnit);
+    if (config.restartWarmupSteps !== undefined) setRestartWarmupSteps(config.restartWarmupSteps);
+    if (config.optimizerResetStrategy !== undefined) setOptimizerResetStrategy(config.optimizerResetStrategy);
+    if (config.optimizerPruningRatio !== undefined) setOptimizerPruningRatio(config.optimizerPruningRatio);
+
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
 
@@ -966,9 +986,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
       optimizer_use_radam: optimizerUseRadam,
       optimizer_stochastic_rounding: optimizerStochasticRounding,
-      lora_rank: trainingMethod === "lora" ? loraRank : undefined,
-      lora_alpha: trainingMethod === "lora" ? loraAlpha : undefined,
-      lora_dtype: trainingMethod === "lora" ? loraDtype : undefined,
+      lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? loraRank : undefined,
+      lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? loraAlpha : undefined,
+      lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? loraDtype : undefined,
+      // ReLoRA-specific parameters
+      ...(trainingMethod === "relora" ? {
+        relora_merge_every: reloraMergeEvery,
+        relora_merge_unit: reloraMergeUnit,
+        restart_warmup_steps: restartWarmupSteps,
+        optimizer_reset_strategy: optimizerResetStrategy,
+        optimizer_pruning_ratio: optimizerPruningRatio,
+      } : {}),
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
       sample_every: sampleEvery,
@@ -1254,6 +1282,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-sm">ControlNet (SD1.5/SDXL)</span>
             </label>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="radio"
+                name="training_method"
+                value="relora"
+                checked={trainingMethod === "relora"}
+                onChange={() => setTrainingMethod("relora")}
+                className="text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm">ReLoRA (Periodic Merge + Reinit)</span>
+            </label>
           </div>
         </div>
 
@@ -1335,7 +1374,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
 
         {/* LoRA Settings */}
-        {trainingMethod === "lora" && (
+        {(trainingMethod === "lora" || trainingMethod === "relora") && (
           <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
             <h3 className="text-sm font-semibold">LoRA Settings</h3>
 
@@ -1377,6 +1416,83 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="fp16">FP16 (Half Precision)</option>
               </select>
             </div>
+          </div>
+        )}
+
+        {/* ReLoRA Settings */}
+        {trainingMethod === "relora" && (
+          <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-3">
+            <h3 className="text-sm font-semibold">ReLoRA Settings</h3>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Merge Interval</label>
+                <input
+                  type="number"
+                  value={reloraMergeEvery}
+                  onChange={(e) => setReloraMergeEvery(e.target.value === '' ? '' as any : parseInt(e.target.value))}
+                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setReloraMergeEvery(500); }}
+                  min="1"
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Merge Unit</label>
+                <select
+                  value={reloraMergeUnit}
+                  onChange={(e) => setReloraMergeUnit(e.target.value as "steps" | "epochs")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="steps">Steps</option>
+                  <option value="epochs">Epochs</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Restart Warmup Steps</label>
+              <input
+                type="number"
+                value={restartWarmupSteps}
+                onChange={(e) => setRestartWarmupSteps(e.target.value === '' ? '' as any : parseInt(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setRestartWarmupSteps(100); }}
+                min="0"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">LR warmup steps after each merge-reinit cycle</p>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Optimizer Reset Strategy</label>
+              <select
+                value={optimizerResetStrategy}
+                onChange={(e) => setOptimizerResetStrategy(e.target.value as "full_reset" | "magnitude_pruning" | "random_pruning")}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="full_reset">Full Reset (Clear all optimizer state)</option>
+                <option value="magnitude_pruning">Magnitude Pruning (Keep top-N% by magnitude)</option>
+                <option value="random_pruning">Random Pruning (Randomly keep N%)</option>
+              </select>
+            </div>
+
+            {optimizerResetStrategy !== "full_reset" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Pruning Ratio: {optimizerPruningRatio.toFixed(2)}
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={optimizerPruningRatio}
+                  onChange={(e) => setOptimizerPruningRatio(parseFloat(e.target.value))}
+                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+                <p className="text-xs text-gray-500 mt-1">Fraction of optimizer state entries to prune (set to 0)</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -2261,11 +2377,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => setTrainTextEncoder(e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${(isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)) ? 'text-gray-500' : 'text-gray-300'}`}>
-                  Train Text Encoder {(isZImageModel(baseModelPath) || isFlux2Model(baseModelPath)) && '(Not supported for Z-Image/FLUX.2)'}
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                  Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                 </label>
               </div>
 
@@ -3286,7 +3402,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <div className="flex items-center gap-2 mb-1">
                           <h4 className="font-medium">{preset.name}</h4>
                           <span className="text-xs px-2 py-0.5 bg-blue-600 rounded">
-                            {preset.training_method === "lora" ? "LoRA" : preset.training_method === "controlnet" ? "ControlNet" : "Full Finetune"}
+                            {preset.training_method === "lora" ? "LoRA" : preset.training_method === "relora" ? "ReLoRA" : preset.training_method === "controlnet" ? "ControlNet" : "Full Finetune"}
                           </span>
                         </div>
                         {preset.description && (

@@ -6670,11 +6670,12 @@ class BaseTrainer(ABC):
 
         # Generate step 0 sample to verify base model output
         if sample_every_n_steps > 0 and global_step == 0:
+            step0_prompt = self._sample_prompts[0].get('positive', 'a beautiful landscape') if self._sample_prompts else 'a beautiful landscape'
             print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
             print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
             if self.is_flux2:
                 sample = self._generate_sample_flux2(
-                    prompt=sample_prompt,
+                    prompt=step0_prompt,
                     width=sample_width,
                     height=sample_height,
                     num_inference_steps=sample_steps,
@@ -6683,7 +6684,7 @@ class BaseTrainer(ABC):
                 )
             elif self.is_zimage:
                 sample = self._generate_sample_zimage(
-                    prompt=sample_prompt,
+                    prompt=step0_prompt,
                     width=sample_width,
                     height=sample_height,
                     num_inference_steps=sample_steps,
@@ -6692,7 +6693,7 @@ class BaseTrainer(ABC):
                 )
             else:
                 sample = self.generate_sample(
-                    prompt=sample_prompt,
+                    prompt=step0_prompt,
                     width=sample_width,
                     height=sample_height,
                     num_inference_steps=sample_steps,

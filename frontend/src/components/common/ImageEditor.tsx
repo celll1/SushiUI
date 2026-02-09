@@ -39,6 +39,16 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     };
   }, []);
 
+  // Cleanup requestAnimationFrame on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, []);
+
   // Canvas refs - we'll use Map to store multiple layer canvases
   const baseLayerRef = useRef<HTMLCanvasElement>(null); // Original image layer (not editable)
   const layerCanvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map()); // Editable layers
@@ -106,6 +116,12 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
   const exitVelocityRef = useRef(0); // Velocity when entering taper mode
   const taperDistanceRef = useRef(0); // Distance traveled during taper mode
   const strokePathRef = useRef<Array<{ x: number; y: number; pressure: number; velocity: number; distance: number; taperProgress: number }>>([]); // Store stroke path
+
+  // Performance optimization: requestAnimationFrame-based rendering
+  const rafIdRef = useRef<number | null>(null); // Current requestAnimationFrame ID
+  const pendingPointsRef = useRef<Array<{ x: number; y: number; pressure: number; time: number }>>([]); // Pending points to draw
+  const needsComposeRef = useRef(false); // Flag to batch composeLayers calls
+  const lastCursorUpdateRef = useRef(0); // Timestamp of last cursor color update
 
   // Calculate color from RGB with alpha
   const getColorFromRGB = () => {
@@ -231,6 +247,20 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       ctx.drawImage(tempStrokeCanvasRef.current, 0, 0);
     }
   }, [layers, getLayerCanvas]);
+
+  // Schedule a composeLayers call for the next animation frame (batched)
+  const scheduleCompose = useCallback(() => {
+    needsComposeRef.current = true;
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        if (needsComposeRef.current) {
+          needsComposeRef.current = false;
+          composeLayers();
+        }
+      });
+    }
+  }, [composeLayers]);
 
   // Re-composite when layer visibility or opacity changes
   useEffect(() => {
@@ -1003,7 +1033,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         0,
         0 // No taper at start
       );
-      composeLayers();
+      scheduleCompose(); // Use batched compose for 60+ FPS
     } else if (tool === "eraser") {
       // Eraser erases active layer only (not the base image)
       layerCtx.globalCompositeOperation = "destination-out";
@@ -1015,7 +1045,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       layerCtx.moveTo(point.x, point.y);
     } else if (tool === "blur") {
       applyBlur(layerCtx, point.x, point.y, brushSize);
-      composeLayers();
+      scheduleCompose(); // Use batched compose for 60+ FPS
     }
   };
 
@@ -1071,61 +1101,35 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     });
 
     // Sample background color on circle perimeter to determine border color
-    const canvas = compositeCanvasRef.current;
-    if (canvas && point) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        try {
-          // Sample pixels on and around the circle perimeter
-          const radius = Math.max(5, brushSize * 0.5);
-          const perimeterWidth = 3; // Sample 3 pixels outward from circle edge
+    // Throttle to once every 100ms for performance (getImageData is slow)
+    const now = Date.now();
+    if (now - lastCursorUpdateRef.current >= 100) {
+      lastCursorUpdateRef.current = now;
+      const canvas = compositeCanvasRef.current;
+      if (canvas && point) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          try {
+            // Sample a single pixel at center for performance (instead of perimeter)
+            const x = Math.round(point.x);
+            const y = Math.round(point.y);
 
-          // Calculate luminance for each pixel and bin into windows (0-255 -> 0-15)
-          const luminanceHistogram = new Array(16).fill(0);
+            // Check bounds
+            if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+              const imageData = ctx.getImageData(x, y, 1, 1);
+              const r = imageData.data[0];
+              const g = imageData.data[1];
+              const b = imageData.data[2];
 
-          // Sample points around the circle perimeter
-          const numSamples = Math.max(16, Math.ceil(radius * 2)); // More samples for larger brushes
-          for (let i = 0; i < numSamples; i++) {
-            const angle = (i / numSamples) * Math.PI * 2;
-
-            // Sample multiple pixels from edge to a few pixels outside
-            for (let d = 0; d <= perimeterWidth; d++) {
-              const sampleRadius = radius + d;
-              const x = Math.round(point.x + Math.cos(angle) * sampleRadius);
-              const y = Math.round(point.y + Math.sin(angle) * sampleRadius);
-
-              // Check bounds
-              if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
-                const imageData = ctx.getImageData(x, y, 1, 1);
-                const r = imageData.data[0];
-                const g = imageData.data[1];
-                const b = imageData.data[2];
-
-                // Calculate relative luminance (ITU-R BT.709)
-                const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                const bin = Math.floor(luminance / 16);
-                luminanceHistogram[Math.min(bin, 15)]++;
-              }
+              // Calculate relative luminance (ITU-R BT.709)
+              const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+              // Use white border on dark backgrounds, black border on light backgrounds
+              setCursorBorderColor(luminance < 128 ? "white" : "black");
             }
+          } catch (e) {
+            // If getImageData fails (e.g., out of bounds), use white as default
+            setCursorBorderColor("white");
           }
-
-          // Find the most frequent luminance bin
-          let maxCount = 0;
-          let maxBin = 0;
-          for (let i = 0; i < luminanceHistogram.length; i++) {
-            if (luminanceHistogram[i] > maxCount) {
-              maxCount = luminanceHistogram[i];
-              maxBin = i;
-            }
-          }
-
-          // Convert bin back to luminance value (use middle of bin)
-          const avgLuminance = maxBin * 16 + 8;
-          // Use white border on dark backgrounds, black border on light backgrounds
-          setCursorBorderColor(avgLuminance < 128 ? "white" : "black");
-        } catch (e) {
-          // If getImageData fails (e.g., out of bounds), use white as default
-          setCursorBorderColor("white");
         }
       }
     }
@@ -1201,7 +1205,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           prevPoint ? prevPoint.x : null,
           prevPoint ? prevPoint.y : null
         );
-        composeLayers();
+        scheduleCompose(); // Use batched compose for 60+ FPS
 
         // If taper is complete, apply alpha and end stroke
         if (taperProgressRef.current >= 1 && brushType !== "normal") {
@@ -1209,7 +1213,7 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           setIsDrawing(false);
           setIsTapering(false);
           saveToHistory(activeLayerId, layerCtx);
-          composeLayers();
+          composeLayers(); // Immediate compose for final state
           return;
         }
       } else if (tool === "eraser") {
@@ -1217,12 +1221,12 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           layerCtx.lineWidth = brushSize * pressure;
           layerCtx.lineTo(point.x, point.y);
           layerCtx.stroke();
-          composeLayers();
+          scheduleCompose(); // Use batched compose for 60+ FPS
         }
       } else if (tool === "blur") {
         if (isDrawing) {
           applyBlur(layerCtx, point.x, point.y, brushSize);
-          composeLayers();
+          scheduleCompose(); // Use batched compose for 60+ FPS
         }
       }
 

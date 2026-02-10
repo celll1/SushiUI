@@ -2351,7 +2351,7 @@ def custom_inpaint_sampling_loop(
     image = (image * 255).round().astype("uint8")
 
     # Clean up ControlNet after generation
-    from .controlnet_manager import controlnet_manager
+    from core.extensions.controlnet_manager import controlnet_manager
     controlnet_manager.remove_lllite_patches()
     controlnet_manager.offload_controlnets_to_cpu()
 

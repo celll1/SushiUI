@@ -5,6 +5,7 @@ import Sidebar from "@/components/common/Sidebar";
 import Card from "@/components/common/Card";
 import Button from "@/components/common/Button";
 import DirectorySettings from "@/components/settings/DirectorySettings";
+import GenerationSettings from "@/components/settings/GenerationSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 
@@ -472,6 +473,10 @@ export default function SettingsPage() {
 
           <Card title="Model Directories">
             <DirectorySettings />
+          </Card>
+
+          <Card title="Generation Settings">
+            <GenerationSettings />
           </Card>
 
           <Card title="Tag Suggestions">

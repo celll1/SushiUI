@@ -31,6 +31,11 @@ class UserSettings(GalleryBase):
     training_dir = Column(String, nullable=True)  # Custom training output directory (default: training)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Generation settings
+    # Inpaint method: False = mask blending (default, same as Z-Image/FLUX.2)
+    #                 True = construct dedicated 9ch inpaint model (legacy SD/SDXL method)
+    inpaint_use_dedicated_model = Column(Boolean, default=False)
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -39,6 +44,7 @@ class UserSettings(GalleryBase):
             "controlnet_dirs": self.controlnet_dirs or [],
             "cache_dir": self.cache_dir,
             "training_dir": self.training_dir,
+            "inpaint_use_dedicated_model": self.inpaint_use_dedicated_model if self.inpaint_use_dedicated_model is not None else False,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 

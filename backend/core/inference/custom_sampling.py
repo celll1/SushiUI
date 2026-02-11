@@ -9,6 +9,30 @@ Based on diffusers' pipeline implementation but with added flexibility.
 """
 
 import torch
+
+
+def get_inpaint_use_dedicated_model_setting() -> bool:
+    """Get the inpaint_use_dedicated_model setting from database.
+
+    Returns:
+        bool: True if dedicated 9ch inpaint model should be used (legacy SD/SDXL method),
+              False if mask blending should be used (default, same as Z-Image/FLUX.2).
+    """
+    try:
+        from database.database import get_gallery_db_sync
+        from database.models import UserSettings
+
+        db = get_gallery_db_sync()
+        try:
+            settings = db.query(UserSettings).first()
+            if settings and settings.inpaint_use_dedicated_model is not None:
+                return settings.inpaint_use_dedicated_model
+            return False  # Default: mask blending
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[CustomSampling] Warning: Could not read inpaint_use_dedicated_model setting: {e}")
+        return False  # Default: mask blending
 from typing import Optional, Callable, Dict, Any, Union, List
 from diffusers import (
     StableDiffusionPipeline,
@@ -1691,8 +1715,19 @@ def custom_inpaint_sampling_loop(
 
     # Check if this is an inpaint-specific UNet (9 channels) or regular UNet (4 channels)
     # Regular UNets cannot accept concatenated mask+image, so we'll use img2img-style masking
-    is_inpaint_unet = unet.config.in_channels == 9
-    print(f"[CustomSampling] UNet in_channels: {unet.config.in_channels}, is_inpaint_unet: {is_inpaint_unet}")
+    #
+    # NEW: User setting controls whether to use dedicated 9ch inpaint model or mask blending
+    # - inpaint_use_dedicated_model=False (default): Always use mask blending (like Z-Image/FLUX.2)
+    # - inpaint_use_dedicated_model=True: Use 9ch inpaint model if available (legacy SD/SDXL method)
+    unet_supports_9ch = unet.config.in_channels == 9
+    use_dedicated_model_setting = get_inpaint_use_dedicated_model_setting()
+
+    # Only use 9ch inpaint mode if BOTH: setting is enabled AND UNet supports it
+    is_inpaint_unet = unet_supports_9ch and use_dedicated_model_setting
+
+    print(f"[CustomSampling] UNet in_channels: {unet.config.in_channels}, "
+          f"use_dedicated_model_setting: {use_dedicated_model_setting}, "
+          f"is_inpaint_unet: {is_inpaint_unet}")
 
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size

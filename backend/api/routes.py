@@ -1596,6 +1596,60 @@ async def save_directory_settings(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/settings/generation")
+async def get_generation_settings(db: Session = Depends(get_gallery_db)):
+    """Get user-configured generation settings"""
+    try:
+        settings_record = db.query(UserSettings).first()
+        if not settings_record:
+            settings_record = UserSettings()
+            db.add(settings_record)
+            db.commit()
+            db.refresh(settings_record)
+
+        return {
+            "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model if settings_record.inpaint_use_dedicated_model is not None else False,
+        }
+    except Exception as e:
+        print(f"Error getting generation settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/settings/generation")
+async def save_generation_settings(
+    settings_data: dict,
+    db: Session = Depends(get_gallery_db)
+):
+    """Save user-configured generation settings"""
+    try:
+        settings_record = db.query(UserSettings).first()
+        if not settings_record:
+            settings_record = UserSettings()
+            db.add(settings_record)
+
+        # Update generation settings
+        if "inpaint_use_dedicated_model" in settings_data:
+            settings_record.inpaint_use_dedicated_model = bool(settings_data["inpaint_use_dedicated_model"])
+
+        settings_record.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(settings_record)
+
+        print(f"[Settings] Updated generation settings:")
+        print(f"  inpaint_use_dedicated_model: {settings_record.inpaint_use_dedicated_model}")
+
+        return {
+            "success": True,
+            "message": "Generation settings saved successfully",
+            "settings": {
+                "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model,
+            }
+        }
+    except Exception as e:
+        print(f"Error saving generation settings: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/system/restart-backend")
 async def restart_backend():
     """Restart the backend server"""

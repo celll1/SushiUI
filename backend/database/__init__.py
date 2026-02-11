@@ -105,3 +105,15 @@ def get_training_db():
         yield db
     finally:
         db.close()
+
+
+def get_gallery_db_sync():
+    """Get gallery database session (synchronous, non-generator version).
+
+    Use this when you need a database session outside of FastAPI dependency injection.
+    IMPORTANT: Caller is responsible for closing the session with db.close()
+
+    Returns:
+        Session: SQLAlchemy session for gallery database
+    """
+    return GallerySessionLocal()

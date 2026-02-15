@@ -510,6 +510,12 @@ class BaseTrainer(ABC):
         self._metrics_buffer = []
         self._metrics_flush_interval = 10  # Flush every 10 steps (configurable)
 
+        # Async DB logging with ThreadPoolExecutor
+        # DB writes happen in background thread, not blocking training loop
+        from concurrent.futures import ThreadPoolExecutor
+        self._db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db_logger")
+        self._db_futures = []  # Track pending futures for cleanup
+
         self.learning_rate = learning_rate
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
@@ -7910,7 +7916,30 @@ class BaseTrainer(ABC):
         if not should_flush:
             return
 
-        # Flush buffer to database
+        # Copy buffer and clear immediately (so training can continue adding to new buffer)
+        buffer_to_flush = self._metrics_buffer.copy()
+        self._metrics_buffer = []
+
+        if force_flush:
+            # Synchronous flush for checkpoints/end of training (ensure data is written)
+            self._flush_metrics_to_db(buffer_to_flush)
+        else:
+            # Async flush: submit to background thread, don't block training
+            # Clean up completed futures first
+            self._db_futures = [f for f in self._db_futures if not f.done()]
+            future = self._db_executor.submit(self._flush_metrics_to_db, buffer_to_flush)
+            self._db_futures.append(future)
+
+    def _flush_metrics_to_db(self, buffer: list):
+        """
+        Actually flush metrics buffer to database (runs in background thread).
+
+        Args:
+            buffer: List of metrics dicts to flush
+        """
+        if not buffer:
+            return
+
         try:
             from database.models import TrainingMetrics
             from database import get_training_db
@@ -7918,7 +7947,7 @@ class BaseTrainer(ABC):
             # Get database session
             db = next(get_training_db())
 
-            for metrics in self._metrics_buffer:
+            for metrics in buffer:
                 m_step = metrics['step']
                 m_loss = metrics['loss']
                 m_recon_loss = metrics['recon_loss']
@@ -7968,8 +7997,8 @@ class BaseTrainer(ABC):
 
             # Broadcast latest metrics to WebSocket clients
             # Only send the most recent entry to avoid flooding
-            if self._metrics_buffer:
-                latest = self._metrics_buffer[-1]
+            if buffer:
+                latest = buffer[-1]
                 try:
                     from api.websocket import manager as ws_manager
                     ws_manager.send_training_metrics(
@@ -7985,13 +8014,19 @@ class BaseTrainer(ABC):
                 except Exception:
                     pass  # Non-critical
 
-            # Clear buffer after successful flush
-            self._metrics_buffer = []
-
         except Exception as e:
             # Non-critical: Continue training even if DB logging fails
             print(f"{self.log_prefix} WARNING: Failed to log metrics to DB: {e}")
-            self._metrics_buffer = []  # Clear buffer to prevent memory growth
+
+    def _shutdown_db_executor(self):
+        """Shutdown the DB executor and wait for pending writes to complete."""
+        if hasattr(self, '_db_executor') and self._db_executor is not None:
+            # Wait for all pending futures
+            from concurrent.futures import wait
+            if self._db_futures:
+                wait(self._db_futures, timeout=30)  # Wait up to 30 seconds
+            self._db_executor.shutdown(wait=True)
+            self._db_executor = None
 
     def _cleanup_future_metrics(self, current_step: int):
         """
@@ -8058,6 +8093,9 @@ class BaseTrainer(ABC):
         if hasattr(self, '_metrics_buffer') and self._metrics_buffer and self.run_id is not None:
             print(f"{self.log_prefix} Flushing {len(self._metrics_buffer)} remaining metrics to database...")
             self._log_metrics_to_db(step=0, force_flush=True)  # step ignored, force_flush processes buffer
+
+        # Shutdown DB executor (wait for async writes to complete)
+        self._shutdown_db_executor()
 
         # Cleanup Layer Offload Conductor
         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:

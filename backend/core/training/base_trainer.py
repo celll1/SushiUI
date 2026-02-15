@@ -505,6 +505,11 @@ class BaseTrainer(ABC):
         self.run_id = run_id  # Database run ID (for dual logging: TensorBoard + DB)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Metrics buffering for DB performance optimization
+        # Batch DB commits every N steps instead of every step
+        self._metrics_buffer = []
+        self._metrics_flush_interval = 10  # Flush every 10 steps (configurable)
+
         self.learning_rate = learning_rate
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
@@ -7526,11 +7531,14 @@ class BaseTrainer(ABC):
                                 if self.should_merge(global_step, epoch, is_first_batch):
                                     self.perform_merge_reinit_cycle(global_step, epoch)
 
-                        # Force CUDA memory cleanup between MNT iterations to prevent
-                        # VRAM fragmentation and accumulation. Skip on last iteration
-                        # since batch cleanup follows immediately.
-                        if multi_noise_timesteps > 1 and mnt_idx < multi_noise_timesteps - 1:
-                            torch.cuda.empty_cache()
+                        # NOTE: torch.cuda.empty_cache() removed from MNT loop for performance.
+                        # Previous behavior called empty_cache() after every MNT iteration,
+                        # which caused significant CPU-GPU sync overhead.
+                        # Memory cleanup now relies on:
+                        # 1. Proper tensor deletion (del statements above)
+                        # 2. Python garbage collection
+                        # 3. Periodic cleanup every 100 steps (below)
+                        # 4. Checkpoint-triggered cleanup
 
                     # Free batch tensors AFTER all MNT iterations complete
                     del latents, text_embeddings
@@ -7559,6 +7567,9 @@ class BaseTrainer(ABC):
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)
                     if global_step % save_every_n_steps == 0:
+                        # Flush metrics buffer before checkpoint to ensure consistency
+                        if self.run_id is not None:
+                            self._log_metrics_to_db(step=global_step, force_flush=True)
                         self.save_checkpoint(step=global_step, epoch=epoch)
                         # Save training state (epoch progress) for mid-epoch resume
                         self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
@@ -7739,32 +7750,33 @@ class BaseTrainer(ABC):
         """
         Calculate gradient norms for different parameter groups.
 
+        OPTIMIZED: Uses torch.cat() and single norm() call instead of per-parameter .item() calls.
+        This avoids CPU-GPU synchronization overhead that was causing ~2x slowdown.
+
         Returns:
             Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm)
         """
-        total_grad_norm = 0.0
-        text_encoder_grad_norm = 0.0
-        unet_grad_norm = 0.0
+        te_grads = []
+        unet_grads = []
 
         # For LoRA training, iterate through lora_layers dict
         if hasattr(self, 'lora_layers'):
-            grad_count = 0
             for lora_name, lora_layer in self.lora_layers.items():
                 for param in lora_layer.parameters():
                     if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        grad_count += 1
-
+                        grad_flat = param.grad.data.view(-1)
                         # Categorize by LoRA layer name
                         if 'text_encoder' in lora_name or 'te1_' in lora_name or 'te2_' in lora_name or 'clip_' in lora_name:
-                            text_encoder_grad_norm += param_norm ** 2
+                            te_grads.append(grad_flat)
                         elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
-                            unet_grad_norm += param_norm ** 2
+                            unet_grads.append(grad_flat)
+                        else:
+                            # Unknown category - add to unet (backbone)
+                            unet_grads.append(grad_flat)
 
             # Debug: Print first calculation only
-            if grad_count > 0 and not hasattr(self, '_grad_norm_debug_printed'):
-                print(f"{self.log_prefix} [GradNorm] Calculated from {grad_count} parameters with gradients")
+            if (te_grads or unet_grads) and not hasattr(self, '_grad_norm_debug_printed'):
+                print(f"{self.log_prefix} [GradNorm] Calculated from {len(te_grads) + len(unet_grads)} parameters with gradients")
                 print(f"{self.log_prefix} [GradNorm] Sample LoRA layer names (first 3):")
                 for i, name in enumerate(list(self.lora_layers.keys())[:3]):
                     print(f"{self.log_prefix}   {name}")
@@ -7774,40 +7786,44 @@ class BaseTrainer(ABC):
         else:
             # SD1.5/SDXL: Direct text_encoder access
             if hasattr(self, 'text_encoder') and self.text_encoder is not None:
-                for name, param in self.text_encoder.named_parameters():
+                for param in self.text_encoder.parameters():
                     if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        text_encoder_grad_norm += param_norm ** 2
+                        te_grads.append(param.grad.data.view(-1))
 
             # Iterate through text encoder 2 parameters (if trainable, SDXL)
             if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
-                for name, param in self.text_encoder_2.named_parameters():
+                for param in self.text_encoder_2.parameters():
                     if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        text_encoder_grad_norm += param_norm ** 2
+                        te_grads.append(param.grad.data.view(-1))
 
             # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
             if hasattr(self, 'unet') and self.unet is not None:
-                for name, param in self.unet.named_parameters():
+                for param in self.unet.parameters():
                     if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        unet_grad_norm += param_norm ** 2
+                        unet_grads.append(param.grad.data.view(-1))
 
             # Iterate through Transformer parameters (if trainable, Z-Image)
             if hasattr(self, 'transformer_original') and self.transformer_original is not None:
-                for name, param in self.transformer_original.named_parameters():
+                for param in self.transformer_original.parameters():
                     if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        unet_grad_norm += param_norm ** 2
+                        unet_grads.append(param.grad.data.view(-1))
 
-        # Take square root to get L2 norm
-        total_grad_norm = total_grad_norm ** 0.5
-        text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
-        unet_grad_norm = unet_grad_norm ** 0.5
+        # Compute norms efficiently with single .item() call per group
+        # This avoids per-parameter CPU-GPU sync that was causing massive slowdown
+        if te_grads:
+            te_all = torch.cat(te_grads)
+            text_encoder_grad_norm = te_all.norm(2).item()
+        else:
+            text_encoder_grad_norm = 0.0
+
+        if unet_grads:
+            unet_all = torch.cat(unet_grads)
+            unet_grad_norm = unet_all.norm(2).item()
+        else:
+            unet_grad_norm = 0.0
+
+        # Total norm: sqrt(te_norm^2 + unet_norm^2)
+        total_grad_norm = (text_encoder_grad_norm ** 2 + unet_grad_norm ** 2) ** 0.5
 
         # Debug: Print values once
         if not hasattr(self, '_grad_norm_values_printed'):
@@ -7824,16 +7840,21 @@ class BaseTrainer(ABC):
         learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
-        grad_norm_unet: float = None
+        grad_norm_unet: float = None,
+        force_flush: bool = False
     ):
         """
-        Log training metrics to database (dual logging: TensorBoard + DB).
+        Log training metrics to database with buffering (dual logging: TensorBoard + DB).
+
+        OPTIMIZED: Buffers metrics and batch commits every N steps to reduce I/O overhead.
+        This reduces DB operations from every step to every _metrics_flush_interval steps.
 
         Features:
         - UPSERT behavior: Same (run_id, step) will overwrite existing values
         - Allows training restart from checkpoint without duplicating metrics
         - Fast queries: indexed by (run_id, step) for incremental fetching
         - Partial update: If a parameter is None, existing value is preserved
+        - Buffered commits: Batches DB writes for performance
 
         Args:
             step: Global training step
@@ -7843,12 +7864,30 @@ class BaseTrainer(ABC):
             grad_norm: Total gradient norm, None to keep existing
             grad_norm_text_encoder: Text encoder gradient norm, None to keep existing
             grad_norm_unet: U-Net/Transformer gradient norm, None to keep existing
+            force_flush: If True, flush buffer immediately (for checkpoints, end of training)
 
         Note:
             The 'loss' parameter stores prediction loss (not combined loss).
             This allows monitoring pred_loss and recon_loss separately in DB.
             Combined loss can be calculated as: (1-β)*loss + β*recon_loss
         """
+        # Buffer the metrics
+        self._metrics_buffer.append({
+            'step': step,
+            'loss': loss,
+            'recon_loss': recon_loss,
+            'learning_rate': learning_rate,
+            'grad_norm': grad_norm,
+            'grad_norm_text_encoder': grad_norm_text_encoder,
+            'grad_norm_unet': grad_norm_unet,
+        })
+
+        # Only flush when buffer is full or force_flush is requested
+        should_flush = force_flush or len(self._metrics_buffer) >= self._metrics_flush_interval
+        if not should_flush:
+            return
+
+        # Flush buffer to database
         try:
             from database.models import TrainingMetrics
             from database import get_training_db
@@ -7856,66 +7895,80 @@ class BaseTrainer(ABC):
             # Get database session
             db = next(get_training_db())
 
-            # UPSERT: Check if metric exists for this (run_id, step)
-            existing = db.query(TrainingMetrics).filter(
-                TrainingMetrics.run_id == self.run_id,
-                TrainingMetrics.step == step
-            ).first()
+            for metrics in self._metrics_buffer:
+                m_step = metrics['step']
+                m_loss = metrics['loss']
+                m_recon_loss = metrics['recon_loss']
+                m_learning_rate = metrics['learning_rate']
+                m_grad_norm = metrics['grad_norm']
+                m_grad_norm_te = metrics['grad_norm_text_encoder']
+                m_grad_norm_unet = metrics['grad_norm_unet']
 
-            if existing:
-                # Update existing metric (training restarted from checkpoint)
-                # Only update fields that are not None (partial update support)
-                if loss is not None:
-                    existing.loss = loss
-                if recon_loss is not None:
-                    existing.recon_loss = recon_loss
-                if learning_rate is not None:
-                    existing.learning_rate = learning_rate
-                if grad_norm is not None:
-                    existing.grad_norm = grad_norm
-                if grad_norm_text_encoder is not None:
-                    existing.grad_norm_text_encoder = grad_norm_text_encoder
-                if grad_norm_unet is not None:
-                    existing.grad_norm_unet = grad_norm_unet
-                existing.timestamp = datetime.now()
-            else:
-                # Insert new metric (use 0.0 as default for required fields)
-                metric = TrainingMetrics(
-                    run_id=self.run_id,
-                    step=step,
-                    loss=loss if loss is not None else 0.0,
-                    recon_loss=recon_loss if recon_loss is not None else 0.0,
-                    learning_rate=learning_rate if learning_rate is not None else 0.0,
-                    grad_norm=grad_norm,
-                    grad_norm_text_encoder=grad_norm_text_encoder,
-                    grad_norm_unet=grad_norm_unet
-                )
-                db.add(metric)
+                # UPSERT: Check if metric exists for this (run_id, step)
+                existing = db.query(TrainingMetrics).filter(
+                    TrainingMetrics.run_id == self.run_id,
+                    TrainingMetrics.step == m_step
+                ).first()
 
-            # Commit every step (same as TensorBoard logging)
+                if existing:
+                    # Update existing metric (training restarted from checkpoint)
+                    if m_loss is not None:
+                        existing.loss = m_loss
+                    if m_recon_loss is not None:
+                        existing.recon_loss = m_recon_loss
+                    if m_learning_rate is not None:
+                        existing.learning_rate = m_learning_rate
+                    if m_grad_norm is not None:
+                        existing.grad_norm = m_grad_norm
+                    if m_grad_norm_te is not None:
+                        existing.grad_norm_text_encoder = m_grad_norm_te
+                    if m_grad_norm_unet is not None:
+                        existing.grad_norm_unet = m_grad_norm_unet
+                    existing.timestamp = datetime.now()
+                else:
+                    # Insert new metric
+                    metric = TrainingMetrics(
+                        run_id=self.run_id,
+                        step=m_step,
+                        loss=m_loss if m_loss is not None else 0.0,
+                        recon_loss=m_recon_loss if m_recon_loss is not None else 0.0,
+                        learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
+                        grad_norm=m_grad_norm,
+                        grad_norm_text_encoder=m_grad_norm_te,
+                        grad_norm_unet=m_grad_norm_unet
+                    )
+                    db.add(metric)
+
+            # Single commit for entire buffer
             db.commit()
             db.close()
 
-            # Broadcast metrics to WebSocket clients for real-time graph update
-            try:
-                from api.websocket import manager as ws_manager
-                ws_manager.send_training_metrics(
-                    run_id=self.run_id,
-                    step=step,
-                    loss=loss,
-                    recon_loss=recon_loss,
-                    learning_rate=learning_rate,
-                    grad_norm=grad_norm,
-                    grad_norm_text_encoder=grad_norm_text_encoder,
-                    grad_norm_unet=grad_norm_unet
-                )
-            except Exception as ws_error:
-                # Non-critical: Continue even if WebSocket broadcast fails
-                pass
+            # Broadcast latest metrics to WebSocket clients
+            # Only send the most recent entry to avoid flooding
+            if self._metrics_buffer:
+                latest = self._metrics_buffer[-1]
+                try:
+                    from api.websocket import manager as ws_manager
+                    ws_manager.send_training_metrics(
+                        run_id=self.run_id,
+                        step=latest['step'],
+                        loss=latest['loss'],
+                        recon_loss=latest['recon_loss'],
+                        learning_rate=latest['learning_rate'],
+                        grad_norm=latest['grad_norm'],
+                        grad_norm_text_encoder=latest['grad_norm_text_encoder'],
+                        grad_norm_unet=latest['grad_norm_unet']
+                    )
+                except Exception:
+                    pass  # Non-critical
+
+            # Clear buffer after successful flush
+            self._metrics_buffer = []
 
         except Exception as e:
             # Non-critical: Continue training even if DB logging fails
             print(f"{self.log_prefix} WARNING: Failed to log metrics to DB: {e}")
+            self._metrics_buffer = []  # Clear buffer to prevent memory growth
 
     def _cleanup_future_metrics(self, current_step: int):
         """
@@ -7971,11 +8024,17 @@ class BaseTrainer(ABC):
         """
         Cleanup training resources.
 
+        - Flush metrics buffer to database
         - Remove Layer Offload Conductor hooks
         - Restore layers to GPU
         - Close TensorBoard writer
         """
         print(f"{self.log_prefix} Cleaning up training resources...")
+
+        # Flush any remaining metrics to database
+        if hasattr(self, '_metrics_buffer') and self._metrics_buffer and self.run_id is not None:
+            print(f"{self.log_prefix} Flushing {len(self._metrics_buffer)} remaining metrics to database...")
+            self._log_metrics_to_db(step=0, force_flush=True)  # step ignored, force_flush processes buffer
 
         # Cleanup Layer Offload Conductor
         if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:

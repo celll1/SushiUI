@@ -96,11 +96,9 @@ class ControlNetTrainer(BaseTrainer):
                 f"ControlNet training is only supported for SD1.5 and SDXL models. "
                 f"Detected model type: {model_type}"
             )
-        if self.is_deus:
-            raise ValueError(
-                f"ControlNet training is only supported for SD1.5 and SDXL models. "
-                f"Detected model type: DEUS"
-            )
+        # DEUS support removed - architecture no longer maintained
+        # if self.is_deus:
+        #     raise ValueError(...)
 
         # Freeze all base model components
         self._freeze_base_models()

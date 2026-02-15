@@ -39,7 +39,7 @@ class ReLoRATrainer(LoRATrainer):
     and adds the periodic merge-reinit-reset-restart cycle.
 
     Class hierarchy: BaseTrainer -> LoRATrainer -> ReLoRATrainer
-    Supports SD1.5 / SDXL / Z-Image / DEUS / FLUX.2 via adapter system.
+    Supports SD1.5 / SDXL / Z-Image / FLUX.2 via adapter system.
     """
 
     def __init__(

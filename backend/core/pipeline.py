@@ -44,10 +44,9 @@ class DiffusionPipelineManager:
         self.zimage_components: Optional[Dict[str, Any]] = None
         self.is_zimage_model: bool = False
 
-        # DEUS components (SDXL-like architecture with SigLIP-2 text encoder)
-        # Key differences from SDXL: single text encoder (1152d), no time_ids, 2-Pass CFG
-        self.deus_components: Optional[Dict[str, Any]] = None
-        self.is_deus_model: bool = False
+        # DEUS support removed - architecture no longer maintained
+        # self.deus_components: Optional[Dict[str, Any]] = None
+        # self.is_deus_model: bool = False
 
         # FLUX.2 Klein components (MMDiT with Qwen3 text encoder)
         # Key features: 8 dual + 48 single stream blocks, 32ch VAE with BatchNorm, Flow Matching
@@ -146,15 +145,15 @@ class DiffusionPipelineManager:
                 self.zimage_components = None
                 self.is_zimage_model = False
 
-            # Clean up DEUS components
-            if self.deus_components is not None:
-                print("[Pipeline] Cleaning up DEUS components...")
-                for comp_name, comp in self.deus_components.items():
-                    if comp is not None and hasattr(comp, 'to'):
-                        comp.to('cpu')
-                    del comp
-                self.deus_components = None
-                self.is_deus_model = False
+            # DEUS support removed - architecture no longer maintained
+            # if self.deus_components is not None:
+            #     print("[Pipeline] Cleaning up DEUS components...")
+            #     for comp_name, comp in self.deus_components.items():
+            #         if comp is not None and hasattr(comp, 'to'):
+            #             comp.to('cpu')
+            #         del comp
+            #     self.deus_components = None
+            #     self.is_deus_model = False
 
             # Clean up FLUX.2 components
             if self.flux2_components is not None:
@@ -199,7 +198,7 @@ class DiffusionPipelineManager:
                 self.flux2_components = model_result
                 self.is_flux2_model = True
                 self.is_zimage_model = False
-                self.is_deus_model = False
+                # DEUS support removed: self.is_deus_model = False
                 self.current_model = model_id
                 self.current_attention_type = "normal"  # Reset on model load
 
@@ -287,56 +286,56 @@ class DiffusionPipelineManager:
                 print("[Pipeline] Z-Image model loaded successfully")
                 return
 
-            # Check if DEUS (SDXL-like with SigLIP-2, detected by "unet" key without "transformer")
-            if isinstance(model_result, dict) and "unet" in model_result and "transformer" not in model_result:
-                # DEUS component-based model
-                print("[Pipeline] DEUS model detected (component-based dict with unet)")
-                self.deus_components = model_result
-                self.is_deus_model = True
-                self.is_zimage_model = False
-                self.current_model = model_id
-                self.current_attention_type = "normal"  # Reset on model load
-
-                # Initialize VRAM optimization: Move all components to CPU
-                # DEUS uses SDXL-like VRAM optimization (sequential offloading)
-                print("[VRAM] Initializing sequential loading strategy for DEUS...")
-                from core.vram_optimization import (
-                    move_text_encoders_to_cpu,
-                    move_unet_to_cpu,
-                    move_vae_to_cpu
-                )
-                # Note: DEUS has single text encoder, but we can use the same functions
-                if self.deus_components.get("text_encoder") is not None:
-                    self.deus_components["text_encoder"].to("cpu")
-                if self.deus_components.get("unet") is not None:
-                    self.deus_components["unet"].to("cpu")
-                if self.deus_components.get("vae") is not None:
-                    self.deus_components["vae"].to("cpu")
-                torch.cuda.empty_cache()
-                print("[VRAM] All DEUS components moved to CPU. Will load to GPU as needed.")
-
-                # DEUS info
-                model_type = "deus"
-                is_v_prediction = False  # DEUS uses epsilon prediction
-                model_hash = ""
-                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
-                    from utils.hash_cache import get_cached_file_hash
-                    model_hash = get_cached_file_hash(source)
-                    print(f"[Pipeline] Model hash: {model_hash[:16]}...")
-
-                self.current_model_info = {
-                    "source_type": source_type,
-                    "source": source,
-                    "type": model_type,
-                    "is_v_prediction": is_v_prediction,
-                    "model_hash": model_hash
-                }
-
-                # Save this model as the last loaded model
-                self._save_last_model(source_type, source, pipeline_type)
-
-                print("[Pipeline] DEUS model loaded successfully")
-                return
+            # DEUS support removed - architecture no longer maintained
+            # if isinstance(model_result, dict) and "unet" in model_result and "transformer" not in model_result:
+            #     # DEUS component-based model
+            #     print("[Pipeline] DEUS model detected (component-based dict with unet)")
+            #     self.deus_components = model_result
+            #     self.is_deus_model = True
+            #     self.is_zimage_model = False
+            #     self.current_model = model_id
+            #     self.current_attention_type = "normal"  # Reset on model load
+            #
+            #     # Initialize VRAM optimization: Move all components to CPU
+            #     # DEUS uses SDXL-like VRAM optimization (sequential offloading)
+            #     print("[VRAM] Initializing sequential loading strategy for DEUS...")
+            #     from core.vram_optimization import (
+            #         move_text_encoders_to_cpu,
+            #         move_unet_to_cpu,
+            #         move_vae_to_cpu
+            #     )
+            #     # Note: DEUS has single text encoder, but we can use the same functions
+            #     if self.deus_components.get("text_encoder") is not None:
+            #         self.deus_components["text_encoder"].to("cpu")
+            #     if self.deus_components.get("unet") is not None:
+            #         self.deus_components["unet"].to("cpu")
+            #     if self.deus_components.get("vae") is not None:
+            #         self.deus_components["vae"].to("cpu")
+            #     torch.cuda.empty_cache()
+            #     print("[VRAM] All DEUS components moved to CPU. Will load to GPU as needed.")
+            #
+            #     # DEUS info
+            #     model_type = "deus"
+            #     is_v_prediction = False  # DEUS uses epsilon prediction
+            #     model_hash = ""
+            #     if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+            #         from utils.hash_cache import get_cached_file_hash
+            #         model_hash = get_cached_file_hash(source)
+            #         print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+            #
+            #     self.current_model_info = {
+            #         "source_type": source_type,
+            #         "source": source,
+            #         "type": model_type,
+            #         "is_v_prediction": is_v_prediction,
+            #         "model_hash": model_hash
+            #     }
+            #
+            #     # Save this model as the last loaded model
+            #     self._save_last_model(source_type, source, pipeline_type)
+            #
+            #     print("[Pipeline] DEUS model loaded successfully")
+            #     return
 
             # Check if FLUX.2 (detected by "transformer" key with Flux2Transformer2DModel-specific keys)
             if isinstance(model_result, dict) and "transformer" in model_result and "scheduler" in model_result:
@@ -353,7 +352,7 @@ class DiffusionPipelineManager:
                     self.flux2_components = model_result
                     self.is_flux2_model = True
                     self.is_zimage_model = False
-                    self.is_deus_model = False
+                    # DEUS support removed: self.is_deus_model = False
                     self.current_model = model_id
                     self.current_attention_type = "normal"  # Reset on model load
 
@@ -394,13 +393,13 @@ class DiffusionPipelineManager:
             # Standard SD1.5/SDXL pipeline
             base_pipeline = model_result
             self.is_zimage_model = False
-            self.is_deus_model = False
+            # DEUS support removed: self.is_deus_model = False
             self.is_flux2_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
             model_arch = "SDXL" if is_sdxl else "SD1.5"
-            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image/DEUS)")
+            print(f"[Pipeline] Standard {model_arch} pipeline detected (NOT Z-Image)")
 
             # Log component devices after loading
             self._log_component_devices(base_pipeline, "After model loading")
@@ -5187,9 +5186,9 @@ class DiffusionPipelineManager:
         if self.is_zimage_model:
             return self._generate_txt2img_zimage(params, progress_callback, step_callback)
 
-        # DEUS handling (SDXL-like with SigLIP-2 text encoder)
-        if self.is_deus_model:
-            return self._generate_txt2img_deus(params, progress_callback, step_callback)
+        # DEUS support removed - architecture no longer maintained
+        # if self.is_deus_model:
+        #     return self._generate_txt2img_deus(params, progress_callback, step_callback)
 
         # FLUX.2 Klein handling (MMDiT with Qwen3 text encoder)
         if self.is_flux2_model:
@@ -5621,9 +5620,9 @@ class DiffusionPipelineManager:
         if self.is_zimage_model:
             return self._generate_img2img_zimage(params, init_image, progress_callback, step_callback)
 
-        # DEUS handling
-        if self.deus_components:
-            return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
+        # DEUS support removed - architecture no longer maintained
+        # if self.deus_components:
+        #     return self._generate_img2img_deus(params, init_image, progress_callback, step_callback)
 
         # FLUX.2 Klein handling
         if self.is_flux2_model:
@@ -6100,9 +6099,9 @@ class DiffusionPipelineManager:
         if self.is_zimage_model:
             return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)
 
-        # DEUS inpaint support
-        if self.deus_components:
-            return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
+        # DEUS support removed - architecture no longer maintained
+        # if self.deus_components:
+        #     return self._generate_inpaint_deus(params, init_image, mask_image, progress_callback, step_callback)
 
         # FLUX.2 Klein inpaint support
         if self.is_flux2_model:

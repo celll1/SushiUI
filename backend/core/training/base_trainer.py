@@ -572,25 +572,13 @@ class BaseTrainer(ABC):
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
 
-            # Pre-detect model type for GradScaler init_scale adjustment
-            # (is_deus is set later in _load_model_components, but we need it here)
-            from core.model_loader import ModelLoader
-            _pre_model_type = ModelLoader.detect_model_type(self.model_path)
-            _is_deus_model = (_pre_model_type == "deus")
-
             # Use higher init_scale for FP16 to prevent gradient underflow
             # Problem: Initial gradients in LoRA training are very small (1e-7 ~ 1e-8)
             # FP16 smallest normal: ~6e-5, so gradients < 6e-5 underflow to 0
             # Solution: Use higher init_scale for FP16 (2^20 = 1048576)
             # - 1e-7 × 2^20 = 0.105 (representable in FP16)
             # - 1e-8 × 2^20 = 0.01 (representable in FP16)
-            #
-            # Exception: DEUS models tend to produce larger gradients, so use lower init_scale
-            # to prevent overflow (inf) during backward pass
-            if _is_deus_model:
-                init_scale = 2**16  # 65536 (lower scale for DEUS to prevent overflow)
-            else:
-                init_scale = 2**20  # 1048576 (higher scale for SD/SDXL)
+            init_scale = 2**20  # 1048576 (higher scale for SD/SDXL)
 
             self.grad_scaler = GradScaler(
                 init_scale=init_scale,
@@ -600,8 +588,6 @@ class BaseTrainer(ABC):
             )
             print(f"[Trainer] GradScaler enabled for {training_dtype} training")
             print(f"[Trainer]   Init scale: {init_scale} (2^{init_scale.bit_length()-1})")
-            if _is_deus_model:
-                print(f"[Trainer]   DEUS model detected: using lower init_scale to prevent overflow")
             print(f"[Trainer]   Weight dtype: {weight_dtype}")
             print(f"[Trainer]   Training dtype: {training_dtype}")
             if hasattr(self, 'lora_dtype'):
@@ -750,14 +736,16 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = (model_type == "deus")
+        # DEUS support removed - architecture no longer maintained
+        self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
         self.is_sdxl = False
 
         if self.is_zimage:
             self._load_zimage_components()
-        elif self.is_deus:
-            self._load_deus_components()
+        # DEUS support removed
+        # elif self.is_deus:
+        #     self._load_deus_components()
         elif self.is_flux2:
             self._load_flux2_components()
         else:
@@ -868,97 +856,98 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
 
-    def _load_deus_components(self):
-        """Load DEUS model components.
-
-        DEUS architecture:
-        - SigLIP-2 text encoder (1152d output, variable sequence length)
-        - U-Net with Transformer2DModel blocks
-        - SDXL VAE (same scaling factor 0.13025)
-        - DDPM epsilon prediction
-
-        Key differences from SDXL:
-        - Single text encoder (SigLIP-2) vs dual CLIP
-        - No pooled_embeddings
-        - No time_ids / added_cond_kwargs
-        """
-        print(f"{self.log_prefix} Detected DEUS model")
-        print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
-
-        from core.model_loader import ModelLoader
-        from diffusers import DDPMScheduler
-
-        components = ModelLoader.load_deus_from_safetensors(
-            file_path=self.model_path,
-            device="cpu",
-            torch_dtype=self.weight_dtype
-        )
-
-        # Store components
-        self.unet = components["unet"]
-        self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]
-        self.tokenizer = components.get("tokenizer")
-        self.processor = components.get("processor")
-        self.scheduler = components["scheduler"]
-        self.pipeline = components.get("pipeline")  # Keep reference for encode_prompt
-
-        # DEUS specific: no text_encoder_2, no transformer
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.transformer = None
-        self.transformer_original = None
-
-        # Create DDPM scheduler for training
-        self.noise_scheduler = DDPMScheduler.from_config(self.scheduler.config)
-
-        # Save original scheduler for inference (sample generation)
-        self.original_scheduler = self.scheduler
-
-        # Convert VAE to vae_dtype
-        self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for DEUS U-Net")
-        else:
-            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for DEUS U-Net")
-
-        # Enable gradient checkpointing for Text Encoder
-        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
-
-        # Move VAE to device (always frozen during training)
-        print(f"{self.log_prefix} Moving VAE to {self.device}...")
-        self.vae.to(self.device)
-
-        # Move U-Net to device
-        print(f"{self.log_prefix} Moving U-Net to {self.device}...")
-        self.unet.to(self.device)
-
-        # Move Text Encoder to device
-        print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-        self.text_encoder.to(self.device)
-
-        print(f"{self.log_prefix} DEUS model loaded successfully")
-        print(f"{self.log_prefix} U-Net: {self.unet.__class__.__name__}")
-        print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
-        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-
-        # Debug: Check for inf/nan in U-Net parameters
-        unet_has_inf = False
-        unet_has_nan = False
-        for name, param in self.unet.named_parameters():
-            if torch.isinf(param).any():
-                print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains inf!")
-                unet_has_inf = True
-            if torch.isnan(param).any():
-                print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains nan!")
-                unet_has_nan = True
-        if not unet_has_inf and not unet_has_nan:
-            print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
+    # DEUS support removed - architecture no longer maintained
+    # def _load_deus_components(self):
+    #     """Load DEUS model components.
+    #
+    #     DEUS architecture:
+    #     - SigLIP-2 text encoder (1152d output, variable sequence length)
+    #     - U-Net with Transformer2DModel blocks
+    #     - SDXL VAE (same scaling factor 0.13025)
+    #     - DDPM epsilon prediction
+    #
+    #     Key differences from SDXL:
+    #     - Single text encoder (SigLIP-2) vs dual CLIP
+    #     - No pooled_embeddings
+    #     - No time_ids / added_cond_kwargs
+    #     """
+    #     print(f"{self.log_prefix} Detected DEUS model")
+    #     print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
+    #
+    #     from core.model_loader import ModelLoader
+    #     from diffusers import DDPMScheduler
+    #
+    #     components = ModelLoader.load_deus_from_safetensors(
+    #         file_path=self.model_path,
+    #         device="cpu",
+    #         torch_dtype=self.weight_dtype
+    #     )
+    #
+    #     # Store components
+    #     self.unet = components["unet"]
+    #     self.vae = components["vae"]
+    #     self.text_encoder = components["text_encoder"]
+    #     self.tokenizer = components.get("tokenizer")
+    #     self.processor = components.get("processor")
+    #     self.scheduler = components["scheduler"]
+    #     self.pipeline = components.get("pipeline")  # Keep reference for encode_prompt
+    #
+    #     # DEUS specific: no text_encoder_2, no transformer
+    #     self.text_encoder_2 = None
+    #     self.tokenizer_2 = None
+    #     self.transformer = None
+    #     self.transformer_original = None
+    #
+    #     # Create DDPM scheduler for training
+    #     self.noise_scheduler = DDPMScheduler.from_config(self.scheduler.config)
+    #
+    #     # Save original scheduler for inference (sample generation)
+    #     self.original_scheduler = self.scheduler
+    #
+    #     # Convert VAE to vae_dtype
+    #     self.vae = self.vae.to(dtype=self.vae_dtype)
+    #
+    #     # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
+    #     if hasattr(self.unet, 'enable_gradient_checkpointing'):
+    #         self.unet.enable_gradient_checkpointing()
+    #         print(f"{self.log_prefix} Gradient checkpointing enabled for DEUS U-Net")
+    #     else:
+    #         print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for DEUS U-Net")
+    #
+    #     # Enable gradient checkpointing for Text Encoder
+    #     if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+    #         self.text_encoder.gradient_checkpointing_enable()
+    #         print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
+    #
+    #     # Move VAE to device (always frozen during training)
+    #     print(f"{self.log_prefix} Moving VAE to {self.device}...")
+    #     self.vae.to(self.device)
+    #
+    #     # Move U-Net to device
+    #     print(f"{self.log_prefix} Moving U-Net to {self.device}...")
+    #     self.unet.to(self.device)
+    #
+    #     # Move Text Encoder to device
+    #     print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
+    #     self.text_encoder.to(self.device)
+    #
+    #     print(f"{self.log_prefix} DEUS model loaded successfully")
+    #     print(f"{self.log_prefix} U-Net: {self.unet.__class__.__name__}")
+    #     print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
+    #     print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
+    #
+    #     # Debug: Check for inf/nan in U-Net parameters
+    #     unet_has_inf = False
+    #     unet_has_nan = False
+    #     for name, param in self.unet.named_parameters():
+    #         if torch.isinf(param).any():
+    #             print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains inf!")
+    #             unet_has_inf = True
+    #         if torch.isnan(param).any():
+    #             print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains nan!")
+    #             unet_has_nan = True
+    #     if not unet_has_inf and not unet_has_nan:
+    #         print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
 
     def _load_flux2_components(self):
         """Load FLUX.2 Klein model components.
@@ -1122,69 +1111,18 @@ class BaseTrainer(ABC):
         # Detect model type from checkpoint
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = (model_type == "deus")
+        # DEUS support removed - architecture no longer maintained
+        self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
         self.is_sdxl = False
 
-        if self.is_deus:
-            print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
+        # DEUS support removed
+        # if self.is_deus:
+        #     print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
+        #     ...
+        #     return
 
-            # DEUS checkpoints are loaded via DeusPipeline.from_single_file
-            # For checkpoint resume, we load the original checkpoint as the base model
-            from core.model_loader import ModelLoader
-
-            components = ModelLoader.load_deus_from_safetensors(
-                file_path=checkpoint_path,
-                device="cpu",
-                torch_dtype=self.weight_dtype
-            )
-
-            # Store components
-            self.unet = components["unet"]
-            self.vae = components["vae"]
-            self.text_encoder = components["text_encoder"]
-            self.tokenizer = components.get("tokenizer")
-            self.processor = components.get("processor")
-            self.scheduler = components["scheduler"]
-            self.pipeline = components.get("pipeline")
-
-            # DEUS specific: no text_encoder_2, no transformer
-            self.text_encoder_2 = None
-            self.tokenizer_2 = None
-            self.transformer = None
-            self.transformer_original = None
-
-            # Create DDPM scheduler for training
-            from diffusers import DDPMScheduler
-            self.noise_scheduler = DDPMScheduler.from_config(self.scheduler.config)
-            self.original_scheduler = self.scheduler
-
-            # Convert VAE to vae_dtype
-            self.vae = self.vae.to(dtype=self.vae_dtype)
-
-            # Enable gradient checkpointing
-            if hasattr(self.unet, 'enable_gradient_checkpointing'):
-                self.unet.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for DEUS U-Net")
-
-            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-                self.text_encoder.gradient_checkpointing_enable()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
-
-            # Move components to device
-            print(f"{self.log_prefix} Moving VAE to {self.device}...")
-            self.vae.to(self.device)
-
-            print(f"{self.log_prefix} Moving U-Net to {self.device}...")
-            self.unet.to(self.device)
-
-            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-            self.text_encoder.to(self.device)
-
-            print(f"{self.log_prefix} DEUS checkpoint loaded successfully as base model")
-            return
-
-        elif self.is_flux2:
+        if self.is_flux2:
             print(f"{self.log_prefix} Loading FLUX.2 checkpoint as base model")
 
             # FLUX.2 checkpoints from training are loaded via ModelLoader
@@ -2571,12 +2509,10 @@ class BaseTrainer(ABC):
         Returns:
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
-            For DEUS: text_embeddings tensor (variable sequence length)
         """
-        # DEUS uses SigLIP-2 with variable sequence length support
-        # No chunking needed - SigLIP-2 handles long prompts natively
-        if self.is_deus:
-            return self._encode_prompt_deus(prompt, requires_grad)
+        # DEUS support removed
+        # if self.is_deus:
+        #     return self._encode_prompt_deus(prompt, requires_grad)
 
         # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
         tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
@@ -2589,84 +2525,13 @@ class BaseTrainer(ABC):
         # Long prompt - use chunking
         return self._encode_prompt_chunked(prompt, requires_grad)
 
-    def _encode_prompt_deus(self, prompt: str, requires_grad: bool = False):
-        """
-        Encode prompt using DEUS's SigLIP-2 text encoder.
-
-        SigLIP-2 supports variable sequence length up to max_position_embeddings (512).
-        Longer sequences are truncated with a warning.
-        Returns text embeddings of shape (batch, seq_len, 1152).
-        No pooled embeddings (unlike SDXL).
-        """
-        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
-
-        # Check if text encoder has FP8 weights (requires autocast)
-        has_fp8_weights = self._has_fp8_text_encoder()
-
-        with context_manager:
-            # Use processor's tokenizer if available, otherwise try direct tokenizer
-            if self.processor is not None and hasattr(self.processor, 'tokenizer'):
-                tokenizer = self.processor.tokenizer
-            elif self.tokenizer is not None:
-                tokenizer = self.tokenizer
-            else:
-                raise RuntimeError("DEUS: No tokenizer available for prompt encoding")
-
-            # Get max_position_embeddings from text encoder config (default 512 for SigLIP-2)
-            max_length = 512
-            if hasattr(self.text_encoder, 'config'):
-                max_length = getattr(self.text_encoder.config, 'max_position_embeddings', 512)
-            elif hasattr(self.text_encoder, 'text_model') and hasattr(self.text_encoder.text_model, 'config'):
-                max_length = getattr(self.text_encoder.text_model.config, 'max_position_embeddings', 512)
-
-            # Tokenize prompt with truncation to max_position_embeddings
-            text_inputs = tokenizer(
-                prompt,
-                return_tensors="pt",
-                padding=False,  # No padding for single prompt
-                truncation=True,
-                max_length=max_length,
-            )
-            input_ids = text_inputs.input_ids.to(self.device)
-            attention_mask = text_inputs.attention_mask.to(self.device) if "attention_mask" in text_inputs else None
-
-            # Log warning if prompt was truncated
-            if input_ids.shape[1] >= max_length:
-                log_verbose(f"{self.log_prefix} [DEUS] Prompt truncated to {max_length} tokens (original may have been longer)")
-
-            # Encode using SigLIP-2 text model
-            # SigLIP structure: text_encoder.text_model.encoder.layers
-            if has_fp8_weights:
-                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                    if hasattr(self.text_encoder, 'text_model'):
-                        outputs = self.text_encoder.text_model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                        )
-                        text_embeddings = outputs.last_hidden_state
-                    else:
-                        # Direct text encoder
-                        outputs = self.text_encoder(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                        )
-                        text_embeddings = outputs.last_hidden_state
-            else:
-                if hasattr(self.text_encoder, 'text_model'):
-                    outputs = self.text_encoder.text_model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                    )
-                    text_embeddings = outputs.last_hidden_state
-                else:
-                    # Direct text encoder
-                    outputs = self.text_encoder(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                    )
-                    text_embeddings = outputs.last_hidden_state
-
-            return text_embeddings
+    # DEUS support removed - architecture no longer maintained
+    # def _encode_prompt_deus(self, prompt: str, requires_grad: bool = False):
+    #     """
+    #     Encode prompt using DEUS's SigLIP-2 text encoder.
+    #     ...
+    #     """
+    #     pass
 
     def _encode_prompt_simple(self, prompt: str, requires_grad: bool = False):
         """
@@ -3234,15 +3099,12 @@ class BaseTrainer(ABC):
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
         """
-        Perform single training step (SD1.5/SDXL/DEUS).
-
-        Note: DEUS uses DDPM epsilon prediction like SDXL, but without added_cond_kwargs.
-        DEUS is handled by the else branch (is_sdxl=False, is_deus=True).
+        Perform single training step (SD1.5/SDXL).
 
         Args:
             latents: Image latents [B, C, H, W]
             text_embeddings: Text prompt embeddings
-            pooled_embeddings: Pooled text embeddings (SDXL only, None for DEUS)
+            pooled_embeddings: Pooled text embeddings (SDXL only)
             timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
             debug_save_path: If provided, save latents for debugging
             debug_captions: Captions for debug output
@@ -3385,13 +3247,7 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step] After UNet forward")
 
-        # Debug: Check for inf/nan in model prediction (only on first step or if issue detected)
-        if self.is_deus and (torch.isinf(model_pred).any() or torch.isnan(model_pred).any()):
-            print(f"[train_step] WARNING: DEUS model_pred contains inf/nan!")
-            print(f"  - model_pred stats: min={model_pred.min():.4f}, max={model_pred.max():.4f}")
-            print(f"  - noisy_latents stats: min={noisy_latents.min():.4f}, max={noisy_latents.max():.4f}")
-            print(f"  - text_embeddings stats: min={text_embeddings.min():.4f}, max={text_embeddings.max():.4f}")
-            print(f"  - timesteps: {timesteps}")
+        # DEUS debug check removed (architecture no longer maintained)
 
         # Get target based on unified framework
         prediction_target = getattr(self, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility

@@ -81,7 +81,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [showSD15, setShowSD15] = useState(true);
   const [showSDXL, setShowSDXL] = useState(true);
   const [showZImage, setShowZImage] = useState(true);
-  const [showDEUS, setShowDEUS] = useState(true);
+  // DEUS support removed: const [showDEUS, setShowDEUS] = useState(true);
   const [showFlux2, setShowFlux2] = useState(true);
 
   // Flag to track if dtype settings have been explicitly set (from YAML or user)
@@ -261,10 +261,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "zimage";
   };
 
-  const isDEUSModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
-    return model?.architecture === "deus";
-  };
+  // DEUS support removed
+  // const isDEUSModel = (modelPath: string): boolean => {
+  //   const model = availableModels.find(m => m.path === modelPath);
+  //   return model?.architecture === "deus";
+  // };
 
   const isFlux2Model = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
@@ -281,7 +282,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (model.architecture === "sd15" && !showSD15) return false;
     if (model.architecture === "sdxl" && !showSDXL) return false;
     if (model.architecture === "zimage" && !showZImage) return false;
-    if (model.architecture === "deus" && !showDEUS) return false;
+    // DEUS support removed: if (model.architecture === "deus" && !showDEUS) return false;
     if (model.architecture === "flux2" && !showFlux2) return false;
     return true;
   });
@@ -1332,6 +1333,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-gray-300">Z-Image</span>
             </label>
+            {/* DEUS support removed
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -1341,6 +1343,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-gray-300">DEUS</span>
             </label>
+            */}
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"

@@ -1636,62 +1636,46 @@ class BaseTrainer(ABC):
     def _setup_flash_attention_sd_sdxl(self):
         """Setup Flash Attention for SD/SDXL models.
 
-        Uses diffusers' set_attention_backend('flash') as the primary method,
-        which requires the flash-attn package (>= 2.0).
+        Uses diffusers' set_attention_backend('flash') which requires flash-attn package.
+        This is the same modern API used by FLUX.2 and other DiT models.
 
-        Falls back to AttnProcessor2_0 (PyTorch 2.0 SDPA) if set_attention_backend
-        is not available (older diffusers versions).
+        Available backends: 'flash', 'sage', 'native', 'xformers', etc.
+        See: diffusers.models.attention_dispatch.AttentionBackendName
         """
         if self.unet is None:
             print(f"{self.log_prefix} WARNING: UNet not loaded, skipping Flash Attention setup")
             return
 
         try:
-            # Primary: Use set_attention_backend('flash') (diffusers ModelMixin method)
-            if hasattr(self.unet, 'set_attention_backend'):
-                print(f"{self.log_prefix} Setting Flash Attention backend for SD/SDXL UNet...")
-                self.unet.set_attention_backend("flash")
-                print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
-            else:
-                # Fallback: Use AttnProcessor2_0 (PyTorch 2.0 SDPA, older diffusers)
-                from diffusers.models.attention_processor import AttnProcessor2_0
-                print(f"{self.log_prefix} Setting Flash Attention for SD/SDXL UNet (fallback: AttnProcessor2_0)...")
-                self.unet.set_attn_processor(AttnProcessor2_0())
-                print(f"{self.log_prefix} [OK] Flash Attention enabled via AttnProcessor2_0")
+            # Use set_attention_backend('flash') - modern diffusers API (same as FLUX.2)
+            print(f"{self.log_prefix} Setting Flash Attention backend for SD/SDXL UNet...")
+            self.unet.set_attention_backend("flash")
+            print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
         except Exception as e:
             print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
 
     def _setup_flash_attention_flux2(self):
         """Setup Flash Attention for FLUX.2 models.
 
-        Uses diffusers' dispatch_attention_fn with the 'flash' backend,
-        which requires the flash-attn package (>= 2.0).
+        Uses diffusers' set_attention_backend('flash') which requires flash-attn package.
+        Same modern API as SD/SDXL.
 
-        The 'flash' backend is set via FluxAttnProcessor._attention_backend class variable,
-        or via transformer.set_attention_backend() method.
+        Available backends: 'flash', 'sage', 'native', 'xformers', etc.
+        See: diffusers.models.attention_dispatch.AttentionBackendName
         """
         if self.transformer is None:
             print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
             return
 
         try:
-            # Method 1: Use transformer.set_attention_backend() (diffusers ModelMixin method)
-            if hasattr(self.transformer, 'set_attention_backend'):
-                print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 Transformer...")
-                self.transformer.set_attention_backend("flash")
-                print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
-            else:
-                # Method 2: Set FluxAttnProcessor class variable directly
-                from diffusers.models.transformers.transformer_flux import FluxAttnProcessor
-                print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 (direct)...")
-                FluxAttnProcessor._attention_backend = "flash"
-                print(f"{self.log_prefix} [OK] Flash Attention enabled: FluxAttnProcessor._attention_backend = 'flash'")
-
-        except ImportError as e:
-            print(f"{self.log_prefix} WARNING: Failed to import FluxAttnProcessor: {e}")
-            print(f"{self.log_prefix} Flash Attention not enabled for FLUX.2")
+            # Use set_attention_backend('flash') - modern diffusers API
+            print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 Transformer...")
+            self.transformer.set_attention_backend("flash")
+            print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for FLUX.2: {e}")
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
 
     # ============================================================
     # Abstract Methods (must be implemented by subclasses)

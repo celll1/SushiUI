@@ -2388,22 +2388,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </label>
               </div>
 
-              {/* Train Image Encoder (DEUS only, grayed out) */}
-              {isDEUSModel(baseModelPath) && (
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id="train-image-encoder"
-                    checked={trainImageEncoder}
-                    onChange={(e) => setTrainImageEncoder(e.target.checked)}
-                    disabled={true}
-                    className="w-4 h-4 opacity-50 cursor-not-allowed"
-                  />
-                  <label htmlFor="train-image-encoder" className="text-xs text-gray-500 cursor-not-allowed">
-                    Train Image Encoder (T2I, Not Implemented)
-                  </label>
-                </div>
-              )}
+              {/* Train Image Encoder - DEUS support removed */}
             </div>
 
             {/* U-Net Learning Rate */}
@@ -2475,22 +2460,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* Image Encoder Learning Rate (DEUS only, grayed out) */}
-            {trainImageEncoder && isDEUSModel(baseModelPath) && (
-              <div className="mb-3">
-                <label className="block text-xs text-gray-400 mb-1 opacity-50">
-                  Image Encoder LR <span className="text-xs text-gray-500">(T2I, Not Implemented)</span>
-                </label>
-                <input
-                  type="text"
-                  value={imageEncoderLr}
-                  onChange={(e) => setImageEncoderLr(e.target.value)}
-                  placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
-                  disabled={true}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm opacity-50 cursor-not-allowed"
-                />
-              </div>
-            )}
+            {/* Image Encoder Learning Rate - DEUS support removed */}
           </div>
         </div>
 

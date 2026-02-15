@@ -7871,16 +7871,39 @@ class BaseTrainer(ABC):
             This allows monitoring pred_loss and recon_loss separately in DB.
             Combined loss can be calculated as: (1-β)*loss + β*recon_loss
         """
-        # Buffer the metrics
-        self._metrics_buffer.append({
-            'step': step,
-            'loss': loss,
-            'recon_loss': recon_loss,
-            'learning_rate': learning_rate,
-            'grad_norm': grad_norm,
-            'grad_norm_text_encoder': grad_norm_text_encoder,
-            'grad_norm_unet': grad_norm_unet,
-        })
+        # Buffer the metrics (merge if same step already exists in buffer)
+        # This handles the case where loss and grad_norm are logged separately for the same step
+        existing_entry = None
+        for entry in self._metrics_buffer:
+            if entry['step'] == step:
+                existing_entry = entry
+                break
+
+        if existing_entry is not None:
+            # Merge: update existing entry with new non-None values
+            if loss is not None:
+                existing_entry['loss'] = loss
+            if recon_loss is not None:
+                existing_entry['recon_loss'] = recon_loss
+            if learning_rate is not None:
+                existing_entry['learning_rate'] = learning_rate
+            if grad_norm is not None:
+                existing_entry['grad_norm'] = grad_norm
+            if grad_norm_text_encoder is not None:
+                existing_entry['grad_norm_text_encoder'] = grad_norm_text_encoder
+            if grad_norm_unet is not None:
+                existing_entry['grad_norm_unet'] = grad_norm_unet
+        else:
+            # New step: add to buffer
+            self._metrics_buffer.append({
+                'step': step,
+                'loss': loss,
+                'recon_loss': recon_loss,
+                'learning_rate': learning_rate,
+                'grad_norm': grad_norm,
+                'grad_norm_text_encoder': grad_norm_text_encoder,
+                'grad_norm_unet': grad_norm_unet,
+            })
 
         # Only flush when buffer is full or force_flush is requested
         should_flush = force_flush or len(self._metrics_buffer) >= self._metrics_flush_interval

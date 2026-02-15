@@ -7,7 +7,7 @@ websockets==12.0
 # Stable Diffusion & AI
 torch>=2.1.0
 torchvision>=0.16.0
-diffusers>=0.25.0
+diffusers>=0.25.0  # Note: 0.36.0 has torchao bug, use main branch or 0.37.0+ when released
 transformers>=4.36.0
 accelerate>=0.25.0
 safetensors>=0.4.1
@@ -16,7 +16,6 @@ peft>=0.7.0  # Required for LoRA support
 sentencepiece>=0.2.0  # Required for TIPO tokenizer
 protobuf>=4.21.0  # Required for TIPO model support
 tipo-kgen>=0.1.0  # TIPO prompt optimization library
-torchao>=0.1.0  # PyTorch quantization library (uint2-8, fp8, etc.)
 
 # Image Processing
 Pillow>=10.2.0

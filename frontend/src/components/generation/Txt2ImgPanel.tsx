@@ -2166,8 +2166,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     { value: "none", label: "None" },
                     { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
                     { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    { value: "uint8", label: "UINT8" },
-                    { value: "uint4", label: "UINT4" },
                   ]}
                 />
                 <Select
@@ -2181,8 +2179,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     { value: "none", label: "None" },
                     { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
                     { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    { value: "uint8", label: "UINT8" },
-                    { value: "uint4", label: "UINT4" },
                   ]}
                 />
               </div>
@@ -2209,13 +2205,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     { value: "none", label: "None" },
                     { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
                     { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    { value: "uint8", label: "UINT8" },
-                    { value: "uint7", label: "UINT7" },
-                    { value: "uint6", label: "UINT6" },
-                    { value: "uint5", label: "UINT5" },
-                    { value: "uint4", label: "UINT4" },
-                    { value: "uint3", label: "UINT3" },
-                    { value: "uint2", label: "UINT2" },
                   ]}
                 />
                 <Select
@@ -2229,8 +2218,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     { value: "none", label: "None" },
                     { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
                     { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    { value: "uint8", label: "UINT8" },
-                    { value: "uint4", label: "UINT4" },
                   ]}
                 />
               </div>

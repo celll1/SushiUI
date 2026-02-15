@@ -5,11 +5,12 @@ This module implements sequential VRAM loading:
 - U-Net → GPU only during inference
 - VAE → GPU only during decode
 
-Also supports on-demand U-Net quantization for VRAM reduction.
+Also supports on-demand U-Net FP8 quantization for VRAM reduction.
+Note: torchao/UINT quantization has been removed due to compatibility issues.
 """
 
 import torch
-from typing import Optional, Literal
+from typing import Optional
 import copy
 
 
@@ -35,7 +36,7 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
             return "unknown"
 
     def check_quantization(module):
-        """Check if module is quantized (torchao, bitsandbytes, etc.)"""
+        """Check if module is quantized (FP8, etc.)"""
         # Check first few Linear layers for quantization
         checked_count = 0
         max_check = 5  # Check first 5 linear layers
@@ -48,32 +49,9 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
             if checked_count > max_check:
                 break
 
-            submodule_type = type(submodule).__name__
-
-            # torchao AffineQuantizedTensor or related classes in module type
-            if 'AffineQuantized' in submodule_type or 'Quantized' in submodule_type:
-                return f"quantized (torchao: {submodule_type})"
-
             # Check weight attributes for quantization
             if hasattr(submodule, 'weight'):
                 weight = submodule.weight
-                weight_type = type(weight).__name__
-
-                # torchao quantized weights (AffineQuantizedTensor, etc.)
-                if 'AffineQuantized' in weight_type:
-                    # Try to extract layout/dtype info
-                    if hasattr(weight, 'layout_type'):
-                        try:
-                            layout = weight.layout_type
-                            layout_name = layout.__name__ if hasattr(layout, '__name__') else str(layout)
-                            # Extract dtype if possible
-                            if hasattr(layout, 'dtype'):
-                                dtype = str(layout.dtype).replace('torch.', '')
-                                return f"quantized (torchao {dtype.upper()})"
-                            return f"quantized (torchao: {layout_name})"
-                        except:
-                            pass
-                    return f"quantized (torchao: {weight_type})"
 
                 # Check weight dtype for FP8
                 if hasattr(weight, 'dtype'):
@@ -81,10 +59,6 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
                     if 'float8' in dtype_str:
                         dtype_name = dtype_str.replace('torch.', '').upper()
                         return f"quantized ({dtype_name})"
-
-            # Legacy quantization checks
-            if hasattr(submodule, '_packed_params'):
-                return "quantized (qint8)"
 
         return None
 
@@ -193,7 +167,7 @@ def _quantize_unet(unet, quantization: str):
 
     Args:
         unet: Original U-Net model (should be on CPU)
-        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2'
 
     Returns:
         Quantized U-Net model
@@ -201,10 +175,6 @@ def _quantize_unet(unet, quantization: str):
     Supported quantization types:
         - fp8_e4m3fn, fp8_e5m2: FP8 quantization (via .to(), ~50% VRAM reduction)
           * Weight: FP8, Activation: FP16 (via autocast)
-        - uint2-uint8: UintX weight-only quantization (via torchao, for future training support)
-          * Weight: UINTX (internally), Activation: FP16 (via autocast)
-        - int4, nf4: 4-bit quantization (via bitsandbytes, not recommended)
-        - int8: INT8 quantization (not recommended, causes slowdown)
     """
     try:
         if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
@@ -246,150 +216,11 @@ def _quantize_unet(unet, quantization: str):
                 print(f"[Quantization] Falling back to original model without quantization")
                 return copy.deepcopy(unet)
 
-        elif quantization == 'int8':
-            # INT8 quantization is not recommended for inference
-            print(f"[Quantization] WARNING: INT8 quantization is not recommended")
-            print(f"[Quantization] INT8 causes significant slowdown with minimal VRAM savings")
-            print(f"[Quantization] Recommendation: Use FP8 (Ada/Hopper GPUs) or disable quantization")
-            print(f"[Quantization] Sequential offloading already provides efficient VRAM usage")
+        else:
+            print(f"[Quantization] Unsupported quantization type: {quantization}")
+            print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
             print(f"[Quantization] Falling back to original model without quantization")
             return copy.deepcopy(unet)
-
-        elif quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
-            # UintX quantization using torchao (for future training support)
-            print(f"[Quantization] Applying {quantization.upper()} weight-only quantization...")
-
-            try:
-                from torchao.quantization.quant_api import quantize_, UIntXWeightOnlyConfig
-
-                # Map string to torch dtype
-                uint_dtypes = {
-                    'uint2': torch.uint2,
-                    'uint3': torch.uint3,
-                    'uint4': torch.uint4,
-                    'uint5': torch.uint5,
-                    'uint6': torch.uint6,
-                    'uint7': torch.uint7,
-                    'uint8': torch.uint8,
-                }
-
-                if not hasattr(torch, quantization):
-                    print(f"[Quantization] ERROR: PyTorch does not support {quantization}")
-                    print(f"[Quantization] This may require a newer PyTorch version")
-                    print(f"[Quantization] Falling back to original model without quantization")
-                    return copy.deepcopy(unet)
-
-                # Clone the model
-                quantized_unet = copy.deepcopy(unet)
-
-                # Create quantization config
-                # group_size: controls quantization granularity (smaller = more fine-grained)
-                config = UIntXWeightOnlyConfig(
-                    dtype=uint_dtypes[quantization],
-                    group_size=64,  # Default from torchao
-                )
-
-                # Apply quantization (modifies model in-place)
-                print(f"[Quantization] Quantizing model weights to {quantization}...")
-
-                # Calculate model size before quantization (on CPU)
-                def get_model_size(model):
-                    """Calculate model size in bytes"""
-                    total_size = 0
-                    for param in model.parameters():
-                        total_size += param.nelement() * param.element_size()
-                    return total_size
-
-                size_before = get_model_size(quantized_unet) / (1024**3)  # GB
-                print(f"[Quantization] Model size before: {size_before:.3f} GB")
-
-                quantize_(quantized_unet, config)
-
-                size_after = get_model_size(quantized_unet) / (1024**3)  # GB
-                actual_reduction_pct = (1 - size_after / size_before) * 100
-
-                print(f"[Quantization] Model size after:  {size_after:.3f} GB")
-                print(f"[Quantization] Actual reduction:   {actual_reduction_pct:.1f}%")
-
-                # Estimate memory reduction based on bit width
-                bit_width = int(quantization.replace('uint', ''))
-                expected_reduction_pct = (1 - bit_width / 16) * 100  # Assuming FP16 baseline
-
-                print(f"[Quantization] Expected reduction: {expected_reduction_pct:.0f}%")
-                print(f"[Quantization] Successfully quantized U-Net to {quantization.upper()}")
-                print(f"[Quantization] Note: This is weight-only quantization")
-                print(f"[Quantization] Activations will use FP16 (via autocast)")
-
-                if actual_reduction_pct < expected_reduction_pct * 0.5:
-                    print(f"[Quantization] WARNING: Actual reduction is much lower than expected")
-                    print(f"[Quantization] This may indicate fake quantization (model still in high precision)")
-
-                # Mark as UINT quantized for autocast detection
-                # Store as a custom attribute since AffineQuantizedTensor reports dtype as float32
-                quantized_unet._is_uint_quantized = True
-
-                return quantized_unet
-
-            except ImportError:
-                print(f"[Quantization] ERROR: torchao library not installed")
-                print(f"[Quantization] Install with: pip install torchao")
-                print(f"[Quantization] Falling back to original model without quantization")
-                return copy.deepcopy(unet)
-            except Exception as e:
-                print(f"[Quantization] ERROR during {quantization.upper()} conversion: {e}")
-                import traceback
-                traceback.print_exc()
-                print(f"[Quantization] Falling back to original model without quantization")
-                return copy.deepcopy(unet)
-
-        elif quantization in ['int4', 'nf4']:
-            # INT4/NF4 quantization using bitsandbytes if available
-            print(f"[Quantization] Applying {quantization.upper()} quantization...")
-            try:
-                import bitsandbytes as bnb
-                from transformers import BitsAndBytesConfig
-
-                # Note: This is a simplified approach
-                # Full bitsandbytes integration would require model reload
-                quantized_unet = copy.deepcopy(unet)
-
-                # Convert Linear layers to 4-bit
-                for name, module in quantized_unet.named_modules():
-                    if isinstance(module, torch.nn.Linear):
-                        # Replace with bnb Linear4bit layer
-                        parent_name = '.'.join(name.split('.')[:-1])
-                        child_name = name.split('.')[-1]
-
-                        if parent_name:
-                            parent = dict(quantized_unet.named_modules())[parent_name]
-                        else:
-                            parent = quantized_unet
-
-                        # Create 4-bit linear layer
-                        quant_type = "nf4" if quantization == 'nf4' else "int4"
-                        new_module = bnb.nn.Linear4bit(
-                            module.in_features,
-                            module.out_features,
-                            bias=module.bias is not None,
-                            compute_dtype=torch.float16,
-                            quant_type=quant_type
-                        )
-
-                        # Copy weights
-                        new_module.weight.data = module.weight.data
-                        if module.bias is not None:
-                            new_module.bias.data = module.bias.data
-
-                        setattr(parent, child_name, new_module)
-
-                return quantized_unet
-
-            except ImportError:
-                print(f"[Quantization] Warning: bitsandbytes not available, falling back to INT8")
-                return _quantize_unet(unet, 'int8')
-
-        else:
-            raise ValueError(f"Unsupported quantization type: {quantization}")
 
     except Exception as e:
         print(f"[Quantization] Error during quantization: {e}")
@@ -700,7 +531,7 @@ def _quantize_transformer(transformer, quantization: str):
 
     Args:
         transformer: Original Z-Image transformer model
-        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8'
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2'
 
     Returns:
         Quantized transformer model
@@ -755,13 +586,9 @@ def _quantize_transformer(transformer, quantization: str):
             print(f"[Quantization] Falling back to original model without quantization")
             return copy.deepcopy(transformer)
 
-    # UINT quantization is supported (weight-only, doesn't affect buffers)
-    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
-        # Reuse U-Net quantization logic for UINT
-        return _quantize_unet(transformer, quantization)
-
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
     print(f"[Quantization] Falling back to non-quantized transformer")
     return copy.deepcopy(transformer)
 
@@ -769,12 +596,12 @@ def _quantize_transformer(transformer, quantization: str):
 def _quantize_text_encoder(text_encoder, quantization: str):
     """Create a quantized copy of Z-Image text encoder
 
-    Uses same weight-only FP8/UINT quantization as Transformer.
+    Uses same weight-only FP8 quantization as Transformer.
     Z-Image text encoder (Qwen 3.4B) is large, so quantization can significantly reduce VRAM.
 
     Args:
         text_encoder: Original Z-Image text encoder model (Qwen)
-        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2', 'uint2'-'uint8', etc.
+        quantization: Quantization type - 'fp8_e4m3fn', 'fp8_e5m2'
 
     Returns:
         Quantized text encoder model
@@ -851,13 +678,9 @@ def _quantize_text_encoder(text_encoder, quantization: str):
             print(f"[Quantization] Falling back to original model without quantization")
             return copy.deepcopy(text_encoder)
 
-    # UINT quantization
-    if quantization in ['uint2', 'uint3', 'uint4', 'uint5', 'uint6', 'uint7', 'uint8']:
-        # Reuse U-Net quantization logic for UINT
-        return _quantize_unet(text_encoder, quantization)
-
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
+    print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
     print(f"[Quantization] Falling back to non-quantized text encoder")
     return copy.deepcopy(text_encoder)
 

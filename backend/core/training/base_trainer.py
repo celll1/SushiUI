@@ -7549,14 +7549,11 @@ class BaseTrainer(ABC):
                                 if self.should_merge(global_step, epoch, is_first_batch):
                                     self.perform_merge_reinit_cycle(global_step, epoch)
 
-                        # NOTE: torch.cuda.empty_cache() removed from MNT loop for performance.
-                        # Previous behavior called empty_cache() after every MNT iteration,
-                        # which caused significant CPU-GPU sync overhead.
-                        # Memory cleanup now relies on:
-                        # 1. Proper tensor deletion (del statements above)
-                        # 2. Python garbage collection
-                        # 3. Periodic cleanup every 100 steps (below)
-                        # 4. Checkpoint-triggered cleanup
+                        # Force CUDA memory cleanup between MNT iterations to prevent
+                        # VRAM fragmentation and accumulation. Skip on last iteration
+                        # since batch cleanup follows immediately.
+                        if multi_noise_timesteps > 1 and mnt_idx < multi_noise_timesteps - 1:
+                            torch.cuda.empty_cache()
 
                     # Free batch tensors AFTER all MNT iterations complete
                     del latents, text_embeddings
@@ -7580,8 +7577,6 @@ class BaseTrainer(ABC):
                     # (TensorBoard buffers events internally, can accumulate GBs over long training)
                     if global_step % 100 == 0:
                         self.writer.flush()
-                        # Also clear CUDA cache to prevent fragmented memory accumulation
-                        torch.cuda.empty_cache()
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)
                     if global_step % save_every_n_steps == 0:
@@ -7826,17 +7821,27 @@ class BaseTrainer(ABC):
                     if param.grad is not None:
                         unet_grads.append(param.grad.data.view(-1))
 
-        # Compute norms efficiently with single .item() call per group
-        # This avoids per-parameter CPU-GPU sync that was causing massive slowdown
+        # Compute norms efficiently: Accumulate squared norms on GPU, then single .item()
+        # This balances between:
+        # - Old approach (per-param .item()): Too many CPU-GPU syncs (~1000+ syncs)
+        # - torch.cat() approach: Large VRAM allocation (~1-2GB for SDXL full FT)
+        # New approach: Accumulate squared norms on GPU scalar, one .item() per group
         if te_grads:
-            te_all = torch.cat(te_grads)
-            text_encoder_grad_norm = te_all.norm(2).item()
+            # Compute squared norms and sum on GPU
+            te_squared_sum = torch.zeros(1, device=te_grads[0].device, dtype=torch.float32)
+            for grad_flat in te_grads:
+                te_squared_sum += grad_flat.norm(2).pow(2)
+            text_encoder_grad_norm = te_squared_sum.sqrt().item()
+            del te_squared_sum
         else:
             text_encoder_grad_norm = 0.0
 
         if unet_grads:
-            unet_all = torch.cat(unet_grads)
-            unet_grad_norm = unet_all.norm(2).item()
+            unet_squared_sum = torch.zeros(1, device=unet_grads[0].device, dtype=torch.float32)
+            for grad_flat in unet_grads:
+                unet_squared_sum += grad_flat.norm(2).pow(2)
+            unet_grad_norm = unet_squared_sum.sqrt().item()
+            del unet_squared_sum
         else:
             unet_grad_norm = 0.0
 

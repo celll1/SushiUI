@@ -3,9 +3,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
+import sys
 import logging
 from PIL import Image
 from sqlalchemy.orm import Session
+
+# Suppress Windows Proactor event loop connection reset errors
+# These occur when WebSocket clients disconnect and are harmless but spam the logs
+# Reference: https://github.com/encode/uvicorn/issues/1642
+if sys.platform == 'win32':
+    import asyncio
+
+    # Custom exception handler to suppress ConnectionResetError on Windows
+    def _windows_exception_handler(loop, context):
+        exception = context.get('exception')
+        # Suppress ConnectionResetError [WinError 10054] which occurs when
+        # WebSocket clients close connections before server can shutdown socket
+        if isinstance(exception, ConnectionResetError):
+            return  # Silently ignore
+        # For all other exceptions, use default handler
+        loop.default_exception_handler(context)
+
+    # Apply custom handler after event loop is created (in startup)
+    _windows_exception_handler_installed = False
 
 # Remove PIL image size limit for large images
 # Reference: https://kakashibata.hatenablog.jp/entry/2022/03/27/232553
@@ -54,6 +74,13 @@ async def startup_event():
     from core.extensions.lora_manager import lora_manager
     from core.extensions.controlnet_manager import controlnet_manager
     from core.pipeline import pipeline_manager
+
+    # Install Windows exception handler to suppress WebSocket ConnectionResetError spam
+    global _windows_exception_handler_installed
+    if sys.platform == 'win32' and not _windows_exception_handler_installed:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(_windows_exception_handler)
+        _windows_exception_handler_installed = True
 
     asyncio.create_task(manager.start_sender())
 

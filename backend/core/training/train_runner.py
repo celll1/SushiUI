@@ -170,9 +170,360 @@ def detect_start_epoch_from_checkpoint(output_dir: str, resume_from_checkpoint: 
         return 0
 
 
+# =============================================================================
+# Dataset Cache System
+# =============================================================================
+# Caches dataset items to avoid repeated DB queries on resume.
+# Cache is invalidated when dataset is modified (item count or updated_at changes).
+
+import hashlib
+import json
+import pickle
+
+def _compute_dataset_cache_key(db: Session, dataset_ids: list, caption_types: list = None) -> str:
+    """
+    Compute cache key based on dataset state.
+
+    The key includes:
+    - Dataset IDs
+    - Item counts per dataset
+    - Latest updated_at timestamp per dataset
+    - Caption types configuration
+
+    If any of these change, the cache is invalidated.
+    """
+    key_parts = []
+
+    for dataset_id in sorted(dataset_ids):
+        # Get dataset info
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            continue
+
+        # Get item count and latest update
+        item_count = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
+
+        # Get latest updated_at from items
+        from sqlalchemy import func
+        latest_update = db.query(func.max(DatasetItem.updated_at)).filter(
+            DatasetItem.dataset_id == dataset_id
+        ).scalar()
+
+        # Get latest caption update
+        latest_caption_update = db.query(func.max(DatasetCaption.updated_at)).join(
+            DatasetItem, DatasetCaption.item_id == DatasetItem.id
+        ).filter(DatasetItem.dataset_id == dataset_id).scalar()
+
+        key_parts.append(f"{dataset_id}:{item_count}:{latest_update}:{latest_caption_update}")
+
+    # Include caption types in key
+    if caption_types:
+        key_parts.append(f"caption_types:{','.join(sorted(caption_types))}")
+
+    key_string = "|".join(key_parts)
+    return hashlib.sha256(key_string.encode()).hexdigest()[:16]
+
+
+def _get_dataset_cache_path(output_dir: Path, cache_key: str) -> Path:
+    """Get path to dataset cache file."""
+    cache_dir = output_dir / ".dataset_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"dataset_{cache_key}.pkl"
+
+
+def _load_dataset_cache(cache_path: Path) -> dict:
+    """Load dataset cache from disk."""
+    if not cache_path.exists():
+        return None
+
+    try:
+        with open(cache_path, 'rb') as f:
+            cache = pickle.load(f)
+        return cache
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to load dataset cache: {e}")
+        return None
+
+
+def _save_dataset_cache(cache_path: Path, cache_data: dict):
+    """Save dataset cache to disk."""
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[TrainRunner] Dataset cache saved: {cache_path}")
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to save dataset cache: {e}")
+
+
+def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None) -> list:
+    """
+    Get all items from dataset using optimized JOIN query.
+
+    This replaces N+1 queries with a single JOIN query.
+    Returns raw data without caption processing (for caching).
+
+    Args:
+        db: Database session
+        dataset_id: Dataset ID
+        caption_types: List of caption types to use
+
+    Returns:
+        List of dicts with item data and caption info
+    """
+    from sqlalchemy.orm import joinedload
+
+    # Single query with JOIN to get all items with their captions
+    items = db.query(DatasetItem).filter(
+        DatasetItem.dataset_id == dataset_id
+    ).options(
+        joinedload(DatasetItem.captions)
+    ).all()
+
+    dataset_items = []
+    for item in items:
+        # Find primary caption
+        primary_caption = None
+        if caption_types:
+            for caption_type in caption_types:
+                for caption in item.captions:
+                    if caption.caption_type == caption_type:
+                        primary_caption = caption
+                        break
+                if primary_caption:
+                    break
+        else:
+            # Auto-select: priority order
+            for caption_type in ["tags", "natural_language"]:
+                for caption in item.captions:
+                    if caption.caption_type == caption_type:
+                        primary_caption = caption
+                        break
+                if primary_caption:
+                    break
+            # Fallback to any caption
+            if not primary_caption and item.captions:
+                primary_caption = item.captions[0]
+
+        item_dict = {
+            "image_path": item.image_path,
+            "raw_caption": primary_caption.content if primary_caption else "",
+            "tag_data": primary_caption.tag_data if primary_caption else None,
+            "is_tags_format": getattr(primary_caption, 'is_tags_format', True) if primary_caption else True,
+            "width": item.width,
+            "height": item.height,
+            "related_images": item.related_images,
+        }
+        dataset_items.append(item_dict)
+
+    return dataset_items
+
+
+def get_dataset_items_cached(
+    db: Session,
+    dataset_id: int,
+    output_dir: Path,
+    epoch_num: int = 0,
+    run_id: int = None,
+    caption_types: list = None,
+    use_cache: bool = True,
+    force_reload: bool = False,
+) -> list:
+    """
+    Get dataset items with caching support.
+
+    On first load (or cache miss), fetches from DB with optimized JOIN query
+    and saves raw data to cache. On subsequent loads (resume), loads from cache
+    and applies caption processing.
+
+    Args:
+        db: Database session
+        dataset_id: Dataset ID
+        output_dir: Training output directory (for cache storage)
+        epoch_num: Current epoch number (for per-epoch shuffle/dropout)
+        run_id: Training run ID (for phase progress updates)
+        caption_types: List of caption types to use
+        use_cache: Whether to use caching (default: True)
+        force_reload: Force reload from DB even if cache exists
+
+    Returns:
+        List of dataset items with processed captions
+    """
+    import time
+    start_time = time.time()
+
+    # Get dataset info for caption config
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise ValueError(f"Dataset {dataset_id} not found")
+
+    caption_config = dataset.caption_processing or get_default_caption_processing_config()
+
+    # Compute cache key
+    cache_key = _compute_dataset_cache_key(db, [dataset_id], caption_types)
+    cache_path = _get_dataset_cache_path(output_dir, cache_key)
+
+    raw_items = None
+
+    # Try to load from cache
+    if use_cache and not force_reload:
+        cache_data = _load_dataset_cache(cache_path)
+        if cache_data and cache_data.get("dataset_id") == dataset_id:
+            raw_items = cache_data.get("items", [])
+            print(f"[TrainRunner] Loaded {len(raw_items)} items from cache ({cache_path.name})")
+
+    # If no cache, fetch from DB with optimized query
+    if raw_items is None:
+        print(f"[TrainRunner] Fetching dataset {dataset_id} from DB (optimized JOIN query)...")
+        raw_items = get_dataset_items_fast(db, dataset_id, caption_types)
+        print(f"[TrainRunner] Fetched {len(raw_items)} items in {time.time() - start_time:.2f}s")
+
+        # Save to cache
+        if use_cache:
+            cache_data = {
+                "dataset_id": dataset_id,
+                "cache_key": cache_key,
+                "items": raw_items,
+                "created_at": datetime.now().isoformat(),
+            }
+            _save_dataset_cache(cache_path, cache_data)
+
+    # Apply caption processing (must be done every time for shuffle/dropout)
+    print(f"[TrainRunner] Processing captions for epoch {epoch_num}...")
+    processed_items = _process_cached_items(
+        raw_items=raw_items,
+        epoch_num=epoch_num,
+        caption_config=caption_config,
+        run_id=run_id,
+    )
+
+    elapsed = time.time() - start_time
+    print(f"[TrainRunner] Dataset loading complete: {len(processed_items)} items in {elapsed:.2f}s")
+
+    return processed_items
+
+
+def _process_cached_items(
+    raw_items: list,
+    epoch_num: int,
+    caption_config: dict,
+    run_id: int = None,
+) -> list:
+    """
+    Apply caption processing to cached raw items.
+
+    Args:
+        raw_items: List of raw item dicts from cache
+        epoch_num: Current epoch number
+        caption_config: Caption processing configuration
+        run_id: Training run ID (for progress updates)
+
+    Returns:
+        List of processed items
+    """
+    total_items = len(raw_items)
+    processed_items = []
+
+    for idx, item in enumerate(raw_items):
+        raw_caption = item.get("raw_caption", "")
+        tag_data_str = item.get("tag_data")
+        is_tags_format = item.get("is_tags_format", True)
+
+        if is_tags_format:
+            # Tags format: Apply tag processing
+            if tag_data_str:
+                # Fast path: Use pre-categorized tag_data
+                try:
+                    tag_data = json.loads(tag_data_str)
+                except:
+                    tag_data = None
+
+                if tag_data:
+                    from core.training.caption_processor import process_caption_with_tag_data
+                    processed_caption = process_caption_with_tag_data(
+                        tag_data=tag_data,
+                        epoch_num=epoch_num,
+                        item_path=item["image_path"],
+                        caption_config=caption_config,
+                    )
+                else:
+                    # Fallback to legacy path
+                    processed_caption = process_caption(
+                        caption=raw_caption,
+                        epoch_num=epoch_num,
+                        item_path=item["image_path"],
+                        normalize_tags=caption_config.get("normalize_tags", True),
+                        category_order=caption_config.get("category_order", None),
+                        caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+                        token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+                        keep_tokens=caption_config.get("keep_tokens", 0),
+                        shuffle_tokens=caption_config.get("shuffle_tokens", False),
+                        shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+                        shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+                        shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+                        shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+                        tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+                        exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+                        tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+                        tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+                        tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+                        tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+                        tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+                    )
+            else:
+                # No tag_data, use legacy path
+                processed_caption = process_caption(
+                    caption=raw_caption,
+                    epoch_num=epoch_num,
+                    item_path=item["image_path"],
+                    normalize_tags=caption_config.get("normalize_tags", True),
+                    category_order=caption_config.get("category_order", None),
+                    caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+                    token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+                    keep_tokens=caption_config.get("keep_tokens", 0),
+                    shuffle_tokens=caption_config.get("shuffle_tokens", False),
+                    shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+                    shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+                    shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+                    shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+                    tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+                    exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+                    tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+                    tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+                    tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+                    tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+                    tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+                )
+        else:
+            # Natural language: Use caption as-is
+            processed_caption = raw_caption
+
+        # Build processed item dict
+        processed_item = {
+            "image_path": item["image_path"],
+            "caption": processed_caption,
+            "width": item.get("width"),
+            "height": item.get("height"),
+        }
+
+        # Add reference images if available
+        if item.get("related_images") and "reference" in item.get("related_images", {}):
+            processed_item["reference_images"] = item["related_images"]["reference"]
+
+        processed_items.append(processed_item)
+
+        # Progress logging
+        if (idx + 1) % 10000 == 0:
+            print(f"[TrainRunner] Processed {idx + 1}/{total_items} captions ({(idx + 1) / total_items * 100:.1f}%)")
+
+    return processed_items
+
+
 def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: int = None, caption_types: list = None) -> list:
     """
     Get all items from dataset with caption processing applied.
+
+    NOTE: This is the legacy function that queries DB for each item.
+    For better performance, use get_dataset_items_cached() instead.
 
     Args:
         db: Database session
@@ -631,9 +982,21 @@ def main():
             print(f"[TrainRunner] Dataset {i+1}: {dataset.name} ({dataset.path})")
             dataset_unique_ids.append(dataset.unique_id)
 
-            # Get dataset items with correct epoch_num (start_epoch for resume, 0 for new training)
+            # Get dataset items with caching support
+            # On resume: loads from cache (fast), on first run: fetches from DB and caches
             caption_types = ds_config.get("caption_types", [])
-            dataset_items = get_dataset_items(datasets_db, dataset_id, epoch_num=start_epoch, run_id=run_id, caption_types=caption_types)
+            output_dir = Path(run.output_dir)
+            is_resume = start_epoch > 0
+            dataset_items = get_dataset_items_cached(
+                db=datasets_db,
+                dataset_id=dataset_id,
+                output_dir=output_dir,
+                epoch_num=start_epoch,
+                run_id=run_id,
+                caption_types=caption_types,
+                use_cache=True,
+                force_reload=not is_resume,  # Force reload on new training to ensure fresh data
+            )
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
 
             # Add dataset_unique_id to each item for cache management
@@ -665,10 +1028,11 @@ def main():
             This wrapper converts the old dataset_items format (list of dicts) to
             the new Dataset object format expected by BaseTrainer.train().
             """
-            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict, initial_epoch: int = 0):
+            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict, output_dir: Path, initial_epoch: int = 0):
                 self.unique_id = unique_id
                 self.items = items
                 self.dataset_config = dataset_config
+                self.output_dir = output_dir  # For dataset cache storage
                 self.cache_dir = Path(f"./latent_cache/{unique_id}")
                 # Track which epoch the initial items were loaded for (to avoid redundant reload)
                 self._initial_load_epoch = initial_epoch
@@ -707,7 +1071,18 @@ def main():
                 self._has_been_reloaded = True
                 dataset_id = self.dataset_config["dataset_id"]
                 caption_types = self.dataset_config.get("caption_types", [])
-                items = get_dataset_items(datasets_db, dataset_id, epoch_num=epoch_num, run_id=run_id, caption_types=caption_types)
+
+                # Use cached loading - caption processing is applied per-epoch
+                items = get_dataset_items_cached(
+                    db=datasets_db,
+                    dataset_id=dataset_id,
+                    output_dir=self.output_dir,
+                    epoch_num=epoch_num,
+                    run_id=run_id,
+                    caption_types=caption_types,
+                    use_cache=True,
+                    force_reload=False,  # Use cache for epoch reloads
+                )
 
                 # Add dataset_unique_id for cache management
                 for item in items:
@@ -736,8 +1111,9 @@ def main():
                 items_by_dataset[dataset.unique_id]["config"] = ds_config
 
         # Create Dataset wrapper objects with initial_epoch for skip-reload optimization
+        training_output_dir = Path(run.output_dir)
         training_datasets = [
-            TrainRunnerDataset(unique_id, data["items"], data["config"], initial_epoch=start_epoch)
+            TrainRunnerDataset(unique_id, data["items"], data["config"], output_dir=training_output_dir, initial_epoch=start_epoch)
             for unique_id, data in items_by_dataset.items()
             if data["config"] is not None
         ]

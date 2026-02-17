@@ -7763,33 +7763,32 @@ class BaseTrainer(ABC):
         """
         Calculate gradient norms for different parameter groups.
 
-        OPTIMIZED: Uses torch.cat() and single norm() call instead of per-parameter .item() calls.
-        This avoids CPU-GPU synchronization overhead that was causing ~2x slowdown.
-
         Returns:
             Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm)
         """
-        te_grads = []
-        unet_grads = []
+        total_grad_norm = 0.0
+        text_encoder_grad_norm = 0.0
+        unet_grad_norm = 0.0
 
         # For LoRA training, iterate through lora_layers dict
         if hasattr(self, 'lora_layers'):
+            grad_count = 0
             for lora_name, lora_layer in self.lora_layers.items():
                 for param in lora_layer.parameters():
                     if param.grad is not None:
-                        grad_flat = param.grad.data.view(-1)
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        grad_count += 1
+
                         # Categorize by LoRA layer name
                         if 'text_encoder' in lora_name or 'te1_' in lora_name or 'te2_' in lora_name or 'clip_' in lora_name:
-                            te_grads.append(grad_flat)
+                            text_encoder_grad_norm += param_norm ** 2
                         elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
-                            unet_grads.append(grad_flat)
-                        else:
-                            # Unknown category - add to unet (backbone)
-                            unet_grads.append(grad_flat)
+                            unet_grad_norm += param_norm ** 2
 
             # Debug: Print first calculation only
-            if (te_grads or unet_grads) and not hasattr(self, '_grad_norm_debug_printed'):
-                print(f"{self.log_prefix} [GradNorm] Calculated from {len(te_grads) + len(unet_grads)} parameters with gradients")
+            if grad_count > 0 and not hasattr(self, '_grad_norm_debug_printed'):
+                print(f"{self.log_prefix} [GradNorm] Calculated from {grad_count} parameters with gradients")
                 print(f"{self.log_prefix} [GradNorm] Sample LoRA layer names (first 3):")
                 for i, name in enumerate(list(self.lora_layers.keys())[:3]):
                     print(f"{self.log_prefix}   {name}")
@@ -7799,54 +7798,40 @@ class BaseTrainer(ABC):
         else:
             # SD1.5/SDXL: Direct text_encoder access
             if hasattr(self, 'text_encoder') and self.text_encoder is not None:
-                for param in self.text_encoder.parameters():
+                for name, param in self.text_encoder.named_parameters():
                     if param.grad is not None:
-                        te_grads.append(param.grad.data.view(-1))
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        text_encoder_grad_norm += param_norm ** 2
 
             # Iterate through text encoder 2 parameters (if trainable, SDXL)
             if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
-                for param in self.text_encoder_2.parameters():
+                for name, param in self.text_encoder_2.named_parameters():
                     if param.grad is not None:
-                        te_grads.append(param.grad.data.view(-1))
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        text_encoder_grad_norm += param_norm ** 2
 
             # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
             if hasattr(self, 'unet') and self.unet is not None:
-                for param in self.unet.parameters():
+                for name, param in self.unet.named_parameters():
                     if param.grad is not None:
-                        unet_grads.append(param.grad.data.view(-1))
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        unet_grad_norm += param_norm ** 2
 
             # Iterate through Transformer parameters (if trainable, Z-Image)
             if hasattr(self, 'transformer_original') and self.transformer_original is not None:
-                for param in self.transformer_original.parameters():
+                for name, param in self.transformer_original.named_parameters():
                     if param.grad is not None:
-                        unet_grads.append(param.grad.data.view(-1))
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        unet_grad_norm += param_norm ** 2
 
-        # Compute norms efficiently: Accumulate squared norms on GPU, then single .item()
-        # This balances between:
-        # - Old approach (per-param .item()): Too many CPU-GPU syncs (~1000+ syncs)
-        # - torch.cat() approach: Large VRAM allocation (~1-2GB for SDXL full FT)
-        # New approach: Accumulate squared norms on GPU scalar, one .item() per group
-        if te_grads:
-            # Compute squared norms and sum on GPU
-            te_squared_sum = torch.zeros(1, device=te_grads[0].device, dtype=torch.float32)
-            for grad_flat in te_grads:
-                te_squared_sum += grad_flat.norm(2).pow(2)
-            text_encoder_grad_norm = te_squared_sum.sqrt().item()
-            del te_squared_sum
-        else:
-            text_encoder_grad_norm = 0.0
-
-        if unet_grads:
-            unet_squared_sum = torch.zeros(1, device=unet_grads[0].device, dtype=torch.float32)
-            for grad_flat in unet_grads:
-                unet_squared_sum += grad_flat.norm(2).pow(2)
-            unet_grad_norm = unet_squared_sum.sqrt().item()
-            del unet_squared_sum
-        else:
-            unet_grad_norm = 0.0
-
-        # Total norm: sqrt(te_norm^2 + unet_norm^2)
-        total_grad_norm = (text_encoder_grad_norm ** 2 + unet_grad_norm ** 2) ** 0.5
+        # Take square root to get L2 norm
+        total_grad_norm = total_grad_norm ** 0.5
+        text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
+        unet_grad_norm = unet_grad_norm ** 0.5
 
         # Debug: Print values once
         if not hasattr(self, '_grad_norm_values_printed'):

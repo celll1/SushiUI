@@ -645,6 +645,18 @@ class BaseTrainer(ABC):
         print(f"  Loss calculation: Always FP32 for numerical stability")
         print(f"  Min-SNR gamma: {min_snr_gamma} ({'enabled' if min_snr_gamma > 0 else 'disabled'})")
 
+        # Warn about FP32 training VRAM usage
+        if self.training_dtype == torch.float32:
+            print(f"[Trainer] WARNING: training_dtype=fp32 uses ~2x VRAM compared to fp16/bf16")
+            print(f"[Trainer] WARNING: Consider using training_dtype=fp16 or bf16 for large models")
+
+        # Optimize: disable autocast if training_dtype is fp32 (no benefit, only overhead)
+        # autocast with dtype=fp32 does nothing but adds context manager overhead
+        if self.training_dtype == torch.float32:
+            self.mixed_precision = False
+            if mixed_precision:
+                print(f"[Trainer] Note: mixed_precision disabled (training_dtype=fp32, autocast has no effect)")
+
         # Initialize tensorboard writer
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tensorboard_dir = self.output_dir / "tensorboard" / timestamp

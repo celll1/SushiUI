@@ -149,6 +149,8 @@ class GenerationParams(BaseModel):
     # TIPO (prompt upsampling)
     use_tipo: bool = False  # Enable TIPO prompt upsampling
     tipo_config: Optional[Dict] = None  # TIPO configuration (model, lengths, etc.)
+    # Preview mode
+    preview_predicted_x0: bool = False  # Show predicted x0 instead of current latent in preview
 
 class Txt2ImgRequest(GenerationParams):
     pass
@@ -195,6 +197,7 @@ async def generate_txt2img(
     use_torch_compile: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(20),
     use_pinned_memory: bool = Form(False),
@@ -385,7 +388,8 @@ async def generate_txt2img(
             is_zimage_sdxl_vae,
             is_flux2,
             image_width=params.get("width"),
-            image_height=params.get("height")
+            image_height=params.get("height"),
+            preview_predicted_x0=preview_predicted_x0
         )
 
         # Create step callback for LoRA step range if needed
@@ -511,6 +515,7 @@ async def generate_img2img(
     use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     image: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
     db: Session = Depends(get_gallery_db)
@@ -687,7 +692,8 @@ async def generate_img2img(
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
-            image_height=height
+            image_height=height,
+            preview_predicted_x0=preview_predicted_x0
         )
 
         # Create step callback for LoRA step range if needed
@@ -820,6 +826,7 @@ async def generate_inpaint(
     use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
@@ -1015,7 +1022,8 @@ async def generate_inpaint(
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
-            image_height=height
+            image_height=height,
+            preview_predicted_x0=preview_predicted_x0
         )
 
         # Create step callback for LoRA step range if needed

@@ -57,6 +57,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   unet_quantization: null,
   text_encoder_quantization: null,
   use_torch_compile: false,
+  preview_predicted_x0: false,
   use_tipo: false,
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1042,6 +1043,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         resampling_method: step.resamplingMethod,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
       };
 
       // Use custom settings or inherit from main
@@ -2502,6 +2504,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </button>
                 </div>
               </div>
+
+            {/* Preview Predicted x0 toggle */}
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="preview_predicted_x0"
+                checked={params.preview_predicted_x0 || false}
+                onChange={(e) => setParams({ ...params, preview_predicted_x0: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="preview_predicted_x0" className="text-sm text-gray-300">
+                Preview Predicted x0
+              </label>
+            </div>
 
             {isGenerating && (
               <div className="space-y-1">

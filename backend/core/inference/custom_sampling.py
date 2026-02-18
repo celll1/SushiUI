@@ -871,7 +871,12 @@ def custom_sampling_loop(
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        latents = step_output.prev_sample
+
+        # Get predicted x0 (original sample) if available from scheduler
+        # This is the model's prediction of what the final denoised image should look like
+        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -879,6 +884,8 @@ def custom_sampling_loop(
         if first_iteration_debug:
             print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
             print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            if pred_original_sample is not None:
+                print(f"[CustomSampling] [Debug] pred_original_sample available: shape={pred_original_sample.shape}")
             print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
             first_iteration_debug = False
 
@@ -903,7 +910,7 @@ def custom_sampling_loop(
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
-            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
         # Step callback
         if step_callback is not None:
@@ -1547,7 +1554,11 @@ def custom_img2img_sampling_loop(
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        latents = step_output.prev_sample
+
+        # Get predicted x0 (original sample) if available from scheduler
+        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -1555,6 +1566,8 @@ def custom_img2img_sampling_loop(
         if first_iteration_debug:
             print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() shape: {latents.shape}, dtype: {latents.dtype}")
             print(f"[CustomSampling] [Debug] latents AFTER scheduler.step() min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+            if pred_original_sample is not None:
+                print(f"[CustomSampling] [Debug] pred_original_sample available: shape={pred_original_sample.shape}")
             print(f"[CustomSampling] [Debug] ========== END FIRST ITERATION ==========\n")
             first_iteration_debug = False
 
@@ -1577,7 +1590,7 @@ def custom_img2img_sampling_loop(
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
-            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
         # Step callback
         if step_callback is not None:
@@ -2271,7 +2284,11 @@ def custom_inpaint_sampling_loop(
             noise_pred_uncond = None
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        latents = scheduler.step(noise_pred, t, latents, generator=step_generator).prev_sample
+        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        latents = step_output.prev_sample
+
+        # Get predicted x0 (original sample) if available from scheduler
+        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
 
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation
@@ -2314,7 +2331,7 @@ def custom_inpaint_sampling_loop(
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
-            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics)
+            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
         if step_callback is not None:
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})

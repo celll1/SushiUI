@@ -117,6 +117,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   unet_quantization: null,
   text_encoder_quantization: null,
   use_torch_compile: false,
+  preview_predicted_x0: false,
   feeling_lucky: false,
   attention_type: "normal",
 };
@@ -1417,6 +1418,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_blur_strength: mainParams.inpaint_blur_strength,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         attention_type: mainParams.attention_type, // Inherit attention backend from main
       };
 
@@ -2987,6 +2989,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     {isMobileControlsOpen ? <ChevronRight className="h-6 w-6" /> : <ChevronLeft className="h-6 w-6" />}
                   </button>
                 </div>
+              </div>
+
+              {/* Preview Predicted x0 toggle */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="preview_predicted_x0_inpaint"
+                  checked={params.preview_predicted_x0 || false}
+                  onChange={(e) => setParams({ ...params, preview_predicted_x0: e.target.checked })}
+                  className="rounded"
+                />
+                <label htmlFor="preview_predicted_x0_inpaint" className="text-sm text-gray-300">
+                  Preview Predicted x0
+                </label>
               </div>
 
               {isGenerating && (

@@ -78,7 +78,8 @@ def create_progress_callback_factory(
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
-    image_height: Optional[int] = None
+    image_height: Optional[int] = None,
+    preview_predicted_x0: bool = False
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -97,11 +98,12 @@ def create_progress_callback_factory(
         steps: ステップ数（display_total計算用）
         image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
         image_height: 生成画像の高さ（FLUX.2プレビューのアスペクト比計算用）
+        preview_predicted_x0: Trueの場合、現在のlatentではなくpred_original_sample（推定x0）をプレビュー
 
     Returns:
         プログレスコールバック関数
     """
-    def progress_callback(step, total_steps, latents, cfg_metrics=None):
+    def progress_callback(step, total_steps, latents, cfg_metrics=None, pred_original_sample=None):
         # Calculate display_total for img2img/inpaint "Do full steps"
         if img2img_fix_steps is not None and steps is not None:
             display_total = steps if img2img_fix_steps else total_steps
@@ -116,8 +118,26 @@ def create_progress_callback_factory(
         try:
             # Debug: Log model type being used for preview
             if step == -1 or step == 0:
-                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}")
-            preview_pil = taesd_manager.decode_latent(latents, is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus, is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2, image_width=image_width, image_height=image_height)
+                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}")
+
+            # Choose which latent to decode based on preview_predicted_x0 option
+            # If preview_predicted_x0 is True and pred_original_sample is available, use it
+            # Otherwise fall back to current latents
+            if preview_predicted_x0 and pred_original_sample is not None:
+                latent_to_decode = pred_original_sample
+            else:
+                latent_to_decode = latents
+
+            preview_pil = taesd_manager.decode_latent(
+                latent_to_decode,
+                is_sdxl=is_sdxl,
+                is_zimage=is_zimage,
+                is_deus=is_deus,
+                is_zimage_sdxl_vae=is_zimage_sdxl_vae,
+                is_flux2=is_flux2,
+                image_width=image_width,
+                image_height=image_height
+            )
             if preview_pil:
                 buffered = BytesIO()
                 preview_pil.save(buffered, format="JPEG", quality=85)

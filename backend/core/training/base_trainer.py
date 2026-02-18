@@ -3155,19 +3155,35 @@ class BaseTrainer(ABC):
             return loss, pred_loss, recon_loss
 
         except RuntimeError as e:
-            if "out of memory" not in str(e).lower():
-                raise  # Re-raise non-OOM errors
+            error_str = str(e).lower()
+            # Check for various CUDA memory-related errors
+            is_recoverable_cuda_error = (
+                "out of memory" in error_str or
+                "cuda error" in error_str or
+                "cublas" in error_str or
+                "cudnn" in error_str or
+                "cusparse" in error_str or
+                "cufft" in error_str
+            )
+            if not is_recoverable_cuda_error:
+                raise  # Re-raise non-CUDA errors
 
-            # OOM occurred - attempt batch splitting
+            # CUDA error occurred - attempt batch splitting
             if batch_size <= min_split_batch_size:
-                print(f"{self.log_prefix} [OOM] Cannot split further (batch_size={batch_size}), re-raising error")
+                print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), re-raising error")
+                print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
                 raise
 
-            # Clear CUDA cache before retry
+            # Clear CUDA cache and reset error state before retry
             torch.cuda.empty_cache()
+            # Reset CUDA error state if possible
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
 
             split_size = batch_size // 2
-            print(f"{self.log_prefix} [OOM Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size}")
+            print(f"{self.log_prefix} [CUDA Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size} (error: {str(e)[:100]})")
 
             # Process first half
             loss1, pred1, recon1 = self._forward_backward_with_oom_recovery(

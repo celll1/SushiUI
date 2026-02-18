@@ -3093,6 +3093,224 @@ class BaseTrainer(ABC):
         return latents
 
     # ============================================================
+    # OOM Recovery: Batch Splitting
+    # ============================================================
+
+    def _forward_backward_with_oom_recovery(
+        self,
+        mnt_latents: torch.Tensor,
+        mnt_text_embeddings: torch.Tensor,
+        mnt_attention_mask: Optional[torch.Tensor],
+        mnt_pooled_embeddings: Optional[torch.Tensor],
+        timesteps: torch.Tensor,
+        debug_save_path: Optional[Path],
+        batch_captions: Optional[List[str]],
+        alphas_cumprod_cached: Optional[torch.Tensor],
+        use_condition_images: bool,
+        condition_images_batch: Optional[torch.Tensor],
+        reference_latents_nested: Optional[list],
+        min_split_batch_size: int = 1,
+    ) -> Tuple[float, float, float]:
+        """
+        Execute forward + backward pass with OOM recovery via batch splitting.
+
+        When OOM occurs, the batch is split in half and processed sequentially.
+        Gradients are accumulated across splits, achieving the same result as
+        processing the full batch (except for BatchNorm, which this model doesn't use).
+
+        Args:
+            mnt_latents: Latents for this MNT iteration [B, C, H, W]
+            mnt_text_embeddings: Text embeddings [B, seq_len, dim]
+            mnt_attention_mask: Attention mask (Z-Image only)
+            mnt_pooled_embeddings: Pooled embeddings (SDXL only)
+            timesteps: Timesteps for diffusion [B]
+            debug_save_path: Path to save debug latents
+            batch_captions: Captions for debug output
+            alphas_cumprod_cached: Cached alphas_cumprod tensor
+            use_condition_images: Whether ControlNet conditioning is used
+            condition_images_batch: ControlNet condition images
+            reference_latents_nested: Reference latents for FLUX.2
+            min_split_batch_size: Minimum batch size (stop splitting below this)
+
+        Returns:
+            Tuple of (loss_value, pred_loss_value, recon_loss_value) as Python floats
+        """
+        batch_size = mnt_latents.shape[0]
+
+        try:
+            # Attempt full batch forward + backward
+            loss, pred_loss, recon_loss = self._execute_forward_backward(
+                mnt_latents=mnt_latents,
+                mnt_text_embeddings=mnt_text_embeddings,
+                mnt_attention_mask=mnt_attention_mask,
+                mnt_pooled_embeddings=mnt_pooled_embeddings,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                batch_captions=batch_captions,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+                use_condition_images=use_condition_images,
+                condition_images_batch=condition_images_batch,
+                reference_latents_nested=reference_latents_nested,
+            )
+            return loss, pred_loss, recon_loss
+
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower():
+                raise  # Re-raise non-OOM errors
+
+            # OOM occurred - attempt batch splitting
+            if batch_size <= min_split_batch_size:
+                print(f"{self.log_prefix} [OOM] Cannot split further (batch_size={batch_size}), re-raising error")
+                raise
+
+            # Clear CUDA cache before retry
+            torch.cuda.empty_cache()
+
+            split_size = batch_size // 2
+            print(f"{self.log_prefix} [OOM Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size}")
+
+            # Process first half
+            loss1, pred1, recon1 = self._forward_backward_with_oom_recovery(
+                mnt_latents=mnt_latents[:split_size],
+                mnt_text_embeddings=mnt_text_embeddings[:split_size],
+                mnt_attention_mask=mnt_attention_mask[:split_size] if mnt_attention_mask is not None else None,
+                mnt_pooled_embeddings=mnt_pooled_embeddings[:split_size] if mnt_pooled_embeddings is not None else None,
+                timesteps=timesteps[:split_size],
+                debug_save_path=debug_save_path,
+                batch_captions=batch_captions[:split_size] if batch_captions else None,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+                use_condition_images=use_condition_images,
+                condition_images_batch=condition_images_batch[:split_size] if condition_images_batch is not None else None,
+                reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
+                min_split_batch_size=min_split_batch_size,
+            )
+
+            # Process second half
+            loss2, pred2, recon2 = self._forward_backward_with_oom_recovery(
+                mnt_latents=mnt_latents[split_size:],
+                mnt_text_embeddings=mnt_text_embeddings[split_size:],
+                mnt_attention_mask=mnt_attention_mask[split_size:] if mnt_attention_mask is not None else None,
+                mnt_pooled_embeddings=mnt_pooled_embeddings[split_size:] if mnt_pooled_embeddings is not None else None,
+                timesteps=timesteps[split_size:],
+                debug_save_path=None,  # Only save debug from first split
+                batch_captions=batch_captions[split_size:] if batch_captions else None,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+                use_condition_images=use_condition_images,
+                condition_images_batch=condition_images_batch[split_size:] if condition_images_batch is not None else None,
+                reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
+                min_split_batch_size=min_split_batch_size,
+            )
+
+            # Average losses (weighted by split sizes for correctness)
+            w1, w2 = split_size, batch_size - split_size
+            total = w1 + w2
+            avg_loss = (loss1 * w1 + loss2 * w2) / total
+            avg_pred = (pred1 * w1 + pred2 * w2) / total
+            avg_recon = (recon1 * w1 + recon2 * w2) / total
+
+            return avg_loss, avg_pred, avg_recon
+
+    def _execute_forward_backward(
+        self,
+        mnt_latents: torch.Tensor,
+        mnt_text_embeddings: torch.Tensor,
+        mnt_attention_mask: Optional[torch.Tensor],
+        mnt_pooled_embeddings: Optional[torch.Tensor],
+        timesteps: torch.Tensor,
+        debug_save_path: Optional[Path],
+        batch_captions: Optional[List[str]],
+        alphas_cumprod_cached: Optional[torch.Tensor],
+        use_condition_images: bool,
+        condition_images_batch: Optional[torch.Tensor],
+        reference_latents_nested: Optional[list],
+    ) -> Tuple[float, float, float]:
+        """
+        Execute forward pass (train_step_xxx) and backward pass for a batch.
+
+        Returns loss values as Python floats (not tensors).
+        Gradients are accumulated in model parameters.
+        """
+        # Forward pass (architecture-specific)
+        if self.is_zimage:
+            loss, pred_loss, recon_loss = self.train_step_zimage(
+                latents=mnt_latents,
+                prompt_embeds=mnt_text_embeddings,
+                attention_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+        elif self.is_flux2:
+            # FLUX.2 training with position IDs
+            img_ids = self._flux2_prepare_latent_ids(mnt_latents).to(self.device)
+            packed_latents = self._flux2_pack_latents(mnt_latents)
+            txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
+
+            # Prepare reference latents
+            mnt_reference_latents_nested = None
+            if reference_latents_nested is not None:
+                mnt_reference_latents_nested = [
+                    [lat.detach() for lat in item_lats]
+                    for item_lats in reference_latents_nested
+                ]
+
+            loss, pred_loss, recon_loss = self.train_step_flux2(
+                latents=packed_latents,
+                prompt_embeds=mnt_text_embeddings,
+                img_ids=img_ids,
+                txt_ids=txt_ids,
+                timesteps=timesteps,
+                guidance=None,
+                reference_latents_nested=mnt_reference_latents_nested,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+        elif use_condition_images and condition_images_batch is not None:
+            # ControlNet training
+            mnt_condition_images = condition_images_batch.detach()
+            loss, pred_loss, recon_loss = self.train_step_controlnet(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                condition_images=mnt_condition_images,
+                pooled_embeddings=mnt_pooled_embeddings,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+        else:
+            # SD1.5/SDXL
+            loss, pred_loss, recon_loss = self.train_step(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                pooled_embeddings=mnt_pooled_embeddings,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+
+        # Backward pass
+        if self.use_grad_scaler:
+            self.grad_scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # Extract values before deleting tensors
+        loss_value = loss.item()
+        pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
+        recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+
+        # Free computation graph
+        del loss, pred_loss, recon_loss
+
+        return loss_value, pred_loss_value, recon_loss_value
+
+    # ============================================================
     # Training Step
     # ============================================================
 
@@ -7337,84 +7555,24 @@ class BaseTrainer(ABC):
                             mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                             mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
 
-                        # Training step (architecture-specific calling convention)
-                        if self.is_zimage:
-                            loss, pred_loss, recon_loss = self.train_step_zimage(
-                                latents=mnt_latents,
-                                prompt_embeds=mnt_text_embeddings,
-                                attention_mask=mnt_attention_mask,
-                                timesteps=timesteps,
-                                debug_save_path=debug_save_path,
-                                debug_captions=batch_captions if debug_save_path else None,
-                                profile_vram=self.debug_vram,
-                                alphas_cumprod_cached=alphas_cumprod_cached,
-                            )
-                        elif self.is_flux2:
-                            # FLUX.2 training with position IDs
-                            # Prepare position IDs from latent dimensions
-                            img_ids = self._flux2_prepare_latent_ids(mnt_latents).to(self.device)
+                        # Training step with OOM recovery (forward + backward)
+                        # If OOM occurs, the batch is automatically split and processed sequentially
+                        mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value = self._forward_backward_with_oom_recovery(
+                            mnt_latents=mnt_latents,
+                            mnt_text_embeddings=mnt_text_embeddings,
+                            mnt_attention_mask=mnt_attention_mask,
+                            mnt_pooled_embeddings=mnt_pooled_embeddings,
+                            timesteps=timesteps,
+                            debug_save_path=debug_save_path,
+                            batch_captions=batch_captions,
+                            alphas_cumprod_cached=alphas_cumprod_cached,
+                            use_condition_images=use_condition_images,
+                            condition_images_batch=condition_images_batch,
+                            reference_latents_nested=reference_latents_nested,
+                            min_split_batch_size=1,
+                        )
 
-                            # Pack latents: (B, C, H, W) -> (B, H*W, C)
-                            packed_latents = self._flux2_pack_latents(mnt_latents)
-
-                            # Prepare text IDs from embeddings
-                            txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
-
-                            # Prepare reference latents for conditioning (if enabled)
-                            # reference_latents_nested is List[List[Tensor]] - one list per batch item
-                            mnt_reference_latents_nested = None
-                            if reference_latents_nested is not None:
-                                # Detach each tensor in nested structure
-                                mnt_reference_latents_nested = [
-                                    [lat.detach() for lat in item_lats]
-                                    for item_lats in reference_latents_nested
-                                ]
-
-                            loss, pred_loss, recon_loss = self.train_step_flux2(
-                                latents=packed_latents,
-                                prompt_embeds=mnt_text_embeddings,
-                                img_ids=img_ids,
-                                txt_ids=txt_ids,
-                                timesteps=timesteps,
-                                guidance=None,  # Klein doesn't use guidance embedding
-                                reference_latents_nested=mnt_reference_latents_nested,  # Reference image conditioning (nested)
-                                debug_save_path=debug_save_path,
-                                debug_captions=batch_captions if debug_save_path else None,
-                                profile_vram=self.debug_vram,
-                                alphas_cumprod_cached=alphas_cumprod_cached,
-                            )
-                        elif use_condition_images and condition_images_batch is not None:
-                            # ControlNet training step
-                            mnt_condition_images = condition_images_batch.detach()
-                            loss, pred_loss, recon_loss = self.train_step_controlnet(
-                                latents=mnt_latents,
-                                text_embeddings=mnt_text_embeddings,
-                                condition_images=mnt_condition_images,
-                                pooled_embeddings=mnt_pooled_embeddings,
-                                timesteps=timesteps,
-                                profile_vram=self.debug_vram,
-                                alphas_cumprod_cached=alphas_cumprod_cached,
-                            )
-                        else:
-                            loss, pred_loss, recon_loss = self.train_step(
-                                latents=mnt_latents,
-                                text_embeddings=mnt_text_embeddings,
-                                pooled_embeddings=mnt_pooled_embeddings,
-                                timesteps=timesteps,
-                                debug_save_path=debug_save_path,
-                                debug_captions=batch_captions if debug_save_path else None,
-                                profile_vram=self.debug_vram,
-                                alphas_cumprod_cached=alphas_cumprod_cached,
-                            )
-
-                        # Backward pass with GradScaler if enabled
-                        # loss is already a tensor with computation graph from train_step/train_step_zimage
-                        if self.use_grad_scaler:
-                            self.grad_scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
-
-                        # Clear MNT iteration tensors immediately after backward
+                        # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings
                         if mnt_attention_mask is not None:
                             del mnt_attention_mask
@@ -7438,10 +7596,8 @@ class BaseTrainer(ABC):
                         # Log loss immediately for each MNT iteration so frontend
                         # updates every step, not just every MNT*grad_accum steps.
                         # Grad norm will be updated after optimizer step.
-                        # Extract loss values BEFORE deleting loss tensor
-                        mnt_loss_value = loss.item()
-                        mnt_pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
-                        mnt_recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+                        # Note: mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value
+                        # are already extracted as floats by _forward_backward_with_oom_recovery()
                         mnt_current_lr = self.lr_scheduler.get_last_lr()[0]
 
                         # TensorBoard logging (per-iteration for loss only)
@@ -7473,13 +7629,6 @@ class BaseTrainer(ABC):
                                 epoch=epoch,
                                 loss=mnt_loss_value,
                             )
-
-                        # ============================================================
-                        # MNT VRAM Cleanup: Free computation graph and reduce fragmentation
-                        # ============================================================
-                        # Delete loss tensor AFTER extracting values (backward already done)
-                        # This frees the computation graph memory
-                        del loss, pred_loss, recon_loss
 
                         # ============================================================
                         # Sequential MNT: Optimizer step after each MNT iteration

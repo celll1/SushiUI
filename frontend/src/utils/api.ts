@@ -187,6 +187,8 @@ export interface GenerationParams {
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
+  // Preview mode
+  preview_predicted_x0?: boolean;  // Show predicted x0 instead of current latent in preview
   // Z-Image specific
   max_sequence_length?: number;
   // Block Swap (Z-Image Transformer offloading)
@@ -319,6 +321,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
 
+  // Preview mode (predicted x0)
+  formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
+
   // Block Swap (Z-Image Transformer offloading)
   formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
   formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
@@ -413,6 +418,9 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // Preview mode (predicted x0)
+  formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
 
   // FLUX.2 Image Edit (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
@@ -517,6 +525,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
   formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  // Preview mode (predicted x0)
+  formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
 
   // FLUX.2 Image Edit (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {

@@ -25,6 +25,34 @@ from sqlalchemy.orm import Session
 from core.training.caption_processor import process_caption, get_default_caption_processing_config
 
 
+def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
+    """
+    Update training run phase progress in database.
+
+    Args:
+        run_id: Training run ID
+        phase: Current phase name
+        progress: Progress percentage (0-100)
+        detail: Optional detail string
+    """
+    if run_id is None:
+        return
+    try:
+        training_db = next(get_training_db())
+        try:
+            run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+            if run:
+                run.phase = phase
+                run.phase_progress = progress
+                if detail:
+                    run.phase_detail = detail
+                training_db.commit()
+        finally:
+            training_db.close()
+    except Exception as e:
+        print(f"[TrainRunner] Warning: Failed to update phase progress: {e}")
+
+
 class TeeOutput:
     """
     Redirects output to both console and file (like Unix tee command).
@@ -423,6 +451,9 @@ def _process_cached_items(
     total_items = len(raw_items)
     processed_items = []
 
+    # Initial progress update
+    _update_phase_progress(run_id, "initializing", 0.0, f"Processing captions: 0/{total_items}")
+
     for idx, item in enumerate(raw_items):
         raw_caption = item.get("raw_caption", "")
         tag_data_str = item.get("tag_data")
@@ -511,9 +542,17 @@ def _process_cached_items(
 
         processed_items.append(processed_item)
 
-        # Progress logging
+        # Progress update every 1000 items (for UI responsiveness)
+        if (idx + 1) % 1000 == 0:
+            progress_pct = ((idx + 1) / total_items) * 100.0
+            _update_phase_progress(run_id, "initializing", progress_pct, f"Processing captions: {idx + 1}/{total_items}")
+
+        # Console logging every 10000 items (to reduce log spam)
         if (idx + 1) % 10000 == 0:
             print(f"[TrainRunner] Processed {idx + 1}/{total_items} captions ({(idx + 1) / total_items * 100:.1f}%)")
+
+    # Final progress update
+    _update_phase_progress(run_id, "initializing", 100.0, f"Processing captions: {total_items}/{total_items}")
 
     return processed_items
 
@@ -554,26 +593,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
     total_items = len(items)
     print(f"[TrainRunner] Processing {total_items} items from dataset {dataset_id}...")
 
-    # Helper function to update phase progress
-    def update_phase_progress(phase: str, progress: float, detail: str = None):
-        if run_id is None:
-            return
-        try:
-            # Create separate training DB session (db is for datasets.db)
-            training_db = next(get_training_db())
-            try:
-                run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
-                if run:
-                    run.phase = phase
-                    run.phase_progress = progress
-                    if detail:
-                        run.phase_detail = detail
-                    training_db.commit()
-            finally:
-                training_db.close()
-        except Exception as e:
-            print(f"[TrainRunner] Warning: Failed to update phase progress: {e}")
-
     dataset_items = []
     # Check if category_order is enabled
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
@@ -596,13 +615,13 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         print(f"[TrainRunner] No caption types specified - will auto-select per item (priority: tags > natural_language)")
 
     # Update phase to "initializing" for dataset loading
-    update_phase_progress("initializing", 0.0, f"Loading dataset: 0/{total_items} items")
+    _update_phase_progress(run_id, "initializing", 0.0, f"Loading dataset: 0/{total_items} items")
 
     for idx, item in enumerate(items):
         # Phase update every 1000 items (for UI responsiveness)
         if (idx + 1) % 1000 == 0:
             progress_pct = ((idx + 1) / total_items) * 100.0
-            update_phase_progress("initializing", progress_pct, f"Loading dataset: {idx + 1}/{total_items} items")
+            _update_phase_progress(run_id, "initializing", progress_pct, f"Loading dataset: {idx + 1}/{total_items} items")
 
         # Console log every 10000 items (to reduce log spam)
         if (idx + 1) % 10000 == 0:
@@ -708,7 +727,7 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         dataset_items.append(item_dict)
 
     # Mark dataset loading as complete
-    update_phase_progress("initializing", 100.0, f"Loaded {total_items}/{total_items} items")
+    _update_phase_progress(run_id, "initializing", 100.0, f"Loaded {total_items}/{total_items} items")
     print(f"[TrainRunner] Completed processing {total_items} items from dataset {dataset_id}")
     return dataset_items
 

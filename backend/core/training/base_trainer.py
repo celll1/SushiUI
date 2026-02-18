@@ -7577,6 +7577,8 @@ class BaseTrainer(ABC):
                     # (TensorBoard buffers events internally, can accumulate GBs over long training)
                     if global_step % 100 == 0:
                         self.writer.flush()
+                        # Also clear CUDA cache to prevent fragmented memory accumulation
+                        torch.cuda.empty_cache()
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)
                     if global_step % save_every_n_steps == 0:

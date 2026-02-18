@@ -3170,9 +3170,17 @@ class BaseTrainer(ABC):
 
             # CUDA error occurred - attempt batch splitting
             if batch_size <= min_split_batch_size:
-                print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), re-raising error")
+                # Cannot split further - SKIP this batch instead of crashing
+                print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
                 print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
-                raise
+                # Clear CUDA state and return zero loss (batch will be skipped)
+                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                # Return zero loss - this batch contributes nothing but training continues
+                return 0.0, 0.0, 0.0
 
             # Clear CUDA cache and reset error state before retry
             torch.cuda.empty_cache()

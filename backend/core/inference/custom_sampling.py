@@ -876,7 +876,11 @@ def custom_sampling_loop(
 
         # Get predicted x0 (original sample) if available from scheduler
         # This is the model's prediction of what the final denoised image should look like
+        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
+        # This prevents GPU sync delays during TAESD preview decoding
         pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        if pred_original_sample is not None:
+            pred_original_sample = pred_original_sample.detach().clone()
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -1558,7 +1562,10 @@ def custom_img2img_sampling_loop(
         latents = step_output.prev_sample
 
         # Get predicted x0 (original sample) if available from scheduler
+        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
         pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        if pred_original_sample is not None:
+            pred_original_sample = pred_original_sample.detach().clone()
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -2288,7 +2295,10 @@ def custom_inpaint_sampling_loop(
         latents = step_output.prev_sample
 
         # Get predicted x0 (original sample) if available from scheduler
+        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
         pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        if pred_original_sample is not None:
+            pred_original_sample = pred_original_sample.detach().clone()
 
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation

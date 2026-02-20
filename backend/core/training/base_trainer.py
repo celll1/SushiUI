@@ -3174,7 +3174,11 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
                 print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
                 # Clear CUDA state and return zero loss (batch will be skipped)
-                torch.cuda.empty_cache()
+                # Note: empty_cache() can fail if CUDA is in a bad state, so wrap in try-except
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
                 try:
                     torch.cuda.synchronize()
                 except Exception:
@@ -3183,7 +3187,11 @@ class BaseTrainer(ABC):
                 return 0.0, 0.0, 0.0
 
             # Clear CUDA cache and reset error state before retry
-            torch.cuda.empty_cache()
+            # Note: empty_cache() itself can fail if CUDA is in a bad state
+            try:
+                torch.cuda.empty_cache()
+            except Exception as cache_error:
+                print(f"{self.log_prefix} [CUDA Recovery] empty_cache() failed: {cache_error}")
             # Reset CUDA error state if possible
             try:
                 torch.cuda.synchronize()

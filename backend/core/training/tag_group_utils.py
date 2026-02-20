@@ -136,12 +136,15 @@ class TagGroupManager:
     - Eliminates 50MB file reads on every TagGroupManager instantiation
     """
 
-    def __init__(self, tag_group_dir: str = "taglist"):
+    def __init__(self, tag_group_dir: str = "taglist", enable_gelbooru: bool = False):
         """
         Initialize tag group manager.
 
         Args:
             tag_group_dir: Directory containing tag group JSON files
+            enable_gelbooru: If True, also load gelbooru supplement tags from taglist_gel/
+                             This is used for training only to reduce "Unknown" tags.
+                             Gelbooru has larger vocabulary but more noise.
         """
         tag_path = Path(tag_group_dir)
 
@@ -161,7 +164,8 @@ class TagGroupManager:
         self._normalized_rating_quality: Set[str] = set()  # Fast O(1) lookup for Rating/Quality
 
         # Initialize TaglistCache (will use singleton if already initialized)
-        taglist_cache.initialize(str(project_root))
+        # For training, enable gelbooru supplement to reduce "Unknown" tags
+        taglist_cache.initialize(str(project_root), enable_gelbooru=enable_gelbooru)
 
         self.load_tag_groups()
 
@@ -390,17 +394,20 @@ class TagGroupManager:
 _tag_group_manager_cache: Dict[str, TagGroupManager] = {}
 
 
-def get_tag_group_manager(tag_group_dir: str = "taglist") -> TagGroupManager:
+def get_tag_group_manager(tag_group_dir: str = "taglist", enable_gelbooru: bool = False) -> TagGroupManager:
     """
     Get or create tag group manager (cached).
 
     Args:
         tag_group_dir: Directory containing tag group JSON files
+        enable_gelbooru: If True, enable gelbooru supplement for training.
+                         Once enabled, it stays enabled for the session.
 
     Returns:
         TagGroupManager instance
     """
-    if tag_group_dir not in _tag_group_manager_cache:
-        _tag_group_manager_cache[tag_group_dir] = TagGroupManager(tag_group_dir)
+    cache_key = f"{tag_group_dir}:gel={enable_gelbooru}"
+    if cache_key not in _tag_group_manager_cache:
+        _tag_group_manager_cache[cache_key] = TagGroupManager(tag_group_dir, enable_gelbooru=enable_gelbooru)
 
-    return _tag_group_manager_cache[tag_group_dir]
+    return _tag_group_manager_cache[cache_key]

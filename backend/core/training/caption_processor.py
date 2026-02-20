@@ -91,7 +91,8 @@ def process_caption(
     # This is done FIRST, before any dropout or shuffle
     if category_order and len(category_order) > 0:
         from core.training.tag_group_utils import get_tag_group_manager
-        tag_manager = get_tag_group_manager(tag_group_dir)
+        # enable_gelbooru=True for training to reduce "Unknown" tags
+        tag_manager = get_tag_group_manager(tag_group_dir, enable_gelbooru=True)
 
         # Group tokens by category
         categorized: Dict[str, List[str]] = {}
@@ -158,7 +159,8 @@ def process_caption(
         tag_manager = None
         if tag_dropout_category_rates:
             from core.training.tag_group_utils import get_tag_group_manager
-            tag_manager = get_tag_group_manager(tag_group_dir)
+            # enable_gelbooru=True for training to reduce "Unknown" tags
+            tag_manager = get_tag_group_manager(tag_group_dir, enable_gelbooru=True)
 
         new_token_list = []
         for idx, token in enumerate(token_list):
@@ -206,7 +208,8 @@ def process_caption(
         if shuffle_tag_groups:
             from core.training.tag_group_utils import get_tag_group_manager
 
-            tag_manager = get_tag_group_manager(tag_group_dir)
+            # enable_gelbooru=True for training to reduce "Unknown" tags
+            tag_manager = get_tag_group_manager(tag_group_dir, enable_gelbooru=True)
 
             if shuffle_per_epoch:
                 # エポックごとに一貫したシャッフル（再現性あり）

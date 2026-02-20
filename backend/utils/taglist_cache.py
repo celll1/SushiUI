@@ -40,6 +40,8 @@ class TaglistCache:
         _category_map: Dict[normalized_tag, category] - Tag -> category lookup
         _prefix_index: Dict[(category, prefix), List[Tuple[tag, count]]] - Prefix search index
         _mtimes: Dict[category, float] - File modification times for invalidation
+        _gelbooru_enabled: bool - Whether gelbooru supplement is enabled (training only)
+        _gelbooru_loaded: bool - Whether gelbooru tags have been loaded
     """
 
     _instance = None
@@ -62,17 +64,26 @@ class TaglistCache:
         self._prefix_index: Dict[Tuple[str, str], List[Tuple[str, int]]] = {}
         self._mtimes: Dict[str, float] = {}
         self._root_dir: Optional[str] = None
+        self._gelbooru_enabled: bool = False
+        self._gelbooru_loaded: bool = False
         self._initialized = True
 
-    def initialize(self, root_dir: str):
+    def initialize(self, root_dir: str, enable_gelbooru: bool = False):
         """
         Initialize cache with root directory.
 
         Args:
             root_dir: Root directory of the application (where taglist/ folder is)
+            enable_gelbooru: If True, also load gelbooru supplement tags from taglist_gel/
+                             (used for training only, not for generation tag suggestions)
         """
         self._root_dir = root_dir
         self._load_all_categories()
+
+        # Load gelbooru supplement if enabled and not already loaded
+        if enable_gelbooru and not self._gelbooru_loaded:
+            self._gelbooru_enabled = True
+            self._load_gelbooru_supplement()
 
     def _normalize_tag(self, tag: str) -> str:
         """
@@ -211,6 +222,72 @@ class TaglistCache:
         for category in categories:
             if self._should_reload(category):
                 self._load_category(category)
+
+    def _load_gelbooru_supplement(self):
+        """
+        Load gelbooru supplement tags from taglist_gel/ directory.
+
+        These tags are merged into the existing category_map for training purposes only.
+        Gelbooru has a larger vocabulary but also more noise, so it's only used
+        to reduce "Unknown" tags during training caption processing.
+
+        Note: This does NOT affect prefix_index (no autocomplete for gelbooru tags).
+        """
+        if not self._root_dir:
+            return
+
+        gel_dir = os.path.join(self._root_dir, "taglist_gel")
+        if not os.path.exists(gel_dir):
+            print(f"[TaglistCache] Gelbooru supplement directory not found: {gel_dir}")
+            print(f"[TaglistCache] Skipping gelbooru supplement (optional)")
+            return
+
+        print(f"[TaglistCache] Loading gelbooru supplement from {gel_dir}")
+
+        # Same category mapping as danbooru
+        filename_map = {
+            "general": "General.json",
+            "character": "Character.json",
+            "artist": "Artist.json",
+            "copyright": "Copyright.json",
+            "meta": "Meta.json",
+            "model": "Model.json",
+        }
+
+        total_added = 0
+        total_skipped = 0
+
+        for category, filename in filename_map.items():
+            file_path = os.path.join(gel_dir, filename)
+            if not os.path.exists(file_path):
+                continue
+
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    tags_data = json.load(f)
+
+                added = 0
+                skipped = 0
+
+                for tag in tags_data.keys():
+                    normalized = self._normalize_tag(tag)
+                    if normalized:
+                        # Only add if not already in category_map (danbooru takes precedence)
+                        if normalized not in self._category_map:
+                            self._category_map[normalized] = category.capitalize()
+                            added += 1
+                        else:
+                            skipped += 1
+
+                print(f"[TaglistCache] Gelbooru {category}: +{added} new tags ({skipped} already in danbooru)")
+                total_added += added
+                total_skipped += skipped
+
+            except Exception as e:
+                print(f"[TaglistCache] Error loading gelbooru {category}: {e}")
+
+        print(f"[TaglistCache] Gelbooru supplement complete: {total_added} new tags added ({total_skipped} duplicates skipped)")
+        self._gelbooru_loaded = True
 
     def reload_if_needed(self):
         """Check all categories and reload if any files have been modified."""

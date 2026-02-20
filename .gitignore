@@ -20,6 +20,7 @@ outputs/
 lora/
 controlnet/
 taglist/
+taglist_gel/
 tagother/
 *.safetensors
 *.ckpt

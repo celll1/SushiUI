@@ -3168,77 +3168,152 @@ class BaseTrainer(ABC):
             if not is_recoverable_cuda_error:
                 raise  # Re-raise non-CUDA errors
 
+            # ============================================================
+            # CUDA Error Recovery: Clean up VRAM before retry
+            # ============================================================
+            # Critical: Must release all tensors from failed forward/backward pass
+            # before attempting batch split. Otherwise VRAM stays full.
+            print(f"{self.log_prefix} [CUDA Recovery] Error detected, cleaning up VRAM...")
+
+            # Step 1: Zero gradients to release gradient tensors from failed backward
+            # This is critical - partial backward may have accumulated invalid gradients
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+                print(f"{self.log_prefix} [CUDA Recovery] Gradients cleared (set_to_none=True)")
+            except Exception as grad_error:
+                print(f"{self.log_prefix} [CUDA Recovery] zero_grad() failed: {grad_error}")
+
+            # Step 2: Clear gradient checkpointing saved activations if using layer offloading
+            if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
+                try:
+                    self.layer_offload_conductor.clear_activations()
+                    print(f"{self.log_prefix} [CUDA Recovery] Layer offload activations cleared")
+                except Exception:
+                    pass
+
+            # Step 3: Clear FLUX.2 block swap activations if applicable
+            if hasattr(self, 'flux2_block_offloader') and self.flux2_block_offloader is not None:
+                try:
+                    self.flux2_block_offloader.clear_activations()
+                    print(f"{self.log_prefix} [CUDA Recovery] FLUX.2 block swap activations cleared")
+                except Exception:
+                    pass
+
+            # Step 4: Force Python garbage collection to release orphaned tensors
+            gc.collect()
+
+            # Step 5: Synchronize CUDA to ensure all pending operations complete/fail
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass  # May fail if CUDA is in bad state, that's okay
+
+            # Step 6: Clear CUDA cache (releases unreferenced GPU memory)
+            try:
+                torch.cuda.empty_cache()
+                print(f"{self.log_prefix} [CUDA Recovery] CUDA cache cleared")
+            except Exception as cache_error:
+                print(f"{self.log_prefix} [CUDA Recovery] empty_cache() failed: {cache_error}")
+
+            # Step 7: Reset CUDA error state by attempting a small allocation
+            try:
+                _test = torch.zeros(1, device=self.device)
+                del _test
+                print(f"{self.log_prefix} [CUDA Recovery] CUDA state verified OK")
+            except Exception as cuda_state_error:
+                print(f"{self.log_prefix} [CUDA Recovery] CUDA still in bad state: {cuda_state_error}")
+                # If CUDA is still broken, we may need to skip this batch
+                if batch_size <= min_split_batch_size:
+                    print(f"{self.log_prefix} [CUDA Recovery] Cannot recover, SKIPPING BATCH")
+                    return 0.0, 0.0, 0.0
+
             # CUDA error occurred - attempt batch splitting
             if batch_size <= min_split_batch_size:
                 # Cannot split further - SKIP this batch instead of crashing
                 print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
                 print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
-                # Clear CUDA state and return zero loss (batch will be skipped)
-                # Note: empty_cache() can fail if CUDA is in a bad state, so wrap in try-except
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-                try:
-                    torch.cuda.synchronize()
-                except Exception:
-                    pass
                 # Return zero loss - this batch contributes nothing but training continues
                 return 0.0, 0.0, 0.0
-
-            # Clear CUDA cache and reset error state before retry
-            # Note: empty_cache() itself can fail if CUDA is in a bad state
-            try:
-                torch.cuda.empty_cache()
-            except Exception as cache_error:
-                print(f"{self.log_prefix} [CUDA Recovery] empty_cache() failed: {cache_error}")
-            # Reset CUDA error state if possible
-            try:
-                torch.cuda.synchronize()
-            except Exception:
-                pass
 
             split_size = batch_size // 2
             print(f"{self.log_prefix} [CUDA Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size} (error: {str(e)[:100]})")
 
-            # Process first half
-            loss1, pred1, recon1 = self._forward_backward_with_oom_recovery(
-                mnt_latents=mnt_latents[:split_size],
-                mnt_text_embeddings=mnt_text_embeddings[:split_size],
-                mnt_attention_mask=mnt_attention_mask[:split_size] if mnt_attention_mask is not None else None,
-                mnt_pooled_embeddings=mnt_pooled_embeddings[:split_size] if mnt_pooled_embeddings is not None else None,
-                timesteps=timesteps[:split_size],
-                debug_save_path=debug_save_path,
-                batch_captions=batch_captions[:split_size] if batch_captions else None,
-                alphas_cumprod_cached=alphas_cumprod_cached,
-                use_condition_images=use_condition_images,
-                condition_images_batch=condition_images_batch[:split_size] if condition_images_batch is not None else None,
-                reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
-                min_split_batch_size=min_split_batch_size,
-            )
+            # Process first half with error handling
+            # If sub-batch fails, skip it and continue with the other half
+            try:
+                loss1, pred1, recon1 = self._forward_backward_with_oom_recovery(
+                    mnt_latents=mnt_latents[:split_size],
+                    mnt_text_embeddings=mnt_text_embeddings[:split_size],
+                    mnt_attention_mask=mnt_attention_mask[:split_size] if mnt_attention_mask is not None else None,
+                    mnt_pooled_embeddings=mnt_pooled_embeddings[:split_size] if mnt_pooled_embeddings is not None else None,
+                    timesteps=timesteps[:split_size],
+                    debug_save_path=debug_save_path,
+                    batch_captions=batch_captions[:split_size] if batch_captions else None,
+                    alphas_cumprod_cached=alphas_cumprod_cached,
+                    use_condition_images=use_condition_images,
+                    condition_images_batch=condition_images_batch[:split_size] if condition_images_batch is not None else None,
+                    reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
+                    min_split_batch_size=min_split_batch_size,
+                )
+                first_half_success = True
+            except Exception as split1_error:
+                print(f"{self.log_prefix} [CUDA Recovery] First half failed: {str(split1_error)[:100]}")
+                loss1, pred1, recon1 = 0.0, 0.0, 0.0
+                first_half_success = False
+                # Clean up after failure
+                gc.collect()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
-            # Process second half
-            loss2, pred2, recon2 = self._forward_backward_with_oom_recovery(
-                mnt_latents=mnt_latents[split_size:],
-                mnt_text_embeddings=mnt_text_embeddings[split_size:],
-                mnt_attention_mask=mnt_attention_mask[split_size:] if mnt_attention_mask is not None else None,
-                mnt_pooled_embeddings=mnt_pooled_embeddings[split_size:] if mnt_pooled_embeddings is not None else None,
-                timesteps=timesteps[split_size:],
-                debug_save_path=None,  # Only save debug from first split
-                batch_captions=batch_captions[split_size:] if batch_captions else None,
-                alphas_cumprod_cached=alphas_cumprod_cached,
-                use_condition_images=use_condition_images,
-                condition_images_batch=condition_images_batch[split_size:] if condition_images_batch is not None else None,
-                reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
-                min_split_batch_size=min_split_batch_size,
-            )
+            # Process second half with error handling
+            try:
+                loss2, pred2, recon2 = self._forward_backward_with_oom_recovery(
+                    mnt_latents=mnt_latents[split_size:],
+                    mnt_text_embeddings=mnt_text_embeddings[split_size:],
+                    mnt_attention_mask=mnt_attention_mask[split_size:] if mnt_attention_mask is not None else None,
+                    mnt_pooled_embeddings=mnt_pooled_embeddings[split_size:] if mnt_pooled_embeddings is not None else None,
+                    timesteps=timesteps[split_size:],
+                    debug_save_path=None,  # Only save debug from first split
+                    batch_captions=batch_captions[split_size:] if batch_captions else None,
+                    alphas_cumprod_cached=alphas_cumprod_cached,
+                    use_condition_images=use_condition_images,
+                    condition_images_batch=condition_images_batch[split_size:] if condition_images_batch is not None else None,
+                    reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
+                    min_split_batch_size=min_split_batch_size,
+                )
+                second_half_success = True
+            except Exception as split2_error:
+                print(f"{self.log_prefix} [CUDA Recovery] Second half failed: {str(split2_error)[:100]}")
+                loss2, pred2, recon2 = 0.0, 0.0, 0.0
+                second_half_success = False
+                # Clean up after failure
+                gc.collect()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            # If both halves failed, return zero (batch skipped)
+            if not first_half_success and not second_half_success:
+                print(f"{self.log_prefix} [CUDA Recovery] Both halves failed, SKIPPING BATCH")
+                return 0.0, 0.0, 0.0
 
             # Average losses (weighted by split sizes for correctness)
-            w1, w2 = split_size, batch_size - split_size
-            total = w1 + w2
-            avg_loss = (loss1 * w1 + loss2 * w2) / total
-            avg_pred = (pred1 * w1 + pred2 * w2) / total
-            avg_recon = (recon1 * w1 + recon2 * w2) / total
+            # Only count successful halves in the average
+            if first_half_success and second_half_success:
+                w1, w2 = split_size, batch_size - split_size
+                total = w1 + w2
+                avg_loss = (loss1 * w1 + loss2 * w2) / total
+                avg_pred = (pred1 * w1 + pred2 * w2) / total
+                avg_recon = (recon1 * w1 + recon2 * w2) / total
+            elif first_half_success:
+                # Only first half succeeded
+                avg_loss, avg_pred, avg_recon = loss1, pred1, recon1
+            else:
+                # Only second half succeeded
+                avg_loss, avg_pred, avg_recon = loss2, pred2, recon2
 
             return avg_loss, avg_pred, avg_recon
 
@@ -7589,20 +7664,57 @@ class BaseTrainer(ABC):
 
                         # Training step with OOM recovery (forward + backward)
                         # If OOM occurs, the batch is automatically split and processed sequentially
-                        mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value = self._forward_backward_with_oom_recovery(
-                            mnt_latents=mnt_latents,
-                            mnt_text_embeddings=mnt_text_embeddings,
-                            mnt_attention_mask=mnt_attention_mask,
-                            mnt_pooled_embeddings=mnt_pooled_embeddings,
-                            timesteps=timesteps,
-                            debug_save_path=debug_save_path,
-                            batch_captions=batch_captions,
-                            alphas_cumprod_cached=alphas_cumprod_cached,
-                            use_condition_images=use_condition_images,
-                            condition_images_batch=condition_images_batch,
-                            reference_latents_nested=reference_latents_nested,
-                            min_split_batch_size=1,
-                        )
+                        # Wrap in try-except as final safety net - if all recovery fails, skip batch
+                        cuda_error_skip = False  # Flag to skip optimizer step when CUDA is in bad state
+                        try:
+                            mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value = self._forward_backward_with_oom_recovery(
+                                mnt_latents=mnt_latents,
+                                mnt_text_embeddings=mnt_text_embeddings,
+                                mnt_attention_mask=mnt_attention_mask,
+                                mnt_pooled_embeddings=mnt_pooled_embeddings,
+                                timesteps=timesteps,
+                                debug_save_path=debug_save_path,
+                                batch_captions=batch_captions,
+                                alphas_cumprod_cached=alphas_cumprod_cached,
+                                use_condition_images=use_condition_images,
+                                condition_images_batch=condition_images_batch,
+                                reference_latents_nested=reference_latents_nested,
+                                min_split_batch_size=1,
+                            )
+                        except Exception as batch_error:
+                            # Final safety net: if all OOM recovery attempts failed,
+                            # skip this batch and continue training
+                            error_str = str(batch_error).lower()
+                            is_cuda_error = (
+                                "out of memory" in error_str or
+                                "cuda error" in error_str or
+                                "cublas" in error_str or
+                                "cudnn" in error_str
+                            )
+                            if is_cuda_error:
+                                print(f"{self.log_prefix} [FATAL CUDA Error] All recovery attempts failed, SKIPPING BATCH")
+                                print(f"{self.log_prefix} [FATAL CUDA Error] {str(batch_error)[:200]}")
+                                # Set flag to skip optimizer step - CUDA is in bad state
+                                cuda_error_skip = True
+                                # Aggressive cleanup
+                                try:
+                                    self.optimizer.zero_grad(set_to_none=True)
+                                except Exception as e:
+                                    print(f"{self.log_prefix} [FATAL CUDA Error] zero_grad failed: {e}")
+                                gc.collect()
+                                try:
+                                    torch.cuda.synchronize()
+                                except Exception:
+                                    pass
+                                try:
+                                    torch.cuda.empty_cache()
+                                except Exception:
+                                    pass
+                                # Skip this batch with zero loss
+                                mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value = 0.0, 0.0, 0.0
+                            else:
+                                # Non-CUDA error - re-raise
+                                raise
 
                         # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings
@@ -7674,9 +7786,27 @@ class BaseTrainer(ABC):
                         #
                         # global_step = (batch_idx * multi_noise_timesteps) + (mnt_idx + 1)
                         # We step optimizer when global_step is divisible by gradient_accumulation_steps
+                        #
+                        # IMPORTANT: Skip optimizer step if CUDA error occurred and batch was skipped.
+                        # When CUDA is in bad state, grad_scaler.unscale_() will fail.
                         should_step_optimizer = (global_step % gradient_accumulation_steps == 0)
 
-                        if should_step_optimizer:
+                        if cuda_error_skip:
+                            # CUDA error occurred - skip optimizer step entirely
+                            # The batch was skipped, so there are no valid gradients to step with
+                            print(f"{self.log_prefix} [CUDA Recovery] Skipping optimizer step (batch was skipped)")
+                            grad_norm_total, grad_norm_te, grad_norm_unet = 0.0, 0.0, 0.0
+                            # Still step LR scheduler to keep it in sync with global_step
+                            if should_step_optimizer:
+                                try:
+                                    if self.fused_optimizer_groups is not None:
+                                        for lr_scheduler in self.lr_schedulers:
+                                            lr_scheduler.step()
+                                    else:
+                                        self.lr_scheduler.step()
+                                except Exception as lr_err:
+                                    print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
+                        elif should_step_optimizer:
                             if not self.use_fused_backward and self.fused_optimizer_groups is None:
                                 # Normal flow: optimizer.step() and zero_grad() here
                                 if self.use_grad_scaler:

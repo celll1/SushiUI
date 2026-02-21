@@ -7219,25 +7219,35 @@ class BaseTrainer(ABC):
 
                         # Clear old buffer and encode new latents (dict keyed by image_path)
                         latent_swap_buffer.clear()
+                        corrupted_images = []  # Track corrupted images for logging
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
                             image_path = item["image_path"]
                             caption = item.get("caption", "")
                             width = item.get("width") or item.get("bucket_width")
                             height = item.get("height") or item.get("bucket_height")
 
-                            # Load and encode image
-                            image = Image.open(image_path)
-                            latent = self.encode_image(
-                                image=image,
-                                target_width=width,
-                                target_height=height,
-                                bucket_strategy=bucket_strategy
-                            )
-                            # Store on CPU to save GPU VRAM, keyed by image_path
-                            latent_swap_buffer[image_path] = (
-                                latent.cpu(),
-                                caption,  # String (CPU memory, minimal overhead)
-                            )
+                            # Load and encode image with corruption handling
+                            try:
+                                image = Image.open(image_path)
+                                # Force load to detect truncated images early
+                                image.load()
+                                latent = self.encode_image(
+                                    image=image,
+                                    target_width=width,
+                                    target_height=height,
+                                    bucket_strategy=bucket_strategy
+                                )
+                                # Store on CPU to save GPU VRAM, keyed by image_path
+                                latent_swap_buffer[image_path] = (
+                                    latent.cpu(),
+                                    caption,  # String (CPU memory, minimal overhead)
+                                )
+                            except Exception as img_error:
+                                # Log corrupted image and skip it
+                                corrupted_images.append(image_path)
+                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Skipping: {image_path}")
+                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
+                                continue
 
                             # Send progress update
                             if progress_callback and idx % 10 == 0:
@@ -7246,6 +7256,12 @@ class BaseTrainer(ABC):
                                     step=idx,
                                     total=len(buffer_items)
                                 )
+
+                        # Log summary of corrupted images
+                        if corrupted_images:
+                            print(f"{self.log_prefix} [CORRUPTED IMAGES] Total skipped: {len(corrupted_images)}")
+                            for path in corrupted_images:
+                                print(f"{self.log_prefix} [CORRUPTED IMAGES]   - {path}")
 
                         # Move VAE back to CPU
                         self.move_vae_to_cpu()
@@ -7270,6 +7286,10 @@ class BaseTrainer(ABC):
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
 
+                    # Flag to track if batch should be skipped due to corrupted image
+                    batch_has_corrupted_image = False
+                    corrupted_image_path = None
+
                     for item, dataset in batch:
                         # BucketManager stores bucket_width/bucket_height, not width/height
                         width = item.get("width") or item.get("bucket_width")
@@ -7290,19 +7310,30 @@ class BaseTrainer(ABC):
                             else:
                                 # Fallback to on-the-fly encoding (image not in buffer)
                                 # This happens when buffer hasn't been refilled yet for this batch
+                                # or when image was skipped during buffer refill (corrupted)
                                 print(f"{self.log_prefix} WARNING: Image not in latent swap buffer, encoding on-the-fly: {image_path}")
-                                self.move_vae_to_gpu()
-                                image = Image.open(image_path)
-                                latent = self.encode_image(
-                                    image=image,
-                                    target_width=width,
-                                    target_height=height,
-                                    bucket_strategy=bucket_strategy
-                                )
-                                # Ensure latent is on training device
-                                latent = latent.to(self.device)
-                                latents_list.append(latent)
-                                self.move_vae_to_cpu()
+                                try:
+                                    self.move_vae_to_gpu()
+                                    image = Image.open(image_path)
+                                    image.load()  # Force load to detect truncated images
+                                    latent = self.encode_image(
+                                        image=image,
+                                        target_width=width,
+                                        target_height=height,
+                                        bucket_strategy=bucket_strategy
+                                    )
+                                    # Ensure latent is on training device
+                                    latent = latent.to(self.device)
+                                    latents_list.append(latent)
+                                    self.move_vae_to_cpu()
+                                except Exception as img_error:
+                                    # Corrupted image - log and skip entire batch
+                                    print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {image_path}")
+                                    print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
+                                    # Set flag to skip this batch
+                                    batch_has_corrupted_image = True
+                                    corrupted_image_path = image_path
+                                    break
 
                         elif latent_encoding_mode == "pre_encoded_cache":
                             # Load from disk cache
@@ -7328,14 +7359,23 @@ class BaseTrainer(ABC):
 
                         elif latent_encoding_mode == "onthefly_gpu":
                             # Encode on GPU without cache
-                            image = Image.open(item["image_path"])
-                            latent = self.encode_image(
-                                image=image,
-                                target_width=width,
-                                target_height=height,
-                                bucket_strategy=bucket_strategy
-                            )
-                            latents_list.append(latent)
+                            try:
+                                image = Image.open(item["image_path"])
+                                image.load()  # Force load to detect truncated images
+                                latent = self.encode_image(
+                                    image=image,
+                                    target_width=width,
+                                    target_height=height,
+                                    bucket_strategy=bucket_strategy
+                                )
+                                latents_list.append(latent)
+                            except Exception as img_error:
+                                # Corrupted image - log and skip entire batch
+                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {item['image_path']}")
+                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
+                                batch_has_corrupted_image = True
+                                corrupted_image_path = item["image_path"]
+                                break
 
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
@@ -7449,6 +7489,20 @@ class BaseTrainer(ABC):
                             else:
                                 # No reference image - mark as None (will skip this item)
                                 condition_images_list.append(None)
+
+                    # Skip batch if corrupted image was detected
+                    if batch_has_corrupted_image:
+                        print(f"{self.log_prefix} [CORRUPTED IMAGE] Skipping batch due to corrupted image: {corrupted_image_path}")
+                        # Cleanup partial lists
+                        del latents_list, text_embeddings_list, auxiliary_data_list
+                        if reference_latents_list:
+                            del reference_latents_list
+                        if condition_images_list:
+                            del condition_images_list
+                        # Update global_step for skipped batch (to maintain step counting)
+                        # Each batch would have processed multi_noise_timesteps steps
+                        global_step += multi_noise_timesteps
+                        continue
 
                     # Stack batch with size validation
                     # Filter out latents with mismatched spatial dimensions (rare edge case)

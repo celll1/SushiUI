@@ -3110,7 +3110,7 @@ class BaseTrainer(ABC):
         condition_images_batch: Optional[torch.Tensor],
         reference_latents_nested: Optional[list],
         min_split_batch_size: int = 1,
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
 
@@ -3133,7 +3133,8 @@ class BaseTrainer(ABC):
             min_split_batch_size: Minimum batch size (stop splitting below this)
 
         Returns:
-            Tuple of (loss_value, pred_loss_value, recon_loss_value) as Python floats
+            Tuple of (loss_value, pred_loss_value, recon_loss_value, cuda_error_skip) as Python floats
+            cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
 
@@ -3152,7 +3153,7 @@ class BaseTrainer(ABC):
                 condition_images_batch=condition_images_batch,
                 reference_latents_nested=reference_latents_nested,
             )
-            return loss, pred_loss, recon_loss
+            return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
 
         except RuntimeError as e:
             error_str = str(e).lower()
@@ -3209,11 +3210,24 @@ class BaseTrainer(ABC):
                 pass  # May fail if CUDA is in bad state, that's okay
 
             # Step 6: Clear CUDA cache (releases unreferenced GPU memory)
+            empty_cache_failed = False
             try:
                 torch.cuda.empty_cache()
                 print(f"{self.log_prefix} [CUDA Recovery] CUDA cache cleared")
             except Exception as cache_error:
                 print(f"{self.log_prefix} [CUDA Recovery] empty_cache() failed: {cache_error}")
+                empty_cache_failed = True
+                # If empty_cache itself fails, CUDA context is severely corrupted
+                # Try to reset CUDA context by forcing synchronization
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                # Try ipc_collect as last resort
+                try:
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
 
             # Step 7: Reset CUDA error state by attempting a small allocation
             try:
@@ -3222,10 +3236,16 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [CUDA Recovery] CUDA state verified OK")
             except Exception as cuda_state_error:
                 print(f"{self.log_prefix} [CUDA Recovery] CUDA still in bad state: {cuda_state_error}")
+                # If CUDA is still broken after empty_cache failed, this is unrecoverable
+                # Signal that emergency checkpoint should be saved and process should restart
+                if empty_cache_failed:
+                    print(f"{self.log_prefix} [CUDA Recovery] CUDA context is severely corrupted (empty_cache failed)")
+                    print(f"{self.log_prefix} [CUDA Recovery] Raising exception to trigger emergency checkpoint save")
+                    raise RuntimeError(f"CUDA context unrecoverable: empty_cache() failed. Original error: {str(e)[:200]}")
                 # If CUDA is still broken, we may need to skip this batch
                 if batch_size <= min_split_batch_size:
                     print(f"{self.log_prefix} [CUDA Recovery] Cannot recover, SKIPPING BATCH")
-                    return 0.0, 0.0, 0.0
+                    return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
 
             # CUDA error occurred - attempt batch splitting
             if batch_size <= min_split_batch_size:
@@ -3233,7 +3253,7 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
                 print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
                 # Return zero loss - this batch contributes nothing but training continues
-                return 0.0, 0.0, 0.0
+                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
 
             split_size = batch_size // 2
             print(f"{self.log_prefix} [CUDA Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size} (error: {str(e)[:100]})")
@@ -3241,7 +3261,7 @@ class BaseTrainer(ABC):
             # Process first half with error handling
             # If sub-batch fails, skip it and continue with the other half
             try:
-                loss1, pred1, recon1 = self._forward_backward_with_oom_recovery(
+                loss1, pred1, recon1, skip1 = self._forward_backward_with_oom_recovery(
                     mnt_latents=mnt_latents[:split_size],
                     mnt_text_embeddings=mnt_text_embeddings[:split_size],
                     mnt_attention_mask=mnt_attention_mask[:split_size] if mnt_attention_mask is not None else None,
@@ -3255,10 +3275,10 @@ class BaseTrainer(ABC):
                     reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
                 )
-                first_half_success = True
+                first_half_success = not skip1  # skip1=True means this half was skipped
             except Exception as split1_error:
                 print(f"{self.log_prefix} [CUDA Recovery] First half failed: {str(split1_error)[:100]}")
-                loss1, pred1, recon1 = 0.0, 0.0, 0.0
+                loss1, pred1, recon1, skip1 = 0.0, 0.0, 0.0, True
                 first_half_success = False
                 # Clean up after failure
                 gc.collect()
@@ -3269,7 +3289,7 @@ class BaseTrainer(ABC):
 
             # Process second half with error handling
             try:
-                loss2, pred2, recon2 = self._forward_backward_with_oom_recovery(
+                loss2, pred2, recon2, skip2 = self._forward_backward_with_oom_recovery(
                     mnt_latents=mnt_latents[split_size:],
                     mnt_text_embeddings=mnt_text_embeddings[split_size:],
                     mnt_attention_mask=mnt_attention_mask[split_size:] if mnt_attention_mask is not None else None,
@@ -3283,10 +3303,10 @@ class BaseTrainer(ABC):
                     reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
                 )
-                second_half_success = True
+                second_half_success = not skip2  # skip2=True means this half was skipped
             except Exception as split2_error:
                 print(f"{self.log_prefix} [CUDA Recovery] Second half failed: {str(split2_error)[:100]}")
-                loss2, pred2, recon2 = 0.0, 0.0, 0.0
+                loss2, pred2, recon2, skip2 = 0.0, 0.0, 0.0, True
                 second_half_success = False
                 # Clean up after failure
                 gc.collect()
@@ -3298,7 +3318,7 @@ class BaseTrainer(ABC):
             # If both halves failed, return zero (batch skipped)
             if not first_half_success and not second_half_success:
                 print(f"{self.log_prefix} [CUDA Recovery] Both halves failed, SKIPPING BATCH")
-                return 0.0, 0.0, 0.0
+                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
 
             # Average losses (weighted by split sizes for correctness)
             # Only count successful halves in the average
@@ -3315,7 +3335,8 @@ class BaseTrainer(ABC):
                 # Only second half succeeded
                 avg_loss, avg_pred, avg_recon = loss2, pred2, recon2
 
-            return avg_loss, avg_pred, avg_recon
+            # At least one half succeeded, so we have valid gradients
+            return avg_loss, avg_pred, avg_recon, False  # cuda_error_skip=False
 
     def _execute_forward_backward(
         self,
@@ -7721,7 +7742,7 @@ class BaseTrainer(ABC):
                         # Wrap in try-except as final safety net - if all recovery fails, skip batch
                         cuda_error_skip = False  # Flag to skip optimizer step when CUDA is in bad state
                         try:
-                            mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value = self._forward_backward_with_oom_recovery(
+                            mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value, cuda_error_skip = self._forward_backward_with_oom_recovery(
                                 mnt_latents=mnt_latents,
                                 mnt_text_embeddings=mnt_text_embeddings,
                                 mnt_attention_mask=mnt_attention_mask,
@@ -8120,6 +8141,76 @@ class BaseTrainer(ABC):
 
             self.writer.close()
             raise
+
+        except Exception as e:
+            # Emergency checkpoint save on any unhandled exception (CUDA errors, etc.)
+            print(f"\n{self.log_prefix} [EMERGENCY] Training failed with error: {type(e).__name__}: {str(e)[:200]}")
+            print(f"{self.log_prefix} [EMERGENCY] Attempting to save emergency checkpoint at step {global_step}, epoch {epoch}...")
+
+            # For CUDA errors, first try to move model to CPU to free GPU memory
+            try:
+                print(f"{self.log_prefix} [EMERGENCY] Moving model to CPU to free GPU memory...")
+                self.move_main_model_to_cpu()
+                self.move_text_encoder_to_cpu()
+                self.move_vae_to_cpu()
+            except Exception as move_error:
+                print(f"{self.log_prefix} [EMERGENCY] Failed to move model to CPU: {move_error}")
+
+            # Try to clear CUDA cache (may fail if context is corrupted)
+            try:
+                import gc
+                gc.collect()
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            except Exception:
+                pass  # Ignore - CUDA may be in bad state
+
+            # Try to save checkpoint
+            checkpoint_saved = False
+            try:
+                self.save_checkpoint(step=global_step, epoch=epoch)
+                checkpoint_saved = True
+                print(f"{self.log_prefix} [EMERGENCY] Checkpoint saved successfully")
+            except Exception as save_error:
+                print(f"{self.log_prefix} [EMERGENCY] Failed to save checkpoint: {save_error}")
+                import traceback
+                traceback.print_exc()
+
+            # Try to save training state
+            state_saved = False
+            try:
+                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                state_saved = True
+                print(f"{self.log_prefix} [EMERGENCY] Training state saved successfully")
+            except Exception as state_error:
+                print(f"{self.log_prefix} [EMERGENCY] Failed to save training state: {state_error}")
+
+            # Try to save optimizer state
+            optimizer_saved = False
+            try:
+                self.save_optimizer_state(step=global_step)
+                optimizer_saved = True
+                print(f"{self.log_prefix} [EMERGENCY] Optimizer state saved successfully")
+            except Exception as opt_error:
+                print(f"{self.log_prefix} [EMERGENCY] Failed to save optimizer state: {opt_error}")
+
+            # Summary
+            if checkpoint_saved or state_saved or optimizer_saved:
+                saved_items = []
+                if checkpoint_saved:
+                    saved_items.append("checkpoint")
+                if state_saved:
+                    saved_items.append("state")
+                if optimizer_saved:
+                    saved_items.append("optimizer")
+                print(f"{self.log_prefix} [EMERGENCY] Saved: {', '.join(saved_items)}")
+                print(f"{self.log_prefix} [EMERGENCY] Training can be resumed from step {global_step}")
+            else:
+                print(f"{self.log_prefix} [EMERGENCY] WARNING: All save attempts failed!")
+                print(f"{self.log_prefix} [EMERGENCY] Training progress may be lost")
+
+            self.writer.close()
+            raise  # Re-raise the original exception
 
         print(f"{self.log_prefix} Training complete!")
 

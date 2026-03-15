@@ -389,7 +389,9 @@ async def generate_txt2img(
             is_flux2,
             image_width=params.get("width"),
             image_height=params.get("height"),
-            preview_predicted_x0=preview_predicted_x0
+            preview_predicted_x0=preview_predicted_x0,
+            preview_enabled=params.get("preview_enabled", True),
+            preview_interval=params.get("preview_interval", 4)
         )
 
         # Create step callback for LoRA step range if needed
@@ -693,7 +695,9 @@ async def generate_img2img(
             steps=steps,
             image_width=width,
             image_height=height,
-            preview_predicted_x0=preview_predicted_x0
+            preview_predicted_x0=preview_predicted_x0,
+            preview_enabled=params.get("preview_enabled", True),
+            preview_interval=params.get("preview_interval", 4)
         )
 
         # Create step callback for LoRA step range if needed
@@ -1023,7 +1027,9 @@ async def generate_inpaint(
             steps=steps,
             image_width=width,
             image_height=height,
-            preview_predicted_x0=preview_predicted_x0
+            preview_predicted_x0=preview_predicted_x0,
+            preview_enabled=params.get("preview_enabled", True),
+            preview_interval=params.get("preview_interval", 4)
         )
 
         # Create step callback for LoRA step range if needed

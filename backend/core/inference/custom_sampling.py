@@ -2319,6 +2319,11 @@ def custom_inpaint_sampling_loop(
             # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
             latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
 
+            # Apply same mask blending to pred_original_sample for consistent x0 preview
+            # Without this, the preview shows unblended generation (incorrect outside mask area)
+            if pred_original_sample is not None:
+                pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
+
         # Reset debug flag after first iteration
         if first_iteration_debug:
             first_iteration_debug = False

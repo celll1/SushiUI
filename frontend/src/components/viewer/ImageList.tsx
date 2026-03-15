@@ -35,22 +35,31 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
           gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`
         }}
       >
-        {images.map((image) => (
-          <div
-            key={image.id}
-            onClick={() => onImageClick(image)}
-            className="cursor-pointer group"
-          >
-            <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
-              <img
-                src={`/thumbnails/${image.filename}`}
-                alt={image.prompt}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-              />
+        {images.map((image) => {
+          // Get base filename without extension for WebP support
+          const baseName = image.filename.replace(/\.[^/.]+$/, "");
+          return (
+            <div
+              key={image.id}
+              onClick={() => onImageClick(image)}
+              className="cursor-pointer group"
+            >
+              <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
+                {/* Use picture element for WebP with PNG fallback, lazy loading for transfer reduction */}
+                <picture>
+                  <source srcSet={`/thumbnails/${baseName}.webp`} type="image/webp" />
+                  <img
+                    src={`/thumbnails/${baseName}.png`}
+                    alt={image.prompt}
+                    loading="lazy"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                  />
+                </picture>
+              </div>
+              <p className="mt-2 text-xs text-gray-400 truncate hidden lg:block">{image.prompt}</p>
             </div>
-            <p className="mt-2 text-xs text-gray-400 truncate hidden lg:block">{image.prompt}</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

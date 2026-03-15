@@ -147,17 +147,37 @@ def save_image_with_metadata(
     return filename
 
 def create_thumbnail(image_path: str, size: tuple = (256, 256)) -> str:
-    """Create thumbnail from image"""
+    """Create thumbnail from image (PNG + WebP versions)
+
+    Creates both PNG (for compatibility) and WebP (for transfer reduction) thumbnails.
+    WebP version is ~80% smaller than PNG on average.
+    """
     os.makedirs(settings.thumbnails_dir, exist_ok=True)
 
     image = Image.open(image_path)
+    # Convert to RGB if RGBA (WebP quality mode requires RGB)
+    if image.mode == 'RGBA':
+        # Create white background and paste image on it
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        background.paste(image, mask=image.split()[3])
+        image = background
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+
     image.thumbnail(size, Image.Resampling.LANCZOS)
 
     filename = os.path.basename(image_path)
-    thumb_path = os.path.join(settings.thumbnails_dir, filename)
-    image.save(thumb_path)
+    base_name = os.path.splitext(filename)[0]
 
-    return thumb_path
+    # Save PNG version (for compatibility)
+    thumb_path_png = os.path.join(settings.thumbnails_dir, f"{base_name}.png")
+    image.save(thumb_path_png, format='PNG')
+
+    # Save WebP version (for transfer reduction, ~80% smaller)
+    thumb_path_webp = os.path.join(settings.thumbnails_dir, f"{base_name}.webp")
+    image.save(thumb_path_webp, format='WEBP', quality=85)
+
+    return thumb_path_png
 
 def extract_metadata_from_image(image_path: str) -> Dict[str, Any]:
     """Extract metadata from PNG image"""

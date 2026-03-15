@@ -79,7 +79,9 @@ def create_progress_callback_factory(
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
     image_height: Optional[int] = None,
-    preview_predicted_x0: bool = False
+    preview_predicted_x0: bool = False,
+    preview_enabled: bool = True,
+    preview_interval: int = 1
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -99,6 +101,8 @@ def create_progress_callback_factory(
         image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
         image_height: 生成画像の高さ（FLUX.2プレビューのアスペクト比計算用）
         preview_predicted_x0: Trueの場合、現在のlatentではなくpred_original_sample（推定x0）をプレビュー
+        preview_enabled: プレビュー画像を生成するかどうか（転送量削減用）
+        preview_interval: プレビューを送信するステップ間隔（1=毎ステップ、4=4ステップごと）
 
     Returns:
         プログレスコールバック関数
@@ -110,42 +114,55 @@ def create_progress_callback_factory(
         else:
             display_total = total_steps
 
-        # Generate preview image from latent (every step for debugging)
+        # Generate preview image from latent (based on preview_interval)
         preview_image = None
         send_metrics = None
 
-        # Always generate preview (every step)
-        try:
-            # Debug: Log model type being used for preview
-            if step == -1 or step == 0:
-                print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}")
+        # Determine if we should generate preview for this step
+        # Always generate for: initial (-1), first step (0), last step, or at interval
+        is_last_step = (step == total_steps - 1)
+        should_generate_preview = preview_enabled and (
+            step == -1 or
+            step == 0 or
+            is_last_step or
+            (step > 0 and step % preview_interval == 0)
+        )
 
-            # Choose which latent to decode based on preview_predicted_x0 option
-            # If preview_predicted_x0 is True and pred_original_sample is available, use it
-            # Otherwise fall back to current latents
-            if preview_predicted_x0 and pred_original_sample is not None:
-                latent_to_decode = pred_original_sample
-            else:
-                latent_to_decode = latents
+        if should_generate_preview:
+            try:
+                # Debug: Log model type being used for preview
+                if step == -1 or step == 0:
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
 
-            preview_pil = taesd_manager.decode_latent(
-                latent_to_decode,
-                is_sdxl=is_sdxl,
-                is_zimage=is_zimage,
-                is_deus=is_deus,
-                is_zimage_sdxl_vae=is_zimage_sdxl_vae,
-                is_flux2=is_flux2,
-                image_width=image_width,
-                image_height=image_height
-            )
-            if preview_pil:
-                buffered = BytesIO()
-                preview_pil.save(buffered, format="JPEG", quality=85)
-                preview_image = base64.b64encode(buffered.getvalue()).decode()
-        except Exception as e:
-            print(f"Preview generation error: {e}")
-        # Always send CFG metrics with preview
-        send_metrics = cfg_metrics
+                # Choose which latent to decode based on preview_predicted_x0 option
+                # If preview_predicted_x0 is True and pred_original_sample is available, use it
+                # Otherwise fall back to current latents
+                if preview_predicted_x0 and pred_original_sample is not None:
+                    latent_to_decode = pred_original_sample
+                else:
+                    latent_to_decode = latents
+
+                preview_pil = taesd_manager.decode_latent(
+                    latent_to_decode,
+                    is_sdxl=is_sdxl,
+                    is_zimage=is_zimage,
+                    is_deus=is_deus,
+                    is_zimage_sdxl_vae=is_zimage_sdxl_vae,
+                    is_flux2=is_flux2,
+                    image_width=image_width,
+                    image_height=image_height
+                )
+                if preview_pil:
+                    buffered = BytesIO()
+                    # Use quality 75 for better compression (was 85)
+                    preview_pil.save(buffered, format="JPEG", quality=75)
+                    preview_image = base64.b64encode(buffered.getvalue()).decode()
+            except Exception as e:
+                print(f"Preview generation error: {e}")
+
+        # Send CFG metrics (only when preview is generated to reduce transfer)
+        if should_generate_preview:
+            send_metrics = cfg_metrics
 
         # Handle step=-1 (initial noise) display
         if step == -1:

@@ -5603,6 +5603,21 @@ class DiffusionPipelineManager:
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()
 
+        # Clear embeds_cache to prevent VRAM leak from prompt editing closures
+        if 'embeds_cache' in dir() and embeds_cache:
+            for key in list(embeds_cache.keys()):
+                tensors = embeds_cache[key]
+                if tensors:
+                    for tensor in tensors:
+                        if tensor is not None:
+                            del tensor
+                del embeds_cache[key]
+            embeds_cache.clear()
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("[VRAM] Cleared embeds_cache for prompt editing")
+
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
@@ -6075,6 +6090,21 @@ class DiffusionPipelineManager:
             if hasattr(self, 'device') and self.device == "cuda":
                 torch.cuda.empty_cache()
 
+        # Clear embeds_cache to prevent VRAM leak from prompt editing closures
+        if 'embeds_cache' in dir() and embeds_cache:
+            for key in list(embeds_cache.keys()):
+                tensors = embeds_cache[key]
+                if tensors:
+                    for tensor in tensors:
+                        if tensor is not None:
+                            del tensor
+                del embeds_cache[key]
+            embeds_cache.clear()
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("[VRAM] Cleared embeds_cache for prompt editing")
+
         # Apply extensions after generation
         for ext in self.extensions:
             if ext.enabled:
@@ -6406,6 +6436,21 @@ class DiffusionPipelineManager:
         # Clear intermediate tensors
         if hasattr(self, 'device') and self.device == "cuda":
             torch.cuda.empty_cache()
+
+        # Clear embeds_cache to prevent VRAM leak from prompt editing closures
+        if 'embeds_cache' in dir() and embeds_cache:
+            for key in list(embeds_cache.keys()):
+                tensors = embeds_cache[key]
+                if tensors:
+                    for tensor in tensors:
+                        if tensor is not None:
+                            del tensor
+                del embeds_cache[key]
+            embeds_cache.clear()
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("[VRAM] Cleared embeds_cache for prompt editing")
 
         # Apply extensions after generation
         for ext in self.extensions:

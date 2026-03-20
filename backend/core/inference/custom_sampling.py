@@ -80,6 +80,9 @@ def prepare_reference_guide_latents(
 
     for idx, cfg in enumerate(ref_guide_configs):
         image = cfg["image"]
+        # Ensure RGB (drop alpha channel if RGBA)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
         # Resize to target resolution
         if image.size != (width, height):
             image = image.resize((width, height), Image.Resampling.LANCZOS)

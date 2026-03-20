@@ -1182,6 +1182,32 @@ components:
           type: array
           items:
             type: object
+            properties:
+              model_path:
+                type: string
+              image_base64:
+                type: string
+              strength:
+                type: number
+                default: 1.0
+              start_step:
+                type: integer
+                default: 0
+              end_step:
+                type: integer
+                default: 1000
+              is_lllite:
+                type: boolean
+                default: false
+              is_reference_guide:
+                type: boolean
+                default: false
+                description: "Reference Guide mode: blend latent toward reference image instead of using ControlNet model"
+              preprocessor:
+                type: string
+              enable_preprocessor:
+                type: boolean
+                default: false
         cfg_schedule_type:
           type: string
           enum: [constant, linear, cosine, exponential]

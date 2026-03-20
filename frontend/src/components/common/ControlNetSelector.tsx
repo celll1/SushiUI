@@ -30,6 +30,7 @@ export interface ControlNetConfig {
   layer_weights?: { [layerName: string]: number };  // Changed to support per-layer weights
   prompt?: string;
   is_lllite: boolean;
+  is_reference_guide?: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
 }
@@ -351,10 +352,24 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       end_step: 1000,
       layer_weights: {},  // Will be initialized by LayerWeightGraph
       is_lllite: false,
+      is_reference_guide: false,
       preprocessor: undefined,
       enable_preprocessor: true,
     };
     notifyChange([...value, newControlNet]);
+  };
+
+  const addReferenceGuide = () => {
+    const newRefGuide: ControlNetConfig = {
+      model_path: "__reference_guide__",
+      strength: 0.4,
+      start_step: 0,
+      end_step: 800,
+      is_lllite: false,
+      is_reference_guide: true,
+      enable_preprocessor: false,
+    };
+    notifyChange([...value, newRefGuide]);
   };
 
   const removeControlNet = async (index: number) => {
@@ -580,6 +595,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             {/* Model Selection */}
             <div className="flex gap-2 mb-3 items-start">
               <div className="flex-1">
+                {cn.is_reference_guide ? (
+                  <div className="mt-1">
+                    <span className="inline-block text-xs px-2 py-0.5 rounded bg-green-700 text-green-100">
+                      Reference Guide
+                    </span>
+                  </div>
+                ) : (
+                <>
                 <select
                   value={cn.model_path}
                   onChange={(e) => {
@@ -615,6 +638,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       {modelTypes.get(index) === "LLLite" ? "⚡ ControlNet-LLLite" : "🎯 Standard ControlNet"}
                     </span>
                   </div>
+                )}
+                </>
                 )}
               </div>
               <Button
@@ -812,7 +837,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   disabled={disabled}
                 />
 
-                {/* U-Net Block Weights */}
+                {/* U-Net Block Weights - hidden for Reference Guide */}
+                {!cn.is_reference_guide && (
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     U-Net Block Weights
@@ -826,10 +852,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     modelLoaded={modelLoaded}
                   />
                 </div>
+                )}
               </div>
             </div>
 
-            {/* Preprocessor Settings - Full width, 2 column layout */}
+            {/* Preprocessor Settings - hidden for Reference Guide */}
+            {cn.is_reference_guide ? null :
             <div className="mt-3 p-3 bg-gray-700 rounded-lg">
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Preprocessor
@@ -978,8 +1006,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 )}
               </div>
             </div>
+            }
 
-            {/* Optional Prompt for this ControlNet */}
+            {/* Optional Prompt for this ControlNet - hidden for Reference Guide */}
+            {!cn.is_reference_guide &&
             <div className="mt-3">
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Optional Prompt (for this ControlNet only)
@@ -993,18 +1023,29 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               />
             </div>
+            }
           </div>
         ))}
 
-        {/* Add ControlNet Button */}
-        <Button
-          onClick={addControlNet}
-          disabled={disabled || availableControlNets.length === 0}
-          variant="secondary"
-          className="w-full"
-        >
-          + Add ControlNet
-        </Button>
+        {/* Add ControlNet / Reference Guide Buttons */}
+        <div className="flex gap-2">
+          <Button
+            onClick={addControlNet}
+            disabled={disabled || availableControlNets.length === 0}
+            variant="secondary"
+            className="flex-1"
+          >
+            + Add ControlNet
+          </Button>
+          <Button
+            onClick={addReferenceGuide}
+            disabled={disabled}
+            variant="secondary"
+            className="flex-1"
+          >
+            + Reference Guide
+          </Button>
+        </div>
       </div>
     </Card>
 

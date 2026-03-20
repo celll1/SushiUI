@@ -142,6 +142,7 @@ export interface ControlNetConfig {
   layer_weights?: { down: number; mid: number; up: number };
   prompt?: string;
   is_lllite: boolean;
+  is_reference_guide?: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
 }

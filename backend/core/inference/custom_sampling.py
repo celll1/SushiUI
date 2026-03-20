@@ -50,6 +50,115 @@ import math
 from math import pi, cos
 
 
+def prepare_reference_guide_latents(
+    ref_guide_configs,
+    pipeline,
+    width,
+    height,
+    device,
+    dtype,
+    generator,
+):
+    """Prepare reference guide clean latents by VAE-encoding the reference images.
+
+    Args:
+        ref_guide_configs: List of dicts with "image" (PIL), "strength", "start_step", "end_step"
+        pipeline: Pipeline with VAE
+        width, height: Target resolution
+        device, dtype: Torch device and dtype
+        generator: Torch generator for noise
+
+    Returns:
+        List of dicts with "clean_latent", "noise", "strength", "start_step", "end_step"
+        or empty list if no ref guides
+    """
+    if not ref_guide_configs:
+        return []
+
+    vae_dtype = next(pipeline.vae.parameters()).dtype
+    ref_guides = []
+
+    for idx, cfg in enumerate(ref_guide_configs):
+        image = cfg["image"]
+        # Resize to target resolution
+        if image.size != (width, height):
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+        # PIL -> tensor -> VAE encode
+        img_tensor = torch.from_numpy(np.array(image)).float() / 255.0
+        img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        img_tensor = img_tensor * 2.0 - 1.0  # [-1, 1]
+
+        with torch.no_grad():
+            clean_latent = pipeline.vae.encode(
+                img_tensor.to(device=device, dtype=vae_dtype)
+            ).latent_dist.sample(generator)
+            clean_latent = clean_latent * pipeline.vae.config.scaling_factor
+            clean_latent = clean_latent.to(dtype=dtype)
+
+        # Generate noise for re-noising at each step
+        noise = torch.randn(clean_latent.shape, generator=generator, device=device, dtype=dtype)
+
+        # Normalize start/end from 0-1000 to 0.0-1.0
+        start_frac = cfg.get("start_step", 0) / 1000.0
+        end_frac = cfg.get("end_step", 1000) / 1000.0
+
+        ref_guides.append({
+            "clean_latent": clean_latent,
+            "noise": noise,
+            "strength": cfg.get("strength", 0.4),
+            "start_frac": start_frac,
+            "end_frac": end_frac,
+        })
+        print(f"[RefGuide {idx}] Prepared: strength={cfg.get('strength', 0.4)}, "
+              f"range={start_frac:.2f}-{end_frac:.2f}, latent shape={clean_latent.shape}")
+
+    return ref_guides
+
+
+def apply_reference_guide_blend(
+    latents,
+    pred_original_sample,
+    ref_guides,
+    current_fraction,
+    step_index,
+    timesteps,
+    scheduler,
+):
+    """Apply reference guide blending after scheduler.step.
+
+    Args:
+        latents: Current denoised latents
+        pred_original_sample: x0 prediction (or None)
+        ref_guides: List from prepare_reference_guide_latents()
+        current_fraction: Current step as 0.0-1.0 fraction
+        step_index: Current step index
+        timesteps: Full timestep tensor
+        scheduler: Diffusion scheduler
+
+    Returns:
+        (latents, pred_original_sample) - blended
+    """
+    if not ref_guides:
+        return latents, pred_original_sample
+
+    for rg in ref_guides:
+        if rg["start_frac"] <= current_fraction <= rg["end_frac"] and rg["strength"] > 0:
+            weight = rg["strength"]
+            if step_index < len(timesteps) - 1:
+                next_t = timesteps[step_index + 1]
+                ref_at_t = scheduler.add_noise(rg["clean_latent"], rg["noise"], next_t.unsqueeze(0))
+            else:
+                ref_at_t = rg["clean_latent"]
+
+            latents = (1 - weight) * latents + weight * ref_at_t
+
+            if pred_original_sample is not None:
+                pred_original_sample = (1 - weight) * pred_original_sample + weight * rg["clean_latent"]
+
+    return latents, pred_original_sample
+
+
 def vae_output_to_pil(image: torch.Tensor) -> Image.Image:
     """Convert VAE decoder output tensor to PIL Image with robust nan/inf handling.
 
@@ -314,6 +423,7 @@ def custom_sampling_loop(
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
+    ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -466,6 +576,17 @@ def custom_sampling_loop(
             dtype=dtype
         )
         latents = latents * scheduler.init_noise_sigma
+
+    # Prepare Reference Guide latents (VAE encode reference images)
+    ref_guides = []
+    if ref_guide_configs:
+        from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
+        print(f"[RefGuide] Preparing {len(ref_guide_configs)} reference guide(s) for txt2img")
+        move_vae_to_gpu(pipeline)
+        ref_guides = prepare_reference_guide_latents(
+            ref_guide_configs, pipeline, width, height, device, dtype, generator
+        )
+        move_vae_to_cpu(pipeline)
 
     # Current prompt embeds (will be updated by callback)
     current_prompt_embeds = prompt_embeds
@@ -882,6 +1003,13 @@ def custom_sampling_loop(
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
 
+        # Reference Guide blending (txt2img)
+        if ref_guides:
+            ref_frac = i / num_inference_steps
+            latents, pred_original_sample = apply_reference_guide_blend(
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+            )
+
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
         # ============================================================
@@ -994,6 +1122,7 @@ def custom_img2img_sampling_loop(
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
+    ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1146,6 +1275,17 @@ def custom_img2img_sampling_loop(
         init_latents = init_latents * pipeline.vae.config.scaling_factor
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
+
+    # Prepare Reference Guide latents while VAE is still on GPU
+    ref_guides = []
+    if ref_guide_configs:
+        # Use actual image dimensions (width/height may be None in img2img)
+        ref_w = width if width is not None else original_width
+        ref_h = height if height is not None else original_height
+        print(f"[RefGuide] Preparing {len(ref_guide_configs)} reference guide(s) for img2img ({ref_w}x{ref_h})")
+        ref_guides = prepare_reference_guide_latents(
+            ref_guide_configs, pipeline, ref_w, ref_h, device, dtype, generator
+        )
 
     # Move VAE back to CPU after initial encoding
     print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
@@ -1567,6 +1707,13 @@ def custom_img2img_sampling_loop(
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
 
+        # Reference Guide blending (img2img)
+        if ref_guides:
+            ref_frac = (t_start + i) / num_inference_steps
+            latents, pred_original_sample = apply_reference_guide_blend(
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+            )
+
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
         # ============================================================
@@ -1681,6 +1828,7 @@ def custom_inpaint_sampling_loop(
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
+    ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -1900,6 +2048,16 @@ def custom_inpaint_sampling_loop(
         generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+
+    # Prepare Reference Guide latents while VAE is still on GPU
+    ref_guides = []
+    if ref_guide_configs:
+        ref_w = width if width is not None else original_width
+        ref_h = height if height is not None else original_height
+        print(f"[RefGuide] Preparing {len(ref_guide_configs)} reference guide(s) for inpaint ({ref_w}x{ref_h})")
+        ref_guides = prepare_reference_guide_latents(
+            ref_guide_configs, pipeline, ref_w, ref_h, device, dtype, generator
+        )
 
     # Move VAE back to CPU after initial encoding
     print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
@@ -2299,6 +2457,13 @@ def custom_inpaint_sampling_loop(
         pred_original_sample = getattr(step_output, 'pred_original_sample', None)
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
+
+        # Reference Guide blending (inpaint) - applied before mask blending
+        if ref_guides:
+            ref_frac = (t_start + i) / num_inference_steps
+            latents, pred_original_sample = apply_reference_guide_blend(
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+            )
 
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation

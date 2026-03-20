@@ -56,6 +56,7 @@ def process_controlnet_configs(
                     "layer_weights": cn_config.get("layer_weights"),
                     "prompt": cn_config.get("prompt"),
                     "is_lllite": cn_config.get("is_lllite", False),
+                    "is_reference_guide": cn_config.get("is_reference_guide", False),
                 })
             except Exception as e:
                 print(f"[ControlNet {idx}] Error decoding image: {e}")

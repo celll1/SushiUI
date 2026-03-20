@@ -816,7 +816,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
                 <Slider
                   label="Strength"
-                  min={0}
+                  min={cn.is_reference_guide ? -2 : 0}
                   max={2}
                   step={0.05}
                   value={cn.strength}

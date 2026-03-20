@@ -37,6 +37,8 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
       >
         {images.map((image) => {
           // Get base filename without extension for WebP support
+          // New thumbnails: baseName.png + baseName.webp
+          // Old thumbnails: original filename (e.g., txt2img_001.png)
           const baseName = image.filename.replace(/\.[^/.]+$/, "");
           return (
             <div
@@ -45,11 +47,14 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
               className="cursor-pointer group"
             >
               <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
-                {/* Use picture element for WebP with PNG fallback, lazy loading for transfer reduction */}
+                {/* Use picture element for WebP with fallback to original filename
+                    - New thumbnails: WebP preferred, PNG fallback
+                    - Old thumbnails: Falls back to original filename */}
                 <picture>
                   <source srcSet={`/thumbnails/${baseName}.webp`} type="image/webp" />
+                  <source srcSet={`/thumbnails/${baseName}.png`} type="image/png" />
                   <img
-                    src={`/thumbnails/${baseName}.png`}
+                    src={`/thumbnails/${image.filename}`}
                     alt={image.prompt}
                     loading="lazy"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform"

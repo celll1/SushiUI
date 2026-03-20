@@ -4760,9 +4760,15 @@ class DiffusionPipelineManager:
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline)
 
-        # Handle ControlNet if specified
-        controlnet_images = params.get("controlnet_images", [])
+        # Handle ControlNet and Reference Guide
+        all_controlnet_images = params.get("controlnet_images", [])
+        # Separate Reference Guide entries from ControlNet entries
+        ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
+        controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
         pipeline_to_use = self.txt2img_pipeline
+
+        if ref_guide_configs:
+            print(f"[RefGuide] Found {len(ref_guide_configs)} reference guide(s)")
 
         if controlnet_images:
             print(f"Applying {len(controlnet_images)} ControlNet(s)")
@@ -5004,6 +5010,7 @@ class DiffusionPipelineManager:
                 nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                 attention_type=attention_type,
+                ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
                 **controlnet_kwargs,
             )
 
@@ -5158,9 +5165,14 @@ class DiffusionPipelineManager:
         move_text_encoders_to_gpu(self.img2img_pipeline)
         log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline)
 
-        # Handle ControlNet if specified
-        controlnet_images = params.get("controlnet_images", [])
+        # Handle ControlNet and Reference Guide
+        all_controlnet_images = params.get("controlnet_images", [])
+        ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
+        controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
         pipeline_to_use = self.img2img_pipeline
+
+        if ref_guide_configs:
+            print(f"[RefGuide] Found {len(ref_guide_configs)} reference guide(s) for img2img")
 
         if controlnet_images:
             print(f"Applying {len(controlnet_images)} ControlNet(s) to img2img")
@@ -5487,6 +5499,7 @@ class DiffusionPipelineManager:
                 nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                 attention_type=attention_type,
+                ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
                 **controlnet_kwargs,
             )
 
@@ -5645,9 +5658,14 @@ class DiffusionPipelineManager:
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
 
-        # Handle ControlNet if specified
-        controlnet_images = params.get("controlnet_images", [])
+        # Handle ControlNet and Reference Guide
+        all_controlnet_images = params.get("controlnet_images", [])
+        ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
+        controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
         pipeline_to_use = self.inpaint_pipeline
+
+        if ref_guide_configs:
+            print(f"[RefGuide] Found {len(ref_guide_configs)} reference guide(s) for inpaint")
 
         if controlnet_images:
             print(f"Applying {len(controlnet_images)} ControlNet(s) to inpaint")
@@ -5836,6 +5854,7 @@ class DiffusionPipelineManager:
             nag_negative_prompt_embeds=nag_negative_prompt_embeds,
             nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
             attention_type=params.get("attention_type", "normal"),
+            ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
             **controlnet_kwargs,
         )
 

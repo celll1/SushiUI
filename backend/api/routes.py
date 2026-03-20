@@ -97,6 +97,7 @@ class ControlNetConfig(BaseModel):
     layer_weights: Optional[dict] = None  # Per-layer weights like {"IN00": 1.0, ..., "MID": 1.0}
     prompt: Optional[str] = None  # Optional separate prompt
     is_lllite: bool = False
+    is_reference_guide: bool = False  # Reference Guide mode: blend latent toward reference image
     preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
     enable_preprocessor: bool = True  # Whether to apply preprocessing
 

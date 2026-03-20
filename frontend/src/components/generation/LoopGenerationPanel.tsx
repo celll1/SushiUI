@@ -61,6 +61,7 @@ export interface LoopGenerationStep {
     layer_weights?: { [layerName: string]: number };
     prompt?: string;
     is_lllite: boolean;
+    is_reference_guide?: boolean;
     preprocessor?: string;
     enable_preprocessor: boolean;
   }>;
@@ -798,6 +799,7 @@ export default function LoopGenerationPanel({
                         layer_weights: cn.layer_weights,
                         prompt: cn.prompt,
                         is_lllite: cn.is_lllite,
+                        is_reference_guide: cn.is_reference_guide,
                         preprocessor: cn.preprocessor,
                         enable_preprocessor: cn.enable_preprocessor,
                       }))}

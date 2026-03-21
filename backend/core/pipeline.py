@@ -5331,8 +5331,12 @@ class DiffusionPipelineManager:
                 decoded = (decoded * 255).round().astype("uint8")
                 init_image = Image.fromarray(decoded[0])
 
+                # Clean up intermediate tensors from latent resize
+                del image_tensor, latent, resized_latent, decoded
+
                 # Move VAE back to CPU after latent resize operations
                 move_vae_to_cpu(pipeline_to_use)
+                torch.cuda.empty_cache()
 
         # Calculate proper steps for img2img
         requested_steps = params.get("steps", settings.default_steps)

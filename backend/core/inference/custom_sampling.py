@@ -1055,6 +1055,12 @@ def custom_sampling_loop(
 
     print(f"[CustomSampling] Sampling complete, decoding latents")
 
+    # Clean up Reference Guide GPU tensors
+    if ref_guides:
+        for rg in ref_guides:
+            del rg["clean_latent"], rg["noise"]
+        ref_guides.clear()
+
     # Restore original processors if NAG was active
     if nag_active and original_processors is not None:
         from core.inference.nag_processor import restore_original_processors
@@ -2519,6 +2525,12 @@ def custom_inpaint_sampling_loop(
         if step_callback is not None:
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})
             latents = callback_kwargs.get("latents", latents)
+
+    # Clean up Reference Guide GPU tensors
+    if ref_guides:
+        for rg in ref_guides:
+            del rg["clean_latent"], rg["noise"]
+        ref_guides.clear()
 
     # ===== STAGE 3: VAE DECODE =====
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu

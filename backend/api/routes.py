@@ -6521,3 +6521,127 @@ async def batch_cancel_endpoint(dataset_id: int):
     """
     cancel_batch_operation()
     return {"message": "Batch operation cancellation requested"}
+
+
+# ==================== Debug VRAM Inspection ====================
+
+@router.get("/debug/vram")
+async def debug_vram_inspection():
+    """Inspect CUDA VRAM usage: list all GPU tensors and memory stats.
+    Developer mode only debug endpoint."""
+    import torch
+    import gc
+
+    if not torch.cuda.is_available():
+        return {"error": "CUDA not available"}
+
+    # Memory stats from PyTorch
+    mem_allocated = torch.cuda.memory_allocated() / 1024**2
+    mem_reserved = torch.cuda.memory_reserved() / 1024**2
+    mem_max_allocated = torch.cuda.max_memory_allocated() / 1024**2
+    mem_max_reserved = torch.cuda.max_memory_reserved() / 1024**2
+
+    # Find all CUDA tensors via gc
+    gc.collect()
+    cuda_tensors = []
+    tensor_summary = {}  # shape+dtype -> {count, total_bytes, referrers}
+
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, torch.Tensor) and obj.is_cuda:
+                shape = tuple(obj.shape)
+                dtype = str(obj.dtype)
+                size_bytes = obj.nelement() * obj.element_size()
+                key = f"{shape} {dtype}"
+
+                if key not in tensor_summary:
+                    tensor_summary[key] = {
+                        "shape": list(shape),
+                        "dtype": dtype,
+                        "count": 0,
+                        "total_mb": 0.0,
+                        "referrers": [],
+                    }
+                tensor_summary[key]["count"] += 1
+                tensor_summary[key]["total_mb"] += size_bytes / 1024**2
+
+                # Get referrer info (what holds this tensor)
+                if tensor_summary[key]["count"] <= 3:  # Limit referrer inspection
+                    try:
+                        referrers = gc.get_referrers(obj)
+                        for ref in referrers[:3]:
+                            ref_type = type(ref).__name__
+                            ref_info = ref_type
+                            if isinstance(ref, dict):
+                                # Find the key that references this tensor
+                                for k, v in ref.items():
+                                    if v is obj:
+                                        ref_info = f"dict['{k}']"
+                                        break
+                            elif isinstance(ref, (list, tuple)):
+                                ref_info = f"{ref_type}[len={len(ref)}]"
+                            elif hasattr(ref, '__class__'):
+                                ref_info = f"{ref.__class__.__module__}.{ref.__class__.__name__}"
+                            if ref_info not in tensor_summary[key]["referrers"]:
+                                tensor_summary[key]["referrers"].append(ref_info)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Sort by total size descending
+    sorted_tensors = sorted(
+        tensor_summary.values(),
+        key=lambda x: x["total_mb"],
+        reverse=True
+    )
+
+    # Format for display
+    tensor_list = []
+    total_tensor_mb = 0.0
+    for t in sorted_tensors:
+        t["total_mb"] = round(t["total_mb"], 3)
+        total_tensor_mb += t["total_mb"]
+        tensor_list.append(t)
+
+    # Pipeline component device check
+    components = {}
+    try:
+        from core.pipeline import pipeline_manager
+        for name in ['txt2img_pipeline', 'img2img_pipeline', 'inpaint_pipeline']:
+            pipe = getattr(pipeline_manager, name, None)
+            if pipe is not None:
+                for comp_name in ['unet', 'text_encoder', 'text_encoder_2', 'vae']:
+                    comp = getattr(pipe, comp_name, None)
+                    if comp is not None:
+                        device = str(next(comp.parameters()).device)
+                        comp_key = f"{name}.{comp_name}"
+                        if comp_key not in components:
+                            components[comp_key] = device
+    except Exception as e:
+        components["error"] = str(e)
+
+    # TAESD check
+    try:
+        from core.utils.taesd import taesd_manager
+        for name in ['taesd', 'taesd_xl', 'taef1']:
+            model = getattr(taesd_manager, name, None)
+            if model is not None:
+                device = str(next(model.parameters()).device)
+                components[f"taesd.{name}"] = device
+    except Exception as e:
+        components["taesd_error"] = str(e)
+
+    return {
+        "memory": {
+            "allocated_mb": round(mem_allocated, 2),
+            "reserved_mb": round(mem_reserved, 2),
+            "max_allocated_mb": round(mem_max_allocated, 2),
+            "max_reserved_mb": round(mem_max_reserved, 2),
+            "total_tensor_mb": round(total_tensor_mb, 2),
+        },
+        "tensor_count": sum(t["count"] for t in tensor_list),
+        "unique_shapes": len(tensor_list),
+        "tensors": tensor_list[:50],  # Top 50 by size
+        "components": components,
+    }

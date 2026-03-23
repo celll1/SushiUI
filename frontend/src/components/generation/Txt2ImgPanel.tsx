@@ -21,6 +21,7 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
+import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
@@ -2565,6 +2566,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <CFGMetricsGraph metrics={cfgMetrics} />
               </div>
             )}
+
+            {/* VRAM Inspector (Developer Mode) */}
+            {developerMode && <VramInspector />}
 
             {generatedImage && (
               <div className="space-y-3 mt-4">

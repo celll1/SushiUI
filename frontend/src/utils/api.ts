@@ -1823,3 +1823,10 @@ export const cancelBatchOperation = async (datasetId: number): Promise<{ message
 };
 
 // Tag Dictionary Search API was removed - use tagSuggestions.ts instead
+
+// ==================== Debug VRAM Inspection ====================
+
+export const debugVramInspection = async () => {
+  const response = await api.get("/debug/vram");
+  return response.data;
+};

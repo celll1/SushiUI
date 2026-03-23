@@ -1082,10 +1082,13 @@ def custom_sampling_loop(
     with torch.no_grad():
         image = pipeline.vae.decode(latents, return_dict=True).sample
 
+    # Free GPU latents before VAE offload
+    del latents
+
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
-    # Convert to PIL with robust nan/inf handling
+    # Convert to PIL with robust nan/inf handling (moves image tensor to CPU internally)
     image = vae_output_to_pil(image)
 
     return image
@@ -1783,6 +1786,9 @@ def custom_img2img_sampling_loop(
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
         image = pipeline.vae.decode(latents, return_dict=True).sample
+
+    # Free GPU latents before VAE offload
+    del latents
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
@@ -2547,6 +2553,9 @@ def custom_inpaint_sampling_loop(
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
         image = pipeline.vae.decode(latents, return_dict=True).sample
+
+    # Free GPU latents before VAE offload
+    del latents
 
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)

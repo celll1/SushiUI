@@ -9,14 +9,22 @@ import sys
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Optional
-import onnxruntime as ort
 import json
 
-# Debug: Print onnxruntime info at module load
-print(f"[Tagger] Python executable: {sys.executable}")
-print(f"[Tagger] ONNX Runtime module path: {ort.__file__}")
-print(f"[Tagger] ONNX Runtime version: {ort.__version__}")
-print(f"[Tagger] Initial available providers: {ort.get_available_providers()}")
+# Lazy import onnxruntime to avoid CUDA context initialization at startup
+ort = None
+
+def _get_ort():
+    """Lazy-load onnxruntime to defer CUDA context initialization."""
+    global ort
+    if ort is None:
+        import onnxruntime as _ort
+        ort = _ort
+        print(f"[Tagger] Python executable: {sys.executable}")
+        print(f"[Tagger] ONNX Runtime module path: {ort.__file__}")
+        print(f"[Tagger] ONNX Runtime version: {ort.__version__}")
+        print(f"[Tagger] Available providers: {ort.get_available_providers()}")
+    return ort
 
 
 class TaggerManager:
@@ -116,8 +124,9 @@ class TaggerManager:
             except Exception as e:
                 print(f"[Tagger] Failed to check model precision: {e}")
 
-            # Setup providers
-            available_providers = ort.get_available_providers()
+            # Setup providers (lazy-load onnxruntime)
+            _ort = _get_ort()
+            available_providers = _ort.get_available_providers()
             print(f"[Tagger] Available providers: {available_providers}")
 
             if use_gpu:
@@ -141,13 +150,13 @@ class TaggerManager:
 
                 if len(providers) > 1:
                     print(f"[Tagger] Using providers: {providers}")
-                    self.session = ort.InferenceSession(model_path, providers=providers)
+                    self.session = _ort.InferenceSession(model_path, providers=providers)
                     print(f"[Tagger] Active provider: {self.session.get_providers()[0]}")
                 else:
                     print("[Tagger] No GPU providers available, using CPU")
-                    self.session = ort.InferenceSession(model_path)
+                    self.session = _ort.InferenceSession(model_path)
             else:
-                self.session = ort.InferenceSession(model_path)
+                self.session = _ort.InferenceSession(model_path)
                 print("[Tagger] Using CPU for inference")
 
             # Load tag mapping

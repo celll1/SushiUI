@@ -5026,18 +5026,24 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
-            # Delete GPU embed tensors before offloading models
-            for var_name in ['prompt_embeds', 'negative_prompt_embeds',
-                             'pooled_prompt_embeds', 'negative_pooled_prompt_embeds',
-                             'nag_negative_prompt_embeds', 'nag_negative_pooled_prompt_embeds']:
-                if var_name in dir() and locals().get(var_name) is not None:
-                    del locals()[var_name]
+            # Delete GPU embed tensors
+            prompt_embeds = None
+            negative_prompt_embeds = None
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+            nag_negative_prompt_embeds = None
+            nag_negative_pooled_prompt_embeds = None
 
             # Offload all components to CPU to free VRAM
             from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
             move_text_encoders_to_cpu(pipeline_to_use)
             move_unet_to_cpu(pipeline_to_use)
             move_vae_to_cpu(pipeline_to_use)
+
+            # Move TAESD preview decoder to CPU
+            from core.utils.taesd import taesd_manager
+            taesd_manager.offload_to_cpu()
+
             print("[VRAM] All components offloaded to CPU after txt2img generation")
 
             # Clear embeds_cache to prevent VRAM leak from prompt editing closures
@@ -5524,11 +5530,24 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Delete GPU embed tensors
+            prompt_embeds = None
+            negative_prompt_embeds = None
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+            nag_negative_prompt_embeds = None
+            nag_negative_pooled_prompt_embeds = None
+
             # Offload all components to CPU to free VRAM
             from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
             move_text_encoders_to_cpu(pipeline_to_use)
             move_unet_to_cpu(pipeline_to_use)
             move_vae_to_cpu(pipeline_to_use)
+
+            # Move TAESD preview decoder to CPU
+            from core.utils.taesd import taesd_manager
+            taesd_manager.offload_to_cpu()
+
             print("[VRAM] All components offloaded to CPU after img2img generation")
 
             # Clear embeds_cache to prevent VRAM leak from prompt editing closures
@@ -5871,11 +5890,24 @@ class DiffusionPipelineManager:
             restore_processors(pipeline_to_use.unet, self.original_processors)
             self.original_processors = None
 
+        # Delete GPU embed tensors
+        prompt_embeds = None
+        negative_prompt_embeds = None
+        pooled_prompt_embeds = None
+        negative_pooled_prompt_embeds = None
+        nag_negative_prompt_embeds = None
+        nag_negative_pooled_prompt_embeds = None
+
         # Offload all components to CPU to free VRAM
         from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
         move_text_encoders_to_cpu(pipeline_to_use)
         move_unet_to_cpu(pipeline_to_use)
         move_vae_to_cpu(pipeline_to_use)
+
+        # Move TAESD preview decoder to CPU
+        from core.utils.taesd import taesd_manager
+        taesd_manager.offload_to_cpu()
+
         print("[VRAM] All components offloaded to CPU after inpaint generation")
 
         # Clear embeds_cache to prevent VRAM leak from prompt editing closures

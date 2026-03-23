@@ -15,6 +15,17 @@ class TAESDManager:
         self.taef1 = None  # For Z-Image (FLUX-based)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    def offload_to_cpu(self):
+        """Move all loaded TAESD models to CPU to free VRAM."""
+        moved = False
+        for name in ('taesd', 'taesd_xl', 'taef1'):
+            model = getattr(self, name, None)
+            if model is not None:
+                model.to("cpu")
+                moved = True
+        if moved:
+            torch.cuda.empty_cache()
+
     def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False):
         """Load appropriate TAESD model
 
@@ -45,10 +56,12 @@ class TAESDManager:
                     self.taef1 = AutoencoderTiny.from_pretrained(
                         "madebyollin/taef1",
                         torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
-                    ).to(self.device)
+                    )
                     print("TAEF1 loaded successfully")
                 except Exception as e:
                     print(f"Failed to load TAEF1: {e}")
+            if self.taef1 is not None:
+                self.taef1.to(self.device)
             return self.taef1
         elif is_sdxl:
             if self.taesd_xl is None:
@@ -57,10 +70,12 @@ class TAESDManager:
                     self.taesd_xl = AutoencoderTiny.from_pretrained(
                         "madebyollin/taesdxl",
                         torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-                    ).to(self.device)
+                    )
                     print("TAESD-XL loaded successfully")
                 except Exception as e:
                     print(f"Failed to load TAESD-XL: {e}")
+            if self.taesd_xl is not None:
+                self.taesd_xl.to(self.device)
             return self.taesd_xl
         else:
             if self.taesd is None:
@@ -69,10 +84,12 @@ class TAESDManager:
                     self.taesd = AutoencoderTiny.from_pretrained(
                         "madebyollin/taesd",
                         torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-                    ).to(self.device)
+                    )
                     print("TAESD loaded successfully")
                 except Exception as e:
                     print(f"Failed to load TAESD: {e}")
+            if self.taesd is not None:
+                self.taesd.to(self.device)
             return self.taesd
 
     def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:

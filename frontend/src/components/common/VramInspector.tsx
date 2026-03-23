@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { debugVramInspection } from "@/utils/api";
+import { debugVramInspection, debugVramForceRelease } from "@/utils/api";
 import Button from "./Button";
 
 interface VramTensor {
@@ -29,6 +29,7 @@ interface VramData {
 export default function VramInspector() {
   const [data, setData] = useState<VramData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [releaseResult, setReleaseResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const inspect = async () => {
@@ -44,6 +45,18 @@ export default function VramInspector() {
     }
   };
 
+  const forceRelease = async () => {
+    setReleaseResult(null);
+    try {
+      const result = await debugVramForceRelease();
+      setReleaseResult(`Freed ${result.freed_mb} MB (${result.before.reserved_mb} -> ${result.after.reserved_mb} MB reserved)`);
+      // Auto-refresh inspection
+      await inspect();
+    } catch (e: any) {
+      setError(e.message || "Failed to release VRAM");
+    }
+  };
+
   return (
     <div className="mt-3 p-3 bg-gray-800 rounded-lg">
       <div className="flex items-center gap-2 mb-2">
@@ -51,7 +64,11 @@ export default function VramInspector() {
         <Button onClick={inspect} disabled={loading} variant="secondary" size="sm">
           {loading ? "Scanning..." : "Inspect VRAM"}
         </Button>
+        <Button onClick={forceRelease} disabled={loading} variant="secondary" size="sm">
+          Force Release
+        </Button>
       </div>
+      {releaseResult && <div className="text-green-400 text-xs mb-2">{releaseResult}</div>}
 
       {error && <div className="text-red-400 text-xs">{error}</div>}
 

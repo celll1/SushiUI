@@ -6645,3 +6645,31 @@ async def debug_vram_inspection():
         "tensors": tensor_list[:50],  # Top 50 by size
         "components": components,
     }
+
+
+@router.post("/debug/vram/release")
+async def debug_vram_force_release():
+    """Force release all cached CUDA memory back to OS."""
+    import torch
+    import gc
+
+    if not torch.cuda.is_available():
+        return {"error": "CUDA not available"}
+
+    before_reserved = torch.cuda.memory_reserved() / 1024**2
+    before_allocated = torch.cuda.memory_allocated() / 1024**2
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    after_reserved = torch.cuda.memory_reserved() / 1024**2
+    after_allocated = torch.cuda.memory_allocated() / 1024**2
+
+    freed = before_reserved - after_reserved
+    print(f"[VRAM] Force release: {before_reserved:.1f}MB -> {after_reserved:.1f}MB reserved (freed {freed:.1f}MB)")
+
+    return {
+        "before": {"allocated_mb": round(before_allocated, 2), "reserved_mb": round(before_reserved, 2)},
+        "after": {"allocated_mb": round(after_allocated, 2), "reserved_mb": round(after_reserved, 2)},
+        "freed_mb": round(freed, 2),
+    }

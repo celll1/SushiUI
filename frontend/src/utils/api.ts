@@ -1830,3 +1830,8 @@ export const debugVramInspection = async () => {
   const response = await api.get("/debug/vram");
   return response.data;
 };
+
+export const debugVramForceRelease = async () => {
+  const response = await api.post("/debug/vram/release");
+  return response.data;
+};

@@ -5026,6 +5026,13 @@ class DiffusionPipelineManager:
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
+            # Delete GPU embed tensors before offloading models
+            for var_name in ['prompt_embeds', 'negative_prompt_embeds',
+                             'pooled_prompt_embeds', 'negative_pooled_prompt_embeds',
+                             'nag_negative_prompt_embeds', 'nag_negative_pooled_prompt_embeds']:
+                if var_name in dir() and locals().get(var_name) is not None:
+                    del locals()[var_name]
+
             # Offload all components to CPU to free VRAM
             from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
             move_text_encoders_to_cpu(pipeline_to_use)
@@ -5033,24 +5040,22 @@ class DiffusionPipelineManager:
             move_vae_to_cpu(pipeline_to_use)
             print("[VRAM] All components offloaded to CPU after txt2img generation")
 
-            # Clear intermediate tensors
-            if hasattr(self, 'device') and self.device == "cuda":
-                torch.cuda.empty_cache()
+            # Clear embeds_cache to prevent VRAM leak from prompt editing closures
+            if 'embeds_cache' in dir() and embeds_cache:
+                for key in list(embeds_cache.keys()):
+                    tensors = embeds_cache[key]
+                    if tensors:
+                        for tensor in tensors:
+                            if tensor is not None:
+                                del tensor
+                    del embeds_cache[key]
+                embeds_cache.clear()
+                print("[VRAM] Cleared embeds_cache for prompt editing")
 
-        # Clear embeds_cache to prevent VRAM leak from prompt editing closures
-        if 'embeds_cache' in dir() and embeds_cache:
-            for key in list(embeds_cache.keys()):
-                tensors = embeds_cache[key]
-                if tensors:
-                    for tensor in tensors:
-                        if tensor is not None:
-                            del tensor
-                del embeds_cache[key]
-            embeds_cache.clear()
+            # Final cache clear
             import gc
             gc.collect()
             torch.cuda.empty_cache()
-            print("[VRAM] Cleared embeds_cache for prompt editing")
 
         # Apply extensions after generation
         for ext in self.extensions:
@@ -5526,24 +5531,22 @@ class DiffusionPipelineManager:
             move_vae_to_cpu(pipeline_to_use)
             print("[VRAM] All components offloaded to CPU after img2img generation")
 
-            # Clear intermediate tensors
-            if hasattr(self, 'device') and self.device == "cuda":
-                torch.cuda.empty_cache()
+            # Clear embeds_cache to prevent VRAM leak from prompt editing closures
+            if 'embeds_cache' in dir() and embeds_cache:
+                for key in list(embeds_cache.keys()):
+                    tensors = embeds_cache[key]
+                    if tensors:
+                        for tensor in tensors:
+                            if tensor is not None:
+                                del tensor
+                    del embeds_cache[key]
+                embeds_cache.clear()
+                print("[VRAM] Cleared embeds_cache for prompt editing")
 
-        # Clear embeds_cache to prevent VRAM leak from prompt editing closures
-        if 'embeds_cache' in dir() and embeds_cache:
-            for key in list(embeds_cache.keys()):
-                tensors = embeds_cache[key]
-                if tensors:
-                    for tensor in tensors:
-                        if tensor is not None:
-                            del tensor
-                del embeds_cache[key]
-            embeds_cache.clear()
+            # Final cache clear
             import gc
             gc.collect()
             torch.cuda.empty_cache()
-            print("[VRAM] Cleared embeds_cache for prompt editing")
 
         # Apply extensions after generation
         for ext in self.extensions:
@@ -5875,10 +5878,6 @@ class DiffusionPipelineManager:
         move_vae_to_cpu(pipeline_to_use)
         print("[VRAM] All components offloaded to CPU after inpaint generation")
 
-        # Clear intermediate tensors
-        if hasattr(self, 'device') and self.device == "cuda":
-            torch.cuda.empty_cache()
-
         # Clear embeds_cache to prevent VRAM leak from prompt editing closures
         if 'embeds_cache' in dir() and embeds_cache:
             for key in list(embeds_cache.keys()):
@@ -5889,10 +5888,12 @@ class DiffusionPipelineManager:
                             del tensor
                 del embeds_cache[key]
             embeds_cache.clear()
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
             print("[VRAM] Cleared embeds_cache for prompt editing")
+
+        # Final cache clear
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # Apply extensions after generation
         for ext in self.extensions:

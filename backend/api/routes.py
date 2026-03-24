@@ -3121,8 +3121,9 @@ async def scan_dataset(
     taglist = load_all_tags(settings.root_dir)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
 
-    # Pre-scan with 2-pass scanner to detect suffix-based captions
+    # Pre-scan with 2-pass scanner: detect suffix captions + count images in one pass
     from utils.dataset_scanner import scan_directory_structure
+    print(f"[Dataset Scan] Pre-scanning directory structure...")
     pre_scan_groups = scan_directory_structure(
         dir_path=dataset.path,
         recursive=dataset.recursive,
@@ -3130,10 +3131,15 @@ async def scan_dataset(
         reference_suffixes=dataset.reference_suffixes or [],
         target_suffixes=dataset.target_suffixes or [],
     )
-    # Build a lookup: image_stem -> [(suffix, caption_path), ...]
+
+    # Build suffix caption lookup and count images from pre-scan results
     suffix_captions_by_stem = {}
     detected_suffixes = set()
+    total_images = 0
     for group_name, group_data in pre_scan_groups.items():
+        # Count main/target images (not reference)
+        total_images += sum(1 for img in group_data["images"] if img["role"] in ("main", "target"))
+        # Collect suffix captions
         suffix_caps = [(c["suffix"], c["path"]) for c in group_data["captions"] if c["suffix"]]
         if suffix_caps:
             suffix_captions_by_stem[group_name] = suffix_caps
@@ -3144,34 +3150,12 @@ async def scan_dataset(
         existing_suffixes = dataset.caption_suffixes or []
         dataset.caption_suffixes = sorted(set(existing_suffixes) | detected_suffixes)
 
+    print(f"[Dataset Scan] Found {total_images} images, {len(suffix_captions_by_stem)} groups with suffix captions")
+
     # Scan directory
     items_found = 0
     captions_found = 0
     files_processed = 0
-    total_images = 0
-
-    # First pass: count total images for progress
-    def count_images(dir_path, current_depth=0):
-        nonlocal total_images
-        try:
-            entries = os.listdir(dir_path)
-        except PermissionError:
-            return
-
-        for entry in entries:
-            entry_path = os.path.join(dir_path, entry)
-            if os.path.isfile(entry_path):
-                _, ext = os.path.splitext(entry)
-                if ext.lower() in image_exts:
-                    total_images += 1
-            elif os.path.isdir(entry_path) and dataset.recursive:
-                max_depth = dataset.max_depth if dataset.max_depth else float('inf')
-                if current_depth < max_depth:
-                    count_images(entry_path, current_depth + 1)
-
-    print(f"[Dataset Scan] Counting images in {dataset.path}...")
-    count_images(dataset.path)
-    print(f"[Dataset Scan] Found {total_images} total images to process")
 
     # Progress tracking: Phase 1 (File scan): 0-90%, Phase 2 (Tag stats): 90-100%
     # We'll use a unified total_steps = total_images * 1.1 (rounded)

@@ -3127,8 +3127,8 @@ async def scan_dataset(
         dir_path=dataset.path,
         recursive=dataset.recursive,
         max_depth=dataset.max_depth if dataset.max_depth else None,
-        reference_suffixes=reference_suffixes,
-        target_suffixes=target_suffixes,
+        reference_suffixes=dataset.reference_suffixes or [],
+        target_suffixes=dataset.target_suffixes or [],
     )
     # Build a lookup: image_stem -> [(suffix, caption_path), ...]
     suffix_captions_by_stem = {}

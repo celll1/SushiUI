@@ -42,7 +42,7 @@ class PriorityTrainingConfig:
 
         Formats:
         - str: "tag_name" → single tag match
-        - str: "tag1 + tag2" → AND condition
+        - str: "tag1, tag2" → AND condition (comma-separated)
         - str: "caption:text" → caption substring match
         - dict: {"tags": [...]} → tag AND match
         - dict: {"caption_contains": "..."} → caption match
@@ -54,8 +54,8 @@ class PriorityTrainingConfig:
             if entry_data.startswith("caption:"):
                 text = entry_data[len("caption:"):].strip()
                 return PriorityEntry(caption_contains=text) if text else None
-            elif " + " in entry_data:
-                tags = [t.strip() for t in entry_data.split(" + ") if t.strip()]
+            elif "," in entry_data:
+                tags = [t.strip() for t in entry_data.split(",") if t.strip()]
                 return PriorityEntry(tags=tags) if tags else None
             else:
                 return PriorityEntry(tags=[entry_data])

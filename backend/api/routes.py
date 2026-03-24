@@ -3193,6 +3193,7 @@ async def scan_dataset(
                         "reference": [],    # Reference images (_source suffix)
                         "target": [],       # Target images (_target suffix)
                         "ref_captions": [], # Reference mode captions (_instruction suffix)
+                        "suffix_captions": [],  # Suffix-based captions [(suffix, path), ...]
                     }
 
                 if ext_lower in image_exts:
@@ -3212,6 +3213,46 @@ async def scan_dataset(
                 max_depth = dataset.max_depth if dataset.max_depth else float('inf')
                 if current_depth < max_depth:
                     scan_directory(entry_path, current_depth + 1)
+
+        # Post-process: detect suffix-based caption files
+        # For each text file that doesn't belong to any image group directly,
+        # check if it matches {image_base}_{suffix}.txt pattern
+        image_group_names = set()
+        for gname, files in file_groups.items():
+            if files["images"] or files["target"]:
+                image_group_names.add(gname)
+
+        orphan_groups = [gname for gname in file_groups if gname not in image_group_names]
+        for orphan_name in orphan_groups:
+            orphan_files = file_groups[orphan_name]
+            # Skip if this group has images (it's a real image group)
+            if orphan_files["images"] or orphan_files["target"] or orphan_files["reference"]:
+                continue
+            # Check if this is a suffix-based caption: find an image group that is a prefix
+            for image_base in image_group_names:
+                if orphan_name.startswith(image_base + "_"):
+                    suffix = orphan_name[len(image_base) + 1:]  # e.g., "caption", "caption_clauderevise"
+                    # Move caption files to the image group as suffix captions
+                    all_caption_files = orphan_files["captions"] + orphan_files["ref_captions"]
+                    if all_caption_files:
+                        if "suffix_captions" not in file_groups[image_base]:
+                            file_groups[image_base]["suffix_captions"] = []
+                        for cf in all_caption_files:
+                            file_groups[image_base]["suffix_captions"].append((suffix, cf))
+                    # Remove orphan group (will be skipped in processing since no images)
+                    break
+
+        # Collect detected suffixes for dataset metadata
+        detected_suffixes = set()
+        for files in file_groups.values():
+            for suffix, _ in files.get("suffix_captions", []):
+                detected_suffixes.add(suffix)
+        if detected_suffixes:
+            print(f"[Dataset Scan] Detected caption suffixes: {sorted(detected_suffixes)}")
+            # Save detected suffixes to dataset
+            existing_suffixes = dataset.caption_suffixes or []
+            merged_suffixes = sorted(set(existing_suffixes) | detected_suffixes)
+            dataset.caption_suffixes = merged_suffixes
 
         print(f"[Dataset Scan] Grouped {len(file_groups)} file groups in {dir_path}, starting processing...")
 
@@ -3409,6 +3450,44 @@ async def scan_dataset(
 
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
+
+                # Process suffix-based caption files (e.g., image_caption.txt, image_caption_clauderevise.txt)
+                for suffix, suffix_caption_path in files.get("suffix_captions", []):
+                    try:
+                        with open(suffix_caption_path, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
+                            if content:
+                                field_category, is_tags_format, match_rate = classify_field(suffix, content, taglist)
+
+                                # Use suffix as caption_type
+                                existing_cap = db.query(DatasetCaption).filter(
+                                    DatasetCaption.item_id == item.id,
+                                    DatasetCaption.caption_type == suffix
+                                ).first()
+
+                                if existing_cap:
+                                    existing_cap.content = content
+                                    existing_cap.field_category = field_category
+                                    existing_cap.is_tags_format = is_tags_format
+                                    existing_cap.tag_match_rate = match_rate
+                                    existing_cap.source = "file"
+                                    existing_cap.source_field = suffix
+                                    existing_cap.updated_at = datetime.utcnow()
+                                else:
+                                    caption = DatasetCaption(
+                                        item_id=item.id,
+                                        caption_type=suffix,
+                                        content=content,
+                                        field_category=field_category,
+                                        is_tags_format=is_tags_format,
+                                        tag_match_rate=match_rate,
+                                        source="file",
+                                        source_field=suffix
+                                    )
+                                    db.add(caption)
+                                    captions_found += 1
+                    except Exception as e:
+                        print(f"[Dataset Scan] Failed to read suffix caption {suffix_caption_path}: {e}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")

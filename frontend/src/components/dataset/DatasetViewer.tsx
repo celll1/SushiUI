@@ -171,6 +171,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
       {/* Left Column: Item Grid - always visible on mobile, fixed width on desktop */}
       <div className={`
         w-full lg:w-80 lg:flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg
+        min-h-0 overflow-y-auto lg:overflow-visible
         ${mobileDetailOpen ? 'hidden lg:flex' : 'flex'}
       `}>
         <ItemGridColumn

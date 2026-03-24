@@ -6563,11 +6563,15 @@ async def save_priority_training_config(request: PriorityConfigSaveRequest):
         "timing": "epoch_start",
     }
 
-    # Determine output path
+    # Determine output path (default: training base directory)
     if request.output_path:
         output_path = Path(request.output_path)
     else:
-        output_path = Path(settings.root_dir) / "priority_training.yaml"
+        from core.training.training_utils import get_training_base_dir
+        training_base = Path(get_training_base_dir())
+        if not training_base.is_absolute():
+            training_base = Path(settings.root_dir) / training_base
+        output_path = training_base / "priority_training.yaml"
 
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -5165,10 +5165,20 @@ async def get_training_run_params(
         "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
         "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
         "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
+        "reconstruction_loss_weight": training_params.get("reconstruction_loss_weight", 0.0),
+        "optimizer_stochastic_rounding": training_params.get("optimizer_stochastic_rounding", False),
+        "train_image_encoder": training_params.get("train_image_encoder", False),
+        "image_encoder_lr": training_params.get("image_encoder_lr"),
         # Reference image conditioning
         "use_reference_images": training_params.get("use_reference_images", False),
         # Priority training
         "priority_training": training_params.get("priority_training", None),
+        # ReLoRA parameters
+        "relora_merge_every": training_params.get("relora_merge_every", 500),
+        "relora_merge_unit": training_params.get("relora_merge_unit", "steps"),
+        "restart_warmup_steps": training_params.get("restart_warmup_steps", 100),
+        "optimizer_reset_strategy": training_params.get("optimizer_reset_strategy", "full_reset"),
+        "optimizer_pruning_ratio": training_params.get("optimizer_pruning_ratio", 0.9),
         # ControlNet-specific parameters
         "controlnet_type": network_config.get("controlnet", {}).get("type", "standard") if job == "controlnet" else "standard",
         "controlnet_pretrained_path": network_config.get("controlnet", {}).get("pretrained_path") if job == "controlnet" else None,

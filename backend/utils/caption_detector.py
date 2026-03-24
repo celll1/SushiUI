@@ -138,6 +138,20 @@ def detect_caption_format(content: str, taglist: set) -> Tuple[bool, float]:
     if has_sentence_pattern(content):
         return (False, 0.0)
 
+    # Heuristic 4: Sentence-ending punctuation (periods, semicolons, em-dashes)
+    # Tags almost never contain these; natural language frequently does
+    sentence_punct_count = content.count('.') + content.count(';') + content.count('\u2014')
+    if sentence_punct_count >= 2:
+        return (False, 0.0)
+
+    # Heuristic 5: Average words per token
+    # Tags average ~1.5 words per comma-separated token
+    # Natural language with commas averages higher
+    total_words = sum(len(t.split()) for t in tokens)
+    avg_words_per_token = total_words / len(tokens)
+    if avg_words_per_token > 3.0:
+        return (False, 0.0)
+
     # Heuristic 4: Match against taglist
     matched = 0
     for token in tokens:
@@ -199,9 +213,19 @@ def has_sentence_pattern(text: str) -> bool:
         return True
 
     # Check for common sentence starters
-    sentence_starters = ['the ', 'a ', 'an ', 'this ', 'that ', 'these ', 'those ', 'he ', 'she ', 'it ', 'they ']
+    sentence_starters = ['the ', 'a ', 'an ', 'this ', 'that ', 'these ', 'those ',
+                         'he ', 'she ', 'it ', 'they ', 'in ', 'on ', 'with ']
     text_lower = text.lower()
     if any(text_lower.startswith(starter) for starter in sentence_starters):
+        return True
+
+    # Check for period-then-capital pattern (multiple sentences)
+    # e.g., "She is smiling. Her hair is long."
+    if re.search(r'\.\s+[A-Z]', text):
+        return True
+
+    # Check for semicolon usage (common in descriptive captions, rare in tags)
+    if ';' in text:
         return True
 
     return False

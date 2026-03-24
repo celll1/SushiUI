@@ -3538,6 +3538,34 @@ async def scan_dataset(
         f"Scan complete: {items_found} items, {captions_found} captions, {len(tag_statistics)} unique tags"
     )
 
+    # Normalize is_tags_format by majority vote per caption_type
+    # Prevents a few misdetected tag-format files from causing issues
+    # in predominantly natural-language datasets (and vice versa)
+    caption_types_in_dataset = db.query(DatasetCaption.caption_type).filter(
+        DatasetCaption.item_id.in_(
+            db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+        )
+    ).distinct().all()
+    for (ct,) in caption_types_in_dataset:
+        captions_of_type = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id.in_(
+                db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+            ),
+            DatasetCaption.caption_type == ct
+        ).all()
+        if not captions_of_type:
+            continue
+        tags_count = sum(1 for c in captions_of_type if c.is_tags_format)
+        nl_count = len(captions_of_type) - tags_count
+        majority_is_tags = tags_count > nl_count
+        minority_count = nl_count if majority_is_tags else tags_count
+        if minority_count > 0:
+            print(f"[Dataset Scan] caption_type='{ct}': {tags_count} tags, {nl_count} NL -> "
+                  f"normalizing {minority_count} to {'tags' if majority_is_tags else 'natural_language'}")
+            for c in captions_of_type:
+                if c.is_tags_format != majority_is_tags:
+                    c.is_tags_format = majority_is_tags
+
     # Update dataset statistics
     dataset.total_items = items_found
     dataset.total_captions = captions_found

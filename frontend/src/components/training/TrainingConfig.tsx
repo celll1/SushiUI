@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -2813,19 +2814,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     Expand
                   </button>
                 </div>
-                <textarea
+                <TextareaWithTagSuggestions
                   value={priorityText}
                   onChange={(e) => setPriorityText(e.target.value)}
                   rows={Math.min(15, Math.max(5, priorityText.split("\n").length + 1))}
-                  placeholder={"hatsune_miku\nkagamine_rin\nblue_hair + twintails\ncaption:dragon"}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-xs text-white font-mono placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                  placeholder={"hatsune_miku\nkagamine_rin\nblue_hair, twintails\ncaption:dragon"}
                 />
               </div>
 
               <div className="text-xs text-gray-500 space-y-0.5">
                 <p>One entry per line. Format:</p>
                 <p><code className="bg-gray-800 px-1 rounded">tag_name</code> — single tag match</p>
-                <p><code className="bg-gray-800 px-1 rounded">tag1 + tag2</code> — AND condition (both required)</p>
+                <p><code className="bg-gray-800 px-1 rounded">tag1, tag2</code> — AND condition (both required)</p>
                 <p><code className="bg-gray-800 px-1 rounded">caption:text</code> — caption substring match</p>
               </div>
             </div>
@@ -2839,7 +2839,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {/* Priority Training Expand Modal */}
         {priorityExpanded && (
           <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-            <div className="bg-gray-800 rounded-lg w-full max-w-3xl max-h-[90vh] flex flex-col">
+            <div className="bg-gray-800 rounded-lg w-full max-w-3xl h-[80vh] flex flex-col">
               <div className="flex items-center justify-between p-3 border-b border-gray-700">
                 <span className="text-sm font-medium text-gray-300">
                   Priority Entries ({priorityText.split("\n").filter(l => l.trim()).length} items)
@@ -2852,13 +2852,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   &times;
                 </button>
               </div>
-              <textarea
-                value={priorityText}
-                onChange={(e) => setPriorityText(e.target.value)}
-                className="flex-1 m-3 px-3 py-2 bg-gray-900 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-blue-500 resize-none"
-                placeholder={"hatsune_miku\nkagamine_rin\nblue_hair + twintails\ncaption:dragon"}
-                autoFocus
-              />
+              <div className="flex-1 m-3 min-h-0">
+                <TextareaWithTagSuggestions
+                  value={priorityText}
+                  onChange={(e) => setPriorityText(e.target.value)}
+                  rows={30}
+                  placeholder={"hatsune_miku\nkagamine_rin\nblue_hair, twintails\ncaption:dragon"}
+                />
+              </div>
               <div className="p-3 border-t border-gray-700 flex justify-end">
                 <button
                   type="button"

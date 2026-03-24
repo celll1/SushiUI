@@ -1826,6 +1826,23 @@ export const cancelBatchOperation = async (datasetId: number): Promise<{ message
 
 // ==================== Debug VRAM Inspection ====================
 
+// ==================== Priority Training Config ====================
+
+export const savePriorityTrainingConfig = async (
+  entries: Array<{ type: string; tags?: string[]; text?: string }>,
+  multiplier: number,
+  outputPath?: string,
+): Promise<{ path: string; entries_count: number }> => {
+  const response = await api.post("/training/priority-config/save", {
+    entries,
+    multiplier,
+    output_path: outputPath || undefined,
+  });
+  return response.data;
+};
+
+// ==================== Debug ====================
+
 export const debugVramInspection = async () => {
   const response = await api.get("/debug/vram");
   return response.data;

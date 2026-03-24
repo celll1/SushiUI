@@ -6533,6 +6533,54 @@ async def batch_cancel_endpoint(dataset_id: int):
     return {"message": "Batch operation cancellation requested"}
 
 
+# ==================== Priority Training Config ====================
+
+class PriorityConfigSaveRequest(BaseModel):
+    entries: List[Dict[str, Any]]  # [{"type": "tags", "tags": [...]}, {"type": "caption_contains", "text": "..."}]
+    multiplier: int = 1
+    output_path: Optional[str] = None  # If None, uses default path
+
+@router.post("/training/priority-config/save")
+async def save_priority_training_config(request: PriorityConfigSaveRequest):
+    """Save priority training config as YAML file."""
+    import yaml
+    from pathlib import Path
+
+    # Build YAML structure
+    yaml_entries = []
+    for entry in request.entries:
+        if entry.get("type") == "tags" and entry.get("tags"):
+            yaml_entries.append({"tags": entry["tags"]})
+        elif entry.get("type") == "caption_contains" and entry.get("text"):
+            yaml_entries.append({"caption_contains": entry["text"]})
+
+    if not yaml_entries:
+        raise HTTPException(status_code=400, detail="No valid entries provided")
+
+    config_data = {
+        "entries": yaml_entries,
+        "multiplier": request.multiplier,
+        "timing": "epoch_start",
+    }
+
+    # Determine output path
+    if request.output_path:
+        output_path = Path(request.output_path)
+    else:
+        output_path = Path(settings.root_dir) / "priority_training.yaml"
+
+    # Ensure parent directory exists
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write YAML
+    with open(output_path, "w", encoding="utf-8") as f:
+        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    print(f"[PriorityTraining] Saved config to {output_path} ({len(yaml_entries)} entries, multiplier={request.multiplier})")
+
+    return {"path": str(output_path), "entries_count": len(yaml_entries)}
+
+
 # ==================== Debug VRAM Inspection ====================
 
 @router.get("/debug/vram")

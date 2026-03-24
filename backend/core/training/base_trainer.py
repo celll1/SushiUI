@@ -6358,7 +6358,7 @@ class BaseTrainer(ABC):
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
-        priority_training_config: Optional[str] = None,
+        priority_training: Optional[Dict] = None,
     ):
         """
         Main training loop.
@@ -6969,12 +6969,15 @@ class BaseTrainer(ABC):
 
                 # Load priority training config (if specified)
                 priority_config = None
-                if priority_training_config:
+                if priority_training:
                     try:
                         from core.training.priority_training import (
                             PriorityTrainingConfig, classify_items, build_priority_batches
                         )
-                        priority_config = PriorityTrainingConfig.load(priority_training_config)
+                        if isinstance(priority_training, dict) and "_legacy_path" in priority_training:
+                            priority_config = PriorityTrainingConfig.load(priority_training["_legacy_path"])
+                        else:
+                            priority_config = PriorityTrainingConfig.from_dict(priority_training)
                     except Exception as e:
                         print(f"{self.log_prefix} WARNING: Failed to load priority training config: {e}")
                         print(f"{self.log_prefix} Continuing with normal training")

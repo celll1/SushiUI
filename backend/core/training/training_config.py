@@ -113,7 +113,7 @@ class TrainingConfigGenerator:
         # Reference image settings
         use_reference_images: bool = False,  # Enable reference image conditioning during training
         # Priority training settings
-        priority_training_config: Optional[str] = None,  # Path to priority training YAML
+        priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
         """
         Generate LoRA training configuration YAML.
@@ -280,7 +280,7 @@ class TrainingConfigGenerator:
                             "text_encoding_swap_interval": text_encoding_swap_interval,
                             # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
                             "use_reference_images": use_reference_images,
-                            **({"priority_training_config": priority_training_config} if priority_training_config else {}),
+                            **({"priority_training": priority_training} if priority_training else {}),
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
                             "multi_noise_timesteps": multi_noise_timesteps,
@@ -644,7 +644,7 @@ class TrainingConfigGenerator:
         # Reference image settings
         use_reference_images: bool = False,  # Enable reference image conditioning during training
         # Priority training settings
-        priority_training_config: Optional[str] = None,  # Path to priority training YAML
+        priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
         """
         Generate full fine-tuning configuration YAML.

@@ -69,7 +69,7 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
   }
 
   return (
-    <div className="p-2">
+    <div className="p-2 w-full">
       <div className="space-y-1.5">
         {runs.map((run) => (
           <div

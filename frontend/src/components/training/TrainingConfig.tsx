@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, savePriorityTrainingConfig } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import InputWithTagSuggestions from "../common/InputWithTagSuggestions";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -174,6 +175,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Priority training
   const [priorityTrainingConfig, setPriorityTrainingConfig] = useState("");
+  const [priorityMode, setPriorityMode] = useState<"none" | "inline" | "file">("none");
+  const [priorityEntries, setPriorityEntries] = useState<Array<{ type: "tags" | "caption_contains"; tags: string[]; captionText: string }>>([]);
+  const [priorityMultiplier, setPriorityMultiplier] = useState(1);
 
   // Bucketing options
   const [enableBucketing, setEnableBucketing] = useState(false);
@@ -1086,7 +1090,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
       // condition_image_path is now embedded in each sample_prompts entry
       // Priority training
-      priority_training_config: priorityTrainingConfig || undefined,
+      priority_training_config: priorityMode !== "none" && priorityTrainingConfig ? priorityTrainingConfig : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -2764,20 +2768,187 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {/* Priority Training */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Priority Training</h3>
+
+          {/* Mode selector */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Priority Training Config (YAML path)</label>
-            <input
-              type="text"
-              value={priorityTrainingConfig}
-              onChange={(e) => setPriorityTrainingConfig(e.target.value)}
-              placeholder="e.g., priority_training.yaml (leave empty to disable)"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white placeholder-gray-500"
-            />
+            <label className="block text-xs text-gray-400 mb-1">Mode</label>
+            <select
+              value={priorityMode}
+              onChange={(e) => setPriorityMode(e.target.value as "none" | "inline" | "file")}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+            >
+              <option value="none">Disabled</option>
+              <option value="inline">Inline Editor</option>
+              <option value="file">External YAML File</option>
+            </select>
           </div>
-          <div className="text-xs text-gray-500 space-y-1">
-            <p>Specify a YAML file with priority tags/captions to train at the beginning of each epoch.</p>
-            <p>Priority items are batched by list order and repeated according to the multiplier setting in the YAML.</p>
-          </div>
+
+          {/* External file mode */}
+          {priorityMode === "file" && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">YAML File Path</label>
+              <input
+                type="text"
+                value={priorityTrainingConfig}
+                onChange={(e) => setPriorityTrainingConfig(e.target.value)}
+                placeholder="e.g., priority_training.yaml"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white placeholder-gray-500"
+              />
+            </div>
+          )}
+
+          {/* Inline editor mode */}
+          {priorityMode === "inline" && (
+            <div className="space-y-3">
+              {/* Multiplier */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Multiplier (repeat priority set {priorityMultiplier}x per epoch)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={priorityMultiplier}
+                  onChange={(e) => setPriorityMultiplier(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-20 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+                />
+              </div>
+
+              {/* Entry list */}
+              {priorityEntries.map((entry, index) => (
+                <div key={index} className="p-3 bg-gray-800 rounded border border-gray-600 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400">Entry {index + 1}</span>
+                    <button
+                      onClick={() => setPriorityEntries(priorityEntries.filter((_, i) => i !== index))}
+                      className="text-red-400 hover:text-red-300 text-xs px-2 py-1"
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  {/* Entry type */}
+                  <select
+                    value={entry.type}
+                    onChange={(e) => {
+                      const updated = [...priorityEntries];
+                      updated[index] = { ...entry, type: e.target.value as "tags" | "caption_contains" };
+                      setPriorityEntries(updated);
+                    }}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  >
+                    <option value="tags">Tags (AND condition)</option>
+                    <option value="caption_contains">Caption Contains</option>
+                  </select>
+
+                  {/* Tags input */}
+                  {entry.type === "tags" && (
+                    <div>
+                      {/* Tag chips */}
+                      {entry.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {entry.tags.map((tag, tagIdx) => (
+                            <span
+                              key={tagIdx}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 rounded text-xs"
+                            >
+                              {tag}
+                              <button
+                                onClick={() => {
+                                  const updated = [...priorityEntries];
+                                  updated[index] = { ...entry, tags: entry.tags.filter((_, i) => i !== tagIdx) };
+                                  setPriorityEntries(updated);
+                                }}
+                                className="text-blue-400 hover:text-blue-200"
+                              >
+                                &times;
+                              </button>
+                            </span>
+                          ))}
+                          {entry.tags.length > 1 && (
+                            <span className="text-xs text-gray-500 self-center ml-1">(AND)</span>
+                          )}
+                        </div>
+                      )}
+                      {/* Tag input with autocomplete */}
+                      <InputWithTagSuggestions
+                        value=""
+                        onChange={() => {}}
+                        onTagAdd={(tag: string) => {
+                          if (tag && !entry.tags.includes(tag)) {
+                            const updated = [...priorityEntries];
+                            updated[index] = { ...entry, tags: [...entry.tags, tag] };
+                            setPriorityEntries(updated);
+                          }
+                        }}
+                        placeholder="Type to search tags..."
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white"
+                      />
+                    </div>
+                  )}
+
+                  {/* Caption contains input */}
+                  {entry.type === "caption_contains" && (
+                    <input
+                      type="text"
+                      value={entry.captionText}
+                      onChange={(e) => {
+                        const updated = [...priorityEntries];
+                        updated[index] = { ...entry, captionText: e.target.value };
+                        setPriorityEntries(updated);
+                      }}
+                      placeholder="Text to search in captions..."
+                      className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white placeholder-gray-500"
+                    />
+                  )}
+                </div>
+              ))}
+
+              {/* Add entry button */}
+              <button
+                onClick={() => setPriorityEntries([...priorityEntries, { type: "tags", tags: [], captionText: "" }])}
+                className="w-full py-2 border border-dashed border-gray-600 rounded text-xs text-gray-400 hover:text-gray-300 hover:border-gray-500"
+              >
+                + Add Entry
+              </button>
+
+              {/* Save button */}
+              {priorityEntries.length > 0 && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const apiEntries = priorityEntries
+                        .filter(e => (e.type === "tags" && e.tags.length > 0) || (e.type === "caption_contains" && e.captionText))
+                        .map(e => e.type === "tags" ? { type: "tags", tags: e.tags } : { type: "caption_contains", text: e.captionText });
+                      if (apiEntries.length === 0) return;
+                      const result = await savePriorityTrainingConfig(apiEntries, priorityMultiplier);
+                      setPriorityTrainingConfig(result.path);
+                      alert(`Saved ${result.entries_count} entries to ${result.path}`);
+                    } catch (e: any) {
+                      alert(`Failed to save: ${e.message}`);
+                    }
+                  }}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded text-xs text-white font-medium"
+                >
+                  Save as YAML
+                </button>
+              )}
+
+              {/* Show saved path */}
+              {priorityTrainingConfig && (
+                <div className="text-xs text-green-400">
+                  Config saved: {priorityTrainingConfig}
+                </div>
+              )}
+            </div>
+          )}
+
+          {priorityMode === "none" && (
+            <div className="text-xs text-gray-500">
+              Priority training is disabled. Enable to focus training on specific tags/concepts at the beginning of each epoch.
+            </div>
+          )}
         </div>
 
         {/* Latent Encoding Mode */}

@@ -7198,8 +7198,10 @@ class BaseTrainer(ABC):
                 if epoch == start_epoch:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if bucket_manager:
-                        # For bucketing: use the full batch count before resume slicing
-                        full_batch_count = len(item_batches)  # item_batches before resume slicing
+                        # For bucketing: use the full batch count before resume slicing.
+                        # Priority training path may not define `item_batches`, so use
+                        # the pre-sliced `batches` list which is always available here.
+                        full_batch_count = len(batches)
                     else:
                         # For simple batching: calculate from total items
                         full_batch_count = (len(all_items) + batch_size - 1) // batch_size

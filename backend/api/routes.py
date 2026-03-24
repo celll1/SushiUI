@@ -3393,32 +3393,35 @@ async def scan_dataset(
                                     # Detect format
                                     field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
 
-                                    # Check if tags caption already exists (single tags field per item)
-                                    existing_tags = db.query(DatasetCaption).filter(
+                                    # Determine caption_type based on detected format
+                                    detected_caption_type = "tags" if is_tags_format else "natural_language"
+
+                                    # Check if caption of this type already exists
+                                    existing_cap = db.query(DatasetCaption).filter(
                                         DatasetCaption.item_id == item.id,
-                                        DatasetCaption.caption_type == "tags"
+                                        DatasetCaption.caption_type == detected_caption_type
                                     ).first()
 
-                                    if existing_tags:
+                                    if existing_cap:
                                         # Update existing
-                                        existing_tags.content = content
-                                        existing_tags.field_category = field_category
-                                        existing_tags.is_tags_format = is_tags_format
-                                        existing_tags.tag_match_rate = match_rate
-                                        existing_tags.source = "file"
-                                        existing_tags.source_field = "tags"
-                                        existing_tags.updated_at = datetime.utcnow()
+                                        existing_cap.content = content
+                                        existing_cap.field_category = field_category
+                                        existing_cap.is_tags_format = is_tags_format
+                                        existing_cap.tag_match_rate = match_rate
+                                        existing_cap.source = "file"
+                                        existing_cap.source_field = detected_caption_type
+                                        existing_cap.updated_at = datetime.utcnow()
                                     else:
                                         # Create new
                                         caption = DatasetCaption(
                                             item_id=item.id,
-                                            caption_type="tags",
+                                            caption_type=detected_caption_type,
                                             content=content,
                                             field_category=field_category,
                                             is_tags_format=is_tags_format,
                                             tag_match_rate=match_rate,
                                             source="file",
-                                            source_field="tags"
+                                            source_field=detected_caption_type
                                         )
                                         db.add(caption)
                                         captions_found += 1
@@ -3560,11 +3563,15 @@ async def scan_dataset(
         majority_is_tags = tags_count > nl_count
         minority_count = nl_count if majority_is_tags else tags_count
         if minority_count > 0:
+            majority_type_name = "tags" if majority_is_tags else "natural_language"
             print(f"[Dataset Scan] caption_type='{ct}': {tags_count} tags, {nl_count} NL -> "
-                  f"normalizing {minority_count} to {'tags' if majority_is_tags else 'natural_language'}")
+                  f"normalizing {minority_count} to {majority_type_name}")
             for c in captions_of_type:
                 if c.is_tags_format != majority_is_tags:
                     c.is_tags_format = majority_is_tags
+                    # Also update caption_type for default txt fields
+                    if ct in ("tags", "natural_language"):
+                        c.caption_type = majority_type_name
 
     # Update dataset statistics
     dataset.total_items = items_found

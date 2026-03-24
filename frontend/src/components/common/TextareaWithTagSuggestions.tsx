@@ -30,6 +30,7 @@ interface TextareaWithTagSuggestionsProps extends Omit<TextareaHTMLAttributes<HT
   onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   enableWeightControl?: boolean;
   rows?: number;
+  tagSeparator?: "comma" | "newline";  // Default: "comma"
 }
 
 /**
@@ -46,6 +47,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   onChange,
   enableWeightControl = false,
   rows = 4,
+  tagSeparator = "comma",
   onKeyDown: externalOnKeyDown,
   ...props
 }, forwardedRef) => {
@@ -625,7 +627,22 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     if (textarea.tagName !== "TEXTAREA") return;
 
     const cursorPos = textarea.selectionStart;
-    const result = replaceCurrentTag(value, cursorPos, tag);
+    let result = replaceCurrentTag(value, cursorPos, tag);
+
+    // For newline separator mode, replace the trailing ", " with "\n"
+    if (tagSeparator === "newline") {
+      const tagEnd = result.text.indexOf(tag, Math.max(0, result.cursorPos - tag.length - 5));
+      if (tagEnd >= 0) {
+        const afterTag = tagEnd + tag.length;
+        const trailing = result.text.substring(afterTag);
+        // Replace ", " or "," at the start of trailing with "\n"
+        const cleaned = trailing.replace(/^,\s*/, "\n");
+        result = {
+          text: result.text.substring(0, afterTag) + cleaned,
+          cursorPos: afterTag + 1,  // After the newline
+        };
+      }
+    }
 
     // Add tag to recent history
     addToRecentTags(tag);

@@ -2821,6 +2821,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-400">Entry {index + 1}</span>
                     <button
+                      type="button"
                       onClick={() => setPriorityEntries(priorityEntries.filter((_, i) => i !== index))}
                       className="text-red-400 hover:text-red-300 text-xs px-2 py-1"
                     >
@@ -2907,6 +2908,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
               {/* Add entry button */}
               <button
+                type="button"
                 onClick={() => setPriorityEntries([...priorityEntries, { type: "tags", tags: [], captionText: "" }])}
                 className="w-full py-2 border border-dashed border-gray-600 rounded text-xs text-gray-400 hover:text-gray-300 hover:border-gray-500"
               >
@@ -2916,6 +2918,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               {/* Save button */}
               {priorityEntries.length > 0 && (
                 <button
+                  type="button"
                   onClick={async () => {
                     try {
                       const apiEntries = priorityEntries

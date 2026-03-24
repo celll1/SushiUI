@@ -458,6 +458,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
       if (params.force_recache !== undefined) setForceRecache(params.force_recache);
 
+      // Reference images
+      if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
+
+      // Priority training
+      if (params.priority_training) {
+        setPriorityEnabled(true);
+        const entries = params.priority_training.entries || [];
+        setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
+        setPriorityMultiplier(params.priority_training.multiplier || 1);
+      }
+
+      // ReLoRA parameters
+      if (params.relora_merge_every !== undefined) setReloraMergeEvery(params.relora_merge_every);
+      if (params.relora_merge_unit !== undefined) setReloraMergeUnit(params.relora_merge_unit);
+      if (params.restart_warmup_steps !== undefined) setRestartWarmupSteps(params.restart_warmup_steps);
+      if (params.optimizer_reset_strategy !== undefined) setOptimizerResetStrategy(params.optimizer_reset_strategy);
+      if (params.optimizer_pruning_ratio !== undefined) setOptimizerPruningRatio(params.optimizer_pruning_ratio);
+
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
       console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);

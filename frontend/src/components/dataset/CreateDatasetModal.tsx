@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Folder, AlertCircle } from "lucide-react";
-import { createDataset, scanDataset, Dataset, StructureDetectionResult } from "@/utils/api";
+import { createDataset, scanDataset, scanDatasetPreview, Dataset, StructureDetectionResult, ScanPreviewResult } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface CreateDatasetModalProps {
@@ -22,6 +22,7 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
   const [scanningProgress, setScanningProgress] = useState<number | null>(null);
   const [scanningMessage, setScanningMessage] = useState<string>("");
   const [detectionResult, setDetectionResult] = useState<StructureDetectionResult | null>(null);
+  const [scanPreview, setScanPreview] = useState<ScanPreviewResult | null>(null);
 
   // WebSocket progress handler
   useEffect(() => {
@@ -81,14 +82,22 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
         setScanningProgress(100);
         setScanningMessage("Scan complete!");
 
+        // Fetch scan preview to show detected structure
+        try {
+          const preview = await scanDatasetPreview(newDataset.id);
+          setScanPreview(preview);
+        } catch (previewErr) {
+          console.error("Failed to get scan preview:", previewErr);
+        }
+
         // Show detection result if paired structure was found
         if (scanResult.structure_detection?.structure_type === "paired") {
           setDetectionResult(scanResult.structure_detection);
           // Longer delay to let user see the detection result
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          await new Promise(resolve => setTimeout(resolve, 3000));
         } else {
           // Small delay to show completion
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
         onCreate(scanResult.dataset); // Return scanned dataset with updated counts
@@ -267,6 +276,58 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
                   {detectionResult.stats.paired_groups} paired groups found from {detectionResult.stats.total_files_sampled} files
                 </p>
               </div>
+            </div>
+          )}
+
+          {/* Scan Preview - Caption Suffixes */}
+          {scanPreview && Object.keys(scanPreview.detected_suffixes).length > 0 && (
+            <div className="bg-blue-900/20 border border-blue-700 rounded p-3">
+              <p className="text-sm text-blue-300 font-medium mb-2">
+                Detected Caption Types ({scanPreview.total_images} images, {scanPreview.total_captions} captions)
+              </p>
+              <div className="space-y-1">
+                {Object.entries(scanPreview.detected_suffixes).map(([suffix, info]) => (
+                  <div key={suffix} className="flex items-center gap-2 text-xs">
+                    <code className="bg-blue-900/50 px-1.5 py-0.5 rounded text-blue-300">
+                      {suffix === "(default)" ? "(default .txt)" : `_${suffix}.txt`}
+                    </code>
+                    <span className="text-gray-400">{info.count} files</span>
+                    <span className={`px-1.5 py-0.5 rounded ${
+                      info.sample_types.includes("tags") ? "bg-green-900/50 text-green-300" :
+                      info.sample_types.includes("natural_language") ? "bg-purple-900/50 text-purple-300" :
+                      "bg-gray-700 text-gray-300"
+                    }`}>
+                      {info.sample_types.join(", ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {scanPreview.sample_groups.length > 0 && (
+                <div className="mt-3 border-t border-blue-800 pt-2">
+                  <p className="text-xs text-gray-400 mb-1">Sample group: {scanPreview.sample_groups[0].group_name}</p>
+                  <div className="text-xs text-gray-500 space-y-0.5">
+                    {scanPreview.sample_groups[0].images.map((img, i) => (
+                      <div key={i}>
+                        <span className="text-gray-400">{img.role}:</span>{" "}
+                        {img.path.split(/[/\\]/).pop()}
+                      </div>
+                    ))}
+                    {scanPreview.sample_groups[0].captions.map((cap, i) => (
+                      <div key={i}>
+                        <span className={cap.detected_type === "tags" ? "text-green-400" : "text-purple-400"}>
+                          {cap.suffix || "default"}:
+                        </span>{" "}
+                        {cap.path.split(/[/\\]/).pop()}
+                        {cap.content_preview && (
+                          <span className="text-gray-600 ml-1 truncate inline-block max-w-[200px] align-bottom">
+                            {cap.content_preview.substring(0, 60)}...
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

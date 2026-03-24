@@ -1826,6 +1826,29 @@ export const cancelBatchOperation = async (datasetId: number): Promise<{ message
 
 // ==================== Debug VRAM Inspection ====================
 
+// ==================== Dataset Scan Preview ====================
+
+export interface ScanPreviewGroup {
+  group_name: string;
+  images: Array<{ path: string; role: string }>;
+  captions: Array<{ path: string; suffix: string; detected_type: string; content_preview?: string }>;
+}
+
+export interface ScanPreviewResult {
+  total_groups: number;
+  total_images: number;
+  total_captions: number;
+  detected_suffixes: Record<string, { count: number; sample_types: string[] }>;
+  structure_type: string;
+  sample_groups: ScanPreviewGroup[];
+  dataset_path?: string;
+}
+
+export const scanDatasetPreview = async (datasetId: number): Promise<ScanPreviewResult> => {
+  const response = await api.post(`/datasets/${datasetId}/scan/preview`);
+  return response.data;
+};
+
 // ==================== Priority Training Config ====================
 
 export const savePriorityTrainingConfig = async (

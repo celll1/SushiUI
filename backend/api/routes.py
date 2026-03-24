@@ -3016,6 +3016,50 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
     print(f"[Dataset] Tag statistics computed: {len(statistics)} tags")
     return statistics
 
+
+@router.post("/datasets/{dataset_id}/scan/preview")
+async def scan_dataset_preview(dataset_id: int, db: Session = Depends(get_datasets_db)):
+    """Preview dataset structure before importing.
+
+    Scans the directory and returns detected file groups, caption suffixes,
+    and format classifications without writing to the database.
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if not os.path.isdir(dataset.path):
+        raise HTTPException(status_code=400, detail=f"Dataset path not found: {dataset.path}")
+
+    from utils.dataset_scanner import scan_directory_structure, classify_caption_files, build_scan_preview
+    from utils.taglist_loader import load_all_tags
+
+    # Load taglist for format detection
+    taglist = load_all_tags(settings.root_dir)
+
+    # 2-pass scan
+    scan_groups = scan_directory_structure(
+        dir_path=dataset.path,
+        recursive=dataset.recursive,
+        max_depth=dataset.max_depth if dataset.max_depth else None,
+        reference_suffixes=dataset.reference_suffixes or [],
+        target_suffixes=dataset.target_suffixes or [],
+    )
+
+    # Classify caption files (sample up to 500 groups for performance)
+    sample_groups = dict(list(scan_groups.items())[:500])
+    classify_caption_files(sample_groups, taglist)
+
+    # Build preview
+    preview = build_scan_preview(sample_groups)
+    preview["dataset_path"] = dataset.path
+
+    print(f"[ScanPreview] {preview['total_groups']} groups, {preview['total_images']} images, "
+          f"{preview['total_captions']} captions, suffixes: {list(preview['detected_suffixes'].keys())}")
+
+    return preview
+
+
 @router.post("/datasets/{dataset_id}/scan")
 async def scan_dataset(
     dataset_id: int,
@@ -3076,6 +3120,29 @@ async def scan_dataset(
     print(f"[Dataset Scan] Loading taglist for format detection...")
     taglist = load_all_tags(settings.root_dir)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
+
+    # Pre-scan with 2-pass scanner to detect suffix-based captions
+    from utils.dataset_scanner import scan_directory_structure
+    pre_scan_groups = scan_directory_structure(
+        dir_path=dataset.path,
+        recursive=dataset.recursive,
+        max_depth=dataset.max_depth if dataset.max_depth else None,
+        reference_suffixes=reference_suffixes,
+        target_suffixes=target_suffixes,
+    )
+    # Build a lookup: image_stem -> [(suffix, caption_path), ...]
+    suffix_captions_by_stem = {}
+    detected_suffixes = set()
+    for group_name, group_data in pre_scan_groups.items():
+        suffix_caps = [(c["suffix"], c["path"]) for c in group_data["captions"] if c["suffix"]]
+        if suffix_caps:
+            suffix_captions_by_stem[group_name] = suffix_caps
+            for s, _ in suffix_caps:
+                detected_suffixes.add(s)
+    if detected_suffixes:
+        print(f"[Dataset Scan] Detected caption suffixes: {sorted(detected_suffixes)}")
+        existing_suffixes = dataset.caption_suffixes or []
+        dataset.caption_suffixes = sorted(set(existing_suffixes) | detected_suffixes)
 
     # Scan directory
     items_found = 0
@@ -3409,6 +3476,46 @@ async def scan_dataset(
 
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
+
+                # Process suffix-based caption files detected by 2-pass scanner
+                if base_name in suffix_captions_by_stem:
+                    for suffix, suffix_path in suffix_captions_by_stem[base_name]:
+                        try:
+                            _, sext = os.path.splitext(suffix_path)
+                            if sext.lower() == '.txt':
+                                with open(suffix_path, 'r', encoding='utf-8') as f:
+                                    content = f.read().strip()
+                                if content:
+                                    field_category, is_tags_format, match_rate = classify_field(
+                                        suffix, content, taglist
+                                    )
+                                    existing_cap = db.query(DatasetCaption).filter(
+                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.caption_type == suffix
+                                    ).first()
+                                    if existing_cap:
+                                        existing_cap.content = content
+                                        existing_cap.field_category = field_category
+                                        existing_cap.is_tags_format = is_tags_format
+                                        existing_cap.tag_match_rate = match_rate
+                                        existing_cap.source = "file"
+                                        existing_cap.source_field = suffix
+                                        existing_cap.updated_at = datetime.utcnow()
+                                    else:
+                                        caption = DatasetCaption(
+                                            item_id=item.id,
+                                            caption_type=suffix,
+                                            content=content,
+                                            field_category=field_category,
+                                            is_tags_format=is_tags_format,
+                                            tag_match_rate=match_rate,
+                                            source="file",
+                                            source_field=suffix
+                                        )
+                                        db.add(caption)
+                                        captions_found += 1
+                        except Exception as e:
+                            print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")

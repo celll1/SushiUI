@@ -172,6 +172,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Reference image conditioning (FLUX.2 only)
   const [useReferenceImages, setUseReferenceImages] = useState(false);
 
+  // Priority training
+  const [priorityTrainingConfig, setPriorityTrainingConfig] = useState("");
+
   // Bucketing options
   const [enableBucketing, setEnableBucketing] = useState(false);
   const [baseResolutions, setBaseResolutions] = useState<number[]>([1024]);
@@ -865,6 +868,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
     if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
     if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
+    if (config.priorityTrainingConfig !== undefined) setPriorityTrainingConfig(config.priorityTrainingConfig || "");
     if (config.enableBucketing !== undefined) setEnableBucketing(config.enableBucketing);
     if (config.baseResolutions !== undefined) setBaseResolutions(config.baseResolutions);
     if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
@@ -1081,6 +1085,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
       // condition_image_path is now embedded in each sample_prompts entry
+      // Priority training
+      priority_training_config: priorityTrainingConfig || undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -2752,6 +2758,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p>Uses reference images from dataset to condition the model during training via latent concatenation.</p>
             <p>Dataset items must have reference images configured (e.g., <code className="bg-gray-800 px-1 rounded">image_ref.png</code> suffix).</p>
             <p className="text-yellow-500/80">⚠️ Only supported for FLUX.2 models. Will be ignored for other architectures.</p>
+          </div>
+        </div>
+
+        {/* Priority Training */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Priority Training</h3>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Priority Training Config (YAML path)</label>
+            <input
+              type="text"
+              value={priorityTrainingConfig}
+              onChange={(e) => setPriorityTrainingConfig(e.target.value)}
+              placeholder="e.g., priority_training.yaml (leave empty to disable)"
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white placeholder-gray-500"
+            />
+          </div>
+          <div className="text-xs text-gray-500 space-y-1">
+            <p>Specify a YAML file with priority tags/captions to train at the beginning of each epoch.</p>
+            <p>Priority items are batched by list order and repeated according to the multiplier setting in the YAML.</p>
           </div>
         </div>
 

@@ -4333,6 +4333,9 @@ class TrainingRunCreateRequest(BaseModel):
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training
 
+    # Priority training
+    priority_training_config: Optional[str] = None  # Path to priority training YAML file
+
     # ReLoRA-specific parameters
     relora_merge_every: int = 500  # Steps/epochs between merge-reinit cycles
     relora_merge_unit: str = "steps"  # "steps" or "epochs"
@@ -4543,7 +4546,8 @@ async def create_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
-                use_reference_images=request.use_reference_images,  # Reference image conditioning
+                use_reference_images=request.use_reference_images,
+                priority_training_config=request.priority_training_config,
             )
         elif request.training_method == "relora":
             config_yaml = config_generator.generate_relora_config(
@@ -4633,6 +4637,7 @@ async def create_training_run(
                 prediction_target=request.prediction_target,
                 strict_validation=request.strict_validation,
                 use_reference_images=request.use_reference_images,
+                priority_training_config=request.priority_training_config,
                 # ReLoRA-specific parameters
                 relora_merge_every=request.relora_merge_every,
                 relora_merge_unit=request.relora_merge_unit,
@@ -4795,7 +4800,8 @@ async def create_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
-                use_reference_images=request.use_reference_images,  # Reference image conditioning
+                use_reference_images=request.use_reference_images,
+                priority_training_config=request.priority_training_config,
             )
 
         # Save config file
@@ -5022,6 +5028,8 @@ async def get_training_run_params(
         "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
         # Reference image conditioning
         "use_reference_images": training_params.get("use_reference_images", False),
+        # Priority training
+        "priority_training_config": training_params.get("priority_training_config", None),
         # ControlNet-specific parameters
         "controlnet_type": network_config.get("controlnet", {}).get("type", "standard") if job == "controlnet" else "standard",
         "controlnet_pretrained_path": network_config.get("controlnet", {}).get("pretrained_path") if job == "controlnet" else None,
@@ -5178,7 +5186,8 @@ async def update_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
-                use_reference_images=request.use_reference_images,  # Reference image conditioning
+                use_reference_images=request.use_reference_images,
+                priority_training_config=request.priority_training_config,
             )
         elif request.training_method == "controlnet":
             config_yaml = config_generator.generate_controlnet_config(
@@ -5335,7 +5344,8 @@ async def update_training_run(
                 noise_process=request.noise_process,  # Unified Training Framework
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
-                use_reference_images=request.use_reference_images,  # Reference image conditioning
+                use_reference_images=request.use_reference_images,
+                priority_training_config=request.priority_training_config,
             )
 
         # Update config_yaml and base_model_path in database

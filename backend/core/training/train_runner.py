@@ -532,6 +532,9 @@ def _process_cached_items(
         processed_item = {
             "image_path": item["image_path"],
             "caption": processed_caption,
+            "raw_caption": raw_caption,
+            "tag_data": tag_data_str,
+            "is_tags_format": is_tags_format,
             "width": item.get("width"),
             "height": item.get("height"),
         }
@@ -1470,6 +1473,9 @@ def main():
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
 
+            # Get priority training settings
+            priority_training_config = train_config.get('priority_training_config', None)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -1509,6 +1515,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                priority_training_config=priority_training_config,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -1854,6 +1861,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                priority_training_config=priority_training_config,
             )
 
             print("[TrainRunner] ReLoRA training completed successfully!")
@@ -2166,6 +2174,9 @@ def main():
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
 
+            # Get priority training settings
+            priority_training_config = train_config.get('priority_training_config', None)
+
             # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
@@ -2205,6 +2216,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                priority_training_config=priority_training_config,
             )
 
             print("[TrainRunner] Training completed successfully!")

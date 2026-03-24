@@ -6358,6 +6358,7 @@ class BaseTrainer(ABC):
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
+        priority_training_config: Optional[str] = None,
     ):
         """
         Main training loop.
@@ -6966,6 +6967,18 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} Dataset unchanged - restoring random state for mid-epoch resume...")
                         random.setstate(resume_training_state['random_state'])
 
+                # Load priority training config (if specified)
+                priority_config = None
+                if priority_training_config:
+                    try:
+                        from core.training.priority_training import (
+                            PriorityTrainingConfig, classify_items, build_priority_batches
+                        )
+                        priority_config = PriorityTrainingConfig.load(priority_training_config)
+                    except Exception as e:
+                        print(f"{self.log_prefix} WARNING: Failed to load priority training config: {e}")
+                        print(f"{self.log_prefix} Continuing with normal training")
+
                 # Create batches
                 if bucket_manager:
                     # BucketManager only manages items, we need to pair with datasets
@@ -6975,20 +6988,69 @@ class BaseTrainer(ABC):
                         for item in dataset.items:
                             path_to_dataset[item["image_path"]] = dataset
 
-                    # Get batches from bucket manager
-                    item_batches = bucket_manager.build_batch_indices(batch_size)
+                    if priority_config and priority_config.entries:
+                        # Priority training: split items, build priority batches first
+                        priority_items, normal_items = classify_items(all_items, priority_config)
 
-                    # Convert to (item, dataset) tuples
-                    batches = []
-                    for item_batch in item_batches:
-                        batch_with_dataset = [
-                            (item, path_to_dataset[item["image_path"]])
-                            for item in item_batch
-                        ]
-                        batches.append(batch_with_dataset)
+                        # Build priority batches (sorted by entry index, bucketed by resolution)
+                        priority_batches = build_priority_batches(
+                            priority_items, batch_size, bucket_manager
+                        )
+
+                        # Build normal batches from remaining items using bucket manager
+                        # Temporarily replace bucket contents with normal items only
+                        from core.training.bucketing import BucketManager
+                        normal_bucket_manager = BucketManager(
+                            base_resolutions=bucket_manager.base_resolutions,
+                            divisibility=8,
+                            strategy=bucket_manager.strategy,
+                            multi_resolution_mode=bucket_manager.multi_resolution_mode,
+                        )
+                        for item, dataset in normal_items:
+                            normal_bucket_manager.assign_image_to_bucket(
+                                image_path=item["image_path"],
+                                width=item.get("width", 1024),
+                                height=item.get("height", 1024),
+                                caption=item.get("caption", ""),
+                                dataset_unique_id=getattr(dataset, 'unique_id', None),
+                            )
+                        normal_item_batches = normal_bucket_manager.build_batch_indices(batch_size)
+                        normal_batches = []
+                        for item_batch in normal_item_batches:
+                            batch_with_dataset = [
+                                (item, path_to_dataset[item["image_path"]])
+                                for item in item_batch
+                            ]
+                            normal_batches.append(batch_with_dataset)
+
+                        # Combine: priority x multiplier + normal
+                        batches = priority_batches * priority_config.multiplier + normal_batches
+                        print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
+                              f"{len(priority_batches)} priority batches x {priority_config.multiplier} "
+                              f"+ {len(normal_batches)} normal batches = {len(batches)} total")
+                    else:
+                        # Standard bucketed batching (no priority)
+                        item_batches = bucket_manager.build_batch_indices(batch_size)
+                        batches = []
+                        for item_batch in item_batches:
+                            batch_with_dataset = [
+                                (item, path_to_dataset[item["image_path"]])
+                                for item in item_batch
+                            ]
+                            batches.append(batch_with_dataset)
                 else:
                     # Simple sequential batching
-                    batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
+                    if priority_config and priority_config.entries:
+                        priority_items, normal_items = classify_items(all_items, priority_config)
+                        p_items = [(item, dataset) for item, dataset, _ in priority_items]
+                        priority_batches = [p_items[i:i+batch_size] for i in range(0, len(p_items), batch_size)]
+                        normal_batches = [normal_items[i:i+batch_size] for i in range(0, len(normal_items), batch_size)]
+                        batches = priority_batches * priority_config.multiplier + normal_batches
+                        print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
+                              f"{len(priority_batches)} priority x {priority_config.multiplier} "
+                              f"+ {len(normal_batches)} normal = {len(batches)} total")
+                    else:
+                        batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)

@@ -157,10 +157,22 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setPage(1);
   };
 
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+
+  // Open detail panel on mobile when item is selected
+  const handleSelectItemMobile = useCallback((item: DatasetItem) => {
+    handleSelectItem(item);
+    setMobileDetailOpen(true);
+  }, [handleSelectItem]);
+
   return (
-    <div className="flex h-full gap-3">
-      {/* Left Column: Item Grid */}
-      <div className="w-80 flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg">
+    <div className="flex flex-col lg:flex-row h-full gap-0 lg:gap-3 relative">
+      {/* Left Column: Item Grid - always visible on mobile, fixed width on desktop */}
+      <div className={`
+        w-full lg:w-80 lg:flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg
+        ${mobileDetailOpen ? 'hidden lg:flex' : 'flex'}
+      `}>
         <ItemGridColumn
           items={items}
           selectedItems={selectedItems}
@@ -171,7 +183,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           total={total}
           pageSize={pageSize}
           loading={loading}
-          onSelectItem={handleSelectItem}
+          onSelectItem={handleSelectItemMobile}
           onToggleSelection={handleToggleSelection}
           onSearchChange={handleSearchChange}
           onTagFilterChange={handleTagFilterChange}
@@ -181,8 +193,19 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         />
       </div>
 
-      {/* Center Column: Detail View */}
-      <div className="flex-1 flex flex-col bg-gray-900/50 rounded-lg min-w-0">
+      {/* Center Column: Detail View - fullscreen overlay on mobile */}
+      <div className={`
+        fixed inset-0 z-30 lg:relative lg:z-auto
+        lg:flex-1 flex flex-col bg-gray-900 lg:bg-gray-900/50 rounded-lg min-w-0
+        ${mobileDetailOpen ? 'flex' : 'hidden lg:flex'}
+      `}>
+        {/* Mobile back button */}
+        <button
+          onClick={() => setMobileDetailOpen(false)}
+          className="lg:hidden flex items-center gap-2 px-3 py-2 text-sm text-gray-300 bg-gray-800 border-b border-gray-700"
+        >
+          <span>&#8592;</span> Back to Grid
+        </button>
         <ItemDetailColumn
           item={currentItem}
           datasetId={datasetId}
@@ -191,8 +214,23 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         />
       </div>
 
-      {/* Right Column: Actions & Tag Statistics */}
-      <div className="w-80 flex-shrink-0 flex flex-col bg-gray-900/50 rounded-lg">
+      {/* Right Column: Actions - slide-over on mobile */}
+      <div className={`
+        fixed top-0 right-0 h-full w-80 max-w-[calc(100vw-3rem)] z-40 lg:relative lg:z-auto
+        lg:flex-shrink-0 flex flex-col bg-gray-900 lg:bg-gray-900/50 rounded-lg
+        transform transition-transform duration-200 ease-in-out
+        ${mobileActionsOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+        overflow-y-auto lg:overflow-visible
+        shadow-2xl lg:shadow-none
+      `}>
+        {/* Mobile close button */}
+        <button
+          onClick={() => setMobileActionsOpen(false)}
+          className="lg:hidden flex items-center justify-between px-3 py-2 text-sm text-gray-300 bg-gray-800 border-b border-gray-700"
+        >
+          <span>Actions & Statistics</span>
+          <span>&times;</span>
+        </button>
         <ActionsColumn
           datasetId={datasetId}
           tagStatistics={tagStatistics}
@@ -203,6 +241,29 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           taggerSettings={taggerSettings}
         />
       </div>
+
+      {/* Mobile backdrop for actions panel */}
+      {mobileActionsOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+          onClick={() => setMobileActionsOpen(false)}
+        />
+      )}
+
+      {/* Mobile FAB: Actions toggle */}
+      <button
+        onClick={() => setMobileActionsOpen(!mobileActionsOpen)}
+        className="fixed bottom-4 right-4 z-50 p-3 rounded-full bg-blue-600 text-white shadow-lg lg:hidden"
+        title="Actions & Statistics"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" />
+          <line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" />
+          <line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" />
+          <line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" />
+          <line x1="17" y1="16" x2="23" y2="16" />
+        </svg>
+      </button>
     </div>
   );
 }

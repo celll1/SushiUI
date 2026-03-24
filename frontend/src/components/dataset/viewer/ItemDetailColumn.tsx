@@ -541,7 +541,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         {/* Image + File Info - Horizontal Layout */}
         <div className="flex-shrink-0 flex gap-2">
           {/* Image Preview - Small Thumbnail */}
-          <div className="w-32 h-32 bg-gray-800 rounded overflow-hidden flex-shrink-0">
+          <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gray-800 rounded overflow-hidden flex-shrink-0">
             <img
               src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
               alt={item.base_name}

@@ -2,9 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, savePriorityTrainingConfig } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import InputWithTagSuggestions from "../common/InputWithTagSuggestions";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -173,11 +172,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Reference image conditioning (FLUX.2 only)
   const [useReferenceImages, setUseReferenceImages] = useState(false);
 
-  // Priority training
-  const [priorityTrainingConfig, setPriorityTrainingConfig] = useState("");
-  const [priorityMode, setPriorityMode] = useState<"none" | "inline" | "file">("none");
-  const [priorityEntries, setPriorityEntries] = useState<Array<{ type: "tags" | "caption_contains"; tags: string[]; captionText: string }>>([]);
+  // Priority training (one entry per line in textarea)
+  const [priorityEnabled, setPriorityEnabled] = useState(false);
+  const [priorityText, setPriorityText] = useState("");  // newline-separated entries
   const [priorityMultiplier, setPriorityMultiplier] = useState(1);
+  const [priorityExpanded, setPriorityExpanded] = useState(false);  // expand textarea modal
 
   // Bucketing options
   const [enableBucketing, setEnableBucketing] = useState(false);
@@ -872,7 +871,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
     if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
     if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
-    if (config.priorityTrainingConfig !== undefined) setPriorityTrainingConfig(config.priorityTrainingConfig || "");
+    if (config.priority_training) {
+      setPriorityEnabled(true);
+      const entries = config.priority_training.entries || [];
+      setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
+      setPriorityMultiplier(config.priority_training.multiplier || 1);
+    }
     if (config.enableBucketing !== undefined) setEnableBucketing(config.enableBucketing);
     if (config.baseResolutions !== undefined) setBaseResolutions(config.baseResolutions);
     if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
@@ -1090,7 +1094,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
       // condition_image_path is now embedded in each sample_prompts entry
       // Priority training
-      priority_training_config: priorityMode !== "none" && priorityTrainingConfig ? priorityTrainingConfig : undefined,
+      priority_training: priorityEnabled && priorityText.trim() ? {
+        entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
+        multiplier: priorityMultiplier,
+      } : undefined,
     };
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -2767,192 +2774,103 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
         {/* Priority Training */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 mb-3">Priority Training</h3>
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Priority Training</h3>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={priorityEnabled}
+              onChange={(e) => setPriorityEnabled(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+            />
+            <span className="text-sm text-gray-300">Enable Priority Training</span>
+          </label>
 
-          {/* Mode selector */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Mode</label>
-            <select
-              value={priorityMode}
-              onChange={(e) => setPriorityMode(e.target.value as "none" | "inline" | "file")}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white"
-            >
-              <option value="none">Disabled</option>
-              <option value="inline">Inline Editor</option>
-              <option value="file">External YAML File</option>
-            </select>
-          </div>
-
-          {/* External file mode */}
-          {priorityMode === "file" && (
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">YAML File Path</label>
-              <input
-                type="text"
-                value={priorityTrainingConfig}
-                onChange={(e) => setPriorityTrainingConfig(e.target.value)}
-                placeholder="e.g., priority_training.yaml"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white placeholder-gray-500"
-              />
-            </div>
-          )}
-
-          {/* Inline editor mode */}
-          {priorityMode === "inline" && (
+          {priorityEnabled && (
             <div className="space-y-3">
-              {/* Multiplier */}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">
-                  Multiplier (repeat priority set {priorityMultiplier}x per epoch)
-                </label>
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400">Multiplier</label>
                 <input
                   type="number"
                   min={1}
-                  max={20}
+                  max={50}
                   value={priorityMultiplier}
                   onChange={(e) => setPriorityMultiplier(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-20 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+                  className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+                />
+                <span className="text-xs text-gray-500">x per epoch</span>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-gray-400">
+                    Priority entries ({priorityText.split("\n").filter(l => l.trim()).length} items)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setPriorityExpanded(true)}
+                    className="text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Expand
+                  </button>
+                </div>
+                <textarea
+                  value={priorityText}
+                  onChange={(e) => setPriorityText(e.target.value)}
+                  rows={Math.min(15, Math.max(5, priorityText.split("\n").length + 1))}
+                  placeholder={"hatsune_miku\nkagamine_rin\nblue_hair + twintails\ncaption:dragon"}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-xs text-white font-mono placeholder-gray-600 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              {/* Entry list */}
-              {priorityEntries.map((entry, index) => (
-                <div key={index} className="p-3 bg-gray-800 rounded border border-gray-600 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">Entry {index + 1}</span>
-                    <button
-                      type="button"
-                      onClick={() => setPriorityEntries(priorityEntries.filter((_, i) => i !== index))}
-                      className="text-red-400 hover:text-red-300 text-xs px-2 py-1"
-                    >
-                      Remove
-                    </button>
-                  </div>
-
-                  {/* Entry type */}
-                  <select
-                    value={entry.type}
-                    onChange={(e) => {
-                      const updated = [...priorityEntries];
-                      updated[index] = { ...entry, type: e.target.value as "tags" | "caption_contains" };
-                      setPriorityEntries(updated);
-                    }}
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
-                  >
-                    <option value="tags">Tags (AND condition)</option>
-                    <option value="caption_contains">Caption Contains</option>
-                  </select>
-
-                  {/* Tags input */}
-                  {entry.type === "tags" && (
-                    <div>
-                      {/* Tag chips */}
-                      {entry.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mb-2">
-                          {entry.tags.map((tag, tagIdx) => (
-                            <span
-                              key={tagIdx}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 rounded text-xs"
-                            >
-                              {tag}
-                              <button
-                                onClick={() => {
-                                  const updated = [...priorityEntries];
-                                  updated[index] = { ...entry, tags: entry.tags.filter((_, i) => i !== tagIdx) };
-                                  setPriorityEntries(updated);
-                                }}
-                                className="text-blue-400 hover:text-blue-200"
-                              >
-                                &times;
-                              </button>
-                            </span>
-                          ))}
-                          {entry.tags.length > 1 && (
-                            <span className="text-xs text-gray-500 self-center ml-1">(AND)</span>
-                          )}
-                        </div>
-                      )}
-                      {/* Tag input with autocomplete */}
-                      <InputWithTagSuggestions
-                        value=""
-                        onChange={() => {}}
-                        onTagAdd={(tag: string) => {
-                          if (tag && !entry.tags.includes(tag)) {
-                            const updated = [...priorityEntries];
-                            updated[index] = { ...entry, tags: [...entry.tags, tag] };
-                            setPriorityEntries(updated);
-                          }
-                        }}
-                        placeholder="Type to search tags..."
-                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white"
-                      />
-                    </div>
-                  )}
-
-                  {/* Caption contains input */}
-                  {entry.type === "caption_contains" && (
-                    <input
-                      type="text"
-                      value={entry.captionText}
-                      onChange={(e) => {
-                        const updated = [...priorityEntries];
-                        updated[index] = { ...entry, captionText: e.target.value };
-                        setPriorityEntries(updated);
-                      }}
-                      placeholder="Text to search in captions..."
-                      className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white placeholder-gray-500"
-                    />
-                  )}
-                </div>
-              ))}
-
-              {/* Add entry button */}
-              <button
-                type="button"
-                onClick={() => setPriorityEntries([...priorityEntries, { type: "tags", tags: [], captionText: "" }])}
-                className="w-full py-2 border border-dashed border-gray-600 rounded text-xs text-gray-400 hover:text-gray-300 hover:border-gray-500"
-              >
-                + Add Entry
-              </button>
-
-              {/* Save button */}
-              {priorityEntries.length > 0 && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const apiEntries = priorityEntries
-                        .filter(e => (e.type === "tags" && e.tags.length > 0) || (e.type === "caption_contains" && e.captionText))
-                        .map(e => e.type === "tags" ? { type: "tags", tags: e.tags } : { type: "caption_contains", text: e.captionText });
-                      if (apiEntries.length === 0) return;
-                      const result = await savePriorityTrainingConfig(apiEntries, priorityMultiplier);
-                      setPriorityTrainingConfig(result.path);
-                      alert(`Saved ${result.entries_count} entries to ${result.path}`);
-                    } catch (e: any) {
-                      alert(`Failed to save: ${e.message}`);
-                    }
-                  }}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded text-xs text-white font-medium"
-                >
-                  Save as YAML
-                </button>
-              )}
-
-              {/* Show saved path */}
-              {priorityTrainingConfig && (
-                <div className="text-xs text-green-400">
-                  Config saved: {priorityTrainingConfig}
-                </div>
-              )}
+              <div className="text-xs text-gray-500 space-y-0.5">
+                <p>One entry per line. Format:</p>
+                <p><code className="bg-gray-800 px-1 rounded">tag_name</code> — single tag match</p>
+                <p><code className="bg-gray-800 px-1 rounded">tag1 + tag2</code> — AND condition (both required)</p>
+                <p><code className="bg-gray-800 px-1 rounded">caption:text</code> — caption substring match</p>
+              </div>
             </div>
           )}
 
-          {priorityMode === "none" && (
-            <div className="text-xs text-gray-500">
-              Priority training is disabled. Enable to focus training on specific tags/concepts at the beginning of each epoch.
-            </div>
+          {!priorityEnabled && (
+            <p className="text-xs text-gray-500">Focus training on specific tags/concepts at the beginning of each epoch.</p>
           )}
         </div>
+
+        {/* Priority Training Expand Modal */}
+        {priorityExpanded && (
+          <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-800 rounded-lg w-full max-w-3xl max-h-[90vh] flex flex-col">
+              <div className="flex items-center justify-between p-3 border-b border-gray-700">
+                <span className="text-sm font-medium text-gray-300">
+                  Priority Entries ({priorityText.split("\n").filter(l => l.trim()).length} items)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPriorityExpanded(false)}
+                  className="text-gray-400 hover:text-white text-lg px-2"
+                >
+                  &times;
+                </button>
+              </div>
+              <textarea
+                value={priorityText}
+                onChange={(e) => setPriorityText(e.target.value)}
+                className="flex-1 m-3 px-3 py-2 bg-gray-900 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-blue-500 resize-none"
+                placeholder={"hatsune_miku\nkagamine_rin\nblue_hair + twintails\ncaption:dragon"}
+                autoFocus
+              />
+              <div className="p-3 border-t border-gray-700 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPriorityExpanded(false)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Latent Encoding Mode */}
         <div className="border border-gray-700 rounded p-4 space-y-3">

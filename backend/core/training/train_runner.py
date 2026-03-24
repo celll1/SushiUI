@@ -1473,8 +1473,12 @@ def main():
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
 
-            # Get priority training settings
-            priority_training_config = train_config.get('priority_training_config', None)
+            # Get priority training settings (inline dict or legacy file path)
+            priority_training = train_config.get('priority_training', None)
+            # Legacy support: if it's a string path, load from file
+            if isinstance(priority_training, str):
+                from core.training.priority_training import PriorityTrainingConfig
+                priority_training = {"_legacy_path": priority_training}
 
             # Start training with new interface
             trainer.train(
@@ -1515,7 +1519,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
-                priority_training_config=priority_training_config,
+                priority_training=priority_training,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -1861,7 +1865,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
-                priority_training_config=priority_training_config,
+                priority_training=priority_training,
             )
 
             print("[TrainRunner] ReLoRA training completed successfully!")
@@ -2174,8 +2178,12 @@ def main():
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
 
-            # Get priority training settings
-            priority_training_config = train_config.get('priority_training_config', None)
+            # Get priority training settings (inline dict or legacy file path)
+            priority_training = train_config.get('priority_training', None)
+            # Legacy support: if it's a string path, load from file
+            if isinstance(priority_training, str):
+                from core.training.priority_training import PriorityTrainingConfig
+                priority_training = {"_legacy_path": priority_training}
 
             # Start training with new interface
             trainer.train(
@@ -2216,7 +2224,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
-                priority_training_config=priority_training_config,
+                priority_training=priority_training,
             )
 
             print("[TrainRunner] Training completed successfully!")

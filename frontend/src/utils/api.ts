@@ -1849,21 +1849,6 @@ export const scanDatasetPreview = async (datasetId: number): Promise<ScanPreview
   return response.data;
 };
 
-// ==================== Priority Training Config ====================
-
-export const savePriorityTrainingConfig = async (
-  entries: Array<{ type: string; tags?: string[]; text?: string }>,
-  multiplier: number,
-  outputPath?: string,
-): Promise<{ path: string; entries_count: number }> => {
-  const response = await api.post("/training/priority-config/save", {
-    entries,
-    multiplier,
-    output_path: outputPath || undefined,
-  });
-  return response.data;
-};
-
 // ==================== Debug ====================
 
 export const debugVramInspection = async () => {

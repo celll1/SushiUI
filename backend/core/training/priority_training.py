@@ -37,26 +37,47 @@ class PriorityTrainingConfig:
     timing: str = "epoch_start"  # "epoch_start" for now
 
     @staticmethod
-    def load(yaml_path: str) -> "PriorityTrainingConfig":
-        """Load priority training config from YAML file."""
-        path = Path(yaml_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Priority training config not found: {yaml_path}")
+    def _parse_entry(entry_data) -> Optional["PriorityEntry"]:
+        """Parse a single entry from various formats.
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        Formats:
+        - str: "tag_name" → single tag match
+        - str: "tag1 + tag2" → AND condition
+        - str: "caption:text" → caption substring match
+        - dict: {"tags": [...]} → tag AND match
+        - dict: {"caption_contains": "..."} → caption match
+        """
+        if isinstance(entry_data, str):
+            entry_data = entry_data.strip()
+            if not entry_data:
+                return None
+            if entry_data.startswith("caption:"):
+                text = entry_data[len("caption:"):].strip()
+                return PriorityEntry(caption_contains=text) if text else None
+            elif " + " in entry_data:
+                tags = [t.strip() for t in entry_data.split(" + ") if t.strip()]
+                return PriorityEntry(tags=tags) if tags else None
+            else:
+                return PriorityEntry(tags=[entry_data])
+        elif isinstance(entry_data, dict):
+            if "tags" in entry_data:
+                return PriorityEntry(tags=entry_data["tags"])
+            elif "caption_contains" in entry_data:
+                return PriorityEntry(caption_contains=entry_data["caption_contains"])
+        print(f"[PriorityTraining] Skipping invalid entry: {entry_data}")
+        return None
 
+    @staticmethod
+    def from_dict(data: Dict) -> "PriorityTrainingConfig":
+        """Create config from inline dict (embedded in training YAML)."""
         if not data or not isinstance(data, dict):
-            raise ValueError(f"Invalid priority training config: {yaml_path}")
+            return PriorityTrainingConfig()
 
         entries = []
         for entry_data in data.get("entries", []):
-            if "tags" in entry_data:
-                entries.append(PriorityEntry(tags=entry_data["tags"]))
-            elif "caption_contains" in entry_data:
-                entries.append(PriorityEntry(caption_contains=entry_data["caption_contains"]))
-            else:
-                print(f"[PriorityTraining] Skipping invalid entry: {entry_data}")
+            entry = PriorityTrainingConfig._parse_entry(entry_data)
+            if entry:
+                entries.append(entry)
 
         config = PriorityTrainingConfig(
             entries=entries,
@@ -66,6 +87,18 @@ class PriorityTrainingConfig:
         print(f"[PriorityTraining] Loaded {len(config.entries)} entries, "
               f"multiplier={config.multiplier}, timing={config.timing}")
         return config
+
+    @staticmethod
+    def load(yaml_path: str) -> "PriorityTrainingConfig":
+        """Load priority training config from YAML file (legacy support)."""
+        path = Path(yaml_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Priority training config not found: {yaml_path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        return PriorityTrainingConfig.from_dict(data)
 
 
 def match_item_to_entry(item: Dict, entry: PriorityEntry) -> bool:

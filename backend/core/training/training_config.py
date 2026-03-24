@@ -708,7 +708,7 @@ class TrainingConfigGenerator:
             "text_encoding_swap_interval": text_encoding_swap_interval,
             # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
             "use_reference_images": use_reference_images,
-            **({"priority_training_config": priority_training_config} if priority_training_config else {}),
+            **({"priority_training": priority_training} if priority_training else {}),
             "latent_encoding_mode": latent_encoding_mode,
             "latent_encoding_swap_interval": latent_encoding_swap_interval,
             "debug_latents": debug_latents,

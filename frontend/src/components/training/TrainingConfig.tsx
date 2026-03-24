@@ -2819,6 +2819,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => setPriorityText(e.target.value)}
                   rows={Math.min(15, Math.max(5, priorityText.split("\n").length + 1))}
                   placeholder={"hatsune_miku\nkagamine_rin\nblue_hair, twintails\ncaption:dragon"}
+                  tagSeparator="newline"
                 />
               </div>
 
@@ -2858,6 +2859,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => setPriorityText(e.target.value)}
                   rows={30}
                   placeholder={"hatsune_miku\nkagamine_rin\nblue_hair, twintails\ncaption:dragon"}
+                  tagSeparator="newline"
                 />
               </div>
               <div className="p-3 border-t border-gray-700 flex justify-end">

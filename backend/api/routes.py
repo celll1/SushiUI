@@ -3087,10 +3087,15 @@ async def scan_dataset(
     structure_detection_result = None
     if not dataset.reference_suffixes and not dataset.target_suffixes:
         print(f"[Dataset Scan] Auto-detecting dataset structure...")
-        structure_detection_result = detect_dataset_structure(
-            dataset.path,
-            recursive=dataset.recursive,
-            max_depth=dataset.max_depth if hasattr(dataset, 'max_depth') and dataset.max_depth else None,
+        import asyncio
+        _loop = asyncio.get_event_loop()
+        structure_detection_result = await _loop.run_in_executor(
+            None,
+            lambda: detect_dataset_structure(
+                dataset.path,
+                recursive=dataset.recursive,
+                max_depth=dataset.max_depth if hasattr(dataset, 'max_depth') and dataset.max_depth else None,
+            )
         )
 
         if structure_detection_result["structure_type"] == "paired":
@@ -3123,13 +3128,18 @@ async def scan_dataset(
 
     # Pre-scan with 2-pass scanner: detect suffix captions + count images in one pass
     from utils.dataset_scanner import scan_directory_structure
+    import asyncio
     print(f"[Dataset Scan] Pre-scanning directory structure...")
-    pre_scan_groups = scan_directory_structure(
-        dir_path=dataset.path,
-        recursive=dataset.recursive,
-        max_depth=dataset.max_depth if dataset.max_depth else None,
-        reference_suffixes=dataset.reference_suffixes or [],
-        target_suffixes=dataset.target_suffixes or [],
+    loop = asyncio.get_event_loop()
+    pre_scan_groups = await loop.run_in_executor(
+        None,
+        lambda: scan_directory_structure(
+            dir_path=dataset.path,
+            recursive=dataset.recursive,
+            max_depth=dataset.max_depth if dataset.max_depth else None,
+            reference_suffixes=dataset.reference_suffixes or [],
+            target_suffixes=dataset.target_suffixes or [],
+        )
     )
 
     # Build suffix caption lookup and count images from pre-scan results
@@ -3504,8 +3514,11 @@ async def scan_dataset(
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
 
-    # Start scanning
-    scan_directory(dataset.path)
+    # Run scan in thread pool to avoid blocking event loop (enables WebSocket progress updates)
+    # SQLite is configured with check_same_thread=False, so cross-thread access is safe
+    import asyncio
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: scan_directory(dataset.path))
 
     # File scan complete - progress is now at ~90%
     manager.send_progress_sync(

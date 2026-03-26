@@ -89,6 +89,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // When true, baseModelPath changes will NOT override dtype settings
   const dtypeExplicitlySetRef = useRef(false);
 
+  // Flag to track if we are in the middle of restoring from YAML
+  // When true, optimizer useEffect will NOT reset hyperparameters to defaults
+  const restoringFromYAMLRef = useRef(false);
+
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
     { dataset_id: 0, caption_types: [], filters: {} }
@@ -302,6 +306,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Mark dtype as explicitly set before loading params
     // This prevents baseModelPath useEffect from overriding YAML values
     dtypeExplicitlySetRef.current = true;
+    // Mark as restoring from YAML to prevent optimizer useEffect from overwriting
+    // restored optimizer hyperparameters with optimizer defaults
+    restoringFromYAMLRef.current = true;
 
     try {
       const apiStartTime = performance.now();
@@ -479,12 +486,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
       console.log(`[TrainingConfig] MNT mode restored:`, params.multi_noise_mode);
+      console.log(`[TrainingConfig] sample_every restored:`, params.sample_every);
       console.log(`[TrainingConfig] Total loadTrainingRunParams time: ${performance.now() - startTime}ms`);
+
+      // Reset restoringFromYAMLRef after effects have fired
+      // (setTimeout defers to after React's useEffect flush)
+      setTimeout(() => { restoringFromYAMLRef.current = false; }, 0);
     } catch (err: any) {
       console.error("[TrainingConfig] Failed to load training run parameters:", err);
       console.error("[TrainingConfig] Error details:", err.response?.data);
       console.error("[TrainingConfig] Error message:", err.message);
       setError(`Failed to load training run parameters: ${err.response?.data?.detail || err.message}`);
+      restoringFromYAMLRef.current = false;
     } finally {
       // dtypeExplicitlySetRef stays true - we don't reset it
       // This ensures dtype settings are never overwritten by baseModelPath changes
@@ -537,6 +550,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {
+    // Skip during YAML restoration — params are already being restored correctly
+    if (restoringFromYAMLRef.current) return;
+
     const config = OPTIMIZER_CONFIGS[optimizer];
     if (!config) return;
 

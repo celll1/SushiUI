@@ -85,6 +85,17 @@ def get_tensor_memory_mb(tensor: torch.Tensor) -> float:
     return tensor.element_size() * tensor.nelement() / 1024**2
 
 
+def format_param_count(n: int) -> str:
+    """Format parameter count as B (>=1B) or M (>=1M) or K."""
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.2f}B"
+    elif n >= 1_000_000:
+        return f"{n / 1e6:.2f}M"
+    elif n >= 1_000:
+        return f"{n / 1e3:.1f}K"
+    return str(n)
+
+
 def get_torch_dtype(dtype_str: str) -> torch.dtype:
     """
     Convert dtype string to torch.dtype.
@@ -2299,7 +2310,7 @@ class BaseTrainer(ABC):
             group_lr = group.get('lr', 'N/A')
             num_tensors = len(group['params'])
             num_scalars = sum(p.numel() for p in group['params'])
-            print(f"{self.log_prefix}   Group {i}: lr={group_lr}, tensors={num_tensors}, params={num_scalars/1e6:.2f}M")
+            print(f"{self.log_prefix}   Group {i}: lr={group_lr}, tensors={num_tensors}, params={format_param_count(num_scalars)}")
         print(f"{self.log_prefix} ==========================================")
 
         # Setup LR scheduler
@@ -6435,14 +6446,14 @@ class BaseTrainer(ABC):
             unet_trainable_tensors = sum(1 for p in unet_obj.parameters() if p.requires_grad)
             unet_trainable_scalars = sum(p.numel() for p in unet_obj.parameters() if p.requires_grad)
             print(f"{self.log_prefix} Trainable parameters:")
-            print(f"{self.log_prefix}   U-Net/Transformer: tensors={unet_trainable_tensors}, params={unet_trainable_scalars/1e6:.2f}M")
+            print(f"{self.log_prefix}   U-Net/Transformer: tensors={unet_trainable_tensors}, params={format_param_count(unet_trainable_scalars)}")
         else:
             print(f"{self.log_prefix} Trainable parameters:")
         if text_encoder_trainable:
             if te1_trainable_tensors > 0:
-                print(f"{self.log_prefix}   Text Encoder 1:    tensors={te1_trainable_tensors}, params={te1_trainable_scalars/1e6:.2f}M")
+                print(f"{self.log_prefix}   Text Encoder 1:    tensors={te1_trainable_tensors}, params={format_param_count(te1_trainable_scalars)}")
             if te2_trainable_tensors > 0:
-                print(f"{self.log_prefix}   Text Encoder 2:    tensors={te2_trainable_tensors}, params={te2_trainable_scalars/1e6:.2f}M")
+                print(f"{self.log_prefix}   Text Encoder 2:    tensors={te2_trainable_tensors}, params={format_param_count(te2_trainable_scalars)}")
 
         # If Text Encoder is trainable, embeddings must be recomputed each step
         if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache']:

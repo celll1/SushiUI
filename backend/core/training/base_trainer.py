@@ -2297,8 +2297,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} ===== Optimizer Parameter Group LRs =====")
         for i, group in enumerate(self.optimizer.param_groups):
             group_lr = group.get('lr', 'N/A')
-            num_params = len(group['params'])
-            print(f"{self.log_prefix}   Group {i}: lr={group_lr}, num_params={num_params}")
+            num_tensors = len(group['params'])
+            num_scalars = sum(p.numel() for p in group['params'])
+            print(f"{self.log_prefix}   Group {i}: lr={group_lr}, tensors={num_tensors}, params={num_scalars/1e6:.2f}M")
         print(f"{self.log_prefix} ==========================================")
 
         # Setup LR scheduler
@@ -6413,24 +6414,35 @@ class BaseTrainer(ABC):
         # Validate text_encoding_mode when Text Encoder is trainable
         # Check if any Text Encoder has trainable parameters (works for both LoRA and full fine-tune)
         text_encoder_trainable = False
-        te1_trainable_params = 0
-        te2_trainable_params = 0
+        te1_trainable_tensors = 0
+        te1_trainable_scalars = 0
+        te2_trainable_tensors = 0
+        te2_trainable_scalars = 0
 
         if hasattr(self, 'text_encoder') and self.text_encoder is not None:
-            te1_trainable_params = sum(1 for p in self.text_encoder.parameters() if p.requires_grad)
-            text_encoder_trainable = te1_trainable_params > 0
+            te1_trainable_tensors = sum(1 for p in self.text_encoder.parameters() if p.requires_grad)
+            te1_trainable_scalars = sum(p.numel() for p in self.text_encoder.parameters() if p.requires_grad)
+            text_encoder_trainable = te1_trainable_tensors > 0
 
         if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
-            te2_trainable_params = sum(1 for p in self.text_encoder_2.parameters() if p.requires_grad)
-            text_encoder_trainable = text_encoder_trainable or (te2_trainable_params > 0)
+            te2_trainable_tensors = sum(1 for p in self.text_encoder_2.parameters() if p.requires_grad)
+            te2_trainable_scalars = sum(p.numel() for p in self.text_encoder_2.parameters() if p.requires_grad)
+            text_encoder_trainable = text_encoder_trainable or (te2_trainable_tensors > 0)
 
-        # Log trainable parameter counts
+        # Log trainable parameter counts (U-Net + Text Encoders)
+        unet_obj = getattr(self, 'unet', None) or getattr(self, 'transformer', None)
+        if unet_obj is not None:
+            unet_trainable_tensors = sum(1 for p in unet_obj.parameters() if p.requires_grad)
+            unet_trainable_scalars = sum(p.numel() for p in unet_obj.parameters() if p.requires_grad)
+            print(f"{self.log_prefix} Trainable parameters:")
+            print(f"{self.log_prefix}   U-Net/Transformer: tensors={unet_trainable_tensors}, params={unet_trainable_scalars/1e6:.2f}M")
+        else:
+            print(f"{self.log_prefix} Trainable parameters:")
         if text_encoder_trainable:
-            print(f"{self.log_prefix} Text Encoder trainable parameters detected:")
-            if te1_trainable_params > 0:
-                print(f"{self.log_prefix}   Text Encoder 1: {te1_trainable_params} trainable params")
-            if te2_trainable_params > 0:
-                print(f"{self.log_prefix}   Text Encoder 2: {te2_trainable_params} trainable params")
+            if te1_trainable_tensors > 0:
+                print(f"{self.log_prefix}   Text Encoder 1:    tensors={te1_trainable_tensors}, params={te1_trainable_scalars/1e6:.2f}M")
+            if te2_trainable_tensors > 0:
+                print(f"{self.log_prefix}   Text Encoder 2:    tensors={te2_trainable_tensors}, params={te2_trainable_scalars/1e6:.2f}M")
 
         # If Text Encoder is trainable, embeddings must be recomputed each step
         if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache']:

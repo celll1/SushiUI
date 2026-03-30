@@ -294,6 +294,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture;
   };
 
+  const isSDOrSDXLModel = (modelPath: string): boolean => {
+    const arch = getModelArchitecture(modelPath);
+    return arch === "sd15" || arch === "sdxl";
+  };
+
   // Filter models by architecture
   const filteredModels = availableModels.filter((model) => {
     if (model.architecture === "sd15" && !showSD15) return false;
@@ -550,6 +555,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setVaeDtype("fp32");
       // Z-Image/FLUX.2: Cannot train text encoder (frozen)
       setTrainTextEncoder(false);
+      // Z-Image/FLUX.2: VE not supported — clear selection
+      setVisionEncoderPath("");
+      setTrainVisionEncoder(false);
     } else {
       // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
       setWeightDtype("fp32");
@@ -1441,6 +1449,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-500 mt-1">No models match the selected filters.</p>
           )}
         </div>
+
+        {/* Vision Encoder selector — SD/SDXL only, shown below Base Model */}
+        {isSDOrSDXLModel(baseModelPath) && (
+          <div className="break-inside-avoid bg-gray-800/50 rounded-lg p-3 space-y-2">
+            <label className="block text-xs text-gray-400 font-medium">
+              Vision Encoder (SigLIP2)
+              <span className="ml-1 text-gray-500 font-normal">— optional, SD/SDXL only</span>
+            </label>
+            <VisionEncoderSelector
+              value={visionEncoderPath || null}
+              onChange={(path) => setVisionEncoderPath(path || "")}
+              label=""
+            />
+          </div>
+        )}
 
         {/* LoRA Settings */}
         {(trainingMethod === "lora" || trainingMethod === "relora") && (
@@ -2526,6 +2549,38 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
+            {/* Vision Encoder LR — shown only when VE is selected on SD/SDXL */}
+            {visionEncoderPath && isSDOrSDXLModel(baseModelPath) && (
+              <div className="mt-3 pt-3 border-t border-gray-700 space-y-2">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="train-vision-encoder"
+                    checked={trainVisionEncoder}
+                    onChange={(e) => setTrainVisionEncoder(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="train-vision-encoder" className="text-xs text-gray-300 cursor-pointer">
+                    Train Vision Encoder
+                  </label>
+                </div>
+                {trainVisionEncoder && (
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      VE LR <span className="text-xs text-gray-500">(empty = use text encoder LR)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={visionEncoderLr}
+                      onChange={(e) => setVisionEncoderLr(e.target.value)}
+                      placeholder={`Default: ${textEncoderLr || learningRate}`}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Image Encoder Learning Rate - DEUS support removed */}
           </div>
         </div>
@@ -2821,44 +2876,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         </div>
 
-        {/* SigLIP2 Vision Encoder */}
-        <div className="border border-gray-700 rounded p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 mb-3">SigLIP2 Vision Encoder</h3>
-          <VisionEncoderSelector
-            value={visionEncoderPath || null}
-            onChange={(path) => setVisionEncoderPath(path || "")}
-            label="Vision Encoder (.safetensors)"
-          />
-          <div className="flex items-center space-x-3">
-            <input
-              type="checkbox"
-              id="train-vision-encoder"
-              checked={trainVisionEncoder}
-              onChange={(e) => setTrainVisionEncoder(e.target.checked)}
-              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-            />
-            <label htmlFor="train-vision-encoder" className="text-sm text-gray-400">
-              Train vision encoder weights
-            </label>
-          </div>
-          {trainVisionEncoder && (
-            <div className="space-y-1">
-              <label className="text-xs text-gray-400">Vision Encoder Learning Rate (leave blank to use text encoder LR)</label>
-              <input
-                type="number"
-                value={visionEncoderLr}
-                onChange={(e) => setVisionEncoderLr(e.target.value)}
-                placeholder="e.g. 1e-4"
-                step="any"
-                className="w-full bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-          )}
+        {/* SigLIP2 Vision Encoder — info only; selector is near Base Model, train/LR are in Component-Specific LR */}
+        <div className="border border-gray-700 rounded p-4 space-y-2">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">SigLIP2 Vision Encoder</h3>
           <div className="text-xs text-gray-500 space-y-1">
-            <p>Loads a SigLIP2 vision encoder to condition training on reference images.</p>
-            <p>Dataset items must include a <code className="bg-gray-800 px-1 rounded">reference</code> entry in their reference images.</p>
-            <p>The vision encoder checkpoint is saved separately as <code className="bg-gray-800 px-1 rounded">*_vision_encoder_step_*.safetensors</code>.</p>
-            <p className="text-yellow-500/80">⚠️ Not supported for FLUX.2 or Z-Image models.</p>
+            <p>参照画像を持つデータセットアイテムにのみ VE 条件付けが適用されます。参照画像なしのアイテムは通常のトレーニングが行われます。</p>
+            <p>VE チェックポイントは <code className="bg-gray-800 px-1 rounded">*_vision_encoder_step_*.safetensors</code> として保存されます。</p>
+            <p className="text-yellow-500/80">⚠️ SD 1.5 / SDXL モデルのみ対応。VE 選択はモデル選択欄の下にあります。</p>
           </div>
         </div>
 

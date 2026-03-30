@@ -81,6 +81,15 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
         except:
             print(f"  Text Encoder 2: no parameters")
 
+    # Vision Encoder (SigLIP2, if provided)
+    if vision_encoder is not None:
+        try:
+            device = next(vision_encoder.model.parameters()).device
+            dtype = get_dtype_info(vision_encoder.model)
+            print(f"  Vision Encoder: {device} ({dtype})")
+        except Exception:
+            print(f"  Vision Encoder: no parameters")
+
     # U-Net
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
         try:
@@ -120,18 +129,8 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
         except:
             print(f"  VAE:            no parameters")
 
-    # Vision Encoder (SigLIP2, if provided)
-    if vision_encoder is not None:
-        try:
-            device = next(vision_encoder.model.parameters()).device
-            dtype = get_dtype_info(vision_encoder.model)
-            print(f"  Vision Encoder: {device} ({dtype})")
-        except Exception:
-            print(f"  Vision Encoder: no parameters")
-
     # Z-Image components (if provided)
     if zimage_components:
-        # Text Encoder
         if 'text_encoder' in zimage_components and zimage_components['text_encoder'] is not None:
             try:
                 device = next(zimage_components['text_encoder'].parameters()).device

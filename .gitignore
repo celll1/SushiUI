@@ -145,6 +145,7 @@ Thumbs.db
 .DS_Store
 # Test outputs and analysis
 test_output/
+/test/
 archive/
 CFG_2PASS_IMPLEMENTATION_PLAN.md
 DEUS_TRAINING_IMPLEMENTATION_PLAN.md

@@ -427,6 +427,7 @@ def custom_sampling_loop(
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
+    vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -1073,7 +1074,7 @@ def custom_sampling_loop(
     move_unet_to_cpu(pipeline)
 
     move_vae_to_gpu(pipeline)
-    log_device_status("Ready for VAE decode", pipeline)
+    log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor
@@ -1135,6 +1136,7 @@ def custom_img2img_sampling_loop(
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
+    vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1778,7 +1780,7 @@ def custom_img2img_sampling_loop(
     move_unet_to_cpu(pipeline)
 
     move_vae_to_gpu(pipeline)
-    log_device_status("Ready for VAE decode", pipeline)
+    log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor
@@ -1844,6 +1846,7 @@ def custom_inpaint_sampling_loop(
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
+    vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2545,7 +2548,7 @@ def custom_inpaint_sampling_loop(
     move_unet_to_cpu(pipeline)
 
     move_vae_to_gpu(pipeline)
-    log_device_status("Ready for VAE decode (inpaint)", pipeline)
+    log_device_status("Ready for VAE decode (inpaint)", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     latents = latents / pipeline.vae.config.scaling_factor

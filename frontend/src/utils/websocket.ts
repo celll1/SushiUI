@@ -33,6 +33,7 @@ interface TrainingMetrics {
   grad_norm?: number;
   grad_norm_text_encoder?: number;
   grad_norm_unet?: number;
+  grad_norm_vision_encoder?: number;
 }
 
 type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;

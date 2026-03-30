@@ -44,6 +44,7 @@ from api.generation_utils import (
     prepare_params_for_db,
     create_lora_step_callback,
     extract_model_info,
+    extract_vision_encoder_info,
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata
@@ -425,6 +426,13 @@ async def generate_txt2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
+        # Add Vision Encoder info to params for PNG metadata and DB storage
+        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+        if ve_name:
+            params["vision_encoder_name"] = ve_name
+        if ve_hash:
+            params["vision_encoder_hash"] = ve_hash
+
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             image,
@@ -738,6 +746,13 @@ async def generate_img2img(
         # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
+
+        # Add Vision Encoder info to params for PNG metadata and DB storage
+        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+        if ve_name:
+            params["vision_encoder_name"] = ve_name
+        if ve_hash:
+            params["vision_encoder_hash"] = ve_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1076,6 +1091,13 @@ async def generate_inpaint(
         # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
+
+        # Add Vision Encoder info to params for PNG metadata and DB storage
+        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+        if ve_name:
+            params["vision_encoder_name"] = ve_name
+        if ve_hash:
+            params["vision_encoder_hash"] = ve_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -6407,7 +6429,8 @@ async def get_training_metrics_db(
                 "learning_rate": [],
                 "grad_norm": [],
                 "grad_norm_text_encoder": [],
-                "grad_norm_unet": []
+                "grad_norm_unet": [],
+                "grad_norm_vision_encoder": [],
             }
 
         # Calculate uniform sample steps
@@ -6441,6 +6464,7 @@ async def get_training_metrics_db(
         grad_norm_data = []
         grad_norm_te_data = []
         grad_norm_unet_data = []
+        grad_norm_ve_data = []
 
         import math
 
@@ -6474,13 +6498,17 @@ async def get_training_metrics_db(
             if is_valid_float(m.grad_norm_unet):
                 grad_norm_unet_data.append({**point, "value": m.grad_norm_unet})
 
+            if is_valid_float(getattr(m, 'grad_norm_vision_encoder', None)):
+                grad_norm_ve_data.append({**point, "value": m.grad_norm_vision_encoder})
+
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
             "learning_rate": lr_data,
             "grad_norm": grad_norm_data,
             "grad_norm_text_encoder": grad_norm_te_data,
-            "grad_norm_unet": grad_norm_unet_data
+            "grad_norm_unet": grad_norm_unet_data,
+            "grad_norm_vision_encoder": grad_norm_ve_data,
         }
 
     except Exception as e:

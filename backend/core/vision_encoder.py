@@ -160,6 +160,12 @@ class SigLIP2VisionEncoderWrapper:
         config = Siglip2VisionConfig(**cfg_dict)
         self.model = Siglip2VisionModel(config)
 
+        # Some checkpoint formats omit the "vision_model." prefix that Siglip2VisionModel expects.
+        # Detect this by checking whether any key begins with "vision_model."; if not, remap.
+        if raw_sd and not any(k.startswith("vision_model.") for k in raw_sd):
+            raw_sd = {f"vision_model.{k}": v for k, v in raw_sd.items()}
+            print("[VisionEncoder] Remapped keys: added 'vision_model.' prefix")
+
         # Load weights (strict=False to tolerate missing header_token)
         missing, unexpected = self.model.load_state_dict(raw_sd, strict=False)
         if missing:

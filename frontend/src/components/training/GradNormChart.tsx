@@ -71,6 +71,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const [gradNormData, setGradNormData] = useState<MetricPoint[]>([]);
   const [gradNormTEData, setGradNormTEData] = useState<MetricPoint[]>([]);
   const [gradNormUNetData, setGradNormUNetData] = useState<MetricPoint[]>([]);
+  const [gradNormVEData, setGradNormVEData] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastStep, setLastStep] = useState<number>(-1);
@@ -81,6 +82,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const [showTotal, setShowTotal] = useState(true);
   const [showTextEncoder, setShowTextEncoder] = useState(true);
   const [showUNet, setShowUNet] = useState(true);
+  const [showVisionEncoder, setShowVisionEncoder] = useState(true);
   const [yAxisMode, setYAxisMode] = useState<"auto" | "custom">("auto");
   const [customYMin, setCustomYMin] = useState<number>(0);
   const [customYMax, setCustomYMax] = useState<number>(1);
@@ -99,6 +101,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     smoothTextEncoder?: number;
     unet?: number;
     smoothUNet?: number;
+    visionEncoder?: number;
+    smoothVisionEncoder?: number;
   } | null>(null);
 
   // SVG ref for responsive width
@@ -118,6 +122,10 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     return calculateSmoothing(gradNormUNetData, smoothingFactor);
   }, [gradNormUNetData, smoothingFactor]);
 
+  const smoothGradNormVEData = useMemo(() => {
+    return calculateSmoothing(gradNormVEData, smoothingFactor);
+  }, [gradNormVEData, smoothingFactor]);
+
   const fetchMetrics = useCallback(async () => {
     try {
       setLoading(true);
@@ -132,6 +140,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
       setGradNormData(data.grad_norm);
       setGradNormTEData(data.grad_norm_text_encoder || []);
       setGradNormUNetData(data.grad_norm_unet || []);
+      setGradNormVEData(data.grad_norm_vision_encoder || []);
 
       // Update lastStep for display
       if (data.grad_norm.length > 0) {
@@ -254,6 +263,26 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
         });
       }
 
+      // Add grad_norm_vision_encoder if available
+      if (metrics.grad_norm_vision_encoder !== undefined && metrics.grad_norm_vision_encoder !== null) {
+        const newGradNormVEPoint: MetricPoint = {
+          step: metrics.step,
+          value: metrics.grad_norm_vision_encoder,
+          wall_time: Date.now() / 1000
+        };
+
+        setGradNormVEData((prevData) => {
+          const existingIndex = prevData.findIndex((p) => p.step === metrics.step);
+          if (existingIndex >= 0) {
+            const newData = [...prevData];
+            newData[existingIndex] = newGradNormVEPoint;
+            return newData;
+          } else {
+            return [...prevData, newGradNormVEPoint];
+          }
+        });
+      }
+
       // Update lastStep (both state and ref)
       setLastStep((prevLastStep) => {
         const newLastStep = Math.max(prevLastStep, metrics.step);
@@ -339,7 +368,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const allValues = [
     ...(showTotal ? gradNormData.map((d) => d.value) : []),
     ...(showTextEncoder ? gradNormTEData.map((d) => d.value) : []),
-    ...(showUNet ? gradNormUNetData.map((d) => d.value) : [])
+    ...(showUNet ? gradNormUNetData.map((d) => d.value) : []),
+    ...(showVisionEncoder ? gradNormVEData.map((d) => d.value) : []),
   ];
   const { min: autoMinGradNorm, max: autoMaxGradNorm } = calculateRobustYRange(allValues);
 
@@ -406,6 +436,23 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     })
     .join(" ");
 
+  // Generate Vision Encoder paths
+  const rawVEPath = gradNormVEData
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  const smoothVEPath = smoothGradNormVEData
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
   // Generate Y-axis ticks
   const yTicks = 5;
   const yTickValues = Array.from({ length: yTicks }, (_, i) =>
@@ -453,6 +500,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     const closestSmoothTE = smoothGradNormTEData.find(d => d.step === step);
     const closestUNetPoint = gradNormUNetData.find(d => d.step === step);
     const closestSmoothUNet = smoothGradNormUNetData.find(d => d.step === step);
+    const closestVEPoint = gradNormVEData.find(d => d.step === step);
+    const closestSmoothVE = smoothGradNormVEData.find(d => d.step === step);
 
     const pointX = scaleX(closestSmooth.step);
     const pointY = scaleY(closestSmooth.value);  // Use smooth total grad norm Y position
@@ -466,7 +515,9 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
       textEncoder: closestTEPoint?.value,
       smoothTextEncoder: closestSmoothTE?.value,
       unet: closestUNetPoint?.value,
-      smoothUNet: closestSmoothUNet?.value
+      smoothUNet: closestSmoothUNet?.value,
+      visionEncoder: closestVEPoint?.value,
+      smoothVisionEncoder: closestSmoothVE?.value,
     });
   };
 
@@ -566,6 +617,17 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               className="w-4 h-4"
             />
             <span>U-Net/Transformer</span>
+          </label>
+        )}
+        {gradNormVEData.length > 0 && (
+          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showVisionEncoder}
+              onChange={(e) => setShowVisionEncoder(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>Vision Encoder</span>
           </label>
         )}
       </div>
@@ -965,6 +1027,35 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
           </>
         )}
 
+        {/* Vision Encoder Grad Norm lines */}
+        {showVisionEncoder && gradNormVEData.length > 0 && (
+          <>
+            {/* Raw VE line (behind) */}
+            <path
+              d={rawVEPath}
+              fill="none"
+              stroke="#a78bfa"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              opacity="0.3"
+              clipPath="url(#chart-clip-gradnorm)"
+            />
+
+            {/* Smooth VE line */}
+            {smoothingFactor > 0 && (
+              <path
+                d={smoothVEPath}
+                fill="none"
+                stroke="#c4b5fd"
+                strokeWidth="2.5"
+                strokeLinejoin="round"
+                opacity="0.9"
+                clipPath="url(#chart-clip-gradnorm)"
+              />
+            )}
+          </>
+        )}
+
         {/* Tooltip */}
         {tooltip && (
           <g>
@@ -998,6 +1089,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               if (showTotal) lineCount += 2; // Total + Smooth
               if (showTextEncoder && tooltip.textEncoder !== undefined) lineCount += 1;
               if (showUNet && tooltip.unet !== undefined) lineCount += 1;
+              if (showVisionEncoder && tooltip.visionEncoder !== undefined) lineCount += 1;
               const tooltipHeight = lineCount * 15 + 10; // 15px per line + padding
 
               // Show tooltip on left if it would overflow on right
@@ -1073,6 +1165,17 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                       UNet: {tooltip.unet.toExponential(3)}
                     </text>
                   )}
+                  {showVisionEncoder && tooltip.visionEncoder !== undefined && (
+                    <text
+                      x={textX}
+                      y={tooltip.y + 50}
+                      fill="#c4b5fd"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      VE: {tooltip.visionEncoder.toExponential(3)}
+                    </text>
+                  )}
                 </g>
               );
             })()}
@@ -1128,6 +1231,21 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               )}
             </div>
           )}
+          {showVisionEncoder && gradNormVEData.length > 0 && (
+            <div className="flex items-center gap-3">
+              <span className="text-gray-400">Vision Encoder:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-violet-500 opacity-30"></div>
+                <span>Raw</span>
+              </div>
+              {smoothingFactor > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5 bg-violet-300"></div>
+                  <span>Smooth</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-4 text-gray-400 flex-wrap">
           {showTotal && smoothGradNormData.length > 0 && (
@@ -1143,6 +1261,11 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
           {showUNet && smoothGradNormUNetData.length > 0 && (
             <span>
               Latest UNet: {smoothGradNormUNetData[smoothGradNormUNetData.length - 1]?.value.toExponential(3)}
+            </span>
+          )}
+          {showVisionEncoder && smoothGradNormVEData.length > 0 && (
+            <span>
+              Latest VE: {smoothGradNormVEData[smoothGradNormVEData.length - 1]?.value.toExponential(3)}
             </span>
           )}
           <span className="ml-auto">

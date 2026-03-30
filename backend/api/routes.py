@@ -1279,7 +1279,9 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
             architecture = ModelLoader.detect_model_type(item_path)
 
             if os.path.isdir(item_path):
-                # Diffusers format directory
+                # Only include directories that are valid diffusers model directories
+                if not ModelLoader.is_valid_diffusers_directory(item_path):
+                    continue
                 models.append({
                     "name": item,
                     "path": item_path,
@@ -1289,6 +1291,9 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                     "architecture": architecture
                 })
             elif item.endswith('.safetensors'):
+                # Exclude vision encoder files from the main model list
+                if architecture == "vision_encoder":
+                    continue
                 # Safetensors file
                 file_size = os.path.getsize(item_path) / (1024**3)  # GB
                 models.append({
@@ -1314,10 +1319,35 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
     return result
 
 @router.get("/models/vision_encoders")
-async def list_vision_encoders(db: Session = Depends(get_db)):
-    """List safetensors files detected as SigLIP2 vision encoders from the model directories."""
-    all_models = await list_models(db)
-    vision_encoders = [m for m in all_models.get("models", []) if m.get("architecture") == "vision_encoder"]
+async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
+    """List safetensors files detected as SigLIP2 vision encoders from the model directories.
+
+    Scans directly without cache so new files are always visible immediately.
+    """
+    from core.model_loader import ModelLoader
+
+    settings_record = db.query(UserSettings).first()
+    additional_model_dirs = settings_record.model_dirs if settings_record else []
+    all_dirs = [settings.models_dir] + additional_model_dirs
+
+    vision_encoders = []
+    for models_dir in all_dirs:
+        if not os.path.exists(models_dir):
+            continue
+        for item in os.listdir(models_dir):
+            if not item.endswith('.safetensors'):
+                continue
+            item_path = os.path.join(models_dir, item)
+            architecture = ModelLoader.detect_model_type(item_path)
+            if architecture == "vision_encoder":
+                file_size = os.path.getsize(item_path) / (1024**3)
+                vision_encoders.append({
+                    "name": item.replace('.safetensors', ''),
+                    "path": item_path,
+                    "size_gb": round(file_size, 2),
+                    "source_dir": models_dir,
+                    "architecture": "vision_encoder",
+                })
     return {"vision_encoders": vision_encoders}
 
 @router.post("/models/load")
@@ -1617,6 +1647,11 @@ async def save_directory_settings(
 
         db.commit()
         db.refresh(settings_record)
+
+        # Invalidate models cache so new directories take effect immediately
+        global _models_cache, _models_cache_timestamp
+        _models_cache = None
+        _models_cache_timestamp = 0
 
         print(f"[Settings] Updated directory settings:")
         print(f"  Model dirs: {settings_record.model_dirs}")

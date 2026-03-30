@@ -3,9 +3,8 @@
 import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
-import Input from "./Input";
 import Select from "./Select";
-import { Folder, Globe } from "lucide-react";
+import { Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 
 interface Model {
@@ -14,6 +13,7 @@ interface Model {
   type: string;
   source_type: string;
   size_gb?: number;
+  source_dir?: string;
 }
 
 interface ModelSelectorProps {
@@ -25,24 +25,15 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<"local" | "huggingface">("local");
-
-  // Form states
-  const [huggingfaceRepo, setHuggingfaceRepo] = useState("");
-  const [huggingfaceRevision, setHuggingfaceRevision] = useState("");
-
-  // Filter states
   const [selectedModelPath, setSelectedModelPath] = useState<string>("");
   const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
 
   useEffect(() => {
     loadModels();
-    // Also load current model immediately when component mounts
     loadCurrentModel();
   }, []);
 
   useEffect(() => {
-    // Load current model when startup completes
     if (modelLoaded) {
       loadCurrentModel();
     }
@@ -64,7 +55,6 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
       const data = await response.json();
       if (data.loaded) {
         setCurrentModel(data.model_info);
-        // Sync selectedModelPath with current model
         if (data.model_info.source) {
           setSelectedModelPath(data.model_info.source);
         }
@@ -77,15 +67,12 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     }
   };
 
-  const handleLoadModel = async (sourceType: string, source: string, revision?: string) => {
+  const handleLoadModel = async (sourceType: string, source: string) => {
     setLoading(true);
     try {
       const formData = new FormData();
       formData.append("source_type", sourceType);
       formData.append("source", source);
-      if (revision) {
-        formData.append("revision", revision);
-      }
 
       const response = await fetch("/api/models/load", {
         method: "POST",
@@ -94,7 +81,6 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
 
       const data = await response.json();
       if (data.success) {
-        // Reload current model info to ensure UI is in sync
         await loadCurrentModel();
         if (onModelLoad) {
           onModelLoad(data.model_info);
@@ -108,6 +94,11 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
       setLoading(false);
     }
   };
+
+  const uniqueDirs = Array.from(new Set(models.map(m => m.source_dir || "Unknown")));
+  const filteredModels = models.filter(
+    m => selectedSourceDir === "all" || m.source_dir === selectedSourceDir
+  );
 
   return (
     <Card
@@ -141,172 +132,81 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
           </div>
         )}
 
-        {/* Tabs */}
-        <div className="flex space-x-2 border-b border-gray-700">
-          <button
-            onClick={() => setSelectedTab("local")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
-              selectedTab === "local"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            <Folder className="inline w-4 h-4 mr-2" />
-            Local Files
-          </button>
-          <button
-            onClick={() => setSelectedTab("huggingface")}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
-              selectedTab === "huggingface"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            <Globe className="inline w-4 h-4 mr-2" />
-            HuggingFace
-          </button>
-        </div>
+        <div className="space-y-3">
+          {models.length === 0 ? (
+            <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
+          ) : (
+            <>
+              {/* Directory Filter (only shown when multiple source dirs) */}
+              {uniqueDirs.length > 1 && (
+                <Select
+                  label="Filter by Directory"
+                  value={selectedSourceDir}
+                  onChange={(e) => setSelectedSourceDir(e.target.value)}
+                  options={[
+                    { value: "all", label: "All Directories" },
+                    ...uniqueDirs.map(dir => ({ value: dir, label: dir }))
+                  ]}
+                />
+              )}
 
-        {/* Local Files Tab */}
-        {selectedTab === "local" && (
-          <div className="space-y-4">
-            {models.length === 0 ? (
-              <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
-            ) : (
-              <div className="space-y-3">
-                {/* Directory Filter */}
-                {(() => {
-                  const uniqueDirs = Array.from(new Set(models.map(m => m.source_dir || "Unknown")));
-                  if (uniqueDirs.length > 1) {
-                    return (
-                      <Select
-                        label="Filter by Directory"
-                        value={selectedSourceDir}
-                        onChange={(e) => setSelectedSourceDir(e.target.value)}
-                        options={[
-                          { value: "all", label: "All Directories" },
-                          ...uniqueDirs.map(dir => ({
-                            value: dir,
-                            label: dir
-                          }))
-                        ]}
-                      />
-                    );
-                  }
-                  return null;
-                })()}
+              {/* Model Dropdown */}
+              <Select
+                label="Select Model"
+                value={selectedModelPath}
+                onChange={(e) => setSelectedModelPath(e.target.value)}
+                options={[
+                  { value: "", label: "-- Select a model --" },
+                  ...filteredModels.map(model => ({
+                    value: model.path,
+                    label: `${model.name} (${model.type}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
+                  }))
+                ]}
+              />
 
-                {/* Model Dropdown */}
-                <div className="space-y-2">
-                  <Select
-                    label="Select Model"
-                    value={selectedModelPath}
-                    onChange={(e) => setSelectedModelPath(e.target.value)}
-                    options={[
-                      { value: "", label: "-- Select a model --" },
-                      ...models
-                        .filter(model =>
-                          selectedSourceDir === "all" ||
-                          model.source_dir === selectedSourceDir
-                        )
-                        .map(model => ({
-                          value: model.path,
-                          label: `${model.name} (${model.type}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
-                        }))
-                    ]}
-                  />
-
-                  {/* Model Details */}
-                  {selectedModelPath && (() => {
-                    const selectedModel = models.find(m => m.path === selectedModelPath);
-                    if (selectedModel) {
-                      return (
-                        <div className="bg-gray-800 p-3 rounded-lg text-sm">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <span className="text-gray-400">Type:</span>
-                              <span className="ml-2 text-white">{selectedModel.type}</span>
-                            </div>
-                            {selectedModel.size_gb && (
-                              <div>
-                                <span className="text-gray-400">Size:</span>
-                                <span className="ml-2 text-white">{selectedModel.size_gb} GB</span>
-                              </div>
-                            )}
-                            <div className="col-span-2">
-                              <span className="text-gray-400">Path:</span>
-                              <div className="mt-1 text-xs text-white break-all bg-gray-900 p-2 rounded">
-                                {selectedModel.path}
-                              </div>
-                            </div>
-                          </div>
+              {/* Model Details */}
+              {selectedModelPath && (() => {
+                const selectedModel = models.find(m => m.path === selectedModelPath);
+                if (!selectedModel) return null;
+                return (
+                  <div className="bg-gray-800 p-3 rounded-lg text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <span className="text-gray-400">Type:</span>
+                        <span className="ml-2 text-white">{selectedModel.type}</span>
+                      </div>
+                      {selectedModel.size_gb && (
+                        <div>
+                          <span className="text-gray-400">Size:</span>
+                          <span className="ml-2 text-white">{selectedModel.size_gb} GB</span>
                         </div>
-                      );
-                    }
-                    return null;
-                  })()}
+                      )}
+                      <div className="col-span-2">
+                        <span className="text-gray-400">Path:</span>
+                        <div className="mt-1 text-xs text-white break-all bg-gray-900 p-2 rounded">
+                          {selectedModel.path}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
-                  <Button
-                    onClick={() => {
-                      const selectedModel = models.find(m => m.path === selectedModelPath);
-                      if (selectedModel) {
-                        handleLoadModel(selectedModel.source_type, selectedModel.path);
-                      }
-                    }}
-                    disabled={!selectedModelPath || loading}
-                    className="w-full"
-                  >
-                    {loading ? "Loading..." : "Load Selected Model"}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* HuggingFace Tab */}
-        {selectedTab === "huggingface" && (
-          <div className="space-y-4">
-            <Input
-              label="Repository ID"
-              placeholder="runwayml/stable-diffusion-v1-5"
-              value={huggingfaceRepo}
-              onChange={(e) => setHuggingfaceRepo(e.target.value)}
-            />
-            <Input
-              label="Revision (optional)"
-              placeholder="main"
-              value={huggingfaceRevision}
-              onChange={(e) => setHuggingfaceRevision(e.target.value)}
-            />
-            <Button
-              onClick={() => handleLoadModel("huggingface", huggingfaceRepo, huggingfaceRevision || undefined)}
-              disabled={!huggingfaceRepo || loading}
-              className="w-full"
-            >
-              {loading ? "Loading..." : "Load from HuggingFace"}
-            </Button>
-
-            <div className="mt-4 p-3 bg-gray-800 rounded-lg">
-              <p className="text-xs text-gray-400">Popular models:</p>
-              <div className="mt-2 space-y-1">
-                {[
-                  "runwayml/stable-diffusion-v1-5",
-                  "stabilityai/stable-diffusion-xl-base-1.0",
-                  "stabilityai/stable-diffusion-2-1",
-                ].map((repo) => (
-                  <button
-                    key={repo}
-                    onClick={() => setHuggingfaceRepo(repo)}
-                    className="block text-xs text-blue-400 hover:text-blue-300"
-                  >
-                    {repo}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+              <Button
+                onClick={() => {
+                  const selectedModel = models.find(m => m.path === selectedModelPath);
+                  if (selectedModel) {
+                    handleLoadModel(selectedModel.source_type, selectedModel.path);
+                  }
+                }}
+                disabled={!selectedModelPath || loading}
+                className="w-full"
+              >
+                {loading ? "Loading..." : "Load Selected Model"}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     </Card>
   );

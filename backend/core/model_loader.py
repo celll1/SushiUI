@@ -230,6 +230,31 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def is_valid_diffusers_directory(path: str) -> bool:
+        """Check if a directory is a valid diffusers-format model directory.
+
+        A valid diffusers directory must have either:
+        - model_index.json (standard diffusers pipeline), OR
+        - transformer/config.json with axes_dims + rope_theta (Z-Image format)
+
+        Non-model directories (tensorboard logs, training output, etc.) are excluded.
+        """
+        if not os.path.isdir(path):
+            return False
+        # Z-Image: transformer/config.json with Z-Image-specific keys
+        transformer_config = os.path.join(path, "transformer", "config.json")
+        if os.path.exists(transformer_config):
+            try:
+                with open(transformer_config, 'r') as f:
+                    config = json.load(f)
+                if "axes_dims" in config and "rope_theta" in config:
+                    return True
+            except Exception:
+                pass
+        # Standard diffusers pipeline requires model_index.json
+        return os.path.exists(os.path.join(path, "model_index.json"))
+
+    @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
         """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
 

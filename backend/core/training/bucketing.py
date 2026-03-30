@@ -252,7 +252,8 @@ class BucketManager:
         caption: str = "",
         target_resolution: Optional[int] = None,
         dataset_unique_id: Optional[str] = None,
-        has_reference: bool = False
+        has_reference: bool = False,
+        reference_images: Optional[list] = None,
     ) -> Tuple[BucketKey, Dict]:
         """
         Assign an image to the best bucket.
@@ -329,6 +330,9 @@ class BucketManager:
             "target_resolution": target_resolution,
             "has_reference": has_reference,  # Track reference status
         }
+        # Store actual reference image paths (for VE conditioning and ControlNet)
+        if reference_images:
+            image_info["reference_images"] = reference_images
 
         # Add dataset_unique_id if provided (for cache management)
         if dataset_unique_id is not None:

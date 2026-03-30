@@ -276,6 +276,11 @@ class ModelLoader:
                     if "model_type" in metadata:
                         model_type = metadata["model_type"].lower() if isinstance(metadata["model_type"], str) else str(metadata["model_type"]).lower()
 
+                        # SigLIP2 Vision Encoder detection (training checkpoint format)
+                        if model_type == "siglip2_vision_encoder":
+                            print(f"[ModelLoader] Detected SigLIP2 Vision Encoder from metadata: {model_path}")
+                            return "vision_encoder"
+
                         # FLUX.2 detection
                         if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
                             print(f"[ModelLoader] Detected FLUX.2 from metadata (model_type={metadata['model_type']}): {model_path}")
@@ -364,6 +369,18 @@ class ModelLoader:
                     if has_required and has_x_embedder:
                         print(f"[ModelLoader] Detected Z-Image model (Comfy safetensors format): {model_path}")
                         return "zimage"
+
+                    # SigLIP2 Vision Encoder detection by key structure
+                    # Our saved format: embeddings.patch_embedding.weight (no prefix)
+                    # HuggingFace format: vision_model.embeddings.patch_embedding.weight
+                    has_ve_direct = any(k == 'embeddings.patch_embedding.weight' or k.startswith('embeddings.patch_embedding.') for k in keys)
+                    has_ve_prefixed = any(k.startswith('vision_model.embeddings.') for k in keys)
+                    has_header_token = 'header_token' in keys
+                    has_encoder_layers = any(('encoder.layers.' in k) for k in keys)
+                    # VE files have no U-Net, flux, or zimage keys
+                    if (has_ve_direct or has_ve_prefixed or has_header_token) and has_encoder_layers and not has_unet_keys:
+                        print(f"[ModelLoader] Detected SigLIP2 Vision Encoder by keys: {model_path}")
+                        return "vision_encoder"
 
                     # Fallback: SDXL detection by file size
                     file_size = os.path.getsize(model_path) / (1024**3)  # GB

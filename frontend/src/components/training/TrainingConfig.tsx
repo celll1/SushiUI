@@ -5,6 +5,7 @@ import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
+import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
 interface TrainingConfigProps {
@@ -2823,16 +2824,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {/* SigLIP2 Vision Encoder */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">SigLIP2 Vision Encoder</h3>
-          <div className="space-y-2">
-            <label className="text-xs text-gray-400">Vision Encoder Path (.safetensors)</label>
-            <input
-              type="text"
-              value={visionEncoderPath}
-              onChange={(e) => setVisionEncoderPath(e.target.value)}
-              placeholder="Path to siglip2 vision encoder .safetensors (optional)"
-              className="w-full bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
-            />
-          </div>
+          <VisionEncoderSelector
+            value={visionEncoderPath || null}
+            onChange={(path) => setVisionEncoderPath(path || "")}
+            label="Vision Encoder (.safetensors)"
+          />
           <div className="flex items-center space-x-3">
             <input
               type="checkbox"

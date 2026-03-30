@@ -68,6 +68,8 @@ interface Img2ImgParams {
   text_encoder_quantization?: string | null;
   // Attention type
   attention_type?: string;
+  // SigLIP2 Vision Encoder path
+  vision_encoder_path?: string | null;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -108,6 +110,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   use_torch_compile: false,
   preview_predicted_x0: false,
   attention_type: "normal",
+  vision_encoder_path: null,
 };
 
 const STORAGE_KEY = "img2img_params";
@@ -1355,6 +1358,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
+      stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.vision_encoder_path = mainParams.vision_encoder_path;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
       const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
@@ -1785,10 +1790,31 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </div>
         </Card>
 
-        {/* FLUX.2 Image Edit: Reference Images */}
-        {currentModelInfo?.model_info?.type === "flux2" && (
+        {/* SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning) */}
+        {currentModelInfo?.model_info?.type !== "flux2" && (
+          <div className="flex items-center gap-2">
+            <label className="text-gray-400 text-sm whitespace-nowrap">Vision Encoder</label>
+            <input
+              type="text"
+              placeholder="Path to siglip2 .safetensors (optional)"
+              value={params.vision_encoder_path || ""}
+              onChange={(e) => setParams({ ...params, vision_encoder_path: e.target.value || null })}
+              className="flex-1 bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+            />
+            {params.vision_encoder_path && (
+              <button
+                onClick={() => setParams({ ...params, vision_encoder_path: null })}
+                className="text-gray-500 hover:text-gray-300 text-sm px-1"
+                title="Clear vision encoder"
+              >✕</button>
+            )}
+          </div>
+        )}
+
+        {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
+        {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
           <Card
-            title="FLUX.2 Image Edit (Reference Images)"
+            title={currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2 Image Edit (Reference Images)" : "Vision Encoder (Reference Images)"}
             collapsible={true}
             defaultCollapsed={true}
             storageKey="img2img_ref_images_collapsed"

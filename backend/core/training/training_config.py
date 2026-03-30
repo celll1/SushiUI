@@ -112,6 +112,10 @@ class TrainingConfigGenerator:
         strict_validation: bool = False,  # If True, error on mismatch; if False, warn only
         # Reference image settings
         use_reference_images: bool = False,  # Enable reference image conditioning during training
+        # Vision Encoder settings (SigLIP2 for SDXL/SD1.5 reference image conditioning)
+        train_vision_encoder: bool = False,  # Train the vision encoder alongside U-Net/TE
+        vision_encoder_path: Optional[str] = None,  # Path to SigLIP2 vision encoder safetensors
+        vision_encoder_lr: Optional[float] = None,  # VE learning rate (defaults to text_encoder_lr)
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -280,6 +284,10 @@ class TrainingConfigGenerator:
                             "text_encoding_swap_interval": text_encoding_swap_interval,
                             # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
                             "use_reference_images": use_reference_images,
+                            # Vision Encoder settings (SigLIP2 for SDXL/SD1.5)
+                            **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
+                            "train_vision_encoder": train_vision_encoder,
+                            **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
                             **({"priority_training": priority_training} if priority_training else {}),
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
@@ -414,6 +422,9 @@ class TrainingConfigGenerator:
         prediction_target: str = "auto",
         strict_validation: bool = False,
         use_reference_images: bool = False,
+        train_vision_encoder: bool = False,
+        vision_encoder_path: Optional[str] = None,
+        vision_encoder_lr: Optional[float] = None,
         # ReLoRA-specific parameters
         relora_merge_every: int = 500,
         relora_merge_unit: str = "steps",
@@ -528,6 +539,9 @@ class TrainingConfigGenerator:
             prediction_target=prediction_target,
             strict_validation=strict_validation,
             use_reference_images=use_reference_images,
+            train_vision_encoder=train_vision_encoder,
+            vision_encoder_path=vision_encoder_path,
+            vision_encoder_lr=vision_encoder_lr,
         )
 
         # Parse the LoRA YAML and modify for ReLoRA
@@ -643,6 +657,10 @@ class TrainingConfigGenerator:
         strict_validation: bool = True,
         # Reference image settings
         use_reference_images: bool = False,  # Enable reference image conditioning during training
+        # Vision Encoder settings (SigLIP2 for SDXL/SD1.5 reference image conditioning)
+        train_vision_encoder: bool = False,
+        vision_encoder_path: Optional[str] = None,
+        vision_encoder_lr: Optional[float] = None,
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -708,6 +726,10 @@ class TrainingConfigGenerator:
             "text_encoding_swap_interval": text_encoding_swap_interval,
             # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
             "use_reference_images": use_reference_images,
+            # Vision Encoder settings (SigLIP2 for SDXL/SD1.5)
+            **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
+            "train_vision_encoder": train_vision_encoder,
+            **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
             **({"priority_training": priority_training} if priority_training else {}),
             "latent_encoding_mode": latent_encoding_mode,
             "latent_encoding_swap_interval": latent_encoding_swap_interval,

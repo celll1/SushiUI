@@ -1472,6 +1472,9 @@ def main():
 
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
+            vision_encoder_path = train_config.get('vision_encoder_path', None)
+            train_vision_encoder = train_config.get('train_vision_encoder', False)
+            vision_encoder_lr = train_config.get('vision_encoder_lr', None)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -1519,6 +1522,9 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                vision_encoder_path=vision_encoder_path,
+                train_vision_encoder=train_vision_encoder,
+                vision_encoder_lr=vision_encoder_lr,
                 priority_training=priority_training,
             )
 
@@ -1825,6 +1831,9 @@ def main():
 
             # Reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
+            vision_encoder_path = train_config.get('vision_encoder_path', None)
+            train_vision_encoder = train_config.get('train_vision_encoder', False)
+            vision_encoder_lr = train_config.get('vision_encoder_lr', None)
 
             # Start ReLoRA training
             trainer.train(
@@ -1865,6 +1874,9 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                vision_encoder_path=vision_encoder_path,
+                train_vision_encoder=train_vision_encoder,
+                vision_encoder_lr=vision_encoder_lr,
                 priority_training=priority_training,
             )
 
@@ -2177,6 +2189,9 @@ def main():
 
             # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
+            vision_encoder_path = train_config.get('vision_encoder_path', None)
+            train_vision_encoder = train_config.get('train_vision_encoder', False)
+            vision_encoder_lr = train_config.get('vision_encoder_lr', None)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -2224,6 +2239,9 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 use_reference_images=use_reference_images,
+                vision_encoder_path=vision_encoder_path,
+                train_vision_encoder=train_vision_encoder,
+                vision_encoder_lr=vision_encoder_lr,
                 priority_training=priority_training,
             )
 

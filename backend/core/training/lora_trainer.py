@@ -157,6 +157,8 @@ class LoRATrainer(BaseTrainer):
         """
         checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}.safetensors"
         self.adapter.save_checkpoint(self.lora_layers, step, epoch, checkpoint_path)
+        # Save Vision Encoder checkpoint separately (if loaded)
+        self._save_vision_encoder_checkpoint(step, epoch)
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """

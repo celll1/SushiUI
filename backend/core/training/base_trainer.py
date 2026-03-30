@@ -1736,6 +1736,31 @@ class BaseTrainer(ABC):
         """
         pass
 
+    def _save_vision_encoder_checkpoint(self, step: int, epoch: int):
+        """
+        Save Vision Encoder checkpoint as a separate safetensors file (if loaded and trained).
+
+        The VE checkpoint is saved alongside the main checkpoint with the suffix
+        '_vision_encoder_step_XXXXXX.safetensors', independent of the main model format.
+        """
+        ve_obj = getattr(self, 'vision_encoder', None)
+        if ve_obj is None:
+            return
+
+        try:
+            from safetensors.torch import save_file
+            ve_path = self.output_dir / f"{self.run_name}_vision_encoder_step_{step:06d}.safetensors"
+            ve_sd = ve_obj.state_dict_for_save()
+            metadata = {
+                "step": str(step),
+                "epoch": str(epoch),
+                "model_type": "siglip2_vision_encoder",
+            }
+            save_file(ve_sd, ve_path, metadata=metadata)
+            print(f"{self.log_prefix} Saved Vision Encoder checkpoint: {ve_path}")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to save Vision Encoder checkpoint: {e}")
+
     @abstractmethod
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """
@@ -2249,6 +2274,18 @@ class BaseTrainer(ABC):
         """
         # Get trainable parameters from subclass
         param_groups = self.setup_trainable_parameters()
+
+        # Add Vision Encoder parameters if training is enabled
+        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+            ve_lr = getattr(self, '_vision_encoder_lr', None) or self.text_encoder_lr
+            ve_params = list(self.vision_encoder.parameters())
+            if ve_params:
+                param_groups.append({"params": ve_params, "lr": ve_lr})
+                ve_total = sum(p.numel() for p in ve_params)
+                print(f"{self.log_prefix} Vision Encoder: Added {len(ve_params)} param tensors ({ve_total/1e6:.1f}M params, lr={ve_lr}) to optimizer")
+                # Set requires_grad on VE model
+                for p in ve_params:
+                    p.requires_grad_(True)
 
         print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
@@ -6370,6 +6407,9 @@ class BaseTrainer(ABC):
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
+        train_vision_encoder: bool = False,
+        vision_encoder_path: Optional[str] = None,
+        vision_encoder_lr: Optional[float] = None,
         priority_training: Optional[Dict] = None,
     ):
         """
@@ -6421,6 +6461,29 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
             if not self.is_flux2:
                 print(f"{self.log_prefix} WARNING: use_reference_images is only supported for FLUX.2, will be ignored")
+
+        # Load Vision Encoder if specified (SigLIP2 for SDXL/SD1.5)
+        if vision_encoder_path:
+            print(f"{self.log_prefix} Vision Encoder: Loading from {vision_encoder_path}")
+            try:
+                from core.vision_encoder import SigLIP2VisionEncoderWrapper
+                self.vision_encoder = SigLIP2VisionEncoderWrapper(vision_encoder_path, device="cpu")
+                self._train_vision_encoder = train_vision_encoder
+                self._vision_encoder_lr = vision_encoder_lr
+                if train_vision_encoder:
+                    print(f"{self.log_prefix} Vision Encoder: Will be trained (lr={vision_encoder_lr or 'inherit'})")
+                else:
+                    print(f"{self.log_prefix} Vision Encoder: Frozen (inference only)")
+            except Exception as e:
+                print(f"{self.log_prefix} ERROR: Failed to load Vision Encoder: {e}")
+                self.vision_encoder = None
+                self._train_vision_encoder = False
+                self._vision_encoder_lr = None
+        else:
+            if not hasattr(self, 'vision_encoder'):
+                self.vision_encoder = None
+            self._train_vision_encoder = False
+            self._vision_encoder_lr = None
 
         # Validate text_encoding_mode when Text Encoder is trainable
         # Check if any Text Encoder has trainable parameters (works for both LoRA and full fine-tune)
@@ -7826,6 +7889,42 @@ class BaseTrainer(ABC):
                             mnt_text_embeddings = text_embeddings.detach() if text_embeddings is not None else None
                             mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                             mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
+
+                        # === Vision Encoder: Encode reference images and concatenate with text embeddings ===
+                        # Only for SD1.5/SDXL (not FLUX.2 or Z-Image which have different conditioning)
+                        ve_obj = getattr(self, 'vision_encoder', None)
+                        if ve_obj is not None and mnt_text_embeddings is not None and not self.is_flux2 and not self.is_zimage:
+                            # Collect first reference image for each batch item
+                            ve_pil_images = []
+                            for _item, _dataset in batch:
+                                _ref_imgs = _item.get("reference_images", [])
+                                if _ref_imgs:
+                                    try:
+                                        _pil = Image.open(_ref_imgs[0]).convert("RGB")
+                                        ve_pil_images.append(_pil)
+                                    except Exception:
+                                        pass
+                            if ve_pil_images:
+                                try:
+                                    ve_obj.to(self.device)
+                                    target_dim = mnt_text_embeddings.shape[-1]
+                                    # Encode all reference images together, concatenated sequence
+                                    ve_pos, _ve_neg = ve_obj.encode(
+                                        ve_pil_images,
+                                        target_dim=target_dim,
+                                        dtype=self.training_dtype,
+                                    )
+                                    ve_obj.to("cpu")
+                                    torch.cuda.empty_cache()
+                                    # ve_pos: [1, 1+256N, dim] → expand to batch
+                                    ve_pos = ve_pos.expand(mnt_text_embeddings.shape[0], -1, -1).to(self.device)
+                                    mnt_text_embeddings = torch.cat([mnt_text_embeddings, ve_pos], dim=1)
+                                except Exception as _ve_err:
+                                    print(f"{self.log_prefix} WARNING: Vision Encoder encoding failed: {_ve_err}, skipping VE conditioning")
+                                    try:
+                                        ve_obj.to("cpu")
+                                    except Exception:
+                                        pass
 
                         # Training step with OOM recovery (forward + backward)
                         # If OOM occurs, the batch is automatically split and processed sequentially

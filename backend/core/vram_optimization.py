@@ -771,3 +771,29 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
         print(f"[VRAM] Falling back to non-quantized transformer")
         transformer.to('cuda:0', non_blocking=False)
         return transformer
+
+
+# ── Vision Encoder VRAM helpers ────────────────────────────────────────────────
+
+def move_vision_encoder_to_gpu(vision_encoder, device: str = "cuda:0"):
+    """Move SigLIP2VisionEncoderWrapper to GPU for encoding."""
+    if vision_encoder is None:
+        return
+    try:
+        vision_encoder.to(device)
+        print(f"[VRAM] Vision Encoder moved to {device}")
+    except Exception as e:
+        print(f"[VRAM] Warning: Could not move Vision Encoder to {device}: {e}")
+
+
+def move_vision_encoder_to_cpu(vision_encoder):
+    """Move SigLIP2VisionEncoderWrapper back to CPU to free VRAM."""
+    if vision_encoder is None:
+        return
+    try:
+        vision_encoder.to("cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[VRAM] Vision Encoder moved to CPU")
+    except Exception as e:
+        print(f"[VRAM] Warning: Could not move Vision Encoder to CPU: {e}")

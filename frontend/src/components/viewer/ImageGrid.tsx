@@ -754,6 +754,20 @@ export default function ImageGrid() {
                       </span>
                     </div>
                   )}
+                  {selectedImage.vision_encoder_name && (
+                    <div>
+                      <span className="text-gray-400">Vision Encoder:</span>{' '}
+                      <span className="text-xs text-white">{selectedImage.vision_encoder_name}</span>
+                    </div>
+                  )}
+                  {selectedImage.vision_encoder_hash && (
+                    <div>
+                      <span className="text-gray-400">VE Hash:</span>{' '}
+                      <span className="text-xs text-gray-100 font-mono" title={selectedImage.vision_encoder_hash}>
+                        {selectedImage.vision_encoder_hash.substring(0, 16)}...
+                      </span>
+                    </div>
+                  )}
                   {selectedImage.unet_quantization && (
                     <div>
                       <span className="text-gray-400">U-Net Quantization:</span> {selectedImage.unet_quantization}

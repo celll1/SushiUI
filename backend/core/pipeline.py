@@ -4848,6 +4848,8 @@ class DiffusionPipelineManager:
                     _ve_ref_images,
                     nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 )
+            print(f"[txt2img][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[txt2img][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
         # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
@@ -5114,6 +5116,7 @@ class DiffusionPipelineManager:
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                 attention_type=attention_type,
                 ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
+                vision_encoder=getattr(self, 'vision_encoder', None),
                 **controlnet_kwargs,
             )
 
@@ -5305,6 +5308,16 @@ class DiffusionPipelineManager:
             pipeline=pipeline_to_use
         )
 
+        # Log embedding shapes for debugging
+        if prompt_embeds is not None:
+            print(f"[img2img] Prompt embeddings shape: {prompt_embeds.shape}")
+        if negative_prompt_embeds is not None:
+            print(f"[img2img] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+        if pooled_prompt_embeds is not None:
+            print(f"[img2img] Pooled prompt embeddings shape: {pooled_prompt_embeds.shape}")
+        if negative_pooled_prompt_embeds is not None:
+            print(f"[img2img] Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
+
         # Encode NAG negative prompt if NAG is enabled
         nag_negative_prompt_embeds = None
         nag_negative_pooled_prompt_embeds = None
@@ -5377,6 +5390,8 @@ class DiffusionPipelineManager:
                     _ve_ref_images,
                     nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 )
+            print(f"[img2img][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[img2img][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
         # ===== STAGE 2: U-NET INFERENCE (after VAE operations) =====
         # Note: For img2img, we need VAE first for initial latent encoding
@@ -5634,6 +5649,7 @@ class DiffusionPipelineManager:
                 nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                 attention_type=attention_type,
                 ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
+                vision_encoder=getattr(self, 'vision_encoder', None),
                 **controlnet_kwargs,
             )
 
@@ -5829,6 +5845,16 @@ class DiffusionPipelineManager:
             pipeline=pipeline_to_use
         )
 
+        # Log embedding shapes for debugging
+        if prompt_embeds is not None:
+            print(f"[inpaint] Prompt embeddings shape: {prompt_embeds.shape}")
+        if negative_prompt_embeds is not None:
+            print(f"[inpaint] Negative prompt embeddings shape: {negative_prompt_embeds.shape}")
+        if pooled_prompt_embeds is not None:
+            print(f"[inpaint] Pooled prompt embeddings shape: {pooled_prompt_embeds.shape}")
+        if negative_pooled_prompt_embeds is not None:
+            print(f"[inpaint] Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
+
         # Pre-calculate all prompt editing embeddings if needed
         embeds_cache = {}
         if prompt_processor:
@@ -5897,6 +5923,8 @@ class DiffusionPipelineManager:
                     _ve_ref_images,
                     nag_negative_prompt_embeds=nag_negative_prompt_embeds,
                 )
+            print(f"[inpaint][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
+            print(f"[inpaint][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
         # Prepare callback for prompt editing
         prompt_embeds_callback_fn = None
@@ -6016,6 +6044,7 @@ class DiffusionPipelineManager:
             nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
             attention_type=params.get("attention_type", "normal"),
             ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
+            vision_encoder=getattr(self, 'vision_encoder', None),
             **controlnet_kwargs,
         )
 

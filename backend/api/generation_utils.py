@@ -386,6 +386,25 @@ def extract_model_info(pipeline_manager) -> tuple:
     return model_name, model_hash
 
 
+def extract_vision_encoder_info(pipeline_manager) -> tuple:
+    """現在ロード済みの VE 情報を抽出。未ロードなら ("", "") を返す。"""
+    from utils.hash_cache import get_cached_file_hash
+
+    ve_path = getattr(pipeline_manager, '_vision_encoder_path', None)
+    print(f"[VE Metadata] _vision_encoder_path = {ve_path!r}")
+    if not ve_path:
+        return "", ""
+
+    ve_name = os.path.basename(ve_path)
+    try:
+        ve_hash = get_cached_file_hash(ve_path)
+    except Exception as e:
+        print(f"[VE Metadata] Hash calculation failed: {e}")
+        ve_hash = ""
+    print(f"[VE Metadata] ve_name={ve_name!r}, ve_hash={ve_hash[:16] if ve_hash else ''!r}")
+    return ve_name, ve_hash
+
+
 def sanitize_params_for_logging(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     ログ出力用にパラメータをサニタイズ（大きなデータを隠す）

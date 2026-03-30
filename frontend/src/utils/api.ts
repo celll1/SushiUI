@@ -245,6 +245,8 @@ export interface GeneratedImage {
   model_hash?: string;
   unet_quantization?: string;
   ref_images?: string[]; // FLUX.2 Image Edit: Reference image hashes
+  vision_encoder_name?: string;   // SigLIP2 Vision Encoder filename
+  vision_encoder_hash?: string;   // SHA256 hash of Vision Encoder model
   // Advanced CFG parameters
   cfg_schedule_type?: string;
   cfg_schedule_min?: string;
@@ -1466,6 +1468,10 @@ export interface TrainingRunCreateRequest {
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;
   use_reference_images?: boolean;
+  // Vision Encoder (SigLIP2) — SD/SDXL only
+  vision_encoder_path?: string | null;
+  train_vision_encoder?: boolean;
+  vision_encoder_lr?: number | null;
   // ReLoRA-specific parameters
   relora_merge_every?: number;
   relora_merge_unit?: "steps" | "epochs";
@@ -1593,6 +1599,7 @@ export interface TrainingMetrics {
   grad_norm: MetricPoint[];
   grad_norm_text_encoder: MetricPoint[];
   grad_norm_unet: MetricPoint[];
+  grad_norm_vision_encoder: MetricPoint[];
 }
 
 export const getTrainingMetrics = async (

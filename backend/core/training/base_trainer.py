@@ -7150,6 +7150,26 @@ class BaseTrainer(ABC):
                     # Clear resume state so we don't skip batches in subsequent epochs
                     resume_training_state = None
 
+                # When VE is configured, split any mixed batch (ref + no-ref) into pure sub-batches.
+                # Ref-image batches and no-ref batches have different embedding shapes so they cannot
+                # be collated together.
+                if getattr(self, 'vision_encoder', None) is not None:
+                    import random as _random_ve
+                    clean_batches = []
+                    for _b in batches:
+                        _ref_items   = [(_i, _ds) for _i, _ds in _b if _i.get("reference_images")]
+                        _noref_items = [(_i, _ds) for _i, _ds in _b if not _i.get("reference_images")]
+                        if _ref_items and _noref_items:
+                            # Mixed batch: split into two pure sub-batches
+                            clean_batches.append(_ref_items)
+                            clean_batches.append(_noref_items)
+                            print(f"{self.log_prefix} [VE] Split mixed batch → "
+                                  f"{len(_ref_items)} ref + {len(_noref_items)} no-ref sub-batches")
+                        else:
+                            clean_batches.append(_b)
+                    _random_ve.shuffle(clean_batches)
+                    batches = clean_batches
+
                 # Initialize swap mode buffer if needed (all architectures)
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
                 swap_buffer = {} if text_encoding_mode == "swap_onthefly" else None
@@ -7890,37 +7910,48 @@ class BaseTrainer(ABC):
                             mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                             mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
 
-                        # === Vision Encoder: Encode reference images and concatenate with text embeddings ===
-                        # Only for SD1.5/SDXL (not FLUX.2 or Z-Image which have different conditioning)
+                        # === Vision Encoder: per-item encoding (SD1.5/SDXL only) ===
+                        # Each batch item is conditioned on its own reference image only.
+                        # Batches without any reference images skip VE entirely.
+                        # When train_vision_encoder=True, VE stays on GPU so gradients flow through;
+                        # it is moved to CPU after _forward_backward_with_oom_recovery() returns.
                         ve_obj = getattr(self, 'vision_encoder', None)
                         if ve_obj is not None and mnt_text_embeddings is not None and not self.is_flux2 and not self.is_zimage:
-                            # Collect first reference image for each batch item
-                            ve_pil_images = []
-                            for _item, _dataset in batch:
-                                _ref_imgs = _item.get("reference_images", [])
-                                if _ref_imgs:
-                                    try:
-                                        _pil = Image.open(_ref_imgs[0]).convert("RGB")
-                                        ve_pil_images.append(_pil)
-                                    except Exception:
-                                        pass
-                            if ve_pil_images:
+                            train_ve = getattr(self, '_train_vision_encoder', False)
+                            ref_paths = [_item.get("reference_images", [None])[0] for _item, _ in batch]
+                            if any(p is not None for p in ref_paths):
                                 try:
                                     ve_obj.to(self.device)
+                                    ve_obj.train(train_ve)
                                     target_dim = mnt_text_embeddings.shape[-1]
-                                    # Encode all reference images together, concatenated sequence
-                                    ve_pos, _ve_neg = ve_obj.encode(
-                                        ve_pil_images,
-                                        target_dim=target_dim,
-                                        dtype=self.training_dtype,
-                                    )
-                                    ve_obj.to("cpu")
-                                    torch.cuda.empty_cache()
-                                    # ve_pos: [1, 1+256N, dim] → expand to batch
-                                    ve_pos = ve_pos.expand(mnt_text_embeddings.shape[0], -1, -1).to(self.device)
-                                    mnt_text_embeddings = torch.cat([mnt_text_embeddings, ve_pos], dim=1)
+                                    ve_pos_list = []
+                                    for _ref_path in ref_paths:
+                                        if _ref_path is not None:
+                                            _pil = Image.open(_ref_path).convert("RGB")
+                                            if train_ve:
+                                                _ve_pos_i, _ = ve_obj.encode(
+                                                    [_pil],
+                                                    target_dim=target_dim,
+                                                    dtype=self.training_dtype,
+                                                )
+                                            else:
+                                                with torch.no_grad():
+                                                    _ve_pos_i, _ = ve_obj.encode(
+                                                        [_pil],
+                                                        target_dim=target_dim,
+                                                        dtype=self.training_dtype,
+                                                    )
+                                            ve_pos_list.append(_ve_pos_i.to(self.device))  # [1, 257, dim]
+                                    if ve_pos_list:
+                                        # Stack per-item embeddings: [B, 257, dim]
+                                        ve_pos_batch = torch.cat(ve_pos_list, dim=0)
+                                        mnt_text_embeddings = torch.cat([mnt_text_embeddings, ve_pos_batch], dim=1)
+                                    if not train_ve:
+                                        # No gradients needed — offload immediately
+                                        ve_obj.to("cpu")
+                                        torch.cuda.empty_cache()
                                 except Exception as _ve_err:
-                                    print(f"{self.log_prefix} WARNING: Vision Encoder encoding failed: {_ve_err}, skipping VE conditioning")
+                                    print(f"{self.log_prefix} WARNING: VE encoding failed: {_ve_err}, skipping VE conditioning")
                                     try:
                                         ve_obj.to("cpu")
                                     except Exception:
@@ -7979,6 +8010,14 @@ class BaseTrainer(ABC):
                             else:
                                 # Non-CUDA error - re-raise
                                 raise
+
+                        # When VE was kept on GPU for training (gradients), offload now that backward is done
+                        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+                            try:
+                                self.vision_encoder.to("cpu")
+                                torch.cuda.empty_cache()
+                            except Exception:
+                                pass
 
                         # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings
@@ -8059,7 +8098,7 @@ class BaseTrainer(ABC):
                             # CUDA error occurred - skip optimizer step entirely
                             # The batch was skipped, so there are no valid gradients to step with
                             print(f"{self.log_prefix} [CUDA Recovery] Skipping optimizer step (batch was skipped)")
-                            grad_norm_total, grad_norm_te, grad_norm_unet = 0.0, 0.0, 0.0
+                            grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = 0.0, 0.0, 0.0, 0.0
                             # Still step LR scheduler to keep it in sync with global_step
                             if should_step_optimizer:
                                 try:
@@ -8076,7 +8115,7 @@ class BaseTrainer(ABC):
                                 if self.use_grad_scaler:
                                     # GradScaler flow
                                     self.grad_scaler.unscale_(self.optimizer)
-                                    grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                    grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.grad_scaler.step(self.optimizer)
@@ -8084,7 +8123,7 @@ class BaseTrainer(ABC):
                                     self.optimizer.zero_grad()
                                 else:
                                     # Normal flow without GradScaler
-                                    grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                    grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.optimizer.step()
@@ -8104,6 +8143,8 @@ class BaseTrainer(ABC):
                             self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
                             self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
                             self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
+                            if grad_norm_ve > 0.0:
+                                self.writer.add_scalar("train/grad_norm_vision_encoder", grad_norm_ve, global_step)
 
                             # Update grad_norm in database
                             if self.run_id is not None:
@@ -8114,7 +8155,8 @@ class BaseTrainer(ABC):
                                     learning_rate=None,
                                     grad_norm=grad_norm_total,
                                     grad_norm_text_encoder=grad_norm_te,
-                                    grad_norm_unet=grad_norm_unet
+                                    grad_norm_unet=grad_norm_unet,
+                                    grad_norm_vision_encoder=grad_norm_ve if grad_norm_ve > 0.0 else None,
                                 )
 
                             # ReLoRA merge-reinit cycle hook
@@ -8411,11 +8453,12 @@ class BaseTrainer(ABC):
         Calculate gradient norms for different parameter groups.
 
         Returns:
-            Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm)
+            Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm, vision_encoder_grad_norm)
         """
         total_grad_norm = 0.0
         text_encoder_grad_norm = 0.0
         unet_grad_norm = 0.0
+        vision_encoder_grad_norm = 0.0
 
         # For LoRA training, iterate through lora_layers dict
         if hasattr(self, 'lora_layers'):
@@ -8475,17 +8518,26 @@ class BaseTrainer(ABC):
                         total_grad_norm += param_norm ** 2
                         unet_grad_norm += param_norm ** 2
 
+            # Iterate through Vision Encoder parameters (if training VE, SD1.5/SDXL only)
+            if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+                for param in self.vision_encoder.parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        vision_encoder_grad_norm += param_norm ** 2
+
         # Take square root to get L2 norm
         total_grad_norm = total_grad_norm ** 0.5
         text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
         unet_grad_norm = unet_grad_norm ** 0.5
+        vision_encoder_grad_norm = vision_encoder_grad_norm ** 0.5
 
         # Debug: Print values once
         if not hasattr(self, '_grad_norm_values_printed'):
-            print(f"{self.log_prefix} [GradNorm] Total: {total_grad_norm:.6f}, TE: {text_encoder_grad_norm:.6f}, UNet: {unet_grad_norm:.6f}")
+            print(f"{self.log_prefix} [GradNorm] Total: {total_grad_norm:.6f}, TE: {text_encoder_grad_norm:.6f}, UNet: {unet_grad_norm:.6f}, VE: {vision_encoder_grad_norm:.6f}")
             self._grad_norm_values_printed = True
 
-        return total_grad_norm, text_encoder_grad_norm, unet_grad_norm
+        return total_grad_norm, text_encoder_grad_norm, unet_grad_norm, vision_encoder_grad_norm
 
     def _log_metrics_to_db(
         self,
@@ -8496,6 +8548,7 @@ class BaseTrainer(ABC):
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
         grad_norm_unet: float = None,
+        grad_norm_vision_encoder: float = None,
         force_flush: bool = False
     ):
         """
@@ -8519,6 +8572,7 @@ class BaseTrainer(ABC):
             grad_norm: Total gradient norm, None to keep existing
             grad_norm_text_encoder: Text encoder gradient norm, None to keep existing
             grad_norm_unet: U-Net/Transformer gradient norm, None to keep existing
+            grad_norm_vision_encoder: Vision Encoder gradient norm, None to keep existing
             force_flush: If True, flush buffer immediately (for checkpoints, end of training)
 
         Note:
@@ -8548,6 +8602,8 @@ class BaseTrainer(ABC):
                 existing_entry['grad_norm_text_encoder'] = grad_norm_text_encoder
             if grad_norm_unet is not None:
                 existing_entry['grad_norm_unet'] = grad_norm_unet
+            if grad_norm_vision_encoder is not None:
+                existing_entry['grad_norm_vision_encoder'] = grad_norm_vision_encoder
         else:
             # New step: add to buffer
             self._metrics_buffer.append({
@@ -8558,6 +8614,7 @@ class BaseTrainer(ABC):
                 'grad_norm': grad_norm,
                 'grad_norm_text_encoder': grad_norm_text_encoder,
                 'grad_norm_unet': grad_norm_unet,
+                'grad_norm_vision_encoder': grad_norm_vision_encoder,
             })
 
         # Only flush when buffer is full or force_flush is requested
@@ -8604,6 +8661,7 @@ class BaseTrainer(ABC):
                 m_grad_norm = metrics['grad_norm']
                 m_grad_norm_te = metrics['grad_norm_text_encoder']
                 m_grad_norm_unet = metrics['grad_norm_unet']
+                m_grad_norm_ve = metrics.get('grad_norm_vision_encoder')
 
                 # UPSERT: Check if metric exists for this (run_id, step)
                 existing = db.query(TrainingMetrics).filter(
@@ -8625,6 +8683,8 @@ class BaseTrainer(ABC):
                         existing.grad_norm_text_encoder = m_grad_norm_te
                     if m_grad_norm_unet is not None:
                         existing.grad_norm_unet = m_grad_norm_unet
+                    if m_grad_norm_ve is not None:
+                        existing.grad_norm_vision_encoder = m_grad_norm_ve
                     existing.timestamp = datetime.now()
                 else:
                     # Insert new metric
@@ -8636,7 +8696,8 @@ class BaseTrainer(ABC):
                         learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
                         grad_norm=m_grad_norm,
                         grad_norm_text_encoder=m_grad_norm_te,
-                        grad_norm_unet=m_grad_norm_unet
+                        grad_norm_unet=m_grad_norm_unet,
+                        grad_norm_vision_encoder=m_grad_norm_ve,
                     )
                     db.add(metric)
 
@@ -8658,7 +8719,8 @@ class BaseTrainer(ABC):
                         learning_rate=latest['learning_rate'],
                         grad_norm=latest['grad_norm'],
                         grad_norm_text_encoder=latest['grad_norm_text_encoder'],
-                        grad_norm_unet=latest['grad_norm_unet']
+                        grad_norm_unet=latest['grad_norm_unet'],
+                        grad_norm_vision_encoder=latest.get('grad_norm_vision_encoder'),
                     )
                 except Exception:
                     pass  # Non-critical

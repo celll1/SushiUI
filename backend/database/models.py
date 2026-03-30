@@ -139,6 +139,12 @@ class GeneratedImage(GalleryBase):
             if "ref_images" in self.parameters:
                 result["ref_images"] = self.parameters["ref_images"]
 
+            # Vision Encoder metadata
+            if "vision_encoder_name" in self.parameters:
+                result["vision_encoder_name"] = self.parameters["vision_encoder_name"]
+            if "vision_encoder_hash" in self.parameters:
+                result["vision_encoder_hash"] = self.parameters["vision_encoder_hash"]
+
         return result
 
 
@@ -689,6 +695,7 @@ class TrainingMetrics(TrainingBase):
     grad_norm = Column(Float, nullable=True)  # Total gradient norm (all parameters)
     grad_norm_text_encoder = Column(Float, nullable=True)  # Text encoder gradient norm
     grad_norm_unet = Column(Float, nullable=True)  # U-Net/Transformer gradient norm
+    grad_norm_vision_encoder = Column(Float, nullable=True)  # Vision Encoder gradient norm (SD/SDXL, optional)
 
     # Timestamp
     timestamp = Column(DateTime, default=get_local_now)
@@ -708,5 +715,6 @@ class TrainingMetrics(TrainingBase):
             "grad_norm": self.grad_norm,
             "grad_norm_text_encoder": self.grad_norm_text_encoder,
             "grad_norm_unet": self.grad_norm_unet,
+            "grad_norm_vision_encoder": self.grad_norm_vision_encoder,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

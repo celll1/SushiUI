@@ -54,7 +54,8 @@ class ConnectionManager:
         learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
-        grad_norm_unet: float = None
+        grad_norm_unet: float = None,
+        grad_norm_vision_encoder: float = None,
     ):
         """Send training metrics (loss, recon_loss, lr, grad_norm) to all connected clients.
 
@@ -77,6 +78,8 @@ class ConnectionManager:
             data["grad_norm_text_encoder"] = grad_norm_text_encoder
         if grad_norm_unet is not None:
             data["grad_norm_unet"] = grad_norm_unet
+        if grad_norm_vision_encoder is not None:
+            data["grad_norm_vision_encoder"] = grad_norm_vision_encoder
 
         # Put message in queue (thread-safe)
         self.message_queue.put(data)

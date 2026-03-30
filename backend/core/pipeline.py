@@ -4754,7 +4754,7 @@ class DiffusionPipelineManager:
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
 
         move_text_encoders_to_gpu(self.txt2img_pipeline)
-        log_device_status("Ready for text encoding", self.txt2img_pipeline)
+        log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
@@ -4861,7 +4861,7 @@ class DiffusionPipelineManager:
             print(f"[Pipeline] Applying U-Net quantization: {unet_quantization}")
         move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
-        log_device_status("Ready for U-Net inference", self.txt2img_pipeline)
+        log_device_status("Ready for U-Net inference", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Handle ControlNet and Reference Guide
         all_controlnet_images = params.get("controlnet_images", [])
@@ -5277,7 +5277,7 @@ class DiffusionPipelineManager:
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         move_text_encoders_to_gpu(self.img2img_pipeline)
-        log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline)
+        log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Handle ControlNet and Reference Guide
         all_controlnet_images = params.get("controlnet_images", [])
@@ -5597,7 +5597,7 @@ class DiffusionPipelineManager:
             use_torch_compile = params.get("use_torch_compile", False)
             move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
-            log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use)
+            log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
             # Call custom img2img sampling loop
             image = custom_img2img_sampling_loop(
@@ -5798,7 +5798,7 @@ class DiffusionPipelineManager:
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         move_text_encoders_to_gpu(self.inpaint_pipeline)
-        log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline)
+        log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
@@ -5975,7 +5975,7 @@ class DiffusionPipelineManager:
         use_torch_compile = params.get("use_torch_compile", False)
         move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
-        log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use)
+        log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Use custom inpaint sampling loop
         image = custom_inpaint_sampling_loop(

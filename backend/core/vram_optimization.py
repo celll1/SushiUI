@@ -14,7 +14,7 @@ from typing import Optional
 import copy
 
 
-def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None):
+def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None, vision_encoder=None):
     """Log device status of all pipeline components
 
     Args:
@@ -22,6 +22,7 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
         pipeline: The diffusers pipeline (or None for Z-Image)
         show_details: Show detailed submodule information
         zimage_components: Dict with Z-Image components (text_encoder, transformer, vae)
+        vision_encoder: Optional SigLIP2VisionEncoderWrapper instance
     """
     print(f"\n{'='*60}")
     print(f"[VRAM] Device Status: {stage}")
@@ -118,6 +119,15 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
             print(f"  VAE:            {device} ({dtype})")
         except:
             print(f"  VAE:            no parameters")
+
+    # Vision Encoder (SigLIP2, if provided)
+    if vision_encoder is not None:
+        try:
+            device = next(vision_encoder.model.parameters()).device
+            dtype = get_dtype_info(vision_encoder.model)
+            print(f"  Vision Encoder: {device} ({dtype})")
+        except Exception:
+            print(f"  Vision Encoder: no parameters")
 
     # Z-Image components (if provided)
     if zimage_components:

@@ -77,7 +77,8 @@ class FullParameterTrainer(BaseTrainer):
         self._prepare_models()
 
         print(f"{self.log_prefix} Initialized")
-        print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")
+        ve_status = getattr(self, '_train_vision_encoder', False)
+        print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}, Vision Encoder: {ve_status}")
 
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""

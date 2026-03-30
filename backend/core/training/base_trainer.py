@@ -645,6 +645,9 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix}   Text Encoder 1 LR: {self.text_encoder_1_lr}")
         if hasattr(self, 'text_encoder_2_lr'):
             print(f"{self.log_prefix}   Text Encoder 2 LR: {self.text_encoder_2_lr}")
+        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+            ve_lr_display = getattr(self, '_vision_encoder_lr', None) or getattr(self, 'text_encoder_lr', None)
+            print(f"{self.log_prefix}   Vision Encoder LR: {ve_lr_display} (train=True)")
         print(f"{self.log_prefix} ====================================")
 
         print(f"[Trainer] Precision settings:")
@@ -6471,9 +6474,13 @@ class BaseTrainer(ABC):
                 self._train_vision_encoder = train_vision_encoder
                 self._vision_encoder_lr = vision_encoder_lr
                 if train_vision_encoder:
-                    print(f"{self.log_prefix} Vision Encoder: Will be trained (lr={vision_encoder_lr or 'inherit'})")
+                    # Move to GPU immediately and keep it there for the duration of training.
+                    # Per-batch CPU offloading is skipped when training VE (92.9M params ≈ 186MB
+                    # is negligible vs UNet, and PCIe round-trips per batch hurt throughput).
+                    self.vision_encoder.to(self.device)
+                    print(f"{self.log_prefix} Vision Encoder: Will be trained (lr={vision_encoder_lr or 'inherit'}), kept on GPU")
                 else:
-                    print(f"{self.log_prefix} Vision Encoder: Frozen (inference only)")
+                    print(f"{self.log_prefix} Vision Encoder: Frozen (inference only, CPU offloaded between batches)")
             except Exception as e:
                 print(f"{self.log_prefix} ERROR: Failed to load Vision Encoder: {e}")
                 self.vision_encoder = None
@@ -6517,6 +6524,10 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix}   Text Encoder 1:    tensors={te1_trainable_tensors}, params={format_param_count(te1_trainable_scalars)}")
             if te2_trainable_tensors > 0:
                 print(f"{self.log_prefix}   Text Encoder 2:    tensors={te2_trainable_tensors}, params={format_param_count(te2_trainable_scalars)}")
+        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+            ve_trainable_tensors = sum(1 for p in self.vision_encoder.parameters() if p.requires_grad)
+            ve_trainable_scalars = sum(p.numel() for p in self.vision_encoder.parameters() if p.requires_grad)
+            print(f"{self.log_prefix}   Vision Encoder:    tensors={ve_trainable_tensors}, params={format_param_count(ve_trainable_scalars)}")
 
         # If Text Encoder is trainable, embeddings must be recomputed each step
         if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache']:
@@ -6654,7 +6665,8 @@ class BaseTrainer(ABC):
                         height=height,
                         caption=item.get("caption", ""),
                         dataset_unique_id=dataset.unique_id,
-                        has_reference=has_reference
+                        has_reference=has_reference,
+                        reference_images=reference_images if reference_images else None,
                     )
                     # Update item with bucket dimensions
                     item["width"] = image_info["bucket_width"]
@@ -7913,8 +7925,9 @@ class BaseTrainer(ABC):
                         # === Vision Encoder: per-item encoding (SD1.5/SDXL only) ===
                         # Each batch item is conditioned on its own reference image only.
                         # Batches without any reference images skip VE entirely.
-                        # When train_vision_encoder=True, VE stays on GPU so gradients flow through;
-                        # it is moved to CPU after _forward_backward_with_oom_recovery() returns.
+                        # When train_vision_encoder=True, VE is already on GPU (moved at training start)
+                        # and stays there for the entire training — no per-batch offloading.
+                        # When train_vision_encoder=False, VE is moved to GPU for encoding and back to CPU after.
                         ve_obj = getattr(self, 'vision_encoder', None)
                         if ve_obj is not None and mnt_text_embeddings is not None and not self.is_flux2 and not self.is_zimage:
                             train_ve = getattr(self, '_train_vision_encoder', False)
@@ -7928,19 +7941,14 @@ class BaseTrainer(ABC):
                                     for _ref_path in ref_paths:
                                         if _ref_path is not None:
                                             _pil = Image.open(_ref_path).convert("RGB")
-                                            if train_ve:
-                                                _ve_pos_i, _ = ve_obj.encode(
-                                                    [_pil],
-                                                    target_dim=target_dim,
-                                                    dtype=self.training_dtype,
-                                                )
-                                            else:
-                                                with torch.no_grad():
-                                                    _ve_pos_i, _ = ve_obj.encode(
-                                                        [_pil],
-                                                        target_dim=target_dim,
-                                                        dtype=self.training_dtype,
-                                                    )
+                                            # with_grad=True keeps gradients flowing through VE for training;
+                                            # with_grad=False (default) wraps in torch.no_grad() for inference.
+                                            _ve_pos_i, _ = ve_obj.encode(
+                                                [_pil],
+                                                target_dim=target_dim,
+                                                dtype=self.training_dtype,
+                                                with_grad=train_ve,
+                                            )
                                             ve_pos_list.append(_ve_pos_i.to(self.device))  # [1, 257, dim]
                                     if ve_pos_list:
                                         # Stack per-item embeddings: [B, 257, dim]
@@ -8011,13 +8019,6 @@ class BaseTrainer(ABC):
                                 # Non-CUDA error - re-raise
                                 raise
 
-                        # When VE was kept on GPU for training (gradients), offload now that backward is done
-                        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
-                            try:
-                                self.vision_encoder.to("cpu")
-                                torch.cuda.empty_cache()
-                            except Exception:
-                                pass
 
                         # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings
@@ -8130,7 +8131,7 @@ class BaseTrainer(ABC):
                                     self.optimizer.zero_grad()
                             else:
                                 # Fused backward/groups flow - calculate grad norm (step/zero_grad by hooks)
-                                grad_norm_total, grad_norm_te, grad_norm_unet = self._calculate_grad_norms()
+                                grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
 
                             # LR scheduler step
                             if self.fused_optimizer_groups is not None:

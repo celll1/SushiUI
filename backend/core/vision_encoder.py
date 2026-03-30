@@ -211,6 +211,7 @@ class SigLIP2VisionEncoderWrapper:
         images: List[Image.Image],
         target_dim: int = 2048,
         dtype: torch.dtype = torch.float16,
+        with_grad: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Encode a list of reference images into vision embeddings.
@@ -223,6 +224,8 @@ class SigLIP2VisionEncoderWrapper:
             images: List of PIL Images (1 to N)
             target_dim: Target embedding dimension to pad to (2048 for SDXL, 768 for SD1.5)
             dtype: Output dtype (match the U-Net dtype)
+            with_grad: If True, run forward pass with gradient tracking (for training VE).
+                       If False (default), wrap in torch.no_grad() for inference.
 
         Returns:
             pos_embeds: [1, 1 + 256*N, target_dim]  (header + vision tokens, zero-padded)
@@ -231,25 +234,28 @@ class SigLIP2VisionEncoderWrapper:
         if not images:
             raise ValueError("At least one image is required for vision encoder")
 
-        self.model.eval()
+        if with_grad:
+            self.model.train()
+        else:
+            self.model.eval()
         all_patch_embeds = []
 
-        with torch.no_grad():
+        def _forward_single(img):
+            if not isinstance(img, Image.Image):
+                raise TypeError(f"Expected PIL Image, got {type(img)}")
+            rgb_img = img.convert("RGB")
+            inputs = self.processor(images=[rgb_img], return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            out = self.model(**inputs)
+            return out.last_hidden_state.to(dtype)  # [1, 256, hidden_size]
+
+        if with_grad:
             for img in images:
-                if not isinstance(img, Image.Image):
-                    raise TypeError(f"Expected PIL Image, got {type(img)}")
-                rgb_img = img.convert("RGB")
-
-                # Process image → NaFlex inputs
-                inputs = self.processor(images=[rgb_img], return_tensors="pt")
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-                # Forward through vision model
-                out = self.model(**inputs)
-                # last_hidden_state: [1, 256, hidden_size]
-                patch_embeds = out.last_hidden_state.to(dtype)
-
-                all_patch_embeds.append(patch_embeds)  # list of [1, 256, D]
+                all_patch_embeds.append(_forward_single(img))
+        else:
+            with torch.no_grad():
+                for img in images:
+                    all_patch_embeds.append(_forward_single(img))
 
         # Concatenate multiple images: [1, 256*N, hidden_size]
         if len(all_patch_embeds) == 1:
@@ -281,8 +287,6 @@ class SigLIP2VisionEncoderWrapper:
         # Negative: all zeros (model should learn to ignore absent vision info)
         neg_embeds = torch.zeros_like(pos_embeds)
 
-        print(f"[VisionEncoder] Encoded {len(images)} image(s) → "
-              f"pos_embeds={list(pos_embeds.shape)}, neg_embeds={list(neg_embeds.shape)}")
 
         return pos_embeds, neg_embeds
 

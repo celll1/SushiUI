@@ -1313,6 +1313,13 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
 
     return result
 
+@router.get("/models/vision_encoders")
+async def list_vision_encoders(db: Session = Depends(get_db)):
+    """List safetensors files detected as SigLIP2 vision encoders from the model directories."""
+    all_models = await list_models(db)
+    vision_encoders = [m for m in all_models.get("models", []) if m.get("architecture") == "vision_encoder"]
+    return {"vision_encoders": vision_encoders}
+
 @router.post("/models/load")
 async def load_model(
     source_type: str = Form(...),

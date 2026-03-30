@@ -11,6 +11,7 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import ModelSelector from "../common/ModelSelector";
+import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
@@ -1790,25 +1791,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </div>
         </Card>
 
-        {/* SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning) */}
+        {/* SigLIP2 Vision Encoder (SDXL/SD1.5 reference image conditioning) */}
         {currentModelInfo?.model_info?.type !== "flux2" && (
-          <div className="flex items-center gap-2">
-            <label className="text-gray-400 text-sm whitespace-nowrap">Vision Encoder</label>
-            <input
-              type="text"
-              placeholder="Path to siglip2 .safetensors (optional)"
-              value={params.vision_encoder_path || ""}
-              onChange={(e) => setParams({ ...params, vision_encoder_path: e.target.value || null })}
-              className="flex-1 bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
-            />
-            {params.vision_encoder_path && (
-              <button
-                onClick={() => setParams({ ...params, vision_encoder_path: null })}
-                className="text-gray-500 hover:text-gray-300 text-sm px-1"
-                title="Clear vision encoder"
-              >✕</button>
-            )}
-          </div>
+          <VisionEncoderSelector
+            value={params.vision_encoder_path ?? null}
+            onChange={(path) => setParams({ ...params, vision_encoder_path: path })}
+          />
         )}
 
         {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}

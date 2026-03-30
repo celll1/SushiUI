@@ -4494,6 +4494,11 @@ class TrainingRunCreateRequest(BaseModel):
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training
 
+    # SigLIP2 Vision Encoder
+    vision_encoder_path: Optional[str] = None  # Path to SigLIP2 vision encoder safetensors
+    train_vision_encoder: bool = False  # Train vision encoder weights
+    vision_encoder_lr: Optional[float] = None  # Learning rate for vision encoder (defaults to text_encoder_lr)
+
     # Priority training
     priority_training: Optional[Dict[str, Any]] = None  # Inline priority training config
 
@@ -4708,6 +4713,9 @@ async def create_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,
+                vision_encoder_path=request.vision_encoder_path,
+                train_vision_encoder=request.train_vision_encoder,
+                vision_encoder_lr=request.vision_encoder_lr,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "relora":
@@ -4798,6 +4806,9 @@ async def create_training_run(
                 prediction_target=request.prediction_target,
                 strict_validation=request.strict_validation,
                 use_reference_images=request.use_reference_images,
+                vision_encoder_path=request.vision_encoder_path,
+                train_vision_encoder=request.train_vision_encoder,
+                vision_encoder_lr=request.vision_encoder_lr,
                 priority_training=request.priority_training,
                 # ReLoRA-specific parameters
                 relora_merge_every=request.relora_merge_every,
@@ -4962,6 +4973,9 @@ async def create_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,
+                vision_encoder_path=request.vision_encoder_path,
+                train_vision_encoder=request.train_vision_encoder,
+                vision_encoder_lr=request.vision_encoder_lr,
                 priority_training=request.priority_training,
             )
 
@@ -5193,6 +5207,10 @@ async def get_training_run_params(
         "image_encoder_lr": training_params.get("image_encoder_lr"),
         # Reference image conditioning
         "use_reference_images": training_params.get("use_reference_images", False),
+        # SigLIP2 Vision Encoder
+        "vision_encoder_path": training_params.get("vision_encoder_path", None),
+        "train_vision_encoder": training_params.get("train_vision_encoder", False),
+        "vision_encoder_lr": training_params.get("vision_encoder_lr", None),
         # Priority training
         "priority_training": training_params.get("priority_training", None),
         # ReLoRA parameters
@@ -5358,6 +5376,9 @@ async def update_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,
+                vision_encoder_path=request.vision_encoder_path,
+                train_vision_encoder=request.train_vision_encoder,
+                vision_encoder_lr=request.vision_encoder_lr,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "controlnet":
@@ -5516,6 +5537,9 @@ async def update_training_run(
                 prediction_target=request.prediction_target,  # Unified Training Framework
                 strict_validation=request.strict_validation,  # Unified Training Framework
                 use_reference_images=request.use_reference_images,
+                vision_encoder_path=request.vision_encoder_path,
+                train_vision_encoder=request.train_vision_encoder,
+                vision_encoder_lr=request.vision_encoder_lr,
                 priority_training=request.priority_training,
             )
 

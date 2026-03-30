@@ -125,6 +125,8 @@ class FullParameterTrainer(BaseTrainer):
         """
         checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}"
         self.adapter.save_checkpoint(step, epoch, checkpoint_path)
+        # Save Vision Encoder checkpoint separately (if loaded)
+        self._save_vision_encoder_checkpoint(step, epoch)
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """

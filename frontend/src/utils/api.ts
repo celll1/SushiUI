@@ -198,6 +198,8 @@ export interface GenerationParams {
   use_pinned_memory?: boolean;
   // FLUX.2 Image Edit (reference images for sequence conditioning)
   ref_images?: File[];
+  // SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning)
+  vision_encoder_path?: string | null;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -330,11 +332,16 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
   formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
 
-  // FLUX.2 Image Edit (reference images)
+  // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
     for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
       formData.append("ref_images", paramsWithImages.ref_images[i]);
     }
+  }
+
+  // SigLIP2 Vision Encoder path
+  if (paramsWithImages.vision_encoder_path) {
+    formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
   }
 
   const response = await api.post("/generate/txt2img", formData, {
@@ -423,11 +430,16 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   // Preview mode (predicted x0)
   formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
 
-  // FLUX.2 Image Edit (reference images)
+  // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
     for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
       formData.append("ref_images", paramsWithImages.ref_images[i]);
     }
+  }
+
+  // SigLIP2 Vision Encoder path
+  if (paramsWithImages.vision_encoder_path) {
+    formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
   }
 
   const response = await api.post("/generate/img2img", formData, {
@@ -530,11 +542,16 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // Preview mode (predicted x0)
   formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
 
-  // FLUX.2 Image Edit (reference images)
+  // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
     for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
       formData.append("ref_images", paramsWithImages.ref_images[i]);
     }
+  }
+
+  // SigLIP2 Vision Encoder path
+  if (paramsWithImages.vision_encoder_path) {
+    formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
   }
 
   const response = await api.post("/generate/inpaint", formData, {

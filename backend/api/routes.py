@@ -202,7 +202,8 @@ async def generate_txt2img(
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(20),
     use_pinned_memory: bool = Form(False),
-    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
+    vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -278,7 +279,7 @@ async def generate_txt2img(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit)
+        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             from PIL import Image
@@ -286,7 +287,16 @@ async def generate_txt2img(
             for ref_img_file in ref_images:
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
-            print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+            print(f"[RefImages] Loaded {len(ref_image_list)} reference image(s)")
+
+        # Load / reuse Vision Encoder if path provided (SD/SDXL only; FLUX.2 uses its own path)
+        is_flux2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "flux2"
+        if vision_encoder_path and not is_flux2:
+            pipeline_manager.load_vision_encoder(vision_encoder_path)
+        elif not vision_encoder_path and not is_flux2:
+            # No VE path supplied — keep existing VE if already loaded (allows sticky sessions)
+            pass
 
         # Generate image
         params = {
@@ -519,8 +529,9 @@ async def generate_img2img(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
+    vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     image: UploadFile = File(...),
-    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from image"""
@@ -604,13 +615,18 @@ async def generate_img2img(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit)
+        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             for ref_img_file in ref_images:
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
             print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
+        # Load Vision Encoder if requested (non-FLUX.2 only)
+        is_flux2 = pipeline_manager.current_model_info and pipeline_manager.current_model_info.get("type") == "flux2"
+        if vision_encoder_path and not is_flux2:
+            pipeline_manager.load_vision_encoder(vision_encoder_path)
 
         # Generate image
         params = {
@@ -832,9 +848,10 @@ async def generate_inpaint(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
+    vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
-    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit reference images
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     db: Session = Depends(get_gallery_db)
 ):
     """Generate inpainted image"""
@@ -932,13 +949,18 @@ async def generate_inpaint(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit)
+        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             for ref_img_file in ref_images:
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
             print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
+        # Load Vision Encoder if requested (non-FLUX.2 only)
+        is_flux2 = pipeline_manager.current_model_info and pipeline_manager.current_model_info.get("type") == "flux2"
+        if vision_encoder_path and not is_flux2:
+            pipeline_manager.load_vision_encoder(vision_encoder_path)
 
         # Generate image
         params = {

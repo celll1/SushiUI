@@ -49,6 +49,10 @@ class DiffusionPipelineManager:
         self.flux2_components: Optional[Dict[str, Any]] = None
         self.is_flux2_model: bool = False
 
+        # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
+        self.vision_encoder: Optional[Any] = None
+        self._vision_encoder_path: Optional[str] = None
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -1897,6 +1901,87 @@ class DiffusionPipelineManager:
         mu = a * num_steps + b
 
         return float(mu)
+
+    # ── Vision Encoder management ────────────────────────────────────────────
+
+    def load_vision_encoder(self, safetensors_path: str):
+        """Load (or reload) the SigLIP2 vision encoder from a safetensors file."""
+        if self._vision_encoder_path == safetensors_path and self.vision_encoder is not None:
+            print(f"[VisionEncoder] Already loaded: {safetensors_path}")
+            return
+        from core.vision_encoder import SigLIP2VisionEncoderWrapper
+        if self.vision_encoder is not None:
+            print("[VisionEncoder] Replacing existing vision encoder.")
+            self.unload_vision_encoder()
+        self.vision_encoder = SigLIP2VisionEncoderWrapper(safetensors_path, device="cpu")
+        self._vision_encoder_path = safetensors_path
+
+    def unload_vision_encoder(self):
+        """Unload the vision encoder and free memory."""
+        if self.vision_encoder is not None:
+            self.vision_encoder.to("cpu")
+            del self.vision_encoder
+            self.vision_encoder = None
+            self._vision_encoder_path = None
+            import gc, torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("[VisionEncoder] Unloaded.")
+
+    def _apply_vision_encoder(
+        self,
+        prompt_embeds: torch.Tensor,
+        negative_prompt_embeds: torch.Tensor,
+        ref_images: List[Image.Image],
+        nag_negative_prompt_embeds: Optional[torch.Tensor] = None,
+    ):
+        """
+        Encode reference images and concatenate vision embeddings to text embeddings.
+
+        Args:
+            prompt_embeds:          [B, 77, D]
+            negative_prompt_embeds: [B, 77, D]
+            ref_images:             list of PIL Images
+            nag_negative_prompt_embeds: optional [B, 77, D] for NAG
+
+        Returns updated (prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds).
+        All outputs have shape [B, 77 + 1 + 256*N, D].
+        """
+        from core.vram_optimization import move_vision_encoder_to_gpu, move_vision_encoder_to_cpu
+
+        device = prompt_embeds.device
+        dtype  = prompt_embeds.dtype
+        target_dim = prompt_embeds.shape[-1]
+
+        move_vision_encoder_to_gpu(self.vision_encoder, str(device))
+
+        ve_pos, ve_neg = self.vision_encoder.encode(
+            ref_images, target_dim=target_dim, dtype=dtype
+        )
+        ve_pos = ve_pos.to(device)
+        ve_neg = ve_neg.to(device)
+
+        # Expand to match batch size
+        batch = prompt_embeds.shape[0]
+        if ve_pos.shape[0] != batch:
+            ve_pos = ve_pos.expand(batch, -1, -1)
+            ve_neg = ve_neg.expand(batch, -1, -1)
+
+        prompt_embeds          = torch.cat([prompt_embeds,          ve_pos], dim=1)
+        negative_prompt_embeds = torch.cat([negative_prompt_embeds, ve_neg], dim=1)
+
+        if nag_negative_prompt_embeds is not None:
+            nag_negative_prompt_embeds = torch.cat(
+                [nag_negative_prompt_embeds, ve_neg.clone()], dim=1
+            )
+
+        move_vision_encoder_to_cpu(self.vision_encoder)
+
+        print(f"[VisionEncoder] Combined embeds: prompt={list(prompt_embeds.shape)}, "
+              f"negative={list(negative_prompt_embeds.shape)}")
+
+        return prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds
 
     def encode_flux2_image_refs(self, images: List[Image.Image], device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -4746,6 +4831,24 @@ class DiffusionPipelineManager:
         # Offload text encoders to CPU after all encoding is complete
         move_text_encoders_to_cpu(self.txt2img_pipeline)
 
+        # ===== STAGE 1.5: VISION ENCODER (optional) =====
+        # Apply vision encoder if loaded and reference images are provided.
+        # Skipped for FLUX.2 (handled separately via encode_flux2_image_refs).
+        _ve_ref_images = params.get("ref_images", [])
+        if (
+            self.vision_encoder is not None
+            and _ve_ref_images
+            and prompt_embeds is not None
+            and negative_prompt_embeds is not None
+        ):
+            prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds = \
+                self._apply_vision_encoder(
+                    prompt_embeds,
+                    negative_prompt_embeds,
+                    _ve_ref_images,
+                    nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                )
+
         # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
 
@@ -5259,6 +5362,22 @@ class DiffusionPipelineManager:
         # Offload text encoders to CPU after all encoding is complete
         move_text_encoders_to_cpu(pipeline_to_use)
 
+        # ===== STAGE 1.5: VISION ENCODER (optional) =====
+        _ve_ref_images = params.get("ref_images", [])
+        if (
+            self.vision_encoder is not None
+            and _ve_ref_images
+            and prompt_embeds is not None
+            and negative_prompt_embeds is not None
+        ):
+            prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds = \
+                self._apply_vision_encoder(
+                    prompt_embeds,
+                    negative_prompt_embeds,
+                    _ve_ref_images,
+                    nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                )
+
         # ===== STAGE 2: U-NET INFERENCE (after VAE operations) =====
         # Note: For img2img, we need VAE first for initial latent encoding
 
@@ -5762,6 +5881,22 @@ class DiffusionPipelineManager:
 
         # Offload text encoders to CPU after all encoding is complete
         move_text_encoders_to_cpu(pipeline_to_use)
+
+        # ===== STAGE 1.5: VISION ENCODER (optional) =====
+        _ve_ref_images = params.get("ref_images", [])
+        if (
+            self.vision_encoder is not None
+            and _ve_ref_images
+            and prompt_embeds is not None
+            and negative_prompt_embeds is not None
+        ):
+            prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds = \
+                self._apply_vision_encoder(
+                    prompt_embeds,
+                    negative_prompt_embeds,
+                    _ve_ref_images,
+                    nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                )
 
         # Prepare callback for prompt editing
         prompt_embeds_callback_fn = None

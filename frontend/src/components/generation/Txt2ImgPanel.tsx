@@ -64,6 +64,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   blocks_to_swap: 20,
   use_pinned_memory: false,
   attention_type: "normal",
+  vision_encoder_path: null,
 };
 
 const STORAGE_KEY = "txt2img_params";
@@ -1196,6 +1197,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       stepParams.controlnets = mainParams.controlnets || [];
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
+      stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.vision_encoder_path = mainParams.vision_encoder_path;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
       const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
@@ -1589,10 +1592,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           }
         }} />
 
-        {/* FLUX.2 Image Edit: Reference Images */}
-        {currentModelInfo?.model_info?.type === "flux2" && (
+        {/* SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning) */}
+        {currentModelInfo?.model_info?.type !== "flux2" && (
+          <div className="flex items-center gap-2">
+            <label className="text-gray-400 text-sm whitespace-nowrap">Vision Encoder</label>
+            <input
+              type="text"
+              placeholder="Path to siglip2 .safetensors (optional)"
+              value={params.vision_encoder_path || ""}
+              onChange={(e) => setParams({ ...params, vision_encoder_path: e.target.value || null })}
+              className="flex-1 bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+            />
+            {params.vision_encoder_path && (
+              <button
+                onClick={() => setParams({ ...params, vision_encoder_path: null })}
+                className="text-gray-500 hover:text-gray-300 text-sm px-1"
+                title="Clear vision encoder"
+              >✕</button>
+            )}
+          </div>
+        )}
+
+        {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
+        {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
           <Card
-            title="FLUX.2 Image Edit (Reference Images)"
+            title={currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2 Image Edit (Reference Images)" : "Vision Encoder (Reference Images)"}
+
             collapsible={true}
             defaultCollapsed={true}
             storageKey="txt2img_ref_images_collapsed"

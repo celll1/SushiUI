@@ -177,6 +177,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Reference image conditioning (FLUX.2 only)
   const [useReferenceImages, setUseReferenceImages] = useState(false);
 
+  // SigLIP2 Vision Encoder
+  const [visionEncoderPath, setVisionEncoderPath] = useState("");
+  const [trainVisionEncoder, setTrainVisionEncoder] = useState(false);
+  const [visionEncoderLr, setVisionEncoderLr] = useState("");
+
   // Priority training (one entry per line in textarea)
   const [priorityEnabled, setPriorityEnabled] = useState(false);
   const [priorityText, setPriorityText] = useState("");  // newline-separated entries
@@ -467,6 +472,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Reference images
       if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
+
+      // Vision Encoder
+      if (params.vision_encoder_path !== undefined) setVisionEncoderPath(params.vision_encoder_path || "");
+      if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
+      if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
 
       // Priority training
       if (params.priority_training) {
@@ -1084,6 +1094,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       text_encoding_mode: textEncodingMode,
       text_encoding_swap_interval: textEncodingSwapInterval,
       use_reference_images: useReferenceImages,
+      vision_encoder_path: visionEncoderPath || null,
+      train_vision_encoder: trainVisionEncoder,
+      vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
       blocks_to_swap: blocksToSwap,
@@ -2804,6 +2817,52 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p>Uses reference images from dataset to condition the model during training via latent concatenation.</p>
             <p>Dataset items must have reference images configured (e.g., <code className="bg-gray-800 px-1 rounded">image_ref.png</code> suffix).</p>
             <p className="text-yellow-500/80">⚠️ Only supported for FLUX.2 models. Will be ignored for other architectures.</p>
+          </div>
+        </div>
+
+        {/* SigLIP2 Vision Encoder */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">SigLIP2 Vision Encoder</h3>
+          <div className="space-y-2">
+            <label className="text-xs text-gray-400">Vision Encoder Path (.safetensors)</label>
+            <input
+              type="text"
+              value={visionEncoderPath}
+              onChange={(e) => setVisionEncoderPath(e.target.value)}
+              placeholder="Path to siglip2 vision encoder .safetensors (optional)"
+              className="w-full bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="train-vision-encoder"
+              checked={trainVisionEncoder}
+              onChange={(e) => setTrainVisionEncoder(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="train-vision-encoder" className="text-sm text-gray-400">
+              Train vision encoder weights
+            </label>
+          </div>
+          {trainVisionEncoder && (
+            <div className="space-y-1">
+              <label className="text-xs text-gray-400">Vision Encoder Learning Rate (leave blank to use text encoder LR)</label>
+              <input
+                type="number"
+                value={visionEncoderLr}
+                onChange={(e) => setVisionEncoderLr(e.target.value)}
+                placeholder="e.g. 1e-4"
+                step="any"
+                className="w-full bg-gray-700 text-gray-200 text-sm rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          )}
+          <div className="text-xs text-gray-500 space-y-1">
+            <p>Loads a SigLIP2 vision encoder to condition training on reference images.</p>
+            <p>Dataset items must include a <code className="bg-gray-800 px-1 rounded">reference</code> entry in their reference images.</p>
+            <p>The vision encoder checkpoint is saved separately as <code className="bg-gray-800 px-1 rounded">*_vision_encoder_step_*.safetensors</code>.</p>
+            <p className="text-yellow-500/80">⚠️ Not supported for FLUX.2 or Z-Image models.</p>
           </div>
         </div>
 

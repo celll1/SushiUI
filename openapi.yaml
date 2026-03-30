@@ -1253,6 +1253,17 @@ components:
         use_torch_compile:
           type: boolean
           default: false
+        vision_encoder_path:
+          type: string
+          nullable: true
+          description: "Path to SigLIP2 vision encoder safetensors file. When set, reference images are encoded via SigLIP2 and concatenated to text embeddings."
+          example: "models/siglip2_base_vision_encoder.safetensors"
+        ref_images:
+          type: array
+          items:
+            type: string
+            format: binary
+          description: "Reference images for FLUX.2 Image Edit or SigLIP2 vision encoder conditioning (multipart upload)"
 
     Txt2ImgRequest:
       allOf:
@@ -1840,3 +1851,24 @@ components:
           maximum: 1.0
           description: Fraction of optimizer state to prune (for pruning strategies)
           example: 0.9
+        # Reference image conditioning
+        use_reference_images:
+          type: boolean
+          default: false
+          description: Enable reference image latent conditioning during training (FLUX.2 only)
+        # SigLIP2 Vision Encoder
+        vision_encoder_path:
+          type: string
+          nullable: true
+          description: "Path to SigLIP2 vision encoder safetensors file for SD/SDXL training"
+          example: "models/siglip2_base_vision_encoder.safetensors"
+        train_vision_encoder:
+          type: boolean
+          default: false
+          description: Whether to train the vision encoder weights
+        vision_encoder_lr:
+          type: number
+          format: float
+          nullable: true
+          description: Learning rate for vision encoder (defaults to text_encoder_lr if null)
+          example: 0.0001

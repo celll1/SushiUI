@@ -2221,8 +2221,11 @@ class BaseTrainer(ABC):
         if max_step_saves_to_keep <= 0:
             return
 
-        # Find all checkpoint files
-        checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+        # Find main checkpoint files only (exclude VE checkpoints to avoid double-counting)
+        checkpoint_files = [
+            f for f in self.output_dir.glob("*_step_*.safetensors")
+            if "vision_encoder" not in f.name
+        ]
         if len(checkpoint_files) <= max_step_saves_to_keep:
             return
 
@@ -2239,6 +2242,7 @@ class BaseTrainer(ABC):
         # Delete old checkpoints
         checkpoints_to_delete = checkpoint_files[max_step_saves_to_keep:]
         for checkpoint_path in checkpoints_to_delete:
+            step_num = get_step(checkpoint_path)
             # Also delete associated _optimizer.pt file and _state.json file
             # Pattern: {short_name}_step_{step}.safetensors
             #          {short_name}_step_{step}_optimizer.pt
@@ -2256,6 +2260,12 @@ class BaseTrainer(ABC):
             if state_json_path.exists():
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
                 state_json_path.unlink()
+
+            # Also delete VE checkpoint for this step if it exists
+            ve_pattern = f"*_vision_encoder_step_{step_num:06d}.safetensors"
+            for ve_file in checkpoint_path.parent.glob(ve_pattern):
+                print(f"{self.log_prefix} Deleting old VE checkpoint: {ve_file.name}")
+                ve_file.unlink()
 
     # ============================================================
     # Optimizer Setup
@@ -4883,6 +4893,7 @@ class BaseTrainer(ABC):
         current_step: int = 0,
         schedule_type: str = "uniform",
         condition_image_path: Optional[str] = None,
+        reference_image_path: Optional[str] = None,
     ) -> "Image.Image":
         """
         Generate sample image during training (SD/SDXL).
@@ -5044,6 +5055,34 @@ class BaseTrainer(ABC):
 
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
+
+            # ========================================
+            # STEP 2.5: Vision Encoder conditioning (if reference image + VE loaded)
+            # ========================================
+            ve_obj = getattr(self, 'vision_encoder', None)
+            if reference_image_path and ve_obj is not None:
+                try:
+                    from PIL import Image as PILImage
+                    ref_img = PILImage.open(reference_image_path).convert("RGB")
+                    target_dim = prompt_embeds.shape[-1]
+                    train_ve = getattr(self, '_train_vision_encoder', False)
+                    if not train_ve:
+                        print(f"{self.log_prefix} [Sample] Moving Vision Encoder to GPU for sample conditioning")
+                        ve_obj.to(self.device)
+                    ve_obj.eval()
+                    with torch.no_grad():
+                        ve_pos, _ = ve_obj.encode([ref_img], target_dim=target_dim, dtype=prompt_embeds.dtype)
+                    ve_pos = ve_pos.to(self.device)
+                    ve_neg = torch.zeros_like(ve_pos)
+                    prompt_embeds = torch.cat([prompt_embeds, ve_pos], dim=1)
+                    negative_prompt_embeds = torch.cat([negative_prompt_embeds, ve_neg], dim=1)
+                    if not train_ve:
+                        ve_obj.to("cpu")
+                        torch.cuda.empty_cache()
+                        print(f"{self.log_prefix} [Sample] Vision Encoder moved back to CPU")
+                    print(f"{self.log_prefix} [Sample] VE conditioning applied: embeds shape {prompt_embeds.shape}")
+                except Exception as ve_err:
+                    print(f"{self.log_prefix} [Sample] WARNING: VE conditioning failed: {ve_err}, skipping")
 
             # ========================================
             # STEP 3: Create Generator
@@ -5473,6 +5512,7 @@ class BaseTrainer(ABC):
         num_inference_steps: int = 20,
         guidance_scale: float = 5.0,
         seed: int = -1,
+        reference_image_path: Optional[str] = None,
     ) -> Image.Image:
         """
         Generate sample image during training (FLUX.2 Klein).
@@ -5553,6 +5593,38 @@ class BaseTrainer(ABC):
             torch.cuda.empty_cache()
 
             # ============================================================
+            # Stage 1.6: Reference Image VAE encoding (FLUX.2 latent concat)
+            # ============================================================
+            packed_reference_latents = None
+            ref_img_ids = None
+            if reference_image_path:
+                try:
+                    from PIL import Image as PILImage
+                    ref_img = PILImage.open(reference_image_path).convert("RGB")
+                    ref_img = ref_img.resize((width, height), PILImage.LANCZOS)
+                    print(f"{self.log_prefix} [Sample] Moving VAE to GPU for reference image encoding")
+                    self.vae.to(self.device)
+                    with torch.no_grad():
+                        ref_tensor = torch.from_numpy(
+                            np.array(ref_img).astype(np.float32) / 127.5 - 1.0
+                        ).permute(2, 0, 1).unsqueeze(0).to(self.device, dtype=self.vae.dtype)
+                        ref_latent = self.vae.encode(ref_tensor).latent_dist.sample()
+                        ref_latent = ref_latent * self.vae.config.scaling_factor
+                    self.vae.to("cpu")
+                    torch.cuda.empty_cache()
+                    packed_reference_latents = self._flux2_pack_latents_for_sample(ref_latent)
+                    packed_reference_latents = packed_reference_latents.to(
+                        device=self.device, dtype=prompt_embeds.dtype)
+                    ref_ids = self._flux2_prepare_latent_ids_for_sample(ref_latent).to(self.device)
+                    ref_ids[..., 0] = ref_ids[..., 0] + 10  # T coordinate offset
+                    ref_img_ids = ref_ids
+                    print(f"{self.log_prefix} [Sample] Reference image encoded: {packed_reference_latents.shape}")
+                except Exception as ref_err:
+                    print(f"{self.log_prefix} [Sample] WARNING: Reference image encoding failed: {ref_err}, skipping")
+                    packed_reference_latents = None
+                    ref_img_ids = None
+
+            # ============================================================
             # Stage 2: Prepare Latents
             # ============================================================
             vae_scale_factor = 8
@@ -5578,6 +5650,12 @@ class BaseTrainer(ABC):
 
             # Pack latents: (B, C, H, W) -> (B, H*W, C)
             latents = self._flux2_pack_latents_for_sample(latents)
+
+            # Concatenate reference latents with noise latents (if provided)
+            if packed_reference_latents is not None and ref_img_ids is not None:
+                latents = torch.cat([latents, packed_reference_latents], dim=1)
+                latent_ids = torch.cat([latent_ids, ref_img_ids], dim=1)
+                print(f"{self.log_prefix} [Sample] Latents after reference concat: {latents.shape}")
 
             # ============================================================
             # Stage 3: Denoising Loop
@@ -8252,6 +8330,7 @@ class BaseTrainer(ABC):
                         for sample_idx, prompt_config in enumerate(self._sample_prompts):
                             positive = prompt_config.get('positive', 'a beautiful landscape')
                             condition_image_path = prompt_config.get('condition_image_path') or None
+                            reference_image_path = prompt_config.get('reference_image_path') or None
 
                             print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
                             if self.is_flux2:
@@ -8261,7 +8340,8 @@ class BaseTrainer(ABC):
                                     height=sample_height,
                                     num_inference_steps=sample_steps,
                                     guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed
+                                    seed=sample_seed,
+                                    reference_image_path=reference_image_path,
                                 )
                             elif self.is_zimage:
                                 sample = self._generate_sample_zimage(
@@ -8283,6 +8363,7 @@ class BaseTrainer(ABC):
                                     current_step=global_step,
                                     schedule_type=sample_schedule_type,
                                     condition_image_path=condition_image_path,
+                                    reference_image_path=reference_image_path,
                                 )
 
                             # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png

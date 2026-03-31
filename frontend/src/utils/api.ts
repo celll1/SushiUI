@@ -1340,6 +1340,7 @@ export interface RandomCaptionResponse {
   caption_type: string;
   caption_subtype?: string;
   item_id: number;
+  reference_images?: string[];
 }
 
 export const getRandomCaption = async (
@@ -1397,6 +1398,7 @@ export interface SamplePrompt {
   positive: string;
   negative: string;
   condition_image_path?: string;
+  reference_image_path?: string;
 }
 
 export interface TrainingRunCreateRequest {

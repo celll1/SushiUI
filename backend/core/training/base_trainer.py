@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List, Tuple
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from tqdm import tqdm
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
@@ -3429,6 +3429,7 @@ class BaseTrainer(ABC):
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
@@ -3456,6 +3457,7 @@ class BaseTrainer(ABC):
                 reference_latents_nested=mnt_reference_latents_nested,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
@@ -3480,6 +3482,7 @@ class BaseTrainer(ABC):
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
@@ -3512,6 +3515,7 @@ class BaseTrainer(ABC):
         timesteps: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[str]] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
@@ -3880,6 +3884,11 @@ class BaseTrainer(ABC):
                 debug_data['caption'] = debug_captions[0]
                 debug_data['all_captions'] = debug_captions
 
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
+
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
             del predicted_latent_for_debug
 
@@ -4172,6 +4181,7 @@ class BaseTrainer(ABC):
         timesteps: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[str]] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
@@ -4384,6 +4394,11 @@ class BaseTrainer(ABC):
                 debug_data['caption'] = debug_captions[0]
                 debug_data['all_captions'] = debug_captions
 
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
+
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent
 
@@ -4411,6 +4426,7 @@ class BaseTrainer(ABC):
         reference_latents_nested: Optional[List[List[torch.Tensor]]] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[str]] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float, float]:
@@ -4720,6 +4736,11 @@ class BaseTrainer(ABC):
             if debug_captions is not None and len(debug_captions) > 0:
                 debug_data['caption'] = debug_captions[0]
                 debug_data['all_captions'] = debug_captions
+
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
 
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             del predicted_latent, latents_4d, noisy_latents_4d, predicted_velocity_4d, actual_velocity_4d, predicted_latent_4d
@@ -7897,6 +7918,13 @@ class BaseTrainer(ABC):
                     # Collect batch captions for debug (done once, outside MNT loop)
                     batch_captions = [item.get("caption", "") for item, dataset in batch]
 
+                    # Collect first reference image path per item for debug visualization
+                    _ref_paths = [
+                        (item.get("reference_images") or [None])[0]
+                        for item, dataset in batch
+                    ]
+                    batch_reference_paths = _ref_paths if any(p is not None for p in _ref_paths) else None
+
                     batch_size = latents.shape[0]
 
                     # ============================================================
@@ -8370,7 +8398,22 @@ class BaseTrainer(ABC):
                             # Use sample_step (which accounts for MNT batch range) for consistent naming
                             sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_{sample_idx}.png"
                             sample_path.parent.mkdir(parents=True, exist_ok=True)
-                            sample.save(sample_path)
+
+                            # Embed generation metadata in PNG for display in Training Monitor
+                            png_metadata = PngImagePlugin.PngInfo()
+                            png_metadata.add_text("prompt", positive)
+                            png_metadata.add_text("negative_prompt", prompt_config.get('negative', ''))
+                            png_metadata.add_text("steps", str(sample_steps))
+                            png_metadata.add_text("cfg_scale", str(sample_guidance_scale))
+                            png_metadata.add_text("seed", str(sample_seed))
+                            png_metadata.add_text("width", str(sample_width))
+                            png_metadata.add_text("height", str(sample_height))
+                            png_metadata.add_text("schedule_type", sample_schedule_type)
+                            if condition_image_path:
+                                png_metadata.add_text("condition_image_path", condition_image_path)
+                            if reference_image_path:
+                                png_metadata.add_text("reference_image_path", reference_image_path)
+                            sample.save(sample_path, pnginfo=png_metadata)
                             print(f"{self.log_prefix} Saved sample to {sample_path}")
 
                             # Log to TensorBoard

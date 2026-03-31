@@ -1340,6 +1340,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       // Apply LoRA inheritance
       stepParams.loras = step.useMainLoRAs ? (mainParams.loras || []) : [];
 
+      // Apply reference images inheritance
+      if (step.useMainRefImages ?? true) {
+        stepParams.ref_images = refImages.length > 0 ? refImages : undefined;
+      }
+
       // Apply ControlNet inheritance
       if (step.useMainControlNets) {
         stepParams.controlnets = mainParams.controlnets || [];
@@ -1381,7 +1386,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
 
     console.log(`[Img2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue]);
+  }, [loopGenerationConfig, addToQueue, refImages]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();

@@ -1617,6 +1617,18 @@ export const getTrainingMetrics = async (
 export interface TrainingSampleImage {
   sample_index: number;
   path: string;
+  params?: {
+    prompt?: string;
+    negative_prompt?: string;
+    steps?: string;
+    cfg_scale?: string;
+    seed?: string;
+    width?: string;
+    height?: string;
+    schedule_type?: string;
+    condition_image_path?: string;
+    reference_image_path?: string;
+  };
 }
 
 export interface TrainingSampleStep {
@@ -1650,6 +1662,7 @@ export interface DebugLatentVisualization {
   loss: number;
   recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
+  reference_image?: string;  // base64 thumbnail of reference image used in this training batch
   latents_image?: string;  // base64
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64

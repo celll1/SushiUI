@@ -26,6 +26,7 @@ export interface LoopGenerationStep {
   useMainSettings: boolean;
   useMainLoRAs: boolean; // Inherit LoRAs from main generation
   useMainControlNets: boolean; // Inherit ControlNets from main generation
+  useMainRefImages: boolean; // Inherit reference images from main generation
   steps?: number;
   cfgScale?: number;
   sampler?: string;
@@ -149,6 +150,7 @@ export default function LoopGenerationPanel({
       useMainSettings: true,
       useMainLoRAs: true, // Default: inherit LoRAs
       useMainControlNets: false, // Default: don't inherit ControlNets (use loop image instead)
+      useMainRefImages: true, // Default: inherit reference images from main
       controlnets: [],
       keepMask: mode === "inpaint",
     };
@@ -526,6 +528,15 @@ export default function LoopGenerationPanel({
                         className="cursor-pointer"
                       />
                       <label className="text-xs text-gray-400">Use Main ControlNets</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.useMainRefImages ?? true}
+                        onChange={(e) => updateStep(step.id, { useMainRefImages: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main Reference Images</label>
                     </div>
                   </div>
 

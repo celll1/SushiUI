@@ -1092,6 +1092,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // Apply LoRA inheritance
       stepParams.loras = step.useMainLoRAs ? (mainParams.loras || []) : [];
 
+      // Apply reference images inheritance
+      if (step.useMainRefImages ?? true) {
+        stepParams.ref_images = refImages.length > 0 ? refImages : undefined;
+      }
+
       // Apply ControlNet inheritance
       if (step.useMainControlNets) {
         stepParams.controlnets = mainParams.controlnets || [];
@@ -1135,7 +1140,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue]);
+  }, [loopGenerationConfig, addToQueue, refImages]);
 
   // Add loop generation steps to queue after main generation completes (legacy - not used anymore)
   const addLoopStepsToQueue = useCallback(async (baseImageUrl: string, mainParams: GenerationParams, loopGroupId: string) => {

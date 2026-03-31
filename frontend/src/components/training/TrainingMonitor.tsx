@@ -519,27 +519,53 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                     </div>
 
                     {/* Generation Settings */}
-                    {samples[selectedStepIndex]?.images[0]?.params && (
-                      <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
-                        <div className="font-semibold text-gray-300 mb-1">Generation Settings</div>
-                        <div>
-                          <span className="text-gray-400">Steps:</span>{" "}
-                          {samples[selectedStepIndex].images[0].params.steps || 20}
+                    {samples[selectedStepIndex]?.images[0]?.params && (() => {
+                      const p = samples[selectedStepIndex].images[0].params!;
+                      return (
+                        <div className="text-xs space-y-1.5 bg-gray-800 rounded p-2">
+                          <div className="font-semibold text-gray-300 mb-1">Generation Settings</div>
+                          {p.prompt && (
+                            <div className="text-gray-300 italic leading-relaxed border-b border-gray-700 pb-1.5 mb-1">
+                              {p.prompt.length > 120 ? `${p.prompt.substring(0, 120)}…` : p.prompt}
+                            </div>
+                          )}
+                          <div className="text-gray-400">
+                            {p.steps} steps / CFG {p.cfg_scale} / seed {p.seed}
+                          </div>
+                          <div className="text-gray-400">{p.width} × {p.height}</div>
+                          {p.schedule_type && p.schedule_type !== "uniform" && (
+                            <div>
+                              <span className="text-gray-500">Schedule:</span>{" "}
+                              <span className="text-gray-300">{p.schedule_type}</span>
+                            </div>
+                          )}
+                          {p.reference_image_path && (
+                            <div className="pt-1 border-t border-gray-700">
+                              <div className="text-gray-500 mb-1">Reference Image</div>
+                              <img
+                                src={`/api/serve-image?path=${encodeURIComponent(
+                                  p.reference_image_path.replace("temp_img://", "")
+                                )}`}
+                                className="h-20 w-20 object-cover rounded border border-gray-700"
+                                alt="Reference"
+                              />
+                            </div>
+                          )}
+                          {p.condition_image_path && (
+                            <div className="pt-1 border-t border-gray-700">
+                              <div className="text-gray-500 mb-1">Condition Image</div>
+                              <img
+                                src={`/api/serve-image?path=${encodeURIComponent(
+                                  p.condition_image_path.replace("temp_img://", "")
+                                )}`}
+                                className="h-20 w-20 object-cover rounded border border-gray-700"
+                                alt="Condition"
+                              />
+                            </div>
+                          )}
                         </div>
-                        <div>
-                          <span className="text-gray-400">CFG Scale:</span>{" "}
-                          {samples[selectedStepIndex].images[0].params.cfg_scale || 7.0}
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Sampler:</span>{" "}
-                          {samples[selectedStepIndex].images[0].params.sampler || "N/A"}
-                        </div>
-                        <div>
-                          <span className="text-gray-400">Size:</span>{" "}
-                          {samples[selectedStepIndex].images[0].params.width || 1024} × {samples[selectedStepIndex].images[0].params.height || 1024}
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {/* Sample Images */}
                     <div className="space-y-2">
@@ -615,6 +641,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               <div className="text-gray-500 text-xxs mt-0.5">
                                 (Hover to see full caption)
                               </div>
+                            </div>
+                          )}
+                          {debugVisualization.reference_image && (
+                            <div className="pt-1 border-t border-gray-700">
+                              <div className="text-gray-400 mb-0.5">Reference Image (training batch):</div>
+                              <img
+                                src={`data:image/png;base64,${debugVisualization.reference_image}`}
+                                className="h-20 w-20 object-cover rounded border border-gray-700"
+                                alt="Reference"
+                              />
                             </div>
                           )}
                         </div>

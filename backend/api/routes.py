@@ -6207,6 +6207,17 @@ async def visualize_debug_latent(
     if "caption" in data:
         result["caption"] = data["caption"]
 
+    # Add reference image thumbnail if available
+    if "reference_image_path" in data:
+        try:
+            from PIL import Image as _PILImage
+            ref_path = str(data["reference_image_path"]).replace("temp_img://", "")
+            ref_img = _PILImage.open(ref_path).convert("RGB")
+            ref_img.thumbnail((256, 256))
+            result["reference_image"] = image_to_base64(ref_img)
+        except Exception:
+            pass
+
     if "latents" in data:
         img = latent_to_image(data["latents"], is_flux2=is_flux2)
         result["latents_image"] = image_to_base64(img)
@@ -6569,9 +6580,20 @@ async def get_training_samples(
             # This ensures compatibility even if UserSettings.training_dir changes
             path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}"
 
+            # Extract generation metadata from PNG (embedded since recent version)
+            img_params = None
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(str(file)) as _img:
+                    if hasattr(_img, 'text') and _img.text:
+                        img_params = dict(_img.text)
+            except Exception:
+                pass
+
             samples_by_step[step].append({
                 "sample_index": sample_idx,
-                "path": path_url
+                "path": path_url,
+                "params": img_params,
             })
 
     # Sort by step and return

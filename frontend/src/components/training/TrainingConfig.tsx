@@ -154,7 +154,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [saveEvery, setSaveEvery] = useState(100);
   const [saveEveryUnit, setSaveEveryUnit] = useState<"steps" | "epochs">("steps");
   const [sampleEvery, setSampleEvery] = useState(100);
-  const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState<string | null>(null);
+  const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState<string | null>("latest");
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
 
   // Sample generation
@@ -170,6 +170,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [sampleSeed, setSampleSeed] = useState(-1);
   const [conditionImagePreviews, setConditionImagePreviews] = useState<Record<number, string>>({});
   const conditionImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const [referenceImagePreviews, setReferenceImagePreviews] = useState<Record<number, string>>({});
+  const referenceImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // Debug options
   const [debugLatents, setDebugLatents] = useState(false);
@@ -685,7 +687,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Set the positive prompt
       const updated = [...samplePrompts];
-      updated[promptIndex].positive = response.caption;
+      updated[promptIndex] = { ...updated[promptIndex], positive: response.caption };
+
+      // Auto-populate reference/condition image if the item has reference images
+      if (response.reference_images && response.reference_images.length > 0) {
+        const refPath = response.reference_images[0];
+        const showRefUI = trainingMethod !== "controlnet" &&
+          ((isSDOrSDXLModel(baseModelPath) && !!visionEncoderPath) || isFlux2Model(baseModelPath));
+        if (trainingMethod === "controlnet") {
+          updated[promptIndex].condition_image_path = refPath;
+          setConditionImagePreviews(prev => ({
+            ...prev,
+            [promptIndex]: `/api/serve-image?path=${encodeURIComponent(refPath)}`
+          }));
+        } else if (showRefUI) {
+          updated[promptIndex].reference_image_path = refPath;
+          setReferenceImagePreviews(prev => ({
+            ...prev,
+            [promptIndex]: `/api/serve-image?path=${encodeURIComponent(refPath)}`
+          }));
+        }
+      }
+
       setSamplePrompts(updated);
     } catch (err) {
       console.error("Failed to get random caption:", err);
@@ -736,14 +759,80 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
   };
 
-  // Load condition image previews when samplePrompts have condition_image_path
+  // Reference image handlers for VE/FLUX.2 sample generation
+  const handleReferenceImageUpload = async (promptIndex: number, file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string;
+      try {
+        const reference = await saveTempImage(base64);
+        const updated = [...samplePrompts];
+        updated[promptIndex] = { ...updated[promptIndex], reference_image_path: reference };
+        setSamplePrompts(updated);
+        setReferenceImagePreviews(prev => ({ ...prev, [promptIndex]: base64 }));
+      } catch (err) {
+        console.error("Failed to save reference image:", err);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleReferenceImageRemove = async (promptIndex: number) => {
+    const currentPath = samplePrompts[promptIndex]?.reference_image_path;
+    if (currentPath) {
+      await deleteTempImageRef(currentPath);
+    }
+    const updated = [...samplePrompts];
+    updated[promptIndex] = { ...updated[promptIndex], reference_image_path: "" };
+    setSamplePrompts(updated);
+    setReferenceImagePreviews(prev => {
+      const next = { ...prev };
+      delete next[promptIndex];
+      return next;
+    });
+  };
+
+  const handleReferenceImageDrop = (promptIndex: number, e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0 && files[0].type.startsWith("image/")) {
+      handleReferenceImageUpload(promptIndex, files[0]);
+    }
+  };
+
+  // Load condition/reference image previews when samplePrompts paths are set
   useEffect(() => {
     samplePrompts.forEach(async (prompt, index) => {
       if (prompt.condition_image_path && !conditionImagePreviews[index]) {
         try {
-          const dataUrl = await loadTempImage(prompt.condition_image_path);
-          if (dataUrl) {
-            setConditionImagePreviews(prev => ({ ...prev, [index]: dataUrl }));
+          if (prompt.condition_image_path.startsWith("temp_img://")) {
+            const dataUrl = await loadTempImage(prompt.condition_image_path);
+            if (dataUrl) {
+              setConditionImagePreviews(prev => ({ ...prev, [index]: dataUrl }));
+            }
+          } else {
+            setConditionImagePreviews(prev => ({
+              ...prev,
+              [index]: `/api/serve-image?path=${encodeURIComponent(prompt.condition_image_path!)}`
+            }));
+          }
+        } catch {
+          // Ignore load errors for previews
+        }
+      }
+      if (prompt.reference_image_path && !referenceImagePreviews[index]) {
+        try {
+          if (prompt.reference_image_path.startsWith("temp_img://")) {
+            const dataUrl = await loadTempImage(prompt.reference_image_path);
+            if (dataUrl) {
+              setReferenceImagePreviews(prev => ({ ...prev, [index]: dataUrl }));
+            }
+          } else {
+            setReferenceImagePreviews(prev => ({
+              ...prev,
+              [index]: `/api/serve-image?path=${encodeURIComponent(prompt.reference_image_path!)}`
+            }));
           }
         } catch {
           // Ignore load errors for previews
@@ -3235,6 +3324,71 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
                         If empty, the first reference image from the dataset is used.
+                      </p>
+                    </div>
+                  )}
+                  {trainingMethod !== "controlnet" &&
+                    ((isSDOrSDXLModel(baseModelPath) && !!visionEncoderPath) || isFlux2Model(baseModelPath)) && (
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">
+                        Reference Image
+                        <span className="text-gray-600 ml-1">
+                          ({isFlux2Model(baseModelPath) ? "Latent concat" : "Vision Encoder"})
+                        </span>
+                      </label>
+                      <div
+                        className={`relative border border-dashed rounded p-2 text-center transition-colors ${
+                          referenceImagePreviews[index]
+                            ? "border-green-600 bg-green-900/10"
+                            : "border-gray-600 hover:border-blue-500 bg-gray-900/50"
+                        }`}
+                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        onDrop={(e) => handleReferenceImageDrop(index, e)}
+                      >
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          ref={(el) => { referenceImageInputRefs.current[index] = el; }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleReferenceImageUpload(index, file);
+                            e.target.value = "";
+                          }}
+                        />
+                        {referenceImagePreviews[index] ? (
+                          <div className="flex items-center space-x-2">
+                            <img
+                              src={referenceImagePreviews[index]}
+                              alt="Reference"
+                              className="h-16 w-16 object-cover rounded border border-gray-700"
+                            />
+                            <div className="flex-1 text-left">
+                              <p className="text-xs text-green-400">Reference image set</p>
+                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
+                                {prompt.reference_image_path?.replace("temp_img://", "") || ""}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleReferenceImageRemove(index)}
+                              className="text-red-400 hover:text-red-300 text-xs px-2 py-1"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => referenceImageInputRefs.current[index]?.click()}
+                            className="w-full py-2 text-xs text-gray-400 hover:text-gray-300"
+                          >
+                            Click to select or drag & drop reference image
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        If set, this image is used for reference conditioning during sample generation.
                       </p>
                     </div>
                   )}

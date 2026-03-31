@@ -3932,11 +3932,18 @@ async def get_random_caption(
     # Select random caption
     random_caption = random.choice(captions)
 
+    # Fetch reference images from the DatasetItem
+    item = db.query(DatasetItem).filter(DatasetItem.id == random_caption.item_id).first()
+    reference_images = []
+    if item and item.related_images:
+        reference_images = item.related_images.get("reference", [])
+
     return {
         "caption": random_caption.content,
         "caption_type": random_caption.caption_type,
         "caption_subtype": random_caption.caption_subtype,
         "item_id": random_caption.item_id,
+        "reference_images": reference_images,
     }
 
 # ============================================================

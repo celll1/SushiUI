@@ -6512,6 +6512,7 @@ class BaseTrainer(ABC):
         train_vision_encoder: bool = False,
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
+        gradient_routing_ve: bool = False,
         priority_training: Optional[Dict] = None,
     ):
         """
@@ -6571,6 +6572,7 @@ class BaseTrainer(ABC):
                 from core.vision_encoder import SigLIP2VisionEncoderWrapper
                 self.vision_encoder = SigLIP2VisionEncoderWrapper(vision_encoder_path, device="cpu")
                 self._train_vision_encoder = train_vision_encoder
+                self._gradient_routing_ve = gradient_routing_ve
                 self._vision_encoder_lr = vision_encoder_lr
                 if train_vision_encoder:
                     # Move to GPU immediately and keep it there for the duration of training.
@@ -8038,7 +8040,14 @@ class BaseTrainer(ABC):
                         if ve_obj is not None and mnt_text_embeddings is not None and not self.is_flux2 and not self.is_zimage:
                             train_ve = getattr(self, '_train_vision_encoder', False)
                             ref_paths = [_item.get("reference_images", [None])[0] for _item, _ in batch]
-                            if any(p is not None for p in ref_paths):
+                            batch_has_ref = any(p is not None for p in ref_paths)
+                            # Gradient Routing: block gradient flow to TE when batch has reference images,
+                            # allowing U-net cross-attention K,V projections to learn VE's feature subspace.
+                            if getattr(self, '_gradient_routing_ve', False) and batch_has_ref:
+                                mnt_text_embeddings = mnt_text_embeddings.detach()
+                                if mnt_pooled_embeddings is not None:
+                                    mnt_pooled_embeddings = mnt_pooled_embeddings.detach()
+                            if batch_has_ref:
                                 try:
                                     ve_obj.to(self.device)
                                     ve_obj.train(train_ve)

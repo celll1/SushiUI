@@ -183,6 +183,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // SigLIP2 Vision Encoder
   const [visionEncoderPath, setVisionEncoderPath] = useState("");
   const [trainVisionEncoder, setTrainVisionEncoder] = useState(false);
+  const [gradientRoutingVE, setGradientRoutingVE] = useState(false);
   const [visionEncoderLr, setVisionEncoderLr] = useState("");
 
   // Priority training (one entry per line in textarea)
@@ -484,6 +485,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Vision Encoder
       if (params.vision_encoder_path !== undefined) setVisionEncoderPath(params.vision_encoder_path || "");
       if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
+      if (params.gradient_routing_ve !== undefined) setGradientRoutingVE(params.gradient_routing_ve);
       if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
 
       // Priority training
@@ -1195,6 +1197,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       vision_encoder_path: visionEncoderPath || null,
       train_vision_encoder: trainVisionEncoder,
       vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
+      gradient_routing_ve: gradientRoutingVE,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
       blocks_to_swap: blocksToSwap,
@@ -2665,6 +2668,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       placeholder={`Default: ${textEncoderLr || learningRate}`}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
+                  </div>
+                )}
+                {trainVisionEncoder && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="gradient-routing-ve"
+                      checked={gradientRoutingVE}
+                      onChange={(e) => setGradientRoutingVE(e.target.checked)}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="gradient-routing-ve" className="text-xs text-gray-300 cursor-pointer">
+                      Gradient Routing
+                    </label>
                   </div>
                 )}
               </div>

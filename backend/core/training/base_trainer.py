@@ -8263,7 +8263,8 @@ class BaseTrainer(ABC):
 
                             # Log grad_norm to TensorBoard
                             self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
-                            self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
+                            if grad_norm_te > 0.0:
+                                self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
                             self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
                             if grad_norm_te1 > 0.0:
                                 self.writer.add_scalar("train/grad_norm_text_encoder_1", grad_norm_te1, global_step)
@@ -8280,7 +8281,7 @@ class BaseTrainer(ABC):
                                     recon_loss=None,
                                     learning_rate=None,
                                     grad_norm=grad_norm_total,
-                                    grad_norm_text_encoder=grad_norm_te,
+                                    grad_norm_text_encoder=grad_norm_te if grad_norm_te > 0.0 else None,
                                     grad_norm_text_encoder_1=grad_norm_te1 if grad_norm_te1 > 0.0 else None,
                                     grad_norm_text_encoder_2=grad_norm_te2 if grad_norm_te2 > 0.0 else None,
                                     grad_norm_unet=grad_norm_unet,

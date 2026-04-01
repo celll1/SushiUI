@@ -6481,6 +6481,8 @@ async def get_training_metrics_db(
         lr_data = []
         grad_norm_data = []
         grad_norm_te_data = []
+        grad_norm_te1_data = []
+        grad_norm_te2_data = []
         grad_norm_unet_data = []
         grad_norm_ve_data = []
 
@@ -6513,6 +6515,12 @@ async def get_training_metrics_db(
             if is_valid_float(m.grad_norm_text_encoder):
                 grad_norm_te_data.append({**point, "value": m.grad_norm_text_encoder})
 
+            if is_valid_float(getattr(m, 'grad_norm_text_encoder_1', None)):
+                grad_norm_te1_data.append({**point, "value": m.grad_norm_text_encoder_1})
+
+            if is_valid_float(getattr(m, 'grad_norm_text_encoder_2', None)):
+                grad_norm_te2_data.append({**point, "value": m.grad_norm_text_encoder_2})
+
             if is_valid_float(m.grad_norm_unet):
                 grad_norm_unet_data.append({**point, "value": m.grad_norm_unet})
 
@@ -6525,6 +6533,8 @@ async def get_training_metrics_db(
             "learning_rate": lr_data,
             "grad_norm": grad_norm_data,
             "grad_norm_text_encoder": grad_norm_te_data,
+            "grad_norm_text_encoder_1": grad_norm_te1_data,
+            "grad_norm_text_encoder_2": grad_norm_te2_data,
             "grad_norm_unet": grad_norm_unet_data,
             "grad_norm_vision_encoder": grad_norm_ve_data,
         }

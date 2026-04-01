@@ -8222,7 +8222,7 @@ class BaseTrainer(ABC):
                                 if self.use_grad_scaler:
                                     # GradScaler flow
                                     self.grad_scaler.unscale_(self.optimizer)
-                                    grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
+                                    grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.grad_scaler.step(self.optimizer)
@@ -8230,14 +8230,14 @@ class BaseTrainer(ABC):
                                     self.optimizer.zero_grad()
                                 else:
                                     # Normal flow without GradScaler
-                                    grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
+                                    grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.optimizer.step()
                                     self.optimizer.zero_grad()
                             else:
                                 # Fused backward/groups flow - calculate grad norm (step/zero_grad by hooks)
-                                grad_norm_total, grad_norm_te, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
+                                grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
 
                             # LR scheduler step
                             if self.fused_optimizer_groups is not None:
@@ -8250,6 +8250,10 @@ class BaseTrainer(ABC):
                             self.writer.add_scalar("train/grad_norm", grad_norm_total, global_step)
                             self.writer.add_scalar("train/grad_norm_text_encoder", grad_norm_te, global_step)
                             self.writer.add_scalar("train/grad_norm_unet", grad_norm_unet, global_step)
+                            if grad_norm_te1 > 0.0:
+                                self.writer.add_scalar("train/grad_norm_text_encoder_1", grad_norm_te1, global_step)
+                            if grad_norm_te2 > 0.0:
+                                self.writer.add_scalar("train/grad_norm_text_encoder_2", grad_norm_te2, global_step)
                             if grad_norm_ve > 0.0:
                                 self.writer.add_scalar("train/grad_norm_vision_encoder", grad_norm_ve, global_step)
 
@@ -8262,6 +8266,8 @@ class BaseTrainer(ABC):
                                     learning_rate=None,
                                     grad_norm=grad_norm_total,
                                     grad_norm_text_encoder=grad_norm_te,
+                                    grad_norm_text_encoder_1=grad_norm_te1 if grad_norm_te1 > 0.0 else None,
+                                    grad_norm_text_encoder_2=grad_norm_te2 if grad_norm_te2 > 0.0 else None,
                                     grad_norm_unet=grad_norm_unet,
                                     grad_norm_vision_encoder=grad_norm_ve if grad_norm_ve > 0.0 else None,
                                 )
@@ -8578,10 +8584,14 @@ class BaseTrainer(ABC):
         Calculate gradient norms for different parameter groups.
 
         Returns:
-            Tuple of (total_grad_norm, text_encoder_grad_norm, unet_grad_norm, vision_encoder_grad_norm)
+            Tuple of (total_grad_norm, text_encoder_grad_norm, text_encoder_1_grad_norm,
+                      text_encoder_2_grad_norm, unet_grad_norm, vision_encoder_grad_norm)
+            text_encoder_1/2 are non-zero only for SDXL (LoRA: te1_/te2_ prefix; Full FT: text_encoder/text_encoder_2).
         """
         total_grad_norm = 0.0
         text_encoder_grad_norm = 0.0
+        text_encoder_1_grad_norm = 0.0
+        text_encoder_2_grad_norm = 0.0
         unet_grad_norm = 0.0
         vision_encoder_grad_norm = 0.0
 
@@ -8595,8 +8605,15 @@ class BaseTrainer(ABC):
                         total_grad_norm += param_norm ** 2
                         grad_count += 1
 
-                        # Categorize by LoRA layer name
-                        if 'text_encoder' in lora_name or 'te1_' in lora_name or 'te2_' in lora_name or 'clip_' in lora_name:
+                        # Categorize by LoRA layer name — TE1/TE2 separation for SDXL
+                        if 'te1_' in lora_name:
+                            text_encoder_grad_norm += param_norm ** 2
+                            text_encoder_1_grad_norm += param_norm ** 2
+                        elif 'te2_' in lora_name:
+                            text_encoder_grad_norm += param_norm ** 2
+                            text_encoder_2_grad_norm += param_norm ** 2
+                        elif 'text_encoder' in lora_name or 'clip_' in lora_name:
+                            # SD1.5 or unknown TE prefix — add to combined only
                             text_encoder_grad_norm += param_norm ** 2
                         elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
                             unet_grad_norm += param_norm ** 2
@@ -8611,21 +8628,23 @@ class BaseTrainer(ABC):
 
         # For Full Fine-Tuning, iterate through base model parameters
         else:
-            # SD1.5/SDXL: Direct text_encoder access
+            # SD1.5/SDXL: Direct text_encoder access — treat as TE1
             if hasattr(self, 'text_encoder') and self.text_encoder is not None:
                 for name, param in self.text_encoder.named_parameters():
                     if param.grad is not None:
                         param_norm = param.grad.data.norm(2).item()
                         total_grad_norm += param_norm ** 2
                         text_encoder_grad_norm += param_norm ** 2
+                        text_encoder_1_grad_norm += param_norm ** 2
 
-            # Iterate through text encoder 2 parameters (if trainable, SDXL)
+            # Iterate through text encoder 2 parameters (if trainable, SDXL) — TE2
             if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
                 for name, param in self.text_encoder_2.named_parameters():
                     if param.grad is not None:
                         param_norm = param.grad.data.norm(2).item()
                         total_grad_norm += param_norm ** 2
                         text_encoder_grad_norm += param_norm ** 2
+                        text_encoder_2_grad_norm += param_norm ** 2
 
             # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
             if hasattr(self, 'unet') and self.unet is not None:
@@ -8654,15 +8673,17 @@ class BaseTrainer(ABC):
         # Take square root to get L2 norm
         total_grad_norm = total_grad_norm ** 0.5
         text_encoder_grad_norm = text_encoder_grad_norm ** 0.5
+        text_encoder_1_grad_norm = text_encoder_1_grad_norm ** 0.5
+        text_encoder_2_grad_norm = text_encoder_2_grad_norm ** 0.5
         unet_grad_norm = unet_grad_norm ** 0.5
         vision_encoder_grad_norm = vision_encoder_grad_norm ** 0.5
 
         # Debug: Print values once
         if not hasattr(self, '_grad_norm_values_printed'):
-            print(f"{self.log_prefix} [GradNorm] Total: {total_grad_norm:.6f}, TE: {text_encoder_grad_norm:.6f}, UNet: {unet_grad_norm:.6f}, VE: {vision_encoder_grad_norm:.6f}")
+            print(f"{self.log_prefix} [GradNorm] Total: {total_grad_norm:.6f}, TE: {text_encoder_grad_norm:.6f}, TE1: {text_encoder_1_grad_norm:.6f}, TE2: {text_encoder_2_grad_norm:.6f}, UNet: {unet_grad_norm:.6f}, VE: {vision_encoder_grad_norm:.6f}")
             self._grad_norm_values_printed = True
 
-        return total_grad_norm, text_encoder_grad_norm, unet_grad_norm, vision_encoder_grad_norm
+        return total_grad_norm, text_encoder_grad_norm, text_encoder_1_grad_norm, text_encoder_2_grad_norm, unet_grad_norm, vision_encoder_grad_norm
 
     def _log_metrics_to_db(
         self,
@@ -8672,6 +8693,8 @@ class BaseTrainer(ABC):
         learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
+        grad_norm_text_encoder_1: float = None,
+        grad_norm_text_encoder_2: float = None,
         grad_norm_unet: float = None,
         grad_norm_vision_encoder: float = None,
         force_flush: bool = False
@@ -8725,6 +8748,10 @@ class BaseTrainer(ABC):
                 existing_entry['grad_norm'] = grad_norm
             if grad_norm_text_encoder is not None:
                 existing_entry['grad_norm_text_encoder'] = grad_norm_text_encoder
+            if grad_norm_text_encoder_1 is not None:
+                existing_entry['grad_norm_text_encoder_1'] = grad_norm_text_encoder_1
+            if grad_norm_text_encoder_2 is not None:
+                existing_entry['grad_norm_text_encoder_2'] = grad_norm_text_encoder_2
             if grad_norm_unet is not None:
                 existing_entry['grad_norm_unet'] = grad_norm_unet
             if grad_norm_vision_encoder is not None:
@@ -8738,6 +8765,8 @@ class BaseTrainer(ABC):
                 'learning_rate': learning_rate,
                 'grad_norm': grad_norm,
                 'grad_norm_text_encoder': grad_norm_text_encoder,
+                'grad_norm_text_encoder_1': grad_norm_text_encoder_1,
+                'grad_norm_text_encoder_2': grad_norm_text_encoder_2,
                 'grad_norm_unet': grad_norm_unet,
                 'grad_norm_vision_encoder': grad_norm_vision_encoder,
             })
@@ -8785,6 +8814,8 @@ class BaseTrainer(ABC):
                 m_learning_rate = metrics['learning_rate']
                 m_grad_norm = metrics['grad_norm']
                 m_grad_norm_te = metrics['grad_norm_text_encoder']
+                m_grad_norm_te1 = metrics.get('grad_norm_text_encoder_1')
+                m_grad_norm_te2 = metrics.get('grad_norm_text_encoder_2')
                 m_grad_norm_unet = metrics['grad_norm_unet']
                 m_grad_norm_ve = metrics.get('grad_norm_vision_encoder')
 
@@ -8806,6 +8837,10 @@ class BaseTrainer(ABC):
                         existing.grad_norm = m_grad_norm
                     if m_grad_norm_te is not None:
                         existing.grad_norm_text_encoder = m_grad_norm_te
+                    if m_grad_norm_te1 is not None:
+                        existing.grad_norm_text_encoder_1 = m_grad_norm_te1
+                    if m_grad_norm_te2 is not None:
+                        existing.grad_norm_text_encoder_2 = m_grad_norm_te2
                     if m_grad_norm_unet is not None:
                         existing.grad_norm_unet = m_grad_norm_unet
                     if m_grad_norm_ve is not None:
@@ -8821,6 +8856,8 @@ class BaseTrainer(ABC):
                         learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
                         grad_norm=m_grad_norm,
                         grad_norm_text_encoder=m_grad_norm_te,
+                        grad_norm_text_encoder_1=m_grad_norm_te1,
+                        grad_norm_text_encoder_2=m_grad_norm_te2,
                         grad_norm_unet=m_grad_norm_unet,
                         grad_norm_vision_encoder=m_grad_norm_ve,
                     )
@@ -8844,6 +8881,8 @@ class BaseTrainer(ABC):
                         learning_rate=latest['learning_rate'],
                         grad_norm=latest['grad_norm'],
                         grad_norm_text_encoder=latest['grad_norm_text_encoder'],
+                        grad_norm_text_encoder_1=latest.get('grad_norm_text_encoder_1'),
+                        grad_norm_text_encoder_2=latest.get('grad_norm_text_encoder_2'),
                         grad_norm_unet=latest['grad_norm_unet'],
                         grad_norm_vision_encoder=latest.get('grad_norm_vision_encoder'),
                     )

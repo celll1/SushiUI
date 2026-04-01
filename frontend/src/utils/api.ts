@@ -1600,6 +1600,8 @@ export interface TrainingMetrics {
   learning_rate: MetricPoint[];
   grad_norm: MetricPoint[];
   grad_norm_text_encoder: MetricPoint[];
+  grad_norm_text_encoder_1: MetricPoint[];
+  grad_norm_text_encoder_2: MetricPoint[];
   grad_norm_unet: MetricPoint[];
   grad_norm_vision_encoder: MetricPoint[];
 }

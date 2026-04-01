@@ -116,6 +116,7 @@ class TrainingConfigGenerator:
         train_vision_encoder: bool = False,  # Train the vision encoder alongside U-Net/TE
         vision_encoder_path: Optional[str] = None,  # Path to SigLIP2 vision encoder safetensors
         vision_encoder_lr: Optional[float] = None,  # VE learning rate (defaults to text_encoder_lr)
+        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -288,6 +289,7 @@ class TrainingConfigGenerator:
                             **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
                             "train_vision_encoder": train_vision_encoder,
                             **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
+                            "gradient_routing_ve": gradient_routing_ve,
                             **({"priority_training": priority_training} if priority_training else {}),
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
@@ -425,6 +427,7 @@ class TrainingConfigGenerator:
         train_vision_encoder: bool = False,
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
+        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
         # ReLoRA-specific parameters
         relora_merge_every: int = 500,
         relora_merge_unit: str = "steps",
@@ -542,6 +545,7 @@ class TrainingConfigGenerator:
             train_vision_encoder=train_vision_encoder,
             vision_encoder_path=vision_encoder_path,
             vision_encoder_lr=vision_encoder_lr,
+            gradient_routing_ve=gradient_routing_ve,
         )
 
         # Parse the LoRA YAML and modify for ReLoRA
@@ -661,6 +665,7 @@ class TrainingConfigGenerator:
         train_vision_encoder: bool = False,
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
+        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -730,6 +735,7 @@ class TrainingConfigGenerator:
             **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
             "train_vision_encoder": train_vision_encoder,
             **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
+            "gradient_routing_ve": gradient_routing_ve,
             **({"priority_training": priority_training} if priority_training else {}),
             "latent_encoding_mode": latent_encoding_mode,
             "latent_encoding_swap_interval": latent_encoding_swap_interval,

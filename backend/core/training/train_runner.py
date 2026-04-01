@@ -1475,6 +1475,7 @@ def main():
             vision_encoder_path = train_config.get('vision_encoder_path', None)
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
+            gradient_routing_ve = train_config.get('gradient_routing_ve', False)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -1525,6 +1526,7 @@ def main():
                 vision_encoder_path=vision_encoder_path,
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
+                gradient_routing_ve=gradient_routing_ve,
                 priority_training=priority_training,
             )
 
@@ -1834,6 +1836,7 @@ def main():
             vision_encoder_path = train_config.get('vision_encoder_path', None)
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
+            gradient_routing_ve = train_config.get('gradient_routing_ve', False)
 
             # Start ReLoRA training
             trainer.train(
@@ -1877,6 +1880,7 @@ def main():
                 vision_encoder_path=vision_encoder_path,
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
+                gradient_routing_ve=gradient_routing_ve,
                 priority_training=priority_training,
             )
 
@@ -2192,6 +2196,7 @@ def main():
             vision_encoder_path = train_config.get('vision_encoder_path', None)
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
+            gradient_routing_ve = train_config.get('gradient_routing_ve', False)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -2242,6 +2247,7 @@ def main():
                 vision_encoder_path=vision_encoder_path,
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
+                gradient_routing_ve=gradient_routing_ve,
                 priority_training=priority_training,
             )
 

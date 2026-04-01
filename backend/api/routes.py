@@ -4569,6 +4569,7 @@ class TrainingRunCreateRequest(BaseModel):
     vision_encoder_path: Optional[str] = None  # Path to SigLIP2 vision encoder safetensors
     train_vision_encoder: bool = False  # Train vision encoder weights
     vision_encoder_lr: Optional[float] = None  # Learning rate for vision encoder (defaults to text_encoder_lr)
+    gradient_routing_ve: bool = False  # Block TE gradient when batch has reference images
 
     # Priority training
     priority_training: Optional[Dict[str, Any]] = None  # Inline priority training config
@@ -4787,6 +4788,7 @@ async def create_training_run(
                 vision_encoder_path=request.vision_encoder_path,
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
+                gradient_routing_ve=request.gradient_routing_ve,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "relora":
@@ -4880,6 +4882,7 @@ async def create_training_run(
                 vision_encoder_path=request.vision_encoder_path,
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
+                gradient_routing_ve=request.gradient_routing_ve,
                 priority_training=request.priority_training,
                 # ReLoRA-specific parameters
                 relora_merge_every=request.relora_merge_every,
@@ -5047,6 +5050,7 @@ async def create_training_run(
                 vision_encoder_path=request.vision_encoder_path,
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
+                gradient_routing_ve=request.gradient_routing_ve,
                 priority_training=request.priority_training,
             )
 
@@ -5450,6 +5454,7 @@ async def update_training_run(
                 vision_encoder_path=request.vision_encoder_path,
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
+                gradient_routing_ve=request.gradient_routing_ve,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "controlnet":
@@ -5611,6 +5616,7 @@ async def update_training_run(
                 vision_encoder_path=request.vision_encoder_path,
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
+                gradient_routing_ve=request.gradient_routing_ve,
                 priority_training=request.priority_training,
             )
 

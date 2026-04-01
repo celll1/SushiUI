@@ -1262,15 +1262,29 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
             {/* Tooltip box - responsive positioning */}
             {(() => {
               const tooltipWidth = 160;
-              // Calculate height based on visible components
-              let lineCount = 1; // Step label
-              if (showTotal) lineCount += 2; // Total + Smooth
-              if (showTextEncoder && tooltip.textEncoder !== undefined) lineCount += 1;
-              if (showTE1 && tooltip.te1 !== undefined) lineCount += 1;
-              if (showTE2 && tooltip.te2 !== undefined) lineCount += 1;
-              if (showUNet && tooltip.unet !== undefined) lineCount += 1;
-              if (showVisionEncoder && tooltip.visionEncoder !== undefined) lineCount += 1;
-              const tooltipHeight = lineCount * 15 + 10; // 15px per line + padding
+              const lineSpacing = 15;
+
+              // Build lines dynamically so Y positions are always sequential
+              type TooltipLine = { color: string; text: string };
+              const lines: TooltipLine[] = [];
+              lines.push({ color: "#e5e7eb", text: `Step: ${tooltip.step}` });
+              if (showTotal) {
+                lines.push({ color: "#8b5cf6", text: `Total: ${tooltip.total.toExponential(3)}` });
+                lines.push({ color: "#a78bfa", text: `Smooth: ${tooltip.smoothTotal.toExponential(3)}` });
+              }
+              if (showTextEncoder && tooltip.textEncoder !== undefined)
+                lines.push({ color: "#34d399", text: `Text Enc: ${tooltip.textEncoder.toExponential(3)}` });
+              if (showTE1 && tooltip.te1 !== undefined)
+                lines.push({ color: "#93c5fd", text: `TE1: ${tooltip.te1.toExponential(3)}` });
+              if (showTE2 && tooltip.te2 !== undefined)
+                lines.push({ color: "#c4b5fd", text: `TE2: ${tooltip.te2.toExponential(3)}` });
+              if (showUNet && tooltip.unet !== undefined)
+                lines.push({ color: "#fbbf24", text: `UNet: ${tooltip.unet.toExponential(3)}` });
+              if (showVisionEncoder && tooltip.visionEncoder !== undefined)
+                lines.push({ color: "#f9a8d4", text: `VE: ${tooltip.visionEncoder.toExponential(3)}` });
+
+              const tooltipHeight = lines.length * lineSpacing + 10;
+              const startY = tooltip.y - 40 + 15; // 15px top padding inside box
 
               // Show tooltip on left if it would overflow on right
               const showLeft = tooltip.x + tooltipWidth + 20 > svgWidth;
@@ -1279,7 +1293,6 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
 
               return (
                 <g>
-                  {/* Background */}
                   <rect
                     x={tooltipX}
                     y={tooltip.y - 40}
@@ -1290,94 +1303,18 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                     strokeWidth="1"
                     rx="4"
                   />
-
-                  {/* Text content */}
-                  <text
-                    x={textX}
-                    y={tooltip.y - 25}
-                    fill="#e5e7eb"
-                    fontSize="11"
-                    fontFamily="monospace"
-                  >
-                    Step: {tooltip.step}
-                  </text>
-                  {showTotal && (
-                    <>
-                      <text
-                        x={textX}
-                        y={tooltip.y - 10}
-                        fill="#8b5cf6"
-                        fontSize="11"
-                        fontFamily="monospace"
-                      >
-                        Total: {tooltip.total.toExponential(3)}
-                      </text>
-                      <text
-                        x={textX}
-                        y={tooltip.y + 5}
-                        fill="#a78bfa"
-                        fontSize="11"
-                        fontFamily="monospace"
-                      >
-                        Smooth: {tooltip.smoothTotal.toExponential(3)}
-                      </text>
-                    </>
-                  )}
-                  {showTextEncoder && tooltip.textEncoder !== undefined && (
+                  {lines.map((line, i) => (
                     <text
+                      key={i}
                       x={textX}
-                      y={tooltip.y + 20}
-                      fill="#34d399"
+                      y={startY + i * lineSpacing}
+                      fill={line.color}
                       fontSize="11"
                       fontFamily="monospace"
                     >
-                      Text Enc: {tooltip.textEncoder.toExponential(3)}
+                      {line.text}
                     </text>
-                  )}
-                  {showTE1 && tooltip.te1 !== undefined && (
-                    <text
-                      x={textX}
-                      y={tooltip.y + 35}
-                      fill="#93c5fd"
-                      fontSize="11"
-                      fontFamily="monospace"
-                    >
-                      TE1: {tooltip.te1.toExponential(3)}
-                    </text>
-                  )}
-                  {showTE2 && tooltip.te2 !== undefined && (
-                    <text
-                      x={textX}
-                      y={tooltip.y + 50}
-                      fill="#c4b5fd"
-                      fontSize="11"
-                      fontFamily="monospace"
-                    >
-                      TE2: {tooltip.te2.toExponential(3)}
-                    </text>
-                  )}
-                  {showUNet && tooltip.unet !== undefined && (
-                    <text
-                      x={textX}
-                      y={tooltip.y + 65}
-                      fill="#fbbf24"
-                      fontSize="11"
-                      fontFamily="monospace"
-                    >
-                      UNet: {tooltip.unet.toExponential(3)}
-                    </text>
-                  )}
-                  {showVisionEncoder && tooltip.visionEncoder !== undefined && (
-                    <text
-                      x={textX}
-                      y={tooltip.y + 80}
-                      fill="#c4b5fd"
-                      fontSize="11"
-                      fontFamily="monospace"
-                    >
-                      VE: {tooltip.visionEncoder.toExponential(3)}
-                    </text>
-                  )}
+                  ))}
                 </g>
               );
             })()}

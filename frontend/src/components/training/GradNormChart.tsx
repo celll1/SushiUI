@@ -70,6 +70,8 @@ interface GradNormChartProps {
 export default function GradNormChart({ runId, isRunning }: GradNormChartProps) {
   const [gradNormData, setGradNormData] = useState<MetricPoint[]>([]);
   const [gradNormTEData, setGradNormTEData] = useState<MetricPoint[]>([]);
+  const [gradNormTE1Data, setGradNormTE1Data] = useState<MetricPoint[]>([]);
+  const [gradNormTE2Data, setGradNormTE2Data] = useState<MetricPoint[]>([]);
   const [gradNormUNetData, setGradNormUNetData] = useState<MetricPoint[]>([]);
   const [gradNormVEData, setGradNormVEData] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -81,6 +83,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const [pollingInterval, setPollingInterval] = useState<number>(0); // 0 = off
   const [showTotal, setShowTotal] = useState(true);
   const [showTextEncoder, setShowTextEncoder] = useState(true);
+  const [showTE1, setShowTE1] = useState(true);
+  const [showTE2, setShowTE2] = useState(true);
   const [showUNet, setShowUNet] = useState(true);
   const [showVisionEncoder, setShowVisionEncoder] = useState(true);
   const [yAxisMode, setYAxisMode] = useState<"auto" | "custom">("auto");
@@ -99,6 +103,10 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     smoothTotal: number;
     textEncoder?: number;
     smoothTextEncoder?: number;
+    te1?: number;
+    smoothTE1?: number;
+    te2?: number;
+    smoothTE2?: number;
     unet?: number;
     smoothUNet?: number;
     visionEncoder?: number;
@@ -117,6 +125,14 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const smoothGradNormTEData = useMemo(() => {
     return calculateSmoothing(gradNormTEData, smoothingFactor);
   }, [gradNormTEData, smoothingFactor]);
+
+  const smoothGradNormTE1Data = useMemo(() => {
+    return calculateSmoothing(gradNormTE1Data, smoothingFactor);
+  }, [gradNormTE1Data, smoothingFactor]);
+
+  const smoothGradNormTE2Data = useMemo(() => {
+    return calculateSmoothing(gradNormTE2Data, smoothingFactor);
+  }, [gradNormTE2Data, smoothingFactor]);
 
   const smoothGradNormUNetData = useMemo(() => {
     return calculateSmoothing(gradNormUNetData, smoothingFactor);
@@ -139,6 +155,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
       // Replace data entirely (no merging needed - backend does uniform sampling)
       setGradNormData(data.grad_norm);
       setGradNormTEData(data.grad_norm_text_encoder || []);
+      setGradNormTE1Data(data.grad_norm_text_encoder_1 ?? []);
+      setGradNormTE2Data(data.grad_norm_text_encoder_2 ?? []);
       setGradNormUNetData(data.grad_norm_unet || []);
       setGradNormVEData(data.grad_norm_vision_encoder || []);
 
@@ -239,6 +257,44 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
             return newData;
           } else {
             return [...prevData, newGradNormTEPoint];
+          }
+        });
+      }
+
+      // Add grad_norm_text_encoder_1 if available (SDXL TE1)
+      if (metrics.grad_norm_text_encoder_1 !== undefined && metrics.grad_norm_text_encoder_1 !== null) {
+        const newPoint: MetricPoint = {
+          step: metrics.step,
+          value: metrics.grad_norm_text_encoder_1,
+          wall_time: Date.now() / 1000
+        };
+        setGradNormTE1Data((prevData) => {
+          const existingIndex = prevData.findIndex((p) => p.step === metrics.step);
+          if (existingIndex >= 0) {
+            const newData = [...prevData];
+            newData[existingIndex] = newPoint;
+            return newData;
+          } else {
+            return [...prevData, newPoint];
+          }
+        });
+      }
+
+      // Add grad_norm_text_encoder_2 if available (SDXL TE2)
+      if (metrics.grad_norm_text_encoder_2 !== undefined && metrics.grad_norm_text_encoder_2 !== null) {
+        const newPoint: MetricPoint = {
+          step: metrics.step,
+          value: metrics.grad_norm_text_encoder_2,
+          wall_time: Date.now() / 1000
+        };
+        setGradNormTE2Data((prevData) => {
+          const existingIndex = prevData.findIndex((p) => p.step === metrics.step);
+          if (existingIndex >= 0) {
+            const newData = [...prevData];
+            newData[existingIndex] = newPoint;
+            return newData;
+          } else {
+            return [...prevData, newPoint];
           }
         });
       }
@@ -368,6 +424,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
   const allValues = [
     ...(showTotal ? gradNormData.map((d) => d.value) : []),
     ...(showTextEncoder ? gradNormTEData.map((d) => d.value) : []),
+    ...(showTE1 ? gradNormTE1Data.map((d) => d.value) : []),
+    ...(showTE2 ? gradNormTE2Data.map((d) => d.value) : []),
     ...(showUNet ? gradNormUNetData.map((d) => d.value) : []),
     ...(showVisionEncoder ? gradNormVEData.map((d) => d.value) : []),
   ];
@@ -453,6 +511,40 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     })
     .join(" ");
 
+  // Generate TE1 paths (SDXL TE1: blue-300, dashed)
+  const rawTE1Path = gradNormTE1Data
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  const smoothTE1Path = smoothGradNormTE1Data
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  // Generate TE2 paths (SDXL TE2: violet-300, dashed)
+  const rawTE2Path = gradNormTE2Data
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
+  const smoothTE2Path = smoothGradNormTE2Data
+    .map((d, i) => {
+      const x = scaleX(d.step);
+      const y = scaleY(d.value);
+      return i === 0 ? `M ${x} ${y}` : `L ${x} ${y}`;
+    })
+    .join(" ");
+
   // Generate Y-axis ticks
   const yTicks = 5;
   const yTickValues = Array.from({ length: yTicks }, (_, i) =>
@@ -498,6 +590,10 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
     const step = closestSmooth.step;
     const closestTEPoint = gradNormTEData.find(d => d.step === step);
     const closestSmoothTE = smoothGradNormTEData.find(d => d.step === step);
+    const closestTE1Point = gradNormTE1Data.find(d => d.step === step);
+    const closestSmoothTE1 = smoothGradNormTE1Data.find(d => d.step === step);
+    const closestTE2Point = gradNormTE2Data.find(d => d.step === step);
+    const closestSmoothTE2 = smoothGradNormTE2Data.find(d => d.step === step);
     const closestUNetPoint = gradNormUNetData.find(d => d.step === step);
     const closestSmoothUNet = smoothGradNormUNetData.find(d => d.step === step);
     const closestVEPoint = gradNormVEData.find(d => d.step === step);
@@ -514,6 +610,10 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
       smoothTotal: closestSmooth.value,
       textEncoder: closestTEPoint?.value,
       smoothTextEncoder: closestSmoothTE?.value,
+      te1: closestTE1Point?.value,
+      smoothTE1: closestSmoothTE1?.value,
+      te2: closestTE2Point?.value,
+      smoothTE2: closestSmoothTE2?.value,
       unet: closestUNetPoint?.value,
       smoothUNet: closestSmoothUNet?.value,
       visionEncoder: closestVEPoint?.value,
@@ -606,6 +706,28 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               className="w-4 h-4"
             />
             <span>Text Encoder</span>
+          </label>
+        )}
+        {gradNormTE1Data.length > 0 && (
+          <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color: "#93c5fd"}}>
+            <input
+              type="checkbox"
+              checked={showTE1}
+              onChange={(e) => setShowTE1(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>TE1</span>
+          </label>
+        )}
+        {gradNormTE2Data.length > 0 && (
+          <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color: "#c4b5fd"}}>
+            <input
+              type="checkbox"
+              checked={showTE2}
+              onChange={(e) => setShowTE2(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>TE2</span>
           </label>
         )}
         {gradNormUNetData.length > 0 && (
@@ -1056,6 +1178,62 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
           </>
         )}
 
+        {/* TE1 Grad Norm lines (SDXL TE1: blue-300, dashed) */}
+        {showTE1 && gradNormTE1Data.length > 0 && (
+          <>
+            <path
+              d={rawTE1Path}
+              fill="none"
+              stroke="#93c5fd"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              strokeDasharray="4 2"
+              opacity="0.3"
+              clipPath="url(#chart-clip-gradnorm)"
+            />
+            {smoothingFactor > 0 && (
+              <path
+                d={smoothTE1Path}
+                fill="none"
+                stroke="#93c5fd"
+                strokeWidth="2"
+                strokeLinejoin="round"
+                strokeDasharray="6 2"
+                opacity="0.9"
+                clipPath="url(#chart-clip-gradnorm)"
+              />
+            )}
+          </>
+        )}
+
+        {/* TE2 Grad Norm lines (SDXL TE2: violet-300, dashed) */}
+        {showTE2 && gradNormTE2Data.length > 0 && (
+          <>
+            <path
+              d={rawTE2Path}
+              fill="none"
+              stroke="#c4b5fd"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+              strokeDasharray="4 2"
+              opacity="0.3"
+              clipPath="url(#chart-clip-gradnorm)"
+            />
+            {smoothingFactor > 0 && (
+              <path
+                d={smoothTE2Path}
+                fill="none"
+                stroke="#c4b5fd"
+                strokeWidth="2"
+                strokeLinejoin="round"
+                strokeDasharray="6 2"
+                opacity="0.9"
+                clipPath="url(#chart-clip-gradnorm)"
+              />
+            )}
+          </>
+        )}
+
         {/* Tooltip */}
         {tooltip && (
           <g>
@@ -1088,6 +1266,8 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               let lineCount = 1; // Step label
               if (showTotal) lineCount += 2; // Total + Smooth
               if (showTextEncoder && tooltip.textEncoder !== undefined) lineCount += 1;
+              if (showTE1 && tooltip.te1 !== undefined) lineCount += 1;
+              if (showTE2 && tooltip.te2 !== undefined) lineCount += 1;
               if (showUNet && tooltip.unet !== undefined) lineCount += 1;
               if (showVisionEncoder && tooltip.visionEncoder !== undefined) lineCount += 1;
               const tooltipHeight = lineCount * 15 + 10; // 15px per line + padding
@@ -1154,10 +1334,32 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                       Text Enc: {tooltip.textEncoder.toExponential(3)}
                     </text>
                   )}
-                  {showUNet && tooltip.unet !== undefined && (
+                  {showTE1 && tooltip.te1 !== undefined && (
                     <text
                       x={textX}
                       y={tooltip.y + 35}
+                      fill="#93c5fd"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      TE1: {tooltip.te1.toExponential(3)}
+                    </text>
+                  )}
+                  {showTE2 && tooltip.te2 !== undefined && (
+                    <text
+                      x={textX}
+                      y={tooltip.y + 50}
+                      fill="#c4b5fd"
+                      fontSize="11"
+                      fontFamily="monospace"
+                    >
+                      TE2: {tooltip.te2.toExponential(3)}
+                    </text>
+                  )}
+                  {showUNet && tooltip.unet !== undefined && (
+                    <text
+                      x={textX}
+                      y={tooltip.y + 65}
                       fill="#fbbf24"
                       fontSize="11"
                       fontFamily="monospace"
@@ -1168,7 +1370,7 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
                   {showVisionEncoder && tooltip.visionEncoder !== undefined && (
                     <text
                       x={textX}
-                      y={tooltip.y + 50}
+                      y={tooltip.y + 80}
                       fill="#c4b5fd"
                       fontSize="11"
                       fontFamily="monospace"
@@ -1216,6 +1418,36 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
               )}
             </div>
           )}
+          {showTE1 && gradNormTE1Data.length > 0 && (
+            <div className="flex items-center gap-3">
+              <span style={{color: "#93c5fd"}}>TE1:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 opacity-30" style={{background: "#93c5fd", borderTop: "2px dashed #93c5fd"}}></div>
+                <span className="text-gray-400">Raw</span>
+              </div>
+              {smoothingFactor > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5" style={{borderTop: "2px dashed #93c5fd"}}></div>
+                  <span className="text-gray-400">Smooth</span>
+                </div>
+              )}
+            </div>
+          )}
+          {showTE2 && gradNormTE2Data.length > 0 && (
+            <div className="flex items-center gap-3">
+              <span style={{color: "#c4b5fd"}}>TE2:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 opacity-30" style={{borderTop: "2px dashed #c4b5fd"}}></div>
+                <span className="text-gray-400">Raw</span>
+              </div>
+              {smoothingFactor > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-0.5" style={{borderTop: "2px dashed #c4b5fd"}}></div>
+                  <span className="text-gray-400">Smooth</span>
+                </div>
+              )}
+            </div>
+          )}
           {showUNet && gradNormUNetData.length > 0 && (
             <div className="flex items-center gap-3">
               <span className="text-gray-400">U-Net/Transformer:</span>
@@ -1256,6 +1488,16 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
           {showTextEncoder && smoothGradNormTEData.length > 0 && (
             <span>
               Latest TE: {smoothGradNormTEData[smoothGradNormTEData.length - 1]?.value.toExponential(3)}
+            </span>
+          )}
+          {showTE1 && smoothGradNormTE1Data.length > 0 && (
+            <span style={{color: "#93c5fd"}}>
+              Latest TE1: {smoothGradNormTE1Data[smoothGradNormTE1Data.length - 1]?.value.toExponential(3)}
+            </span>
+          )}
+          {showTE2 && smoothGradNormTE2Data.length > 0 && (
+            <span style={{color: "#c4b5fd"}}>
+              Latest TE2: {smoothGradNormTE2Data[smoothGradNormTE2Data.length - 1]?.value.toExponential(3)}
             </span>
           )}
           {showUNet && smoothGradNormUNetData.length > 0 && (

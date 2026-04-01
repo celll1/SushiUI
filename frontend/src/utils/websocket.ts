@@ -32,6 +32,8 @@ interface TrainingMetrics {
   learning_rate?: number;
   grad_norm?: number;
   grad_norm_text_encoder?: number;
+  grad_norm_text_encoder_1?: number;
+  grad_norm_text_encoder_2?: number;
   grad_norm_unet?: number;
   grad_norm_vision_encoder?: number;
 }
@@ -89,7 +91,13 @@ class ProgressClient {
             step: data.step,
             loss: data.loss,
             recon_loss: data.recon_loss,
-            learning_rate: data.learning_rate
+            learning_rate: data.learning_rate,
+            grad_norm: data.grad_norm,
+            grad_norm_text_encoder: data.grad_norm_text_encoder,
+            grad_norm_text_encoder_1: data.grad_norm_text_encoder_1,
+            grad_norm_text_encoder_2: data.grad_norm_text_encoder_2,
+            grad_norm_unet: data.grad_norm_unet,
+            grad_norm_vision_encoder: data.grad_norm_vision_encoder,
           };
 
           this.trainingMetricsCallbacks.forEach((callback) => {

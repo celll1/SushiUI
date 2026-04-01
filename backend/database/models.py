@@ -693,7 +693,9 @@ class TrainingMetrics(TrainingBase):
 
     # Gradient norms
     grad_norm = Column(Float, nullable=True)  # Total gradient norm (all parameters)
-    grad_norm_text_encoder = Column(Float, nullable=True)  # Text encoder gradient norm
+    grad_norm_text_encoder = Column(Float, nullable=True)  # Text encoder gradient norm (combined)
+    grad_norm_text_encoder_1 = Column(Float, nullable=True)  # TE1 (CLIP ViT-L) gradient norm, SDXL only
+    grad_norm_text_encoder_2 = Column(Float, nullable=True)  # TE2 (OpenCLIP ViT-bigG) gradient norm, SDXL only
     grad_norm_unet = Column(Float, nullable=True)  # U-Net/Transformer gradient norm
     grad_norm_vision_encoder = Column(Float, nullable=True)  # Vision Encoder gradient norm (SD/SDXL, optional)
 
@@ -714,6 +716,8 @@ class TrainingMetrics(TrainingBase):
             "learning_rate": self.learning_rate,
             "grad_norm": self.grad_norm,
             "grad_norm_text_encoder": self.grad_norm_text_encoder,
+            "grad_norm_text_encoder_1": self.grad_norm_text_encoder_1,
+            "grad_norm_text_encoder_2": self.grad_norm_text_encoder_2,
             "grad_norm_unet": self.grad_norm_unet,
             "grad_norm_vision_encoder": self.grad_norm_vision_encoder,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,

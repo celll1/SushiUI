@@ -54,6 +54,8 @@ class ConnectionManager:
         learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
+        grad_norm_text_encoder_1: float = None,
+        grad_norm_text_encoder_2: float = None,
         grad_norm_unet: float = None,
         grad_norm_vision_encoder: float = None,
     ):
@@ -76,6 +78,10 @@ class ConnectionManager:
             data["grad_norm"] = grad_norm
         if grad_norm_text_encoder is not None:
             data["grad_norm_text_encoder"] = grad_norm_text_encoder
+        if grad_norm_text_encoder_1 is not None:
+            data["grad_norm_text_encoder_1"] = grad_norm_text_encoder_1
+        if grad_norm_text_encoder_2 is not None:
+            data["grad_norm_text_encoder_2"] = grad_norm_text_encoder_2
         if grad_norm_unet is not None:
             data["grad_norm_unet"] = grad_norm_unet
         if grad_norm_vision_encoder is not None:

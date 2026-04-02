@@ -1391,15 +1391,13 @@ class BaseTrainer(ABC):
 
             from safetensors import safe_open
 
-            # Load checkpoint state dict to CPU
-            state_dict = {}
+            # Peek at keys only (reads header, not tensors) to detect model type
             with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
-                for key in f.keys():
-                    state_dict[key] = f.get_tensor(key)
+                checkpoint_keys = list(f.keys())
 
             # Detect if SDXL or SD1.5 based on state dict keys
             # SDXL has text_encoder_2 keys
-            is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in state_dict.keys())
+            is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in checkpoint_keys)
 
             # Load components using diffusers from_single_file
             # This properly reconstructs the model from checkpoint state dict

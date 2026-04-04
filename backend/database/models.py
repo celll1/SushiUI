@@ -699,6 +699,18 @@ class TrainingMetrics(TrainingBase):
     grad_norm_unet = Column(Float, nullable=True)  # U-Net/Transformer gradient norm
     grad_norm_vision_encoder = Column(Float, nullable=True)  # Vision Encoder gradient norm (SD/SDXL, optional)
 
+    # Parameter change tracking (computed every N steps, CPU-side)
+    # B: Step-wise update norm ||θ_t - θ_{t-K}||_F per component
+    param_update_norm_unet = Column(Float, nullable=True)
+    param_update_norm_te1 = Column(Float, nullable=True)
+    param_update_norm_te2 = Column(Float, nullable=True)
+    param_update_norm_ve = Column(Float, nullable=True)
+    # C: Cumulative drift ||θ_t - θ_0||_F / ||θ_0||_F per component
+    param_cumulative_drift_unet = Column(Float, nullable=True)
+    param_cumulative_drift_te1 = Column(Float, nullable=True)
+    param_cumulative_drift_te2 = Column(Float, nullable=True)
+    param_cumulative_drift_ve = Column(Float, nullable=True)
+
     # Timestamp
     timestamp = Column(DateTime, default=get_local_now)
 
@@ -720,5 +732,13 @@ class TrainingMetrics(TrainingBase):
             "grad_norm_text_encoder_2": self.grad_norm_text_encoder_2,
             "grad_norm_unet": self.grad_norm_unet,
             "grad_norm_vision_encoder": self.grad_norm_vision_encoder,
+            "param_update_norm_unet": self.param_update_norm_unet,
+            "param_update_norm_te1": self.param_update_norm_te1,
+            "param_update_norm_te2": self.param_update_norm_te2,
+            "param_update_norm_ve": self.param_update_norm_ve,
+            "param_cumulative_drift_unet": self.param_cumulative_drift_unet,
+            "param_cumulative_drift_te1": self.param_cumulative_drift_te1,
+            "param_cumulative_drift_te2": self.param_cumulative_drift_te2,
+            "param_cumulative_drift_ve": self.param_cumulative_drift_ve,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

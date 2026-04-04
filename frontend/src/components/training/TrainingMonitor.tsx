@@ -5,6 +5,7 @@ import { X, Play, Square, Trash2 } from "lucide-react";
 import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
+import ParamChangeChart from "./ParamChangeChart";
 import CheckpointList from "./CheckpointList";
 
 interface TrainingMonitorProps {
@@ -452,6 +453,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
                 <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
               </div>
+              <ParamChangeChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
             </>
           )}
 

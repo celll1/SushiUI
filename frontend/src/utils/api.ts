@@ -1474,6 +1474,10 @@ export interface TrainingRunCreateRequest {
   vision_encoder_path?: string | null;
   train_vision_encoder?: boolean;
   vision_encoder_lr?: number | null;
+  gradient_routing_ve?: boolean;
+  // Parameter change tracking
+  param_tracking?: boolean;
+  param_tracking_interval?: number;
   // ReLoRA-specific parameters
   relora_merge_every?: number;
   relora_merge_unit?: "steps" | "epochs";
@@ -1604,6 +1608,14 @@ export interface TrainingMetrics {
   grad_norm_text_encoder_2: MetricPoint[];
   grad_norm_unet: MetricPoint[];
   grad_norm_vision_encoder: MetricPoint[];
+  param_update_norm_unet?: MetricPoint[];
+  param_update_norm_te1?: MetricPoint[];
+  param_update_norm_te2?: MetricPoint[];
+  param_update_norm_ve?: MetricPoint[];
+  param_cumulative_drift_unet?: MetricPoint[];
+  param_cumulative_drift_te1?: MetricPoint[];
+  param_cumulative_drift_te2?: MetricPoint[];
+  param_cumulative_drift_ve?: MetricPoint[];
 }
 
 export const getTrainingMetrics = async (

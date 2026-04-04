@@ -117,6 +117,9 @@ class TrainingConfigGenerator:
         vision_encoder_path: Optional[str] = None,  # Path to SigLIP2 vision encoder safetensors
         vision_encoder_lr: Optional[float] = None,  # VE learning rate (defaults to text_encoder_lr)
         gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
+        # Parameter change tracking
+        param_tracking: bool = False,  # Track per-component parameter change norms
+        param_tracking_interval: int = 100,  # Compute tracking every N steps
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -290,6 +293,8 @@ class TrainingConfigGenerator:
                             "train_vision_encoder": train_vision_encoder,
                             **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
                             "gradient_routing_ve": gradient_routing_ve,
+                            "param_tracking": param_tracking,
+                            "param_tracking_interval": param_tracking_interval,
                             **({"priority_training": priority_training} if priority_training else {}),
                             "latent_encoding_mode": latent_encoding_mode,
                             "latent_encoding_swap_interval": latent_encoding_swap_interval,
@@ -428,6 +433,9 @@ class TrainingConfigGenerator:
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
         gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
+        # Parameter change tracking
+        param_tracking: bool = False,
+        param_tracking_interval: int = 100,
         # ReLoRA-specific parameters
         relora_merge_every: int = 500,
         relora_merge_unit: str = "steps",
@@ -546,6 +554,8 @@ class TrainingConfigGenerator:
             vision_encoder_path=vision_encoder_path,
             vision_encoder_lr=vision_encoder_lr,
             gradient_routing_ve=gradient_routing_ve,
+            param_tracking=param_tracking,
+            param_tracking_interval=param_tracking_interval,
         )
 
         # Parse the LoRA YAML and modify for ReLoRA
@@ -666,6 +676,9 @@ class TrainingConfigGenerator:
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
         gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
+        # Parameter change tracking
+        param_tracking: bool = False,
+        param_tracking_interval: int = 100,
         # Priority training settings
         priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
     ) -> str:
@@ -736,6 +749,8 @@ class TrainingConfigGenerator:
             "train_vision_encoder": train_vision_encoder,
             **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
             "gradient_routing_ve": gradient_routing_ve,
+            "param_tracking": param_tracking,
+            "param_tracking_interval": param_tracking_interval,
             **({"priority_training": priority_training} if priority_training else {}),
             "latent_encoding_mode": latent_encoding_mode,
             "latent_encoding_swap_interval": latent_encoding_swap_interval,

@@ -1476,6 +1476,8 @@ def main():
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
             gradient_routing_ve = train_config.get('gradient_routing_ve', False)
+            param_tracking = train_config.get('param_tracking', False)
+            param_tracking_interval = train_config.get('param_tracking_interval', 100)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -1527,6 +1529,8 @@ def main():
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
                 gradient_routing_ve=gradient_routing_ve,
+                param_tracking=param_tracking,
+                param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
             )
 
@@ -1837,6 +1841,8 @@ def main():
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
             gradient_routing_ve = train_config.get('gradient_routing_ve', False)
+            param_tracking = train_config.get('param_tracking', False)
+            param_tracking_interval = train_config.get('param_tracking_interval', 100)
 
             # Start ReLoRA training
             trainer.train(
@@ -1881,6 +1887,8 @@ def main():
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
                 gradient_routing_ve=gradient_routing_ve,
+                param_tracking=param_tracking,
+                param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
             )
 
@@ -2197,6 +2205,8 @@ def main():
             train_vision_encoder = train_config.get('train_vision_encoder', False)
             vision_encoder_lr = train_config.get('vision_encoder_lr', None)
             gradient_routing_ve = train_config.get('gradient_routing_ve', False)
+            param_tracking = train_config.get('param_tracking', False)
+            param_tracking_interval = train_config.get('param_tracking_interval', 100)
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
@@ -2248,6 +2258,8 @@ def main():
                 train_vision_encoder=train_vision_encoder,
                 vision_encoder_lr=vision_encoder_lr,
                 gradient_routing_ve=gradient_routing_ve,
+                param_tracking=param_tracking,
+                param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
             )
 

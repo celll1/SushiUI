@@ -186,6 +186,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [gradientRoutingVE, setGradientRoutingVE] = useState(false);
   const [visionEncoderLr, setVisionEncoderLr] = useState("");
 
+  // Parameter change tracking
+  const [paramTracking, setParamTracking] = useState(false);
+  const [paramTrackingInterval, setParamTrackingInterval] = useState(100);
+
   // Priority training (one entry per line in textarea)
   const [priorityEnabled, setPriorityEnabled] = useState(false);
   const [priorityText, setPriorityText] = useState("");  // newline-separated entries
@@ -487,6 +491,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
       if (params.gradient_routing_ve !== undefined) setGradientRoutingVE(params.gradient_routing_ve);
       if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
+      if (params.param_tracking !== undefined) setParamTracking(params.param_tracking);
+      if (params.param_tracking_interval !== undefined) setParamTrackingInterval(params.param_tracking_interval);
 
       // Priority training
       if (params.priority_training) {
@@ -1198,6 +1204,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       train_vision_encoder: trainVisionEncoder,
       vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
       gradient_routing_ve: gradientRoutingVE,
+      param_tracking: paramTracking,
+      param_tracking_interval: paramTrackingInterval,
       latent_encoding_mode: latentEncodingMode,
       latent_encoding_swap_interval: latentEncodingSwapInterval,
       blocks_to_swap: blocksToSwap,
@@ -3548,6 +3556,42 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <p className="text-xs text-gray-500 mt-1">
                 Saves noisy latents, predicted latents, and timestep info to debug/ folder for debugging training issues
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Parameter Change Tracking */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Parameter Change Tracking</h3>
+
+          <div className="flex items-center space-x-3">
+            <input
+              type="checkbox"
+              id="param-tracking"
+              checked={paramTracking}
+              onChange={(e) => setParamTracking(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="param-tracking" className="text-sm text-gray-400">
+              Track per-component parameter change norms (Update Norm / Cumulative Drift)
+            </label>
+          </div>
+
+          {paramTracking && (
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Tracking Interval (steps)</label>
+              <input
+                type="number"
+                min="1"
+                value={paramTrackingInterval}
+                onChange={(e) => setParamTrackingInterval(e.target.value === '' ? '' as any : parseInt(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setParamTrackingInterval(100); }}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+                placeholder="e.g., 100"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Computes ||θ_t - θ_{t-K}||_F (update norm) and ||θ_t - θ_0||_F / ||θ_0||_F (cumulative drift) per component on CPU every N steps
               </p>
             </div>
           )}

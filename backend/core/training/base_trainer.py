@@ -430,6 +430,111 @@ def predict_original_latent_unified(
 
 
 # ============================================================
+# Parameter Change Tracker
+# ============================================================
+
+class ParameterChangeTracker:
+    """
+    Tracks per-component parameter changes during training.
+
+    Computes two metrics every `interval` optimizer steps:
+      B - Update norm:       ||θ_t - θ_{t-K}||_F  (how much changed in last K steps)
+      C - Cumulative drift:  ||θ_t - θ_0||_F / ||θ_0||_F  (relative change from start)
+
+    All computation and storage happens on CPU (fp16) → zero VRAM overhead.
+    CPU RAM usage: ~2 × sum(component_param_bytes / 2) for full FT SDXL ≈ 14 GB total.
+    """
+
+    def __init__(self, components: Dict[str, torch.nn.Module], interval: int = 100):
+        """
+        Args:
+            components: {name: module} for each trainable component
+                        Keys: 'unet', 'te1', 'te2', 've'
+            interval:   Compute metrics every N optimizer steps
+        """
+        self.components = {k: v for k, v in components.items() if v is not None}
+        self.interval = interval
+
+        # Reference snapshot for C (set once at init, never updated)
+        self._reference: Dict[str, List[torch.Tensor]] = {}
+        self._reference_norms: Dict[str, float] = {}
+
+        # Previous snapshot for B (updated every `interval` steps)
+        self._prev: Dict[str, List[torch.Tensor]] = {}
+
+        self._initialize()
+
+    def _snapshot(self, module: torch.nn.Module) -> List[torch.Tensor]:
+        """Copy all trainable parameters to CPU as fp16 tensors."""
+        return [p.detach().cpu().to(torch.float16)
+                for p in module.parameters() if p.requires_grad]
+
+    @staticmethod
+    def _norm_sq(tensors: List[torch.Tensor]) -> float:
+        """Compute sum of squared L2 norms (returns ||tensors||_F^2)."""
+        total = 0.0
+        for t in tensors:
+            total += t.float().norm(2).item() ** 2
+        return total
+
+    @staticmethod
+    def _delta_norm_sq(curr: List[torch.Tensor], ref: List[torch.Tensor]) -> float:
+        """Compute ||curr - ref||_F^2 parameter-by-parameter to avoid large allocations."""
+        total = 0.0
+        for c, r in zip(curr, ref):
+            delta = c.float() - r.float()
+            total += delta.norm(2).item() ** 2
+        return total
+
+    def _initialize(self):
+        total_params = 0
+        total_bytes = 0
+        for name, module in self.components.items():
+            snap = self._snapshot(module)
+            self._reference[name] = snap
+            self._reference_norms[name] = self._norm_sq(snap) ** 0.5
+            # Deep copy for prev (independent list of cloned tensors)
+            self._prev[name] = [t.clone() for t in snap]
+            n = sum(t.numel() for t in snap)
+            total_params += n
+            total_bytes += n * 2  # fp16 = 2 bytes per element
+            print(f"[ParamTracker]   {name}: {n / 1e6:.1f}M params snapshot stored")
+        print(f"[ParamTracker] Initialized. "
+              f"Total tracked: {total_params / 1e6:.1f}M params, "
+              f"~{total_bytes * 2 / 1e9:.1f} GB CPU RAM (ref + prev snapshots)")
+
+    def compute(self, step: int) -> Optional[Dict[str, Dict[str, float]]]:
+        """
+        Compute B and C metrics if `step` is a multiple of `interval`.
+
+        Returns:
+            {'update_norm': {name: float}, 'cumulative_drift': {name: float}}
+            or None if not at interval boundary.
+        """
+        if step % self.interval != 0 or step == 0:
+            return None
+
+        update_norms: Dict[str, float] = {}
+        cumulative_drifts: Dict[str, float] = {}
+
+        for name, module in self.components.items():
+            curr = self._snapshot(module)
+
+            # B: update norm since last checkpoint
+            update_norms[name] = self._delta_norm_sq(curr, self._prev[name]) ** 0.5
+
+            # C: normalized cumulative drift from reference
+            drift = self._delta_norm_sq(curr, self._reference[name]) ** 0.5
+            ref_norm = self._reference_norms[name]
+            cumulative_drifts[name] = drift / ref_norm if ref_norm > 0 else 0.0
+
+            # Update prev for next B computation
+            self._prev[name] = curr
+
+        return {'update_norm': update_norms, 'cumulative_drift': cumulative_drifts}
+
+
+# ============================================================
 # Base Trainer Class
 # ============================================================
 
@@ -6551,6 +6656,8 @@ class BaseTrainer(ABC):
         vision_encoder_path: Optional[str] = None,
         vision_encoder_lr: Optional[float] = None,
         gradient_routing_ve: bool = False,
+        param_tracking: bool = False,
+        param_tracking_interval: int = 100,
         priority_training: Optional[Dict] = None,
     ):
         """
@@ -7098,6 +7205,33 @@ class BaseTrainer(ABC):
         # This prevents duplicate metrics when training resumes from an earlier step
         if self.run_id is not None:
             self._cleanup_future_metrics(global_step)
+
+        # ============================================================
+        # Parameter Change Tracker initialization
+        # ============================================================
+        self._param_tracker: Optional[ParameterChangeTracker] = None
+        if param_tracking:
+            tracked_components: Dict[str, torch.nn.Module] = {}
+            if getattr(self, 'unet', None) is not None:
+                tracked_components['unet'] = self.unet
+            elif getattr(self, 'transformer', None) is not None:
+                tracked_components['unet'] = self.transformer  # flux2 / zimage
+            if getattr(self, 'text_encoder', None) is not None:
+                tracked_components['te1'] = self.text_encoder
+            if getattr(self, 'text_encoder_2', None) is not None:
+                tracked_components['te2'] = self.text_encoder_2
+            if (getattr(self, '_train_vision_encoder', False)
+                    and getattr(self, 'vision_encoder', None) is not None):
+                tracked_components['ve'] = self.vision_encoder
+            if tracked_components:
+                print(f"{self.log_prefix} [ParamTracker] Initializing "
+                      f"(interval={param_tracking_interval} steps, "
+                      f"components={list(tracked_components.keys())})...")
+                self._param_tracker = ParameterChangeTracker(
+                    tracked_components, interval=param_tracking_interval
+                )
+            else:
+                print(f"{self.log_prefix} [ParamTracker] No trainable components found, disabled")
 
         # Generate step 0 sample to verify base model output
         if sample_every_n_steps > 0 and global_step == 0:
@@ -8303,6 +8437,29 @@ class BaseTrainer(ABC):
                                     grad_norm_vision_encoder=grad_norm_ve if grad_norm_ve > 0.0 else None,
                                 )
 
+                            # Parameter change tracking (B: update norm, C: cumulative drift)
+                            if self._param_tracker is not None:
+                                pt = self._param_tracker.compute(global_step)
+                                if pt is not None:
+                                    un = pt['update_norm']
+                                    cd = pt['cumulative_drift']
+                                    for name, val in un.items():
+                                        self.writer.add_scalar(f"param/update_norm_{name}", val, global_step)
+                                    for name, val in cd.items():
+                                        self.writer.add_scalar(f"param/cumulative_drift_{name}", val, global_step)
+                                    if self.run_id is not None:
+                                        self._log_metrics_to_db(
+                                            step=global_step,
+                                            param_update_norm_unet=un.get('unet'),
+                                            param_update_norm_te1=un.get('te1'),
+                                            param_update_norm_te2=un.get('te2'),
+                                            param_update_norm_ve=un.get('ve'),
+                                            param_cumulative_drift_unet=cd.get('unet'),
+                                            param_cumulative_drift_te1=cd.get('te1'),
+                                            param_cumulative_drift_te2=cd.get('te2'),
+                                            param_cumulative_drift_ve=cd.get('ve'),
+                                        )
+
                             # ReLoRA merge-reinit cycle hook
                             # Only active for ReLoRATrainer (has should_merge method)
                             if hasattr(self, 'should_merge'):
@@ -8728,6 +8885,14 @@ class BaseTrainer(ABC):
         grad_norm_text_encoder_2: float = None,
         grad_norm_unet: float = None,
         grad_norm_vision_encoder: float = None,
+        param_update_norm_unet: float = None,
+        param_update_norm_te1: float = None,
+        param_update_norm_te2: float = None,
+        param_update_norm_ve: float = None,
+        param_cumulative_drift_unet: float = None,
+        param_cumulative_drift_te1: float = None,
+        param_cumulative_drift_te2: float = None,
+        param_cumulative_drift_ve: float = None,
         force_flush: bool = False
     ):
         """
@@ -8787,6 +8952,22 @@ class BaseTrainer(ABC):
                 existing_entry['grad_norm_unet'] = grad_norm_unet
             if grad_norm_vision_encoder is not None:
                 existing_entry['grad_norm_vision_encoder'] = grad_norm_vision_encoder
+            if param_update_norm_unet is not None:
+                existing_entry['param_update_norm_unet'] = param_update_norm_unet
+            if param_update_norm_te1 is not None:
+                existing_entry['param_update_norm_te1'] = param_update_norm_te1
+            if param_update_norm_te2 is not None:
+                existing_entry['param_update_norm_te2'] = param_update_norm_te2
+            if param_update_norm_ve is not None:
+                existing_entry['param_update_norm_ve'] = param_update_norm_ve
+            if param_cumulative_drift_unet is not None:
+                existing_entry['param_cumulative_drift_unet'] = param_cumulative_drift_unet
+            if param_cumulative_drift_te1 is not None:
+                existing_entry['param_cumulative_drift_te1'] = param_cumulative_drift_te1
+            if param_cumulative_drift_te2 is not None:
+                existing_entry['param_cumulative_drift_te2'] = param_cumulative_drift_te2
+            if param_cumulative_drift_ve is not None:
+                existing_entry['param_cumulative_drift_ve'] = param_cumulative_drift_ve
         else:
             # New step: add to buffer
             self._metrics_buffer.append({
@@ -8800,6 +8981,14 @@ class BaseTrainer(ABC):
                 'grad_norm_text_encoder_2': grad_norm_text_encoder_2,
                 'grad_norm_unet': grad_norm_unet,
                 'grad_norm_vision_encoder': grad_norm_vision_encoder,
+                'param_update_norm_unet': param_update_norm_unet,
+                'param_update_norm_te1': param_update_norm_te1,
+                'param_update_norm_te2': param_update_norm_te2,
+                'param_update_norm_ve': param_update_norm_ve,
+                'param_cumulative_drift_unet': param_cumulative_drift_unet,
+                'param_cumulative_drift_te1': param_cumulative_drift_te1,
+                'param_cumulative_drift_te2': param_cumulative_drift_te2,
+                'param_cumulative_drift_ve': param_cumulative_drift_ve,
             })
 
         # Only flush when buffer is full or force_flush is requested
@@ -8849,6 +9038,14 @@ class BaseTrainer(ABC):
                 m_grad_norm_te2 = metrics.get('grad_norm_text_encoder_2')
                 m_grad_norm_unet = metrics['grad_norm_unet']
                 m_grad_norm_ve = metrics.get('grad_norm_vision_encoder')
+                m_param_upd_unet = metrics.get('param_update_norm_unet')
+                m_param_upd_te1  = metrics.get('param_update_norm_te1')
+                m_param_upd_te2  = metrics.get('param_update_norm_te2')
+                m_param_upd_ve   = metrics.get('param_update_norm_ve')
+                m_param_dft_unet = metrics.get('param_cumulative_drift_unet')
+                m_param_dft_te1  = metrics.get('param_cumulative_drift_te1')
+                m_param_dft_te2  = metrics.get('param_cumulative_drift_te2')
+                m_param_dft_ve   = metrics.get('param_cumulative_drift_ve')
 
                 # UPSERT: Check if metric exists for this (run_id, step)
                 existing = db.query(TrainingMetrics).filter(
@@ -8876,6 +9073,22 @@ class BaseTrainer(ABC):
                         existing.grad_norm_unet = m_grad_norm_unet
                     if m_grad_norm_ve is not None:
                         existing.grad_norm_vision_encoder = m_grad_norm_ve
+                    if m_param_upd_unet is not None:
+                        existing.param_update_norm_unet = m_param_upd_unet
+                    if m_param_upd_te1 is not None:
+                        existing.param_update_norm_te1 = m_param_upd_te1
+                    if m_param_upd_te2 is not None:
+                        existing.param_update_norm_te2 = m_param_upd_te2
+                    if m_param_upd_ve is not None:
+                        existing.param_update_norm_ve = m_param_upd_ve
+                    if m_param_dft_unet is not None:
+                        existing.param_cumulative_drift_unet = m_param_dft_unet
+                    if m_param_dft_te1 is not None:
+                        existing.param_cumulative_drift_te1 = m_param_dft_te1
+                    if m_param_dft_te2 is not None:
+                        existing.param_cumulative_drift_te2 = m_param_dft_te2
+                    if m_param_dft_ve is not None:
+                        existing.param_cumulative_drift_ve = m_param_dft_ve
                     existing.timestamp = datetime.now()
                 else:
                     # Insert new metric
@@ -8891,6 +9104,14 @@ class BaseTrainer(ABC):
                         grad_norm_text_encoder_2=m_grad_norm_te2,
                         grad_norm_unet=m_grad_norm_unet,
                         grad_norm_vision_encoder=m_grad_norm_ve,
+                        param_update_norm_unet=m_param_upd_unet,
+                        param_update_norm_te1=m_param_upd_te1,
+                        param_update_norm_te2=m_param_upd_te2,
+                        param_update_norm_ve=m_param_upd_ve,
+                        param_cumulative_drift_unet=m_param_dft_unet,
+                        param_cumulative_drift_te1=m_param_dft_te1,
+                        param_cumulative_drift_te2=m_param_dft_te2,
+                        param_cumulative_drift_ve=m_param_dft_ve,
                     )
                     db.add(metric)
 

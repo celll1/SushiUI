@@ -4571,6 +4571,10 @@ class TrainingRunCreateRequest(BaseModel):
     vision_encoder_lr: Optional[float] = None  # Learning rate for vision encoder (defaults to text_encoder_lr)
     gradient_routing_ve: bool = False  # Block TE gradient when batch has reference images
 
+    # Parameter change tracking
+    param_tracking: bool = False  # Track per-component parameter change norms
+    param_tracking_interval: int = 100  # Compute tracking every N steps
+
     # Priority training
     priority_training: Optional[Dict[str, Any]] = None  # Inline priority training config
 
@@ -4789,6 +4793,8 @@ async def create_training_run(
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
                 gradient_routing_ve=request.gradient_routing_ve,
+                param_tracking=request.param_tracking,
+                param_tracking_interval=request.param_tracking_interval,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "relora":
@@ -4883,6 +4889,8 @@ async def create_training_run(
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
                 gradient_routing_ve=request.gradient_routing_ve,
+                param_tracking=request.param_tracking,
+                param_tracking_interval=request.param_tracking_interval,
                 priority_training=request.priority_training,
                 # ReLoRA-specific parameters
                 relora_merge_every=request.relora_merge_every,
@@ -5051,6 +5059,8 @@ async def create_training_run(
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
                 gradient_routing_ve=request.gradient_routing_ve,
+                param_tracking=request.param_tracking,
+                param_tracking_interval=request.param_tracking_interval,
                 priority_training=request.priority_training,
             )
 
@@ -5455,6 +5465,8 @@ async def update_training_run(
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
                 gradient_routing_ve=request.gradient_routing_ve,
+                param_tracking=request.param_tracking,
+                param_tracking_interval=request.param_tracking_interval,
                 priority_training=request.priority_training,
             )
         elif request.training_method == "controlnet":
@@ -5617,6 +5629,8 @@ async def update_training_run(
                 train_vision_encoder=request.train_vision_encoder,
                 vision_encoder_lr=request.vision_encoder_lr,
                 gradient_routing_ve=request.gradient_routing_ve,
+                param_tracking=request.param_tracking,
+                param_tracking_interval=request.param_tracking_interval,
                 priority_training=request.priority_training,
             )
 
@@ -6455,6 +6469,14 @@ async def get_training_metrics_db(
                 "grad_norm_text_encoder": [],
                 "grad_norm_unet": [],
                 "grad_norm_vision_encoder": [],
+                "param_update_norm_unet": [],
+                "param_update_norm_te1": [],
+                "param_update_norm_te2": [],
+                "param_update_norm_ve": [],
+                "param_cumulative_drift_unet": [],
+                "param_cumulative_drift_te1": [],
+                "param_cumulative_drift_te2": [],
+                "param_cumulative_drift_ve": [],
             }
 
         # Calculate uniform sample steps
@@ -6491,6 +6513,14 @@ async def get_training_metrics_db(
         grad_norm_te2_data = []
         grad_norm_unet_data = []
         grad_norm_ve_data = []
+        param_update_norm_unet_data = []
+        param_update_norm_te1_data = []
+        param_update_norm_te2_data = []
+        param_update_norm_ve_data = []
+        param_cumulative_drift_unet_data = []
+        param_cumulative_drift_te1_data = []
+        param_cumulative_drift_te2_data = []
+        param_cumulative_drift_ve_data = []
 
         import math
 
@@ -6533,6 +6563,23 @@ async def get_training_metrics_db(
             if is_valid_float(getattr(m, 'grad_norm_vision_encoder', None)):
                 grad_norm_ve_data.append({**point, "value": m.grad_norm_vision_encoder})
 
+            if is_valid_float(getattr(m, 'param_update_norm_unet', None)):
+                param_update_norm_unet_data.append({**point, "value": m.param_update_norm_unet})
+            if is_valid_float(getattr(m, 'param_update_norm_te1', None)):
+                param_update_norm_te1_data.append({**point, "value": m.param_update_norm_te1})
+            if is_valid_float(getattr(m, 'param_update_norm_te2', None)):
+                param_update_norm_te2_data.append({**point, "value": m.param_update_norm_te2})
+            if is_valid_float(getattr(m, 'param_update_norm_ve', None)):
+                param_update_norm_ve_data.append({**point, "value": m.param_update_norm_ve})
+            if is_valid_float(getattr(m, 'param_cumulative_drift_unet', None)):
+                param_cumulative_drift_unet_data.append({**point, "value": m.param_cumulative_drift_unet})
+            if is_valid_float(getattr(m, 'param_cumulative_drift_te1', None)):
+                param_cumulative_drift_te1_data.append({**point, "value": m.param_cumulative_drift_te1})
+            if is_valid_float(getattr(m, 'param_cumulative_drift_te2', None)):
+                param_cumulative_drift_te2_data.append({**point, "value": m.param_cumulative_drift_te2})
+            if is_valid_float(getattr(m, 'param_cumulative_drift_ve', None)):
+                param_cumulative_drift_ve_data.append({**point, "value": m.param_cumulative_drift_ve})
+
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
@@ -6543,6 +6590,14 @@ async def get_training_metrics_db(
             "grad_norm_text_encoder_2": grad_norm_te2_data,
             "grad_norm_unet": grad_norm_unet_data,
             "grad_norm_vision_encoder": grad_norm_ve_data,
+            "param_update_norm_unet": param_update_norm_unet_data,
+            "param_update_norm_te1": param_update_norm_te1_data,
+            "param_update_norm_te2": param_update_norm_te2_data,
+            "param_update_norm_ve": param_update_norm_ve_data,
+            "param_cumulative_drift_unet": param_cumulative_drift_unet_data,
+            "param_cumulative_drift_te1": param_cumulative_drift_te1_data,
+            "param_cumulative_drift_te2": param_cumulative_drift_te2_data,
+            "param_cumulative_drift_ve": param_cumulative_drift_ve_data,
         }
 
     except Exception as e:

@@ -645,9 +645,7 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix}   Text Encoder 1 LR: {self.text_encoder_1_lr}")
         if hasattr(self, 'text_encoder_2_lr'):
             print(f"{self.log_prefix}   Text Encoder 2 LR: {self.text_encoder_2_lr}")
-        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
-            ve_lr_display = getattr(self, '_vision_encoder_lr', None) or getattr(self, 'text_encoder_lr', None)
-            print(f"{self.log_prefix}   Vision Encoder LR: {ve_lr_display} (train=True)")
+        # Note: Vision Encoder LR is logged in train() when VE is actually loaded
         print(f"{self.log_prefix} ====================================")
 
         print(f"[Trainer] Precision settings:")
@@ -2268,6 +2266,43 @@ class BaseTrainer(ABC):
     # ============================================================
     # Optimizer Setup
     # ============================================================
+
+    def _build_component_lr_list(self):
+        """
+        Build a (component_lrs, component_names) pair matching the actual optimizer
+        param group order created by setup_trainable_parameters() + VE append.
+
+        Group ordering:
+          - UNet (if train_unet)
+          - TE1 (if train_text_encoder and text_encoder is not None)
+          - TE2 (if train_text_encoder and is_sdxl and text_encoder_2 is not None)
+          - VE  (if _train_vision_encoder and vision_encoder is not None)
+
+        Returns:
+            Tuple[List[float], List[str]]: (lrs, names) matching optimizer group indices
+        """
+        lrs = []
+        names = []
+
+        if getattr(self, 'train_unet', True) and getattr(self, 'unet', None) is not None:
+            lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+            names.append("U-Net")
+
+        if getattr(self, 'train_text_encoder', False):
+            if getattr(self, 'text_encoder', None) is not None:
+                lrs.append(getattr(self, 'text_encoder_1_lr',
+                                   getattr(self, 'text_encoder_lr', self.learning_rate)))
+                names.append("TE1")
+            if getattr(self, 'is_sdxl', False) and getattr(self, 'text_encoder_2', None) is not None:
+                lrs.append(getattr(self, 'text_encoder_2_lr', self.learning_rate))
+                names.append("TE2")
+
+        if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
+            ve_lr = getattr(self, '_vision_encoder_lr', None) or getattr(self, 'text_encoder_lr', self.learning_rate)
+            lrs.append(ve_lr)
+            names.append("VisionEncoder")
+
+        return lrs, names
 
     def setup_optimizer(
         self,
@@ -6896,40 +6931,31 @@ class BaseTrainer(ABC):
 
                     # IMPORTANT: Update optimizer learning rate from YAML config
                     # (Necessary when user modifies LR in YAML before resume)
-                    # Use per-component LRs (unet_lr, text_encoder_lr, etc.) if available
+                    # Build component LR list matching actual optimizer group order:
+                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
                     if hasattr(self, 'optimizer') and self.optimizer is not None:
-                        component_lrs = [
-                            getattr(self, 'unet_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_1_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_2_lr', self.learning_rate),
-                            getattr(self, 'image_encoder_lr', self.learning_rate),
-                        ]
+                        component_lrs, component_names = self._build_component_lr_list()
 
                         for i, param_group in enumerate(self.optimizer.param_groups):
                             old_lr = param_group['lr']
                             new_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
+                            name = component_names[i] if i < len(component_names) else f"group{i}"
                             param_group['lr'] = new_lr
                             if old_lr != new_lr:
-                                print(f"{self.log_prefix} Updated optimizer param_group[{i}] LR: {old_lr:.2e} -> {new_lr:.2e}")
+                                print(f"{self.log_prefix} Updated optimizer {name} LR (param_group[{i}]): {old_lr:.2e} -> {new_lr:.2e}")
 
                     # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
                     if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
                         if hasattr(self.lr_scheduler, 'base_lrs'):
-                            component_lrs = [
-                                getattr(self, 'unet_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_1_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_2_lr', self.learning_rate),
-                                getattr(self, 'image_encoder_lr', self.learning_rate),
-                            ]
+                            component_lrs, component_names = self._build_component_lr_list()
 
                             for i in range(len(self.lr_scheduler.base_lrs)):
                                 old_base_lr = self.lr_scheduler.base_lrs[i]
                                 new_base_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
+                                name = component_names[i] if i < len(component_names) else f"group{i}"
                                 self.lr_scheduler.base_lrs[i] = new_base_lr
                                 if old_base_lr != new_base_lr:
-                                    print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+                                    print(f"{self.log_prefix} Updated LR Scheduler {name} base_lr[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
 
                     # Load optimizer state (momentum, variance, etc.)
                     self.load_optimizer_state(checkpoint_step)
@@ -6983,40 +7009,31 @@ class BaseTrainer(ABC):
 
                     # IMPORTANT: Update optimizer learning rate from YAML config
                     # (Necessary when user modifies LR in YAML before resume)
-                    # Use per-component LRs (unet_lr, text_encoder_lr, etc.) if available
+                    # Build component LR list matching actual optimizer group order:
+                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
                     if hasattr(self, 'optimizer') and self.optimizer is not None:
-                        component_lrs = [
-                            getattr(self, 'unet_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_1_lr', self.learning_rate),
-                            getattr(self, 'text_encoder_2_lr', self.learning_rate),
-                            getattr(self, 'image_encoder_lr', self.learning_rate),
-                        ]
+                        component_lrs, component_names = self._build_component_lr_list()
 
                         for i, param_group in enumerate(self.optimizer.param_groups):
                             old_lr = param_group['lr']
                             new_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
+                            name = component_names[i] if i < len(component_names) else f"group{i}"
                             param_group['lr'] = new_lr
                             if old_lr != new_lr:
-                                print(f"{self.log_prefix} Updated optimizer param_group[{i}] LR: {old_lr:.2e} -> {new_lr:.2e}")
+                                print(f"{self.log_prefix} Updated optimizer {name} LR (param_group[{i}]): {old_lr:.2e} -> {new_lr:.2e}")
 
                     # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
                     if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
                         if hasattr(self.lr_scheduler, 'base_lrs'):
-                            component_lrs = [
-                                getattr(self, 'unet_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_1_lr', self.learning_rate),
-                                getattr(self, 'text_encoder_2_lr', self.learning_rate),
-                                getattr(self, 'image_encoder_lr', self.learning_rate),
-                            ]
+                            component_lrs, component_names = self._build_component_lr_list()
 
                             for i in range(len(self.lr_scheduler.base_lrs)):
                                 old_base_lr = self.lr_scheduler.base_lrs[i]
                                 new_base_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
+                                name = component_names[i] if i < len(component_names) else f"group{i}"
                                 self.lr_scheduler.base_lrs[i] = new_base_lr
                                 if old_base_lr != new_base_lr:
-                                    print(f"{self.log_prefix} Updated LR Scheduler base_lrs[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+                                    print(f"{self.log_prefix} Updated LR Scheduler {name} base_lr[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
 
                     # Load optimizer state (momentum, variance, etc.)
                     self.load_optimizer_state(checkpoint_step)

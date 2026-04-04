@@ -199,6 +199,10 @@ class TrainingConfigGenerator:
                 if ds_caption_types:
                     dataset_entry["caption_types"] = ds_caption_types
 
+                # Add ve_reconstruction_mode if specified
+                if ds_config.get("ve_reconstruction_mode"):
+                    dataset_entry["ve_reconstruction_mode"] = True
+
                 datasets_array.append(dataset_entry)
         else:
             # Fallback: use single dataset_path (backward compatibility)

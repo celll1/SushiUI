@@ -1392,6 +1392,7 @@ export interface DatasetConfigItem {
   dataset_id: number;
   caption_types: string[];  // Empty = use all caption types
   filters: Record<string, any>;  // Filter configuration
+  ve_reconstruction_mode?: boolean;  // Use training image as its own VE reference (no text conditioning)
 }
 
 export interface SamplePrompt {

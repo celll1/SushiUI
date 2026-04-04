@@ -1007,6 +1007,7 @@ def main():
             # Get dataset items with caching support
             # On resume: loads from cache (fast), on first run: fetches from DB and caches
             caption_types = ds_config.get("caption_types", [])
+            ve_reconstruction_mode = ds_config.get("ve_reconstruction_mode", False)
             output_dir = Path(run.output_dir)
             is_resume = start_epoch > 0
             dataset_items = get_dataset_items_cached(
@@ -1024,6 +1025,8 @@ def main():
             # Add dataset_unique_id to each item for cache management
             for item in dataset_items:
                 item["dataset_unique_id"] = dataset.unique_id
+                if ve_reconstruction_mode:
+                    item["_ve_reconstruction_mode"] = True
 
             all_dataset_items.extend(dataset_items)
 

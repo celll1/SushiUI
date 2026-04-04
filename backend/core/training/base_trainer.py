@@ -7417,6 +7417,14 @@ class BaseTrainer(ABC):
                     # Clear resume state so we don't skip batches in subsequent epochs
                     resume_training_state = None
 
+                # Inject reference_images for ve_reconstruction_mode items (use own image as reference).
+                # Must happen BEFORE the batch splitting below so these items go into "ref" sub-batches.
+                if getattr(self, 'vision_encoder', None) is not None:
+                    for _b in batches:
+                        for _item, _ in _b:
+                            if _item.get("_ve_reconstruction_mode") and not _item.get("reference_images"):
+                                _item["reference_images"] = [_item["image_path"]]
+
                 # When VE is configured, split any mixed batch (ref + no-ref) into pure sub-batches.
                 # Ref-image batches and no-ref batches have different embedding shapes so they cannot
                 # be collated together.
@@ -8201,6 +8209,19 @@ class BaseTrainer(ABC):
                                 mnt_text_embeddings = mnt_text_embeddings.detach()
                                 if mnt_pooled_embeddings is not None:
                                     mnt_pooled_embeddings = mnt_pooled_embeddings.detach()
+                            # VE Reconstruction Mode: zero text embeddings for items that use their own
+                            # image as reference. Mask broadcasts over sequence dim (handles chunking).
+                            _ve_recon_mask = [bool(_item.get("_ve_reconstruction_mode")) for _item, _ in batch]
+                            if any(_ve_recon_mask) and mnt_text_embeddings is not None:
+                                _mask = torch.tensor(
+                                    _ve_recon_mask,
+                                    dtype=mnt_text_embeddings.dtype,
+                                    device=mnt_text_embeddings.device,
+                                ).view(-1, 1, 1)  # [B, 1, 1] broadcasts over [B, seq_len, dim]
+                                mnt_text_embeddings = mnt_text_embeddings * (1.0 - _mask)
+                                if mnt_pooled_embeddings is not None:
+                                    _mask_p = _mask.view(-1, 1)  # [B, 1] for pooled embedding
+                                    mnt_pooled_embeddings = mnt_pooled_embeddings * (1.0 - _mask_p)
                             if batch_has_ref:
                                 try:
                                     ve_obj.to(self.device)

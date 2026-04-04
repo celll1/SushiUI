@@ -19,6 +19,7 @@ interface DatasetConfig {
   dataset_id: number;
   caption_types: string[];
   filters: Record<string, any>;
+  ve_reconstruction_mode?: boolean;
 }
 
 interface ModelInfo {
@@ -1416,6 +1417,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
               {/* Caption Types: Moved to Dataset Management > Caption Processing */}
               {/* Configure caption types in Dataset Management page for each dataset */}
+
+              {/* VE Reconstruction Mode - only shown when VE is configured */}
+              {visionEncoderPath && (
+                <div className="flex items-center space-x-2 mt-1.5">
+                  <input
+                    type="checkbox"
+                    id={`ve-recon-mode-${index}`}
+                    checked={config.ve_reconstruction_mode || false}
+                    onChange={(e) => {
+                      const updated = [...datasetConfigs];
+                      updated[index] = { ...updated[index], ve_reconstruction_mode: e.target.checked };
+                      setDatasetConfigs(updated);
+                    }}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor={`ve-recon-mode-${index}`} className="text-xs text-gray-400 cursor-pointer">
+                    VE Reconstruction Mode
+                  </label>
+                </div>
+              )}
             </div>
           ))}
         </div>

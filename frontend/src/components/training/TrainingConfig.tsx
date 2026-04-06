@@ -3638,7 +3638,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 placeholder="e.g., 100"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Computes ||θ_t - θ_{t-K}||_F (update norm) and ||θ_t - θ_0||_F / ||θ_0||_F (cumulative drift) per component on CPU every N steps
+                {"Computes ||θ_t - θ_{t-K}||_F (update norm) and ||θ_t - θ_0||_F / ||θ_0||_F (cumulative drift) per component on CPU every N steps"}
               </p>
             </div>
           )}

@@ -801,6 +801,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     });
   };
 
+  // Apply reference image dimensions (floor to multiple of 8) to sample width/height
+  const applyRefImageSize = () => {
+    // Find the first prompt that has a preview loaded
+    const firstIndex = samplePrompts.findIndex((_, i) => referenceImagePreviews[i]);
+    if (firstIndex === -1) return;
+    const url = referenceImagePreviews[firstIndex];
+    const img = new Image();
+    img.onload = () => {
+      setSampleWidth(Math.floor(img.naturalWidth / 8) * 8);
+      setSampleHeight(Math.floor(img.naturalHeight / 8) * 8);
+    };
+    img.src = url;
+  };
+
   const handleReferenceImageDrop = (promptIndex: number, e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -3453,7 +3467,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           {/* Sample Parameters */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Width</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-gray-400">Width</label>
+                {Object.keys(referenceImagePreviews).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={applyRefImageSize}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    title="Set width and height from reference image (floor to multiple of 8)"
+                  >
+                    From ref image
+                  </button>
+                )}
+              </div>
               <input
                 type="number"
                 min="512"

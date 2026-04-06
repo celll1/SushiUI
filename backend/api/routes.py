@@ -4453,6 +4453,7 @@ class DatasetConfigItem(BaseModel):
     dataset_id: int
     caption_types: List[str] = []  # Empty = use all caption types
     filters: Dict[str, Any] = {}  # {"tag_include": ["1girl"], "tag_exclude": ["photo"], "caption_contains": "smile"}
+    ve_reconstruction_mode: Optional[bool] = False
 
 class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
@@ -4650,6 +4651,9 @@ async def create_training_run(
                 # Add caption_types if specified
                 if config.get("caption_types"):
                     yaml_config["caption_types"] = config["caption_types"]
+                # Add ve_reconstruction_mode if specified
+                if config.get("ve_reconstruction_mode"):
+                    yaml_config["ve_reconstruction_mode"] = True
                 dataset_configs_for_yaml.append(yaml_config)
 
         # Generate run_id and auto-generate run_name if not provided
@@ -5356,6 +5360,8 @@ async def update_training_run(
                     }
                     if config.caption_types:
                         yaml_config["caption_types"] = config.caption_types
+                    if config.ve_reconstruction_mode:
+                        yaml_config["ve_reconstruction_mode"] = True
                     dataset_configs_for_yaml.append(yaml_config)
 
         # Get primary dataset

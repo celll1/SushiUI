@@ -5303,6 +5303,10 @@ async def get_training_run_params(
         "vision_encoder_path": training_params.get("vision_encoder_path", None),
         "train_vision_encoder": training_params.get("train_vision_encoder", False),
         "vision_encoder_lr": training_params.get("vision_encoder_lr", None),
+        "gradient_routing_ve": training_params.get("gradient_routing_ve", False),
+        # Parameter change tracking
+        "param_tracking": training_params.get("param_tracking", False),
+        "param_tracking_interval": training_params.get("param_tracking_interval", 100),
         # Priority training
         "priority_training": training_params.get("priority_training", None),
         # ReLoRA parameters

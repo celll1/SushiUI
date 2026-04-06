@@ -5192,11 +5192,14 @@ async def get_training_run_params(
         dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
         if dataset:
             print(f"[get_training_run_params] Found dataset: id={dataset.id}, name={dataset.name}")
-            dataset_configs.append({
+            entry = {
                 "dataset_id": dataset.id,
                 "caption_types": ds_config.get("caption_types", []),
                 "filters": {}
-            })
+            }
+            if ds_config.get("ve_reconstruction_mode"):
+                entry["ve_reconstruction_mode"] = True
+            dataset_configs.append(entry)
         else:
             print(f"[get_training_run_params] Dataset not found in database for path: {dataset_path}")
         # Extract cache_latents_to_disk from first dataset

@@ -317,6 +317,341 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return true;
   });
 
+  // ============================================================
+  // Centralized state <-> params dict conversion
+  // ============================================================
+  // These two functions are the SINGLE SOURCE OF TRUTH for which
+  // training parameters flow through the form. handleSubmit() and
+  // loadTrainingRunParams() both delegate to them, so adding a new
+  // field requires updating only:
+  //   1. The useState declaration above
+  //   2. getRequestData() (build outgoing dict)
+  //   3. applyParamsToState() (restore from incoming dict)
+  // and the UI <input> element.
+  // ============================================================
+
+  /**
+   * Build the outgoing requestData dict from current useState values.
+   * Used by handleSubmit() and Loop generation stepParams.
+   */
+  const getRequestData = useCallback((): any => {
+    return {
+      dataset_configs: datasetConfigs.filter(c => c.dataset_id !== 0),
+      run_name: runName.trim() || undefined,
+      training_method: trainingMethod,
+      base_model_path: baseModelPath.trim(),
+      total_steps: useEpochs ? undefined : totalSteps,
+      epochs: useEpochs ? epochs : undefined,
+      batch_size: batchSize,
+      learning_rate: parseFloat(learningRate),
+      lr_scheduler: lrScheduler,
+      lr_warmup_steps: lrWarmupSteps,
+      optimizer: optimizer,
+      optimizer_is_paged: optimizerIsPaged,
+      optimizer_cautious: optimizerCautious,
+      optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
+      optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
+      optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
+      optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
+      optimizer_schedule_free: optimizerScheduleFree,
+      optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
+      optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
+      optimizer_use_radam: optimizerUseRadam,
+      optimizer_stochastic_rounding: optimizerStochasticRounding,
+      lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? loraRank : undefined,
+      lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? loraAlpha : undefined,
+      lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? loraDtype : undefined,
+      ...(trainingMethod === "relora" ? {
+        relora_merge_every: reloraMergeEvery,
+        relora_merge_unit: reloraMergeUnit,
+        restart_warmup_steps: restartWarmupSteps,
+        optimizer_reset_strategy: optimizerResetStrategy,
+        optimizer_pruning_ratio: optimizerPruningRatio,
+      } : {}),
+      save_every: saveEvery,
+      save_every_unit: saveEveryUnit,
+      sample_every: sampleEvery,
+      sample_prompts: samplePrompts,
+      sample_width: sampleWidth,
+      sample_height: sampleHeight,
+      sample_steps: sampleSteps,
+      sample_cfg_scale: sampleCfgScale,
+      sample_sampler: sampleSampler,
+      sample_schedule_type: sampleScheduleType,
+      sample_seed: sampleSeed,
+      resume_from_checkpoint: resumeFromCheckpoint || undefined,
+      debug_latents: debugLatents,
+      debug_latents_every: debugLatentsEvery,
+      enable_bucketing: enableBucketing,
+      base_resolutions: enableBucketing ? baseResolutions : undefined,
+      bucket_strategy: enableBucketing ? bucketStrategy : undefined,
+      multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
+      cache_latents_to_disk: cacheLatentsToDisk,
+      force_recache: forceRecache,
+      train_unet: trainUnet,
+      train_text_encoder: trainTextEncoder,
+      train_image_encoder: trainImageEncoder,
+      unet_lr: unetLr ? parseFloat(unetLr) : null,
+      text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
+      text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
+      text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
+      image_encoder_lr: imageEncoderLr ? parseFloat(imageEncoderLr) : null,
+      weight_dtype: weightDtype,
+      training_dtype: trainingDtype,
+      output_dtype: outputDtype,
+      vae_dtype: vaeDtype,
+      mixed_precision: mixedPrecision,
+      use_flash_attention: useFlashAttention,
+      min_snr_gamma: minSnrGamma,
+      reconstruction_loss_weight: reconstructionLossWeight,
+      text_encoding_mode: textEncodingMode,
+      text_encoding_swap_interval: textEncodingSwapInterval,
+      use_reference_images: useReferenceImages,
+      vision_encoder_path: visionEncoderPath || null,
+      train_vision_encoder: trainVisionEncoder,
+      vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
+      gradient_routing_ve: gradientRoutingVE,
+      param_tracking: paramTracking,
+      param_tracking_interval: paramTrackingInterval,
+      latent_encoding_mode: latentEncodingMode,
+      latent_encoding_swap_interval: latentEncodingSwapInterval,
+      blocks_to_swap: blocksToSwap,
+      use_pinned_memory: usePinnedMemory,
+      num_optimizer_groups: numOptimizerGroups,
+      multi_noise_timesteps: multiNoiseTimesteps,
+      multi_noise_mode: multiNoiseMode,
+      trajectory_blend_alpha: trajectoryBlendAlpha,
+      timestep_sampling: {
+        distribution: timestepDistribution,
+        min_timestep: timestepMin,
+        max_timestep: timestepMax,
+        ...(timestepDistribution === "logit_normal" || timestepDistribution === "lognormal" || timestepDistribution === "normal" ? {
+          mean: timestepMean,
+          std: timestepStd,
+        } : {}),
+        ...(timestepDistribution === "beta" ? {
+          alpha: timestepAlpha,
+          beta: timestepBeta,
+        } : {}),
+      },
+      regularization_type: regularizationType !== "none" ? regularizationType : null,
+      snr_regularization_weight: snrRegularizationWeight,
+      snr_timestep_adaptive: snrTimestepAdaptive,
+      snr_penalty_mode: snrPenaltyMode,
+      energy_regularization_weight: energyRegularizationWeight,
+      energy_timestep_adaptive: energyTimestepAdaptive,
+      energy_penalty_mode: energyPenaltyMode,
+      energy_normalize_by_pixels: energyNormalizeByPixels,
+      noise_process: noiseProcess,
+      prediction_target: predictionTarget,
+      strict_validation: strictValidation,
+      controlnet_type: trainingMethod === "controlnet" ? controlnetType : undefined,
+      controlnet_pretrained_path: trainingMethod === "controlnet" && controlnetPretrainedPath ? controlnetPretrainedPath : undefined,
+      controlnet_init_from_unet: trainingMethod === "controlnet" ? controlnetInitFromUnet : undefined,
+      lllite_conditioning_channels: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteConditioningChannels : undefined,
+      lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
+      condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
+      condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
+      priority_training: priorityEnabled && priorityText.trim() ? {
+        entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
+        multiplier: priorityMultiplier,
+      } : undefined,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, totalSteps, epochs, batchSize,
+    learningRate, lrScheduler, lrWarmupSteps, optimizer, optimizerIsPaged, optimizerCautious,
+    optimizerBeta1, optimizerBeta2, optimizerEpsilon, optimizerWeightDecay, optimizerScheduleFree,
+    optimizerScheduleFreeR, optimizerScheduleFreeWeightLrPower, optimizerUseRadam, optimizerStochasticRounding,
+    loraRank, loraAlpha, loraDtype, reloraMergeEvery, reloraMergeUnit, restartWarmupSteps,
+    optimizerResetStrategy, optimizerPruningRatio, saveEvery, saveEveryUnit, sampleEvery, samplePrompts,
+    sampleWidth, sampleHeight, sampleSteps, sampleCfgScale, sampleSampler, sampleScheduleType, sampleSeed,
+    resumeFromCheckpoint, debugLatents, debugLatentsEvery, enableBucketing, baseResolutions, bucketStrategy,
+    multiResolutionMode, cacheLatentsToDisk, forceRecache, trainUnet, trainTextEncoder, trainImageEncoder,
+    unetLr, textEncoderLr, textEncoder1Lr, textEncoder2Lr, imageEncoderLr, weightDtype, trainingDtype,
+    outputDtype, vaeDtype, mixedPrecision, useFlashAttention, minSnrGamma, reconstructionLossWeight,
+    textEncodingMode, textEncodingSwapInterval, useReferenceImages, visionEncoderPath, trainVisionEncoder,
+    visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval, latentEncodingMode,
+    latentEncodingSwapInterval, blocksToSwap, usePinnedMemory, numOptimizerGroups, multiNoiseTimesteps,
+    multiNoiseMode, trajectoryBlendAlpha, timestepDistribution, timestepMin, timestepMax, timestepMean,
+    timestepStd, timestepAlpha, timestepBeta, regularizationType, snrRegularizationWeight,
+    snrTimestepAdaptive, snrPenaltyMode, energyRegularizationWeight, energyTimestepAdaptive, energyPenaltyMode,
+    energyNormalizeByPixels, noiseProcess, predictionTarget, strictValidation, controlnetType,
+    controlnetPretrainedPath, controlnetInitFromUnet, llliteConditioningChannels, llliteRank,
+    conditionPreprocessors, conditionCacheMode, priorityEnabled, priorityText, priorityMultiplier,
+  ]);
+
+  /**
+   * Apply an incoming params dict (from get_training_run_params API) to all useStates.
+   * Used by loadTrainingRunParams() for Edit Config restoration.
+   */
+  const applyParamsToState = useCallback((params: any) => {
+    if (params.run_name) setRunName(params.run_name);
+    if (params.base_model_path !== undefined) setBaseModelPath(params.base_model_path || "");
+    if (params.training_method) setTrainingMethod(params.training_method);
+    if (params.dataset_configs) setDatasetConfigs(params.dataset_configs);
+
+    // LoRA
+    if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
+    if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
+    if (params.lora_dtype !== undefined) setLoraDtype(params.lora_dtype as "fp32" | "fp16" | "bf16");
+
+    // Steps/epochs
+    if (params.total_steps !== undefined && params.total_steps !== null) {
+      setTotalSteps(params.total_steps);
+      setUseEpochs(false);
+    }
+    if (params.epochs !== undefined && params.epochs !== null) {
+      setEpochs(params.epochs);
+      setUseEpochs(true);
+    }
+
+    // Core training
+    if (params.batch_size !== undefined) setBatchSize(params.batch_size);
+    if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
+    if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
+    if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
+    if (params.optimizer !== undefined) setOptimizer(params.optimizer);
+
+    // Optimizer hyperparameters
+    if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
+    if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) setOptimizerBeta2(params.optimizer_beta2.toString());
+    if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) setOptimizerEpsilon(params.optimizer_epsilon.toString());
+    if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
+    if (params.optimizer_is_paged !== undefined) setOptimizerIsPaged(params.optimizer_is_paged);
+    if (params.optimizer_cautious !== undefined) setOptimizerCautious(params.optimizer_cautious);
+    if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);
+    if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r.toString());
+    if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power.toString());
+    if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
+    if (params.optimizer_stochastic_rounding !== undefined) setOptimizerStochasticRounding(params.optimizer_stochastic_rounding);
+
+    // Save/Resume
+    if (params.save_every !== undefined) setSaveEvery(params.save_every);
+    if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
+    if (params.resume_from_checkpoint !== undefined) setResumeFromCheckpoint(params.resume_from_checkpoint);
+
+    // Component training
+    if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
+    if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
+    if (params.train_image_encoder !== undefined) setTrainImageEncoder(params.train_image_encoder);
+    if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
+    if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
+    if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
+    if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
+    if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) setImageEncoderLr(params.image_encoder_lr.toString());
+
+    // Precision
+    if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
+    if (params.training_dtype !== undefined) setTrainingDtype(params.training_dtype);
+    if (params.output_dtype !== undefined) setOutputDtype(params.output_dtype);
+    if (params.vae_dtype !== undefined) setVaeDtype(params.vae_dtype);
+    if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
+    if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
+    if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
+    if (params.reconstruction_loss_weight !== undefined) setReconstructionLossWeight(params.reconstruction_loss_weight);
+
+    // Memory optimization
+    if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
+    if (params.text_encoding_swap_interval !== undefined) setTextEncodingSwapInterval(params.text_encoding_swap_interval);
+    if (params.latent_encoding_mode !== undefined) setLatentEncodingMode(params.latent_encoding_mode);
+    if (params.latent_encoding_swap_interval !== undefined) setLatentEncodingSwapInterval(params.latent_encoding_swap_interval);
+    if (params.blocks_to_swap !== undefined) setBlocksToSwap(params.blocks_to_swap);
+    if (params.use_pinned_memory !== undefined) setUsePinnedMemory(params.use_pinned_memory);
+    if (params.num_optimizer_groups !== undefined) setNumOptimizerGroups(params.num_optimizer_groups);
+
+    // MNT
+    if (params.multi_noise_timesteps !== undefined) setMultiNoiseTimesteps(params.multi_noise_timesteps);
+    if (params.multi_noise_mode !== undefined) setMultiNoiseMode(params.multi_noise_mode);
+    if (params.trajectory_blend_alpha !== undefined) setTrajectoryBlendAlpha(params.trajectory_blend_alpha);
+    if (params.timestep_sampling) {
+      if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
+      if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
+      if (params.timestep_sampling.max_timestep !== undefined) setTimestepMax(params.timestep_sampling.max_timestep);
+      if (params.timestep_sampling.mean !== undefined) setTimestepMean(params.timestep_sampling.mean);
+      if (params.timestep_sampling.std !== undefined) setTimestepStd(params.timestep_sampling.std);
+      if (params.timestep_sampling.alpha !== undefined) setTimestepAlpha(params.timestep_sampling.alpha);
+      if (params.timestep_sampling.beta !== undefined) setTimestepBeta(params.timestep_sampling.beta);
+    }
+
+    // Regularization
+    if (params.regularization_type !== undefined) setRegularizationType(params.regularization_type || "none");
+    if (params.snr_regularization_weight !== undefined) setSnrRegularizationWeight(params.snr_regularization_weight);
+    if (params.snr_timestep_adaptive !== undefined) setSnrTimestepAdaptive(params.snr_timestep_adaptive);
+    if (params.snr_penalty_mode !== undefined) setSnrPenaltyMode(params.snr_penalty_mode);
+    if (params.energy_regularization_weight !== undefined) setEnergyRegularizationWeight(params.energy_regularization_weight);
+    if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
+    if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
+    if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
+
+    // Unified Training Framework
+    if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
+    if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
+    if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
+
+    // ControlNet
+    if (params.controlnet_type !== undefined) setControlnetType(params.controlnet_type as "standard" | "lllite");
+    if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setControlnetPretrainedPath(params.controlnet_pretrained_path);
+    if (params.controlnet_init_from_unet !== undefined) setControlnetInitFromUnet(params.controlnet_init_from_unet);
+    if (params.lllite_conditioning_channels !== undefined) setLlliteConditioningChannels(params.lllite_conditioning_channels);
+    if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
+    if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
+    if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
+
+    // Sample
+    if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
+    if (params.sample_prompts && params.sample_prompts.length > 0) setSamplePrompts(params.sample_prompts);
+    if (params.sample_width !== undefined) setSampleWidth(params.sample_width);
+    if (params.sample_height !== undefined) setSampleHeight(params.sample_height);
+    if (params.sample_steps !== undefined) setSampleSteps(params.sample_steps);
+    if (params.sample_cfg_scale !== undefined) setSampleCfgScale(params.sample_cfg_scale);
+    if (params.sample_sampler !== undefined) setSampleSampler(params.sample_sampler);
+    if (params.sample_schedule_type !== undefined) setSampleScheduleType(params.sample_schedule_type);
+    if (params.sample_seed !== undefined) setSampleSeed(params.sample_seed);
+
+    // Debug
+    if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
+    if (params.debug_latents_every !== undefined) setDebugLatentsEvery(params.debug_latents_every);
+
+    // Bucketing
+    if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
+    if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
+      setBaseResolutions(params.base_resolutions);
+    } else if (params.base_resolutions === null) {
+      setBaseResolutions([1024]);
+    }
+    if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
+    if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
+
+    // Cache
+    if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
+    if (params.force_recache !== undefined) setForceRecache(params.force_recache);
+
+    // Reference images / Vision encoder
+    if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
+    if (params.vision_encoder_path !== undefined) setVisionEncoderPath(params.vision_encoder_path || "");
+    if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
+    if (params.gradient_routing_ve !== undefined) setGradientRoutingVE(params.gradient_routing_ve);
+    if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
+    if (params.param_tracking !== undefined) setParamTracking(params.param_tracking);
+    if (params.param_tracking_interval !== undefined) setParamTrackingInterval(params.param_tracking_interval);
+
+    // Priority training
+    if (params.priority_training) {
+      setPriorityEnabled(true);
+      const entries = params.priority_training.entries || [];
+      setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
+      setPriorityMultiplier(params.priority_training.multiplier || 1);
+    }
+
+    // ReLoRA
+    if (params.relora_merge_every !== undefined) setReloraMergeEvery(params.relora_merge_every);
+    if (params.relora_merge_unit !== undefined) setReloraMergeUnit(params.relora_merge_unit);
+    if (params.restart_warmup_steps !== undefined) setRestartWarmupSteps(params.restart_warmup_steps);
+    if (params.optimizer_reset_strategy !== undefined) setOptimizerResetStrategy(params.optimizer_reset_strategy);
+    if (params.optimizer_pruning_ratio !== undefined) setOptimizerPruningRatio(params.optimizer_pruning_ratio);
+  }, []);
+
   // Load training run parameters for edit mode
   const loadTrainingRunParams = useCallback(async (runId: number) => {
     const startTime = performance.now();
@@ -337,178 +672,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Populate all form fields from loaded parameters
       setRunName(params.run_name || "");
-      setBaseModelPath(params.base_model_path || "");
-      setTrainingMethod(params.training_method || "lora");
-
-      // Dataset configs
-      if (params.dataset_configs) {
-        setDatasetConfigs(params.dataset_configs);
-      }
-
-      // LoRA rank & alpha & dtype
-      if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
-      if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
-      if (params.lora_dtype !== undefined) setLoraDtype(params.lora_dtype as "fp32" | "fp16" | "bf16");
-
-      // Training parameters
-      if (params.total_steps !== undefined && params.total_steps !== null) {
-        setTotalSteps(params.total_steps);
-        setUseEpochs(false);
-      }
-      if (params.epochs !== undefined && params.epochs !== null) {
-        setEpochs(params.epochs);
-        setUseEpochs(true);
-      }
-      if (params.batch_size !== undefined) setBatchSize(params.batch_size);
-      if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
-      if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
-      if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
-      if (params.optimizer !== undefined) setOptimizer(params.optimizer);
-
-      // Optimizer parameters
-      if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
-      if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) setOptimizerBeta2(params.optimizer_beta2.toString());
-      if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) setOptimizerEpsilon(params.optimizer_epsilon.toString());
-      if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
-      if (params.optimizer_is_paged !== undefined) setOptimizerIsPaged(params.optimizer_is_paged);
-      if (params.optimizer_cautious !== undefined) setOptimizerCautious(params.optimizer_cautious);
-      if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);
-      if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r);
-      if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power);
-      if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
-      if (params.optimizer_stochastic_rounding !== undefined) setOptimizerStochasticRounding(params.optimizer_stochastic_rounding);
-
-      // Save & Sample intervals
-      if (params.save_every !== undefined) setSaveEvery(params.save_every);
-      if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
-      if (params.resume_from_checkpoint !== undefined) setResumeFromCheckpoint(params.resume_from_checkpoint);
-
-      // Component-specific training
-      if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
-      if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
-      if (params.train_image_encoder !== undefined) setTrainImageEncoder(params.train_image_encoder);
-      if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
-      if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
-      if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
-      if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
-      if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) setImageEncoderLr(params.image_encoder_lr.toString());
-
-      // Precision settings
-      if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
-      if (params.training_dtype !== undefined) setTrainingDtype(params.training_dtype);
-      if (params.output_dtype !== undefined) setOutputDtype(params.output_dtype);
-      if (params.vae_dtype !== undefined) setVaeDtype(params.vae_dtype);
-      if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
-      if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
-      if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
-      if (params.reconstruction_loss_weight !== undefined) setReconstructionLossWeight(params.reconstruction_loss_weight);
-
-      // Memory optimization
-      if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
-      if (params.text_encoding_swap_interval !== undefined) setTextEncodingSwapInterval(params.text_encoding_swap_interval);
-      if (params.latent_encoding_mode !== undefined) setLatentEncodingMode(params.latent_encoding_mode);
-      if (params.latent_encoding_swap_interval !== undefined) setLatentEncodingSwapInterval(params.latent_encoding_swap_interval);
-      if (params.blocks_to_swap !== undefined) setBlocksToSwap(params.blocks_to_swap);
-      if (params.use_pinned_memory !== undefined) setUsePinnedMemory(params.use_pinned_memory);
-      if (params.num_optimizer_groups !== undefined) setNumOptimizerGroups(params.num_optimizer_groups);
-
-      // MNT settings
-      if (params.multi_noise_timesteps !== undefined) setMultiNoiseTimesteps(params.multi_noise_timesteps);
-      if (params.multi_noise_mode !== undefined) setMultiNoiseMode(params.multi_noise_mode);
-      if (params.trajectory_blend_alpha !== undefined) setTrajectoryBlendAlpha(params.trajectory_blend_alpha);
-      if (params.timestep_sampling) {
-        if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
-        if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
-        if (params.timestep_sampling.max_timestep !== undefined) setTimestepMax(params.timestep_sampling.max_timestep);
-        // Distribution-specific parameters
-        if (params.timestep_sampling.mean !== undefined) setTimestepMean(params.timestep_sampling.mean);
-        if (params.timestep_sampling.std !== undefined) setTimestepStd(params.timestep_sampling.std);
-        if (params.timestep_sampling.alpha !== undefined) setTimestepAlpha(params.timestep_sampling.alpha);
-        if (params.timestep_sampling.beta !== undefined) setTimestepBeta(params.timestep_sampling.beta);
-      }
-
-      // Regularization
-      if (params.regularization_type !== undefined) setRegularizationType(params.regularization_type);
-      if (params.snr_regularization_weight !== undefined) setSnrRegularizationWeight(params.snr_regularization_weight);
-      if (params.snr_timestep_adaptive !== undefined) setSnrTimestepAdaptive(params.snr_timestep_adaptive);
-      if (params.snr_penalty_mode !== undefined) setSnrPenaltyMode(params.snr_penalty_mode);
-      if (params.energy_regularization_weight !== undefined) setEnergyRegularizationWeight(params.energy_regularization_weight);
-      if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
-      if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
-      if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
-
-      // Unified Training Framework
-      if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
-      if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
-      if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
-
-      // ControlNet parameters
-      if (params.controlnet_type !== undefined) setControlnetType(params.controlnet_type as "standard" | "lllite");
-      if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setControlnetPretrainedPath(params.controlnet_pretrained_path);
-      if (params.controlnet_init_from_unet !== undefined) setControlnetInitFromUnet(params.controlnet_init_from_unet);
-      if (params.lllite_conditioning_channels !== undefined) setLlliteConditioningChannels(params.lllite_conditioning_channels);
-      if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
-      if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
-      if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
-      // Legacy: sample_condition_image_path is now per-prompt (ignored here)
-
-      // Sample Generation
-      if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
-      if (params.sample_prompts && params.sample_prompts.length > 0) {
-        setSamplePrompts(params.sample_prompts);
-      }
-      if (params.sample_width !== undefined) setSampleWidth(params.sample_width);
-      if (params.sample_height !== undefined) setSampleHeight(params.sample_height);
-      if (params.sample_steps !== undefined) setSampleSteps(params.sample_steps);
-      if (params.sample_cfg_scale !== undefined) setSampleCfgScale(params.sample_cfg_scale);
-      if (params.sample_sampler !== undefined) setSampleSampler(params.sample_sampler);
-      if (params.sample_schedule_type !== undefined) setSampleScheduleType(params.sample_schedule_type);
-      if (params.sample_seed !== undefined) setSampleSeed(params.sample_seed);
-
-      // Debug Latents
-      if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
-      if (params.debug_latents_every !== undefined) setDebugLatentsEvery(params.debug_latents_every);
-
-      // Bucketing
-      if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
-      if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
-        setBaseResolutions(params.base_resolutions);
-      } else if (params.base_resolutions === null) {
-        // Old configs might have null, use default
-        setBaseResolutions([1024]);
-      }
-      if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
-      if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
-
-      // Cache
-      if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
-      if (params.force_recache !== undefined) setForceRecache(params.force_recache);
-
-      // Reference images
-      if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
-
-      // Vision Encoder
-      if (params.vision_encoder_path !== undefined) setVisionEncoderPath(params.vision_encoder_path || "");
-      if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
-      if (params.gradient_routing_ve !== undefined) setGradientRoutingVE(params.gradient_routing_ve);
-      if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
-      if (params.param_tracking !== undefined) setParamTracking(params.param_tracking);
-      if (params.param_tracking_interval !== undefined) setParamTrackingInterval(params.param_tracking_interval);
-
-      // Priority training
-      if (params.priority_training) {
-        setPriorityEnabled(true);
-        const entries = params.priority_training.entries || [];
-        setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
-        setPriorityMultiplier(params.priority_training.multiplier || 1);
-      }
-
-      // ReLoRA parameters
-      if (params.relora_merge_every !== undefined) setReloraMergeEvery(params.relora_merge_every);
-      if (params.relora_merge_unit !== undefined) setReloraMergeUnit(params.relora_merge_unit);
-      if (params.restart_warmup_steps !== undefined) setRestartWarmupSteps(params.restart_warmup_steps);
-      if (params.optimizer_reset_strategy !== undefined) setOptimizerResetStrategy(params.optimizer_reset_strategy);
-      if (params.optimizer_pruning_ratio !== undefined) setOptimizerPruningRatio(params.optimizer_pruning_ratio);
+      // Apply all params via centralized helper (single source of truth for restoration)
+      applyParamsToState(params);
 
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
@@ -529,7 +694,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // dtypeExplicitlySetRef stays true - we don't reset it
       // This ensures dtype settings are never overwritten by baseModelPath changes
     }
-  }, []);
+  }, [applyParamsToState]);
 
   useEffect(() => {
     // If in edit mode, load YAML parameters first (fast)
@@ -1143,134 +1308,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setLoading(true);
     setError(null);
 
-    const requestData = {
-      dataset_configs: datasetConfigs.filter(c => c.dataset_id !== 0),
-      run_name: runName.trim() || undefined,  // Send undefined if empty (backend will auto-generate)
-      training_method: trainingMethod,
-      base_model_path: baseModelPath.trim(),
-      total_steps: useEpochs ? undefined : totalSteps,
-      epochs: useEpochs ? epochs : undefined,
-      batch_size: batchSize,
-      learning_rate: parseFloat(learningRate),
-      lr_scheduler: lrScheduler,
-      optimizer: optimizer,
-      optimizer_is_paged: optimizerIsPaged,
-      optimizer_cautious: optimizerCautious,
-      optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
-      optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
-      optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
-      optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
-      optimizer_schedule_free: optimizerScheduleFree,
-      optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
-      optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
-      optimizer_use_radam: optimizerUseRadam,
-      optimizer_stochastic_rounding: optimizerStochasticRounding,
-      lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? loraRank : undefined,
-      lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? loraAlpha : undefined,
-      lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? loraDtype : undefined,
-      // ReLoRA-specific parameters
-      ...(trainingMethod === "relora" ? {
-        relora_merge_every: reloraMergeEvery,
-        relora_merge_unit: reloraMergeUnit,
-        restart_warmup_steps: restartWarmupSteps,
-        optimizer_reset_strategy: optimizerResetStrategy,
-        optimizer_pruning_ratio: optimizerPruningRatio,
-      } : {}),
-      save_every: saveEvery,
-      save_every_unit: saveEveryUnit,
-      sample_every: sampleEvery,
-      sample_prompts: samplePrompts,  // Allow empty prompts (SD/SDXL/Z-Image can generate with empty prompts)
-      sample_width: sampleWidth,
-      sample_height: sampleHeight,
-      sample_steps: sampleSteps,
-      sample_cfg_scale: sampleCfgScale,
-      sample_sampler: sampleSampler,
-      sample_schedule_type: sampleScheduleType,
-      sample_seed: sampleSeed,
-      resume_from_checkpoint: resumeFromCheckpoint || undefined,
-      debug_latents: debugLatents,
-      debug_latents_every: debugLatentsEvery,
-      enable_bucketing: enableBucketing,
-      base_resolutions: enableBucketing ? baseResolutions : undefined,
-      bucket_strategy: enableBucketing ? bucketStrategy : undefined,
-      multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
-      cache_latents_to_disk: cacheLatentsToDisk,
-      force_recache: forceRecache,
-      train_unet: trainUnet,
-      train_text_encoder: trainTextEncoder,
-      train_image_encoder: trainImageEncoder,
-      unet_lr: unetLr ? parseFloat(unetLr) : null,
-      text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
-      text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
-      text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
-      image_encoder_lr: imageEncoderLr ? parseFloat(imageEncoderLr) : null,
-      weight_dtype: weightDtype,
-      training_dtype: trainingDtype,
-      output_dtype: outputDtype,
-      vae_dtype: vaeDtype,
-      mixed_precision: mixedPrecision,
-      use_flash_attention: useFlashAttention,
-      min_snr_gamma: minSnrGamma,
-      reconstruction_loss_weight: reconstructionLossWeight,
-      text_encoding_mode: textEncodingMode,
-      text_encoding_swap_interval: textEncodingSwapInterval,
-      use_reference_images: useReferenceImages,
-      vision_encoder_path: visionEncoderPath || null,
-      train_vision_encoder: trainVisionEncoder,
-      vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
-      gradient_routing_ve: gradientRoutingVE,
-      param_tracking: paramTracking,
-      param_tracking_interval: paramTrackingInterval,
-      latent_encoding_mode: latentEncodingMode,
-      latent_encoding_swap_interval: latentEncodingSwapInterval,
-      blocks_to_swap: blocksToSwap,
-      use_pinned_memory: usePinnedMemory,
-      num_optimizer_groups: numOptimizerGroups,
-      multi_noise_timesteps: multiNoiseTimesteps,
-      multi_noise_mode: multiNoiseMode,
-      trajectory_blend_alpha: trajectoryBlendAlpha,
-      timestep_sampling: {
-        distribution: timestepDistribution,
-        min_timestep: timestepMin,
-        max_timestep: timestepMax,
-        // Distribution-specific parameters (only include if relevant)
-        ...(timestepDistribution === "logit_normal" || timestepDistribution === "lognormal" || timestepDistribution === "normal" ? {
-          mean: timestepMean,
-          std: timestepStd,
-        } : {}),
-        ...(timestepDistribution === "beta" ? {
-          alpha: timestepAlpha,
-          beta: timestepBeta,
-        } : {}),
-      },
-      // Regularization settings
-      regularization_type: regularizationType !== "none" ? regularizationType : null,
-      snr_regularization_weight: snrRegularizationWeight,
-      snr_timestep_adaptive: snrTimestepAdaptive,
-      snr_penalty_mode: snrPenaltyMode,
-      energy_regularization_weight: energyRegularizationWeight,
-      energy_timestep_adaptive: energyTimestepAdaptive,
-      energy_penalty_mode: energyPenaltyMode,
-      energy_normalize_by_pixels: energyNormalizeByPixels,
-      // Unified Training Framework settings
-      noise_process: noiseProcess,
-      prediction_target: predictionTarget,
-      strict_validation: strictValidation,
-      // ControlNet-specific parameters
-      controlnet_type: trainingMethod === "controlnet" ? controlnetType : undefined,
-      controlnet_pretrained_path: trainingMethod === "controlnet" && controlnetPretrainedPath ? controlnetPretrainedPath : undefined,
-      controlnet_init_from_unet: trainingMethod === "controlnet" ? controlnetInitFromUnet : undefined,
-      lllite_conditioning_channels: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteConditioningChannels : undefined,
-      lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
-      condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
-      condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
-      // condition_image_path is now embedded in each sample_prompts entry
-      // Priority training
-      priority_training: priorityEnabled && priorityText.trim() ? {
-        entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
-        multiplier: priorityMultiplier,
-      } : undefined,
-    };
+    // Build requestData via centralized helper (single source of truth)
+    const requestData = getRequestData();
 
     console.log("[TrainingConfig] Request data:", requestData);
     console.log("[TrainingConfig] Learning rates:", {

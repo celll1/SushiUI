@@ -332,9 +332,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [referenceImagePreviews, setReferenceImagePreviews] = useState<Record<number, string>>({});
   const referenceImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
-  // Debug options
-  const [debugLatents, setDebugLatents] = useState(false);
-  const [debugLatentsEvery, setDebugLatentsEvery] = useState(50);
+  // Debug options (Phase 3f: migrated to params)
+  const debugLatents = params.debug_latents ?? false;
+  const debugLatentsEvery = params.debug_latents_every ?? 50;
 
   // Reference image conditioning (FLUX.2 only)
   const [useReferenceImages, setUseReferenceImages] = useState(false);
@@ -355,13 +355,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [priorityMultiplier, setPriorityMultiplier] = useState(1);
   const [priorityExpanded, setPriorityExpanded] = useState(false);  // expand textarea modal
 
-  // Bucketing options
-  const [enableBucketing, setEnableBucketing] = useState(false);
-  const [baseResolutions, setBaseResolutions] = useState<number[]>([1024]);
-  const [bucketStrategy, setBucketStrategy] = useState<"resize" | "crop" | "random_crop">("resize");
-  const [multiResolutionMode, setMultiResolutionMode] = useState<"max" | "random">("max");
-  const [cacheLatentsToDisk, setCacheLatentsToDisk] = useState(true);
-  const [forceRecache, setForceRecache] = useState(false);
+  // Bucketing options (Phase 3f: migrated to params)
+  const enableBucketing = params.enable_bucketing ?? false;
+  const baseResolutions = params.base_resolutions ?? [1024];
+  const bucketStrategy = (params.bucket_strategy ?? "resize") as "resize" | "crop" | "random_crop";
+  const multiResolutionMode = (params.multi_resolution_mode ?? "max") as "max" | "random";
+  const cacheLatentsToDisk = params.cache_latents_to_disk ?? true;
+  const forceRecache = params.force_recache ?? false;
 
   // Component-specific training
   const [trainUnet, setTrainUnet] = useState(true);
@@ -538,14 +538,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sample_schedule_type: params.sample_schedule_type,
       sample_seed: params.sample_seed,
       resume_from_checkpoint: params.resume_from_checkpoint || undefined,
-      debug_latents: debugLatents,
-      debug_latents_every: debugLatentsEvery,
-      enable_bucketing: enableBucketing,
-      base_resolutions: enableBucketing ? baseResolutions : undefined,
-      bucket_strategy: enableBucketing ? bucketStrategy : undefined,
-      multi_resolution_mode: enableBucketing ? multiResolutionMode : undefined,
-      cache_latents_to_disk: cacheLatentsToDisk,
-      force_recache: forceRecache,
+      debug_latents: params.debug_latents,
+      debug_latents_every: params.debug_latents_every,
+      enable_bucketing: params.enable_bucketing,
+      base_resolutions: params.enable_bucketing ? params.base_resolutions : undefined,
+      bucket_strategy: params.enable_bucketing ? params.bucket_strategy : undefined,
+      multi_resolution_mode: params.enable_bucketing ? params.multi_resolution_mode : undefined,
+      cache_latents_to_disk: params.cache_latents_to_disk,
+      force_recache: params.force_recache,
       train_unet: trainUnet,
       train_text_encoder: trainTextEncoder,
       train_image_encoder: trainImageEncoder,
@@ -620,8 +620,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
-    debugLatents, debugLatentsEvery, enableBucketing, baseResolutions, bucketStrategy,
-    multiResolutionMode, cacheLatentsToDisk, forceRecache, trainUnet, trainTextEncoder, trainImageEncoder,
+    trainUnet, trainTextEncoder, trainImageEncoder,
     unetLr, textEncoderLr, textEncoder1Lr, textEncoder2Lr, imageEncoderLr, weightDtype, trainingDtype,
     outputDtype, vaeDtype, mixedPrecision, useFlashAttention, minSnrGamma, reconstructionLossWeight,
     textEncodingMode, textEncodingSwapInterval, useReferenceImages, visionEncoderPath, trainVisionEncoder,
@@ -785,22 +784,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.sample_seed !== undefined) setParams(prev => ({ ...prev, sample_seed: params.sample_seed }));
 
     // Debug
-    if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
-    if (params.debug_latents_every !== undefined) setDebugLatentsEvery(params.debug_latents_every);
+    if (params.debug_latents !== undefined) setParams(prev => ({ ...prev, debug_latents: params.debug_latents }));
+    if (params.debug_latents_every !== undefined) setParams(prev => ({ ...prev, debug_latents_every: params.debug_latents_every }));
 
     // Bucketing
-    if (params.enable_bucketing !== undefined) setEnableBucketing(params.enable_bucketing);
+    if (params.enable_bucketing !== undefined) setParams(prev => ({ ...prev, enable_bucketing: params.enable_bucketing }));
     if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
-      setBaseResolutions(params.base_resolutions);
+      setParams(prev => ({ ...prev, base_resolutions: params.base_resolutions }));
     } else if (params.base_resolutions === null) {
-      setBaseResolutions([1024]);
+      setParams(prev => ({ ...prev, base_resolutions: [1024] }));
     }
-    if (params.bucket_strategy !== undefined) setBucketStrategy(params.bucket_strategy);
-    if (params.multi_resolution_mode !== undefined) setMultiResolutionMode(params.multi_resolution_mode);
+    if (params.bucket_strategy !== undefined) setParams(prev => ({ ...prev, bucket_strategy: params.bucket_strategy }));
+    if (params.multi_resolution_mode !== undefined) setParams(prev => ({ ...prev, multi_resolution_mode: params.multi_resolution_mode }));
 
     // Cache
-    if (params.cache_latents_to_disk !== undefined) setCacheLatentsToDisk(params.cache_latents_to_disk);
-    if (params.force_recache !== undefined) setForceRecache(params.force_recache);
+    if (params.cache_latents_to_disk !== undefined) setParams(prev => ({ ...prev, cache_latents_to_disk: params.cache_latents_to_disk }));
+    if (params.force_recache !== undefined) setParams(prev => ({ ...prev, force_recache: params.force_recache }));
 
     // Reference images / Vision encoder
     if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
@@ -1419,8 +1418,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sampleSampler !== undefined) updateParam("sample_sampler", config.sampleSampler);
     if (config.sampleScheduleType !== undefined) updateParam("sample_schedule_type", config.sampleScheduleType);
     if (config.sampleSeed !== undefined) updateParam("sample_seed", config.sampleSeed);
-    if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
-    if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
+    if (config.debugLatents !== undefined) updateParam("debug_latents", config.debugLatents);
+    if (config.debugLatentsEvery !== undefined) updateParam("debug_latents_every", config.debugLatentsEvery);
     if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
     if (config.priority_training) {
       setPriorityEnabled(true);
@@ -1428,12 +1427,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
       setPriorityMultiplier(config.priority_training.multiplier || 1);
     }
-    if (config.enableBucketing !== undefined) setEnableBucketing(config.enableBucketing);
-    if (config.baseResolutions !== undefined) setBaseResolutions(config.baseResolutions);
-    if (config.bucketStrategy !== undefined) setBucketStrategy(config.bucketStrategy);
-    if (config.multiResolutionMode !== undefined) setMultiResolutionMode(config.multiResolutionMode);
-    if (config.cacheLatentsToDisk !== undefined) setCacheLatentsToDisk(config.cacheLatentsToDisk);
-    if (config.forceRecache !== undefined) setForceRecache(config.forceRecache);
+    if (config.enableBucketing !== undefined) updateParam("enable_bucketing", config.enableBucketing);
+    if (config.baseResolutions !== undefined) updateParam("base_resolutions", config.baseResolutions);
+    if (config.bucketStrategy !== undefined) updateParam("bucket_strategy", config.bucketStrategy);
+    if (config.multiResolutionMode !== undefined) updateParam("multi_resolution_mode", config.multiResolutionMode);
+    if (config.cacheLatentsToDisk !== undefined) updateParam("cache_latents_to_disk", config.cacheLatentsToDisk);
+    if (config.forceRecache !== undefined) updateParam("force_recache", config.forceRecache);
     if (config.trainUnet !== undefined) setTrainUnet(config.trainUnet);
     if (config.trainTextEncoder !== undefined) setTrainTextEncoder(config.trainTextEncoder);
     if (config.unetLr !== undefined) setUnetLr(config.unetLr);
@@ -3850,7 +3849,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="debug-latents"
               checked={debugLatents}
-              onChange={(e) => setDebugLatents(e.target.checked)}
+              onChange={(e) => updateParam("debug_latents", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="debug-latents" className="text-sm text-gray-400">
@@ -3866,7 +3865,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 min="1"
                 value={debugLatentsEvery}
-                onChange={(e) => setDebugLatentsEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setDebugLatentsEvery(50); }}
+                onChange={(e) => updateParam("debug_latents_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("debug_latents_every", 50); }}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 placeholder="e.g., 50"
               />
@@ -3923,7 +3922,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="enable-bucketing"
               checked={enableBucketing}
-              onChange={(e) => setEnableBucketing(e.target.checked)}
+              onChange={(e) => updateParam("enable_bucketing", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="enable-bucketing" className="text-sm text-gray-400">
@@ -3954,11 +3953,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             checked={baseResolutions.includes(res)}
                             onChange={(e) => {
                               if (e.target.checked) {
-                                setBaseResolutions([...baseResolutions, res].sort((a, b) => a - b));
+                                updateParam("base_resolutions", [...baseResolutions, res].sort((a, b) => a - b));
                               } else {
                                 // Prevent unchecking the last resolution
                                 if (baseResolutions.length > 1) {
-                                  setBaseResolutions(baseResolutions.filter(r => r !== res));
+                                  updateParam("base_resolutions", baseResolutions.filter(r => r !== res));
                                 }
                               }
                             }}
@@ -3984,7 +3983,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <label className="block text-sm text-gray-400 mb-1.5">Multi-Resolution Mode</label>
                   <select
                     value={multiResolutionMode}
-                    onChange={(e) => setMultiResolutionMode(e.target.value as "max" | "random")}
+                    onChange={(e) => updateParam("multi_resolution_mode", e.target.value as "max" | "random")}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                   >
                     <option value="max">Max (use largest resolution that fits)</option>
@@ -4001,7 +4000,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label className="block text-sm text-gray-400 mb-1.5">Bucket Strategy</label>
                 <select
                   value={bucketStrategy}
-                  onChange={(e) => setBucketStrategy(e.target.value as "resize" | "crop" | "random_crop")}
+                  onChange={(e) => updateParam("bucket_strategy", e.target.value as "resize" | "crop" | "random_crop")}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value="resize">Resize (Lanczos)</option>
@@ -4021,7 +4020,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="cache-latents"
               checked={cacheLatentsToDisk}
-              onChange={(e) => setCacheLatentsToDisk(e.target.checked)}
+              onChange={(e) => updateParam("cache_latents_to_disk", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="cache-latents" className="text-sm text-gray-400">
@@ -4040,7 +4039,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="force-recache"
               checked={forceRecache}
-              onChange={(e) => setForceRecache(e.target.checked)}
+              onChange={(e) => updateParam("force_recache", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="force-recache" className="text-sm text-gray-400">

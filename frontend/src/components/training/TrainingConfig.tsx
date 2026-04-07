@@ -389,23 +389,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
 
-  // Text encoding mode
-  const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
-  const [textEncodingSwapInterval, setTextEncodingSwapInterval] = useState<number>(256);
+  // Text encoding mode (Phase 3i: migrated to params)
+  const textEncodingMode = params.text_encoding_mode ?? "swap_onthefly";
+  const textEncodingSwapInterval = params.text_encoding_swap_interval ?? 256;
 
   // Latent encoding mode
-  const [latentEncodingMode, setLatentEncodingMode] = useState<string>("swap_onthefly");
-  const [latentEncodingSwapInterval, setLatentEncodingSwapInterval] = useState<number>(256);
+  const latentEncodingMode = params.latent_encoding_mode ?? "swap_onthefly";
+  const latentEncodingSwapInterval = params.latent_encoding_swap_interval ?? 256;
 
   // Block Swap settings (training VRAM optimization)
-  const [blocksToSwap, setBlocksToSwap] = useState<number>(0);
-  const [usePinnedMemory, setUsePinnedMemory] = useState<boolean>(false);
-  const [numOptimizerGroups, setNumOptimizerGroups] = useState<number>(0);
+  const blocksToSwap = params.blocks_to_swap ?? 0;
+  const usePinnedMemory = params.use_pinned_memory ?? false;
+  const numOptimizerGroups = params.num_optimizer_groups ?? 0;
 
   // Multi Noise-Timestep (MNT) settings
-  const [multiNoiseTimesteps, setMultiNoiseTimesteps] = useState<number>(1);
-  const [multiNoiseMode, setMultiNoiseMode] = useState<string>("independent");
-  const [trajectoryBlendAlpha, setTrajectoryBlendAlpha] = useState<number>(0.7);
+  const multiNoiseTimesteps = params.multi_noise_timesteps ?? 1;
+  const multiNoiseMode = params.multi_noise_mode ?? "independent";
+  const trajectoryBlendAlpha = params.trajectory_blend_alpha ?? 0.7;
   const [timestepDistribution, setTimestepDistribution] = useState<string>("uniform");
   const [timestepMin, setTimestepMin] = useState<number>(0.0);
   const [timestepMax, setTimestepMax] = useState<number>(1.0);
@@ -568,8 +568,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       use_flash_attention: params.use_flash_attention,
       min_snr_gamma: params.min_snr_gamma,
       reconstruction_loss_weight: params.reconstruction_loss_weight,
-      text_encoding_mode: textEncodingMode,
-      text_encoding_swap_interval: textEncodingSwapInterval,
+      text_encoding_mode: params.text_encoding_mode,
+      text_encoding_swap_interval: params.text_encoding_swap_interval,
       use_reference_images: useReferenceImages,
       vision_encoder_path: visionEncoderPath || null,
       train_vision_encoder: trainVisionEncoder,
@@ -577,14 +577,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       gradient_routing_ve: gradientRoutingVE,
       param_tracking: paramTracking,
       param_tracking_interval: paramTrackingInterval,
-      latent_encoding_mode: latentEncodingMode,
-      latent_encoding_swap_interval: latentEncodingSwapInterval,
-      blocks_to_swap: blocksToSwap,
-      use_pinned_memory: usePinnedMemory,
-      num_optimizer_groups: numOptimizerGroups,
-      multi_noise_timesteps: multiNoiseTimesteps,
-      multi_noise_mode: multiNoiseMode,
-      trajectory_blend_alpha: trajectoryBlendAlpha,
+      latent_encoding_mode: params.latent_encoding_mode,
+      latent_encoding_swap_interval: params.latent_encoding_swap_interval,
+      blocks_to_swap: params.blocks_to_swap,
+      use_pinned_memory: params.use_pinned_memory,
+      num_optimizer_groups: params.num_optimizer_groups,
+      multi_noise_timesteps: params.multi_noise_timesteps,
+      multi_noise_mode: params.multi_noise_mode,
+      trajectory_blend_alpha: params.trajectory_blend_alpha,
       timestep_sampling: {
         distribution: timestepDistribution,
         min_timestep: timestepMin,
@@ -627,10 +627,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
     localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
-    textEncodingMode, textEncodingSwapInterval, useReferenceImages, visionEncoderPath, trainVisionEncoder,
-    visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval, latentEncodingMode,
-    latentEncodingSwapInterval, blocksToSwap, usePinnedMemory, numOptimizerGroups, multiNoiseTimesteps,
-    multiNoiseMode, trajectoryBlendAlpha, timestepDistribution, timestepMin, timestepMax, timestepMean,
+    useReferenceImages, visionEncoderPath, trainVisionEncoder,
+    visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval,
+    timestepDistribution, timestepMin, timestepMax, timestepMean,
     timestepStd, timestepAlpha, timestepBeta, regularizationType, snrRegularizationWeight,
     snrTimestepAdaptive, snrPenaltyMode, energyRegularizationWeight, energyTimestepAdaptive, energyPenaltyMode,
     energyNormalizeByPixels, noiseProcess, predictionTarget, strictValidation, controlnetType,
@@ -745,18 +744,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.reconstruction_loss_weight !== undefined) setParams(prev => ({ ...prev, reconstruction_loss_weight: params.reconstruction_loss_weight }));
 
     // Memory optimization
-    if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
-    if (params.text_encoding_swap_interval !== undefined) setTextEncodingSwapInterval(params.text_encoding_swap_interval);
-    if (params.latent_encoding_mode !== undefined) setLatentEncodingMode(params.latent_encoding_mode);
-    if (params.latent_encoding_swap_interval !== undefined) setLatentEncodingSwapInterval(params.latent_encoding_swap_interval);
-    if (params.blocks_to_swap !== undefined) setBlocksToSwap(params.blocks_to_swap);
-    if (params.use_pinned_memory !== undefined) setUsePinnedMemory(params.use_pinned_memory);
-    if (params.num_optimizer_groups !== undefined) setNumOptimizerGroups(params.num_optimizer_groups);
+    if (params.text_encoding_mode !== undefined) setParams(prev => ({ ...prev, text_encoding_mode: params.text_encoding_mode }));
+    if (params.text_encoding_swap_interval !== undefined) setParams(prev => ({ ...prev, text_encoding_swap_interval: params.text_encoding_swap_interval }));
+    if (params.latent_encoding_mode !== undefined) setParams(prev => ({ ...prev, latent_encoding_mode: params.latent_encoding_mode }));
+    if (params.latent_encoding_swap_interval !== undefined) setParams(prev => ({ ...prev, latent_encoding_swap_interval: params.latent_encoding_swap_interval }));
+    if (params.blocks_to_swap !== undefined) setParams(prev => ({ ...prev, blocks_to_swap: params.blocks_to_swap }));
+    if (params.use_pinned_memory !== undefined) setParams(prev => ({ ...prev, use_pinned_memory: params.use_pinned_memory }));
+    if (params.num_optimizer_groups !== undefined) setParams(prev => ({ ...prev, num_optimizer_groups: params.num_optimizer_groups }));
 
     // MNT
-    if (params.multi_noise_timesteps !== undefined) setMultiNoiseTimesteps(params.multi_noise_timesteps);
-    if (params.multi_noise_mode !== undefined) setMultiNoiseMode(params.multi_noise_mode);
-    if (params.trajectory_blend_alpha !== undefined) setTrajectoryBlendAlpha(params.trajectory_blend_alpha);
+    if (params.multi_noise_timesteps !== undefined) setParams(prev => ({ ...prev, multi_noise_timesteps: params.multi_noise_timesteps }));
+    if (params.multi_noise_mode !== undefined) setParams(prev => ({ ...prev, multi_noise_mode: params.multi_noise_mode }));
+    if (params.trajectory_blend_alpha !== undefined) setParams(prev => ({ ...prev, trajectory_blend_alpha: params.trajectory_blend_alpha }));
     if (params.timestep_sampling) {
       if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
       if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
@@ -1483,14 +1482,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.useFlashAttention !== undefined) updateParam("use_flash_attention", config.useFlashAttention);
     if (config.minSnrGamma !== undefined) updateParam("min_snr_gamma", config.minSnrGamma);
     if (config.reconstructionLossWeight !== undefined) updateParam("reconstruction_loss_weight", config.reconstructionLossWeight);
-    if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
-    if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
-    if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
-    if (config.latentEncodingSwapInterval !== undefined) setLatentEncodingSwapInterval(config.latentEncodingSwapInterval);
-    if (config.blocksToSwap !== undefined) setBlocksToSwap(config.blocksToSwap);
-    if (config.usePinnedMemory !== undefined) setUsePinnedMemory(config.usePinnedMemory);
-    if (config.numOptimizerGroups !== undefined) setNumOptimizerGroups(config.numOptimizerGroups);
-    if (config.multiNoiseTimesteps !== undefined) setMultiNoiseTimesteps(config.multiNoiseTimesteps);
+    if (config.textEncodingMode !== undefined) updateParam("text_encoding_mode", config.textEncodingMode);
+    if (config.textEncodingSwapInterval !== undefined) updateParam("text_encoding_swap_interval", config.textEncodingSwapInterval);
+    if (config.latentEncodingMode !== undefined) updateParam("latent_encoding_mode", config.latentEncodingMode);
+    if (config.latentEncodingSwapInterval !== undefined) updateParam("latent_encoding_swap_interval", config.latentEncodingSwapInterval);
+    if (config.blocksToSwap !== undefined) updateParam("blocks_to_swap", config.blocksToSwap);
+    if (config.usePinnedMemory !== undefined) updateParam("use_pinned_memory", config.usePinnedMemory);
+    if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
+    if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
     if (config.timestepMin !== undefined) setTimestepMin(config.timestepMin);
     if (config.timestepMax !== undefined) setTimestepMax(config.timestepMax);
@@ -2204,7 +2203,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={multiNoiseTimesteps}
-                onChange={(e) => setMultiNoiseTimesteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setMultiNoiseTimesteps(1); }}
+                onChange={(e) => updateParam("multi_noise_timesteps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("multi_noise_timesteps", 1); }}
                 min="1"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
@@ -2220,7 +2219,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
               <select
                 value={multiNoiseMode}
-                onChange={(e) => setMultiNoiseMode(e.target.value)}
+                onChange={(e) => updateParam("multi_noise_mode", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="independent">Independent (Different noise)</option>
@@ -2243,7 +2242,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={trajectoryBlendAlpha}
-                  onChange={(e) => setTrajectoryBlendAlpha(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTrajectoryBlendAlpha(0.7); }}
+                  onChange={(e) => updateParam("trajectory_blend_alpha", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("trajectory_blend_alpha", 0.7); }}
                   min="0.0"
                   max="1.0"
                   step="0.1"
@@ -3203,7 +3202,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="blocks-to-swap"
                 value={blocksToSwap}
-                onChange={(e) => setBlocksToSwap(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBlocksToSwap(0); }}
+                onChange={(e) => updateParam("blocks_to_swap", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("blocks_to_swap", 0); }}
                 min={0}
                 step={1}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
@@ -3225,7 +3224,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="checkbox"
                   id="use-pinned-memory"
                   checked={usePinnedMemory}
-                  onChange={(e) => setUsePinnedMemory(e.target.checked)}
+                  onChange={(e) => updateParam("use_pinned_memory", e.target.checked)}
                   className="w-4 h-4"
                 />
                 <label htmlFor="use-pinned-memory" className="text-xs text-gray-300 cursor-pointer">
@@ -3244,7 +3243,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="number"
                   id="num-optimizer-groups"
                   value={numOptimizerGroups}
-                  onChange={(e) => setNumOptimizerGroups(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setNumOptimizerGroups(0); }}
+                  onChange={(e) => updateParam("num_optimizer_groups", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("num_optimizer_groups", 0); }}
                   min={0}
                   max={20}
                   step={1}
@@ -3274,7 +3273,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
             <select
               value={textEncodingMode}
-              onChange={(e) => setTextEncodingMode(e.target.value)}
+              onChange={(e) => updateParam("text_encoding_mode", e.target.value)}
               className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
             >
               <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
@@ -3292,7 +3291,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="text-encoding-swap-interval"
                 value={textEncodingSwapInterval}
-                onChange={(e) => setTextEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTextEncodingSwapInterval(256); }}
+                onChange={(e) => updateParam("text_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_swap_interval", 256); }}
                 min={1}
                 max={1024}
                 step={1}
@@ -3453,7 +3452,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
             <select
               value={latentEncodingMode}
-              onChange={(e) => setLatentEncodingMode(e.target.value)}
+              onChange={(e) => updateParam("latent_encoding_mode", e.target.value)}
               className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
             >
               <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
@@ -3471,7 +3470,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="latent-encoding-swap-interval"
                 value={latentEncodingSwapInterval}
-                onChange={(e) => setLatentEncodingSwapInterval(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLatentEncodingSwapInterval(256); }}
+                onChange={(e) => updateParam("latent_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("latent_encoding_swap_interval", 256); }}
                 min={1}
                 max={1024}
                 step={1}

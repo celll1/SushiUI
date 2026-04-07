@@ -11,6 +11,22 @@ import yaml
 from core.training.dataset_params import extract_dataset_params
 
 
+# Legacy kwarg names that are renamed in the new dict-based API.
+# Old name → new name (matches Pydantic field name).
+_LEGACY_KEY_MAP = {
+    "timestep_sampling_config": "timestep_sampling",
+}
+
+
+def _normalize_params(p: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply legacy key renames so old kwargs work with the new dict API."""
+    p = dict(p)  # Don't mutate caller's dict
+    for old_key, new_key in _LEGACY_KEY_MAP.items():
+        if old_key in p:
+            p.setdefault(new_key, p.pop(old_key))
+    return p
+
+
 def _build_train_section(
     p: Dict[str, Any],
     *,
@@ -39,22 +55,22 @@ def _build_train_section(
 
     The flags `include_*` allow each training method to opt in/out of optional sections.
     """
-    lr = learning_rate if learning_rate is not None else p["learning_rate"]
+    lr = learning_rate if learning_rate is not None else p.get("learning_rate", 1e-4)
     train: Dict[str, Any] = {
-        "batch_size": p["batch_size"],
+        "batch_size": p.get("batch_size", 1),
         **({"steps": total_steps} if total_steps else {"epochs": epochs}),
         "gradient_accumulation_steps": 1,
         "train_unet": train_unet,
         "train_text_encoder": train_text_encoder,
         "train_image_encoder": train_image_encoder,
         # Unified training framework
-        "noise_process": p["noise_process"],
-        "prediction_target": p["prediction_target"],
-        "strict_validation": p["strict_validation"],
+        "noise_process": p.get("noise_process", "auto"),
+        "prediction_target": p.get("prediction_target", "auto"),
+        "strict_validation": p.get("strict_validation", False),
         # Optimizer
-        "optimizer": p["optimizer"],
+        "optimizer": p.get("optimizer", "adamw8bit"),
         "lr": lr,
-        "lr_scheduler": p["lr_scheduler"],
+        "lr_scheduler": p.get("lr_scheduler", "constant"),
     }
 
     # Conditional optimizer fields
@@ -109,24 +125,24 @@ def _build_train_section(
             train["image_encoder_lr"] = p["image_encoder_lr"]
 
     # Mixed precision and dtype
-    train["mixed_precision"] = p["mixed_precision"]
+    train["mixed_precision"] = p.get("mixed_precision", True)
 
     # Bucketing
     if bucketing_always_emit:
-        train["enable_bucketing"] = p["enable_bucketing"]
+        train["enable_bucketing"] = p.get("enable_bucketing", False)
         train["base_resolutions"] = p.get("base_resolutions") or [1024]
-        train["bucket_strategy"] = p["bucket_strategy"]
-        train["multi_resolution_mode"] = p["multi_resolution_mode"]
+        train["bucket_strategy"] = p.get("bucket_strategy", "resize")
+        train["multi_resolution_mode"] = p.get("multi_resolution_mode", "max")
     else:
         if p.get("enable_bucketing"):
             train["enable_bucketing"] = True
             train["base_resolutions"] = p.get("base_resolutions") or [1024]
-            train["bucket_strategy"] = p["bucket_strategy"]
-            train["multi_resolution_mode"] = p["multi_resolution_mode"]
+            train["bucket_strategy"] = p.get("bucket_strategy", "resize")
+            train["multi_resolution_mode"] = p.get("multi_resolution_mode", "max")
 
     # Common training fields
-    train["use_flash_attention"] = p["use_flash_attention"]
-    train["min_snr_gamma"] = p["min_snr_gamma"]
+    train["use_flash_attention"] = p.get("use_flash_attention", False)
+    train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
     train["reconstruction_loss_weight"] = p.get("reconstruction_loss_weight", 0.0)
 
     # Block Swap (training VRAM optimization) - LoRA/Full FT only
@@ -136,8 +152,8 @@ def _build_train_section(
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
 
     # Text/Latent encoding
-    train["text_encoding_mode"] = p["text_encoding_mode"]
-    train["text_encoding_swap_interval"] = p["text_encoding_swap_interval"]
+    train["text_encoding_mode"] = p.get("text_encoding_mode", "swap_onthefly")
+    train["text_encoding_swap_interval"] = p.get("text_encoding_swap_interval", 256)
 
     # Reference images / Vision encoder
     if include_reference_images:
@@ -159,11 +175,11 @@ def _build_train_section(
     if include_priority_training and p.get("priority_training"):
         train["priority_training"] = p["priority_training"]
 
-    train["latent_encoding_mode"] = p["latent_encoding_mode"]
-    train["latent_encoding_swap_interval"] = p["latent_encoding_swap_interval"]
+    train["latent_encoding_mode"] = p.get("latent_encoding_mode", "swap_onthefly")
+    train["latent_encoding_swap_interval"] = p.get("latent_encoding_swap_interval", 256)
 
-    train["debug_latents"] = p["debug_latents"]
-    train["debug_latents_every"] = p["debug_latents_every"]
+    train["debug_latents"] = p.get("debug_latents", False)
+    train["debug_latents_every"] = p.get("debug_latents_every", 50)
 
     # Multi Noise-Timestep
     train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)
@@ -178,13 +194,13 @@ def _build_train_section(
     # Regularization
     if p.get("regularization_type"):
         train["regularization_type"] = p["regularization_type"]
-    train["snr_regularization_weight"] = p["snr_regularization_weight"]
-    train["snr_timestep_adaptive"] = p["snr_timestep_adaptive"]
-    train["snr_penalty_mode"] = p["snr_penalty_mode"]
-    train["energy_regularization_weight"] = p["energy_regularization_weight"]
-    train["energy_timestep_adaptive"] = p["energy_timestep_adaptive"]
-    train["energy_penalty_mode"] = p["energy_penalty_mode"]
-    train["energy_normalize_by_pixels"] = p["energy_normalize_by_pixels"]
+    train["snr_regularization_weight"] = p.get("snr_regularization_weight", 0.1)
+    train["snr_timestep_adaptive"] = p.get("snr_timestep_adaptive", True)
+    train["snr_penalty_mode"] = p.get("snr_penalty_mode", "relu")
+    train["energy_regularization_weight"] = p.get("energy_regularization_weight", 0.05)
+    train["energy_timestep_adaptive"] = p.get("energy_timestep_adaptive", True)
+    train["energy_penalty_mode"] = p.get("energy_penalty_mode", "abs")
+    train["energy_normalize_by_pixels"] = p.get("energy_normalize_by_pixels", True)
 
     return train
 
@@ -194,160 +210,45 @@ class TrainingConfigGenerator:
 
     @staticmethod
     def generate_lora_config(
+        p: Optional[Dict[str, Any]] = None,
+        *,
         run_name: str,
-        dataset_path: str,  # Deprecated - kept for backward compatibility
         base_model_path: str,
         output_dir: str,
-        dataset_configs: Optional[List[Dict[str, Any]]] = None,  # New: multiple datasets
-        total_steps: Optional[int] = None,
-        epochs: Optional[int] = None,
-        batch_size: int = 1,
-        learning_rate: float = 1e-4,
-        lr_scheduler: str = "constant",
-        lr_warmup_steps: int = 0,
-        optimizer: str = "adamw8bit",
-        optimizer_is_paged: bool = False,
-        optimizer_cautious: bool = False,
-        optimizer_beta1: Optional[float] = None,
-        optimizer_beta2: Optional[float] = None,
-        optimizer_epsilon: Optional[float] = None,
-        optimizer_weight_decay: Optional[float] = None,
-        optimizer_schedule_free: bool = False,
-        optimizer_schedule_free_r: float = 0.0,
-        optimizer_schedule_free_weight_lr_power: float = 2.0,
-        optimizer_use_radam: bool = False,
-        optimizer_stochastic_rounding: bool = False,
-        lora_rank: int = 16,
-        lora_alpha: int = 16,
-        lora_dtype: str = "fp32",
-        save_every: int = 100,
-        save_every_unit: str = "steps",
-        max_step_saves_to_keep: int = 10,
-        sample_every: int = 100,
+        dataset_path: str = "",  # Deprecated - kept for backward compatibility
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,
         sample_prompts: Optional[list] = None,
-        debug_latents: bool = False,
-        debug_latents_every: int = 50,
-        enable_bucketing: bool = False,
-        base_resolutions: Optional[list] = None,
-        bucket_strategy: str = "resize",
-        multi_resolution_mode: str = "max",
-        train_unet: bool = True,
-        train_text_encoder: bool = False,
-        train_image_encoder: bool = False,  # Image Encoder (future support)
-        unet_lr: Optional[float] = None,
-        text_encoder_lr: Optional[float] = None,
-        text_encoder_1_lr: Optional[float] = None,
-        text_encoder_2_lr: Optional[float] = None,
-        image_encoder_lr: Optional[float] = None,  # Image Encoder LR (future support)
-        cache_latents_to_disk: bool = False,
-        weight_dtype: str = "fp16",
-        training_dtype: str = "fp16",
-        output_dtype: str = "fp32",
-        vae_dtype: str = "fp16",
-        mixed_precision: bool = True,
-        use_flash_attention: bool = False,
-        min_snr_gamma: float = 5.0,
-        reconstruction_loss_weight: float = 0.0,
-        # Block Swap settings (training VRAM optimization)
-        blocks_to_swap: int = 0,
-        use_pinned_memory: bool = False,
-        num_optimizer_groups: int = 0,
-        # Text encoding settings
-        text_encoding_mode: str = "swap_onthefly",
-        text_encoding_swap_interval: int = 256,
-        # Latent encoding settings
-        latent_encoding_mode: str = "swap_onthefly",
-        latent_encoding_swap_interval: int = 256,
-        sample_width: int = 1024,
-        sample_height: int = 1024,
-        sample_steps: int = 28,
-        sample_cfg_scale: float = 7.0,
-        sample_sampler: str = "euler",
-        sample_schedule_type: str = "sgm_uniform",
-        sample_seed: int = 42,
-        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
-        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
-        max_prompt_chunks: int = 0,  # 0 = unlimited
-        # Resume settings
-        resume_from_checkpoint: Optional[str] = None,
-        # Caption processing settings
         caption_processing: Optional[Dict[str, Any]] = None,
-        # Multi Noise-Timestep (MNT) settings
-        multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",
-        trajectory_blend_alpha: float = 0.7,
-        timestep_sampling_config: Optional[Dict[str, Any]] = None,
-        # Regularization settings (prevent overbaking)
-        regularization_type: Optional[str] = None,  # "snr", "energy", or None
-        snr_regularization_weight: float = 0.1,
-        snr_timestep_adaptive: bool = True,
-        snr_penalty_mode: str = "relu",
-        energy_regularization_weight: float = 0.05,
-        energy_timestep_adaptive: bool = True,
-        energy_penalty_mode: str = "abs",
-        energy_normalize_by_pixels: bool = True,
-        # Unified training framework settings
-        noise_process: str = "auto",  # "auto", "ddpm", "flow"
-        prediction_target: str = "auto",  # "auto", "epsilon", "velocity", "sample"
-        strict_validation: bool = False,  # If True, error on mismatch; if False, warn only
-        # Reference image settings
-        use_reference_images: bool = False,  # Enable reference image conditioning during training
-        # Vision Encoder settings (SigLIP2 for SDXL/SD1.5 reference image conditioning)
-        train_vision_encoder: bool = False,  # Train the vision encoder alongside U-Net/TE
-        vision_encoder_path: Optional[str] = None,  # Path to SigLIP2 vision encoder safetensors
-        vision_encoder_lr: Optional[float] = None,  # VE learning rate (defaults to text_encoder_lr)
-        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
-        # Parameter change tracking
-        param_tracking: bool = False,  # Track per-component parameter change norms
-        param_tracking_interval: int = 100,  # Compute tracking every N steps
-        # Priority training settings
-        priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
+        **legacy_kwargs: Any,
     ) -> str:
-        """
-        Generate LoRA training configuration YAML.
+        """Generate LoRA training configuration YAML.
 
         Args:
+            p: Training parameters dict (typically from TrainingRunCreateRequest.model_dump()).
+               If None, kwargs are used (backward compatibility).
             run_name: Training run identifier
-            dataset_path: Path to dataset directory (deprecated, use dataset_configs)
             base_model_path: Path to base model
             output_dir: Output directory for checkpoints
-            dataset_configs: List of dataset configurations with path and caption_processing
-            total_steps: Total training steps (mutually exclusive with epochs)
-            epochs: Number of epochs (mutually exclusive with total_steps)
-            batch_size: Batch size
-            learning_rate: Learning rate
-            lr_scheduler: Learning rate scheduler type
-            optimizer: Optimizer type
-            lora_rank: LoRA rank
-            lora_alpha: LoRA alpha
-            save_every: Save checkpoint every N steps/epochs
-            save_every_unit: Unit for save_every ("steps" or "epochs")
-            sample_every: Generate sample every N steps/epochs
-            sample_prompts: List of prompts for sample generation
-            debug_latents: Enable debug mode to save latents
-            debug_latents_every: Save debug latents every N steps
-            enable_bucketing: Enable aspect ratio bucketing
-            base_resolutions: List of base resolutions for bucketing (e.g., [512, 768, 1024])
-            bucket_strategy: Bucketing strategy ("resize", "crop", "random_crop")
-            multi_resolution_mode: Multi-resolution mode ("max" or "random")
-            train_unet: Whether to train U-Net
-            train_text_encoder: Whether to train text encoder
-            unet_lr: U-Net learning rate (defaults to learning_rate if None)
-            text_encoder_lr: Text encoder learning rate (defaults to learning_rate if None)
-            text_encoder_1_lr: Text encoder 1 learning rate for SDXL (defaults to text_encoder_lr if None)
-            text_encoder_2_lr: Text encoder 2 learning rate for SDXL (defaults to text_encoder_lr if None)
-            cache_latents_to_disk: Whether to cache latents to disk (reduces VRAM usage during training)
-            use_flash_attention: Enable Flash Attention for training (faster, lower memory)
-            min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, set to 0 to disable)
-            text_encoding_mode: Text encoding mode ("swap_onthefly", "pre_encoded_cache", "onthefly_gpu")
-            text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256)
-            latent_encoding_mode: Latent encoding mode ("swap_onthefly", "pre_encoded_cache", "onthefly_gpu")
-            latent_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256)
+            dataset_path: Deprecated, use dataset_configs
+            dataset_configs: List of dataset configurations
+            sample_prompts: List of sample prompts
+            caption_processing: Caption processing config (from database)
+            **legacy_kwargs: Backward compatibility for old kwargs-style calls
 
         Returns:
             YAML configuration string
         """
+        # Backward compat: if no p dict provided, build from legacy_kwargs
+        if p is None:
+            p = legacy_kwargs
+        elif legacy_kwargs:
+            # Both provided: legacy_kwargs override p (caller-supplied wins)
+            p = {**p, **legacy_kwargs}
+        p = _normalize_params(p)
+
         # Validate that either steps or epochs is provided
+        total_steps = p.get("total_steps")
+        epochs = p.get("epochs")
         if total_steps is None and epochs is None:
             raise ValueError("Either total_steps or epochs must be provided")
         if total_steps is not None and epochs is not None:
@@ -356,44 +257,33 @@ class TrainingConfigGenerator:
         # Build datasets array
         # NOTE: caption_processing settings are NOT saved to YAML
         # They are read from the database (Dataset.caption_processing) at training time
-        # This ensures Dataset Management page settings are always used
+        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
+        base_resolutions = p.get("base_resolutions")
         datasets_array = []
         if dataset_configs:
-            # Use multiple datasets
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
-                ds_caption_types = ds_config.get("caption_types", [])
-                ds_dataset_id = ds_config.get("dataset_id")  # Include dataset_id for YAML editing support
-
+                ds_dataset_id = ds_config.get("dataset_id")
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
-                    # Dataset ID for resolving dataset from YAML edits (required for train_runner.py)
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
-                    # Other settings
                     "cache_latents_to_disk": cache_latents_to_disk,
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
-
-                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
                 dataset_entry.update(extract_dataset_params(ds_config))
-
                 datasets_array.append(dataset_entry)
         else:
-            # Fallback: use single dataset_path (backward compatibility)
-            # NOTE: caption_processing is NOT saved - read from database at training time
-            dataset_entry = {
+            datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
                 "resolution": base_resolutions or [512, 768, 1024],
-            }
-            datasets_array.append(dataset_entry)
+            })
 
         config = {
             "job": run_name,
             "config": {
-                # Model settings
                 "name": run_name,
                 "process": [
                     {
@@ -402,92 +292,29 @@ class TrainingConfigGenerator:
                         "device": "cuda:0",
                         "network": {
                             "type": "lora",
-                            "linear": lora_rank,
-                            "linear_alpha": lora_alpha,
-                            "lora_dtype": lora_dtype,
+                            "linear": p.get("lora_rank") or 16,
+                            "linear_alpha": p.get("lora_alpha") or 16,
+                            "lora_dtype": p.get("lora_dtype") or "fp32",
                         },
                         "dtype": {
-                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
-                            "training": training_dtype,    # Training/activation dtype (autocast)
-                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
-                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                            "weight": p.get("weight_dtype", "fp16"),
+                            "training": p.get("training_dtype", "fp16"),
+                            "vae": p.get("vae_dtype", "fp16"),
+                            "save": p.get("output_dtype", "fp32"),
                         },
                         "save": {
-                            "save_every": save_every,
-                            "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": max_step_saves_to_keep,
+                            "save_every": p.get("save_every", 100),
+                            "save_every_unit": p.get("save_every_unit", "steps"),
+                            "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 10,
                         },
                         "datasets": datasets_array,
                         "train": _build_train_section(
-                            {
-                                "batch_size": batch_size,
-                                "learning_rate": learning_rate,
-                                "lr_scheduler": lr_scheduler,
-                                "lr_warmup_steps": lr_warmup_steps,
-                                "optimizer": optimizer,
-                                "optimizer_is_paged": optimizer_is_paged,
-                                "optimizer_cautious": optimizer_cautious,
-                                "optimizer_beta1": optimizer_beta1,
-                                "optimizer_beta2": optimizer_beta2,
-                                "optimizer_epsilon": optimizer_epsilon,
-                                "optimizer_weight_decay": optimizer_weight_decay,
-                                "optimizer_schedule_free": optimizer_schedule_free,
-                                "optimizer_schedule_free_r": optimizer_schedule_free_r,
-                                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
-                                "optimizer_use_radam": optimizer_use_radam,
-                                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
-                                "unet_lr": unet_lr,
-                                "text_encoder_lr": text_encoder_lr,
-                                "text_encoder_1_lr": text_encoder_1_lr,
-                                "text_encoder_2_lr": text_encoder_2_lr,
-                                "image_encoder_lr": image_encoder_lr,
-                                "mixed_precision": mixed_precision,
-                                "debug_latents": debug_latents,
-                                "debug_latents_every": debug_latents_every,
-                                "enable_bucketing": enable_bucketing,
-                                "base_resolutions": base_resolutions,
-                                "bucket_strategy": bucket_strategy,
-                                "multi_resolution_mode": multi_resolution_mode,
-                                "use_flash_attention": use_flash_attention,
-                                "min_snr_gamma": min_snr_gamma,
-                                "reconstruction_loss_weight": reconstruction_loss_weight,
-                                "blocks_to_swap": blocks_to_swap,
-                                "use_pinned_memory": use_pinned_memory,
-                                "num_optimizer_groups": num_optimizer_groups,
-                                "text_encoding_mode": text_encoding_mode,
-                                "text_encoding_swap_interval": text_encoding_swap_interval,
-                                "use_reference_images": use_reference_images,
-                                "vision_encoder_path": vision_encoder_path,
-                                "train_vision_encoder": train_vision_encoder,
-                                "vision_encoder_lr": vision_encoder_lr,
-                                "gradient_routing_ve": gradient_routing_ve,
-                                "param_tracking": param_tracking,
-                                "param_tracking_interval": param_tracking_interval,
-                                "priority_training": priority_training,
-                                "latent_encoding_mode": latent_encoding_mode,
-                                "latent_encoding_swap_interval": latent_encoding_swap_interval,
-                                "multi_noise_timesteps": multi_noise_timesteps,
-                                "multi_noise_mode": multi_noise_mode,
-                                "trajectory_blend_alpha": trajectory_blend_alpha,
-                                "timestep_sampling": timestep_sampling_config,
-                                "resume_from_checkpoint": resume_from_checkpoint,
-                                "regularization_type": regularization_type,
-                                "snr_regularization_weight": snr_regularization_weight,
-                                "snr_timestep_adaptive": snr_timestep_adaptive,
-                                "snr_penalty_mode": snr_penalty_mode,
-                                "energy_regularization_weight": energy_regularization_weight,
-                                "energy_timestep_adaptive": energy_timestep_adaptive,
-                                "energy_penalty_mode": energy_penalty_mode,
-                                "energy_normalize_by_pixels": energy_normalize_by_pixels,
-                                "noise_process": noise_process,
-                                "prediction_target": prediction_target,
-                                "strict_validation": strict_validation,
-                            },
+                            p,
                             total_steps=total_steps,
                             epochs=epochs,
-                            train_unet=train_unet,
-                            train_text_encoder=train_text_encoder,
-                            train_image_encoder=train_image_encoder,
+                            train_unet=p.get("train_unet", True),
+                            train_text_encoder=p.get("train_text_encoder", False),
+                            train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=True,
                             bucketing_always_emit=True,
                         ),
@@ -495,20 +322,19 @@ class TrainingConfigGenerator:
                             "name_or_path": base_model_path,
                         },
                         "sample": {
-                            "sampler": sample_sampler,
-                            "schedule_type": sample_schedule_type,
-                            "sample_every": sample_every,
-                            "width": sample_width,
-                            "height": sample_height,
+                            "sampler": p.get("sample_sampler", "euler"),
+                            "schedule_type": p.get("sample_schedule_type", "sgm_uniform"),
+                            "sample_every": p.get("sample_every", 100),
+                            "width": p.get("sample_width", 1024),
+                            "height": p.get("sample_height", 1024),
                             "prompts": sample_prompts or [],
                             "neg": "",
-                            "seed": sample_seed,
-                            "guidance_scale": sample_cfg_scale,
-                            "sample_steps": sample_steps,
+                            "seed": p.get("sample_seed", 42),
+                            "guidance_scale": p.get("sample_cfg_scale", 7.0),
+                            "sample_steps": p.get("sample_steps", 28),
                         },
-                        # Prompt chunking settings (for long prompts >75 tokens)
-                        "prompt_chunking_mode": prompt_chunking_mode,
-                        "max_prompt_chunks": max_prompt_chunks,
+                        "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
+                        "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
                 ],
             },
@@ -518,484 +344,120 @@ class TrainingConfigGenerator:
 
     @staticmethod
     def generate_relora_config(
-        # All LoRA parameters (same as generate_lora_config)
+        p: Optional[Dict[str, Any]] = None,
+        *,
         run_name: str,
-        dataset_path: str,
         base_model_path: str,
         output_dir: str,
+        dataset_path: str = "",
         dataset_configs: Optional[List[Dict[str, Any]]] = None,
-        total_steps: Optional[int] = None,
-        epochs: Optional[int] = None,
-        batch_size: int = 1,
-        learning_rate: float = 1e-4,
-        lr_scheduler: str = "constant",
-        lr_warmup_steps: int = 0,
-        optimizer: str = "adamw8bit",
-        optimizer_is_paged: bool = False,
-        optimizer_cautious: bool = False,
-        optimizer_beta1: Optional[float] = None,
-        optimizer_beta2: Optional[float] = None,
-        optimizer_epsilon: Optional[float] = None,
-        optimizer_weight_decay: Optional[float] = None,
-        optimizer_schedule_free: bool = False,
-        optimizer_schedule_free_r: float = 0.0,
-        optimizer_schedule_free_weight_lr_power: float = 2.0,
-        optimizer_use_radam: bool = False,
-        optimizer_stochastic_rounding: bool = False,
-        lora_rank: int = 16,
-        lora_alpha: int = 16,
-        lora_dtype: str = "fp32",
-        save_every: int = 100,
-        save_every_unit: str = "steps",
-        max_step_saves_to_keep: int = 10,
-        sample_every: int = 100,
         sample_prompts: Optional[list] = None,
-        debug_latents: bool = False,
-        debug_latents_every: int = 50,
-        enable_bucketing: bool = False,
-        base_resolutions: Optional[list] = None,
-        bucket_strategy: str = "resize",
-        multi_resolution_mode: str = "max",
-        train_unet: bool = True,
-        train_text_encoder: bool = False,
-        train_image_encoder: bool = False,
-        unet_lr: Optional[float] = None,
-        text_encoder_lr: Optional[float] = None,
-        text_encoder_1_lr: Optional[float] = None,
-        text_encoder_2_lr: Optional[float] = None,
-        image_encoder_lr: Optional[float] = None,
-        cache_latents_to_disk: bool = False,
-        weight_dtype: str = "fp16",
-        training_dtype: str = "fp16",
-        output_dtype: str = "fp32",
-        vae_dtype: str = "fp16",
-        mixed_precision: bool = True,
-        use_flash_attention: bool = False,
-        min_snr_gamma: float = 5.0,
-        reconstruction_loss_weight: float = 0.0,
-        blocks_to_swap: int = 0,
-        use_pinned_memory: bool = False,
-        num_optimizer_groups: int = 0,
-        text_encoding_mode: str = "swap_onthefly",
-        text_encoding_swap_interval: int = 256,
-        latent_encoding_mode: str = "swap_onthefly",
-        latent_encoding_swap_interval: int = 256,
-        sample_width: int = 1024,
-        sample_height: int = 1024,
-        sample_steps: int = 28,
-        sample_cfg_scale: float = 7.0,
-        sample_sampler: str = "euler",
-        sample_schedule_type: str = "sgm_uniform",
-        sample_seed: int = 42,
-        prompt_chunking_mode: str = "a1111",
-        max_prompt_chunks: int = 0,
-        resume_from_checkpoint: Optional[str] = None,
         caption_processing: Optional[Dict[str, Any]] = None,
-        multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",
-        trajectory_blend_alpha: float = 0.7,
-        timestep_sampling_config: Optional[Dict[str, Any]] = None,
-        regularization_type: Optional[str] = None,
-        snr_regularization_weight: float = 0.1,
-        snr_timestep_adaptive: bool = True,
-        snr_penalty_mode: str = "relu",
-        energy_regularization_weight: float = 0.05,
-        energy_timestep_adaptive: bool = True,
-        energy_penalty_mode: str = "abs",
-        energy_normalize_by_pixels: bool = True,
-        noise_process: str = "auto",
-        prediction_target: str = "auto",
-        strict_validation: bool = False,
-        use_reference_images: bool = False,
-        train_vision_encoder: bool = False,
-        vision_encoder_path: Optional[str] = None,
-        vision_encoder_lr: Optional[float] = None,
-        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
-        # Parameter change tracking
-        param_tracking: bool = False,
-        param_tracking_interval: int = 100,
-        # ReLoRA-specific parameters
-        relora_merge_every: int = 500,
-        relora_merge_unit: str = "steps",
-        restart_warmup_steps: int = 100,
-        optimizer_reset_strategy: str = "full_reset",
-        optimizer_pruning_ratio: float = 0.9,
+        **legacy_kwargs: Any,
     ) -> str:
+        """Generate ReLoRA training configuration YAML.
+
+        Generates LoRA config, then replaces network type with 'relora' and adds
+        ReLoRA-specific settings (merge_every, restart_warmup_steps, etc.).
         """
-        Generate ReLoRA training configuration YAML.
+        if p is None:
+            p = legacy_kwargs
+        elif legacy_kwargs:
+            p = {**p, **legacy_kwargs}
+        p = _normalize_params(p)
 
-        Generates the same config as LoRA, then replaces network type with 'relora'
-        and adds ReLoRA-specific settings.
-
-        Args:
-            (Same as generate_lora_config, plus:)
-            relora_merge_every: Steps/epochs between merge-reinit cycles
-            relora_merge_unit: Unit for merge interval ("steps" or "epochs")
-            restart_warmup_steps: Warmup steps after each merge
-            optimizer_reset_strategy: Reset strategy ("full_reset", "magnitude_pruning", "random_pruning")
-            optimizer_pruning_ratio: Pruning ratio for pruning strategies (0.0-1.0)
-
-        Returns:
-            YAML configuration string
-        """
-        # Generate base LoRA config YAML
+        # Generate base LoRA config YAML using the same params dict
         lora_yaml = TrainingConfigGenerator.generate_lora_config(
+            p,
             run_name=run_name,
-            dataset_path=dataset_path,
             base_model_path=base_model_path,
             output_dir=output_dir,
+            dataset_path=dataset_path,
             dataset_configs=dataset_configs,
-            total_steps=total_steps,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            lr_scheduler=lr_scheduler,
-            lr_warmup_steps=lr_warmup_steps,
-            optimizer=optimizer,
-            optimizer_is_paged=optimizer_is_paged,
-            optimizer_cautious=optimizer_cautious,
-            optimizer_beta1=optimizer_beta1,
-            optimizer_beta2=optimizer_beta2,
-            optimizer_epsilon=optimizer_epsilon,
-            optimizer_weight_decay=optimizer_weight_decay,
-            optimizer_schedule_free=optimizer_schedule_free,
-            optimizer_schedule_free_r=optimizer_schedule_free_r,
-            optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
-            optimizer_use_radam=optimizer_use_radam,
-            optimizer_stochastic_rounding=optimizer_stochastic_rounding,
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dtype=lora_dtype,
-            save_every=save_every,
-            save_every_unit=save_every_unit,
-            max_step_saves_to_keep=max_step_saves_to_keep,
-            sample_every=sample_every,
             sample_prompts=sample_prompts,
-            debug_latents=debug_latents,
-            debug_latents_every=debug_latents_every,
-            enable_bucketing=enable_bucketing,
-            base_resolutions=base_resolutions,
-            bucket_strategy=bucket_strategy,
-            multi_resolution_mode=multi_resolution_mode,
-            train_unet=train_unet,
-            train_text_encoder=train_text_encoder,
-            train_image_encoder=train_image_encoder,
-            unet_lr=unet_lr,
-            text_encoder_lr=text_encoder_lr,
-            text_encoder_1_lr=text_encoder_1_lr,
-            text_encoder_2_lr=text_encoder_2_lr,
-            image_encoder_lr=image_encoder_lr,
-            cache_latents_to_disk=cache_latents_to_disk,
-            weight_dtype=weight_dtype,
-            training_dtype=training_dtype,
-            output_dtype=output_dtype,
-            vae_dtype=vae_dtype,
-            mixed_precision=mixed_precision,
-            use_flash_attention=use_flash_attention,
-            min_snr_gamma=min_snr_gamma,
-            reconstruction_loss_weight=reconstruction_loss_weight,
-            blocks_to_swap=blocks_to_swap,
-            use_pinned_memory=use_pinned_memory,
-            num_optimizer_groups=num_optimizer_groups,
-            text_encoding_mode=text_encoding_mode,
-            text_encoding_swap_interval=text_encoding_swap_interval,
-            latent_encoding_mode=latent_encoding_mode,
-            latent_encoding_swap_interval=latent_encoding_swap_interval,
-            sample_width=sample_width,
-            sample_height=sample_height,
-            sample_steps=sample_steps,
-            sample_cfg_scale=sample_cfg_scale,
-            sample_sampler=sample_sampler,
-            sample_schedule_type=sample_schedule_type,
-            sample_seed=sample_seed,
-            prompt_chunking_mode=prompt_chunking_mode,
-            max_prompt_chunks=max_prompt_chunks,
-            resume_from_checkpoint=resume_from_checkpoint,
             caption_processing=caption_processing,
-            multi_noise_timesteps=multi_noise_timesteps,
-            multi_noise_mode=multi_noise_mode,
-            trajectory_blend_alpha=trajectory_blend_alpha,
-            timestep_sampling_config=timestep_sampling_config,
-            regularization_type=regularization_type,
-            snr_regularization_weight=snr_regularization_weight,
-            snr_timestep_adaptive=snr_timestep_adaptive,
-            snr_penalty_mode=snr_penalty_mode,
-            energy_regularization_weight=energy_regularization_weight,
-            energy_timestep_adaptive=energy_timestep_adaptive,
-            energy_penalty_mode=energy_penalty_mode,
-            energy_normalize_by_pixels=energy_normalize_by_pixels,
-            noise_process=noise_process,
-            prediction_target=prediction_target,
-            strict_validation=strict_validation,
-            use_reference_images=use_reference_images,
-            train_vision_encoder=train_vision_encoder,
-            vision_encoder_path=vision_encoder_path,
-            vision_encoder_lr=vision_encoder_lr,
-            gradient_routing_ve=gradient_routing_ve,
-            param_tracking=param_tracking,
-            param_tracking_interval=param_tracking_interval,
         )
 
         # Parse the LoRA YAML and modify for ReLoRA
         config = yaml.safe_load(lora_yaml)
-
-        # Change network type from "lora" to "relora"
         process = config["config"]["process"][0]
         process["network"]["type"] = "relora"
-
-        # Add ReLoRA-specific settings
         process["network"]["relora"] = {
-            "merge_every": relora_merge_every,
-            "merge_unit": relora_merge_unit,
-            "restart_warmup_steps": restart_warmup_steps,
-            "optimizer_reset_strategy": optimizer_reset_strategy,
-            "optimizer_pruning_ratio": optimizer_pruning_ratio,
+            "merge_every": p.get("relora_merge_every", 500),
+            "merge_unit": p.get("relora_merge_unit", "steps"),
+            "restart_warmup_steps": p.get("restart_warmup_steps", 100),
+            "optimizer_reset_strategy": p.get("optimizer_reset_strategy", "full_reset"),
+            "optimizer_pruning_ratio": p.get("optimizer_pruning_ratio", 0.9),
         }
 
         return yaml.dump(config, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     @staticmethod
     def generate_full_finetune_config(
+        p: Optional[Dict[str, Any]] = None,
+        *,
         run_name: str,
-        dataset_path: str,  # Deprecated - kept for backward compatibility
         base_model_path: str,
         output_dir: str,
-        dataset_configs: Optional[List[Dict[str, Any]]] = None,  # New: multiple datasets
-        total_steps: Optional[int] = None,
-        epochs: Optional[int] = None,
-        batch_size: int = 1,
-        learning_rate: float = 1e-6,
-        lr_scheduler: str = "constant",
-        lr_warmup_steps: int = 0,
-        optimizer: str = "adamw8bit",
-        optimizer_is_paged: bool = False,
-        optimizer_cautious: bool = False,
-        optimizer_beta1: Optional[float] = None,
-        optimizer_beta2: Optional[float] = None,
-        optimizer_epsilon: Optional[float] = None,
-        optimizer_weight_decay: Optional[float] = None,
-        optimizer_schedule_free: bool = False,
-        optimizer_schedule_free_r: float = 0.0,
-        optimizer_schedule_free_weight_lr_power: float = 2.0,
-        optimizer_use_radam: bool = False,
-        optimizer_stochastic_rounding: bool = False,
-        save_every: int = 100,
-        save_every_unit: str = "steps",
-        max_step_saves_to_keep: int = 3,  # Fewer for full models (larger checkpoint size)
-        sample_every: int = 100,
+        dataset_path: str = "",
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,
         sample_prompts: Optional[list] = None,
-        debug_latents: bool = False,
-        debug_latents_every: int = 50,
-        enable_bucketing: bool = False,
-        base_resolutions: Optional[List[int]] = None,
-        bucket_strategy: str = "resize",
-        multi_resolution_mode: str = "max",
-        train_unet: bool = True,
-        train_text_encoder: bool = True,
-        train_image_encoder: bool = False,  # Image Encoder (future support)
-        unet_lr: Optional[float] = None,
-        text_encoder_lr: Optional[float] = None,
-        text_encoder_1_lr: Optional[float] = None,
-        text_encoder_2_lr: Optional[float] = None,
-        image_encoder_lr: Optional[float] = None,  # Image Encoder LR (future support)
-        cache_latents_to_disk: bool = False,
-        weight_dtype: str = "fp16",
-        training_dtype: str = "fp16",
-        output_dtype: str = "fp32",
-        vae_dtype: str = "fp16",
-        mixed_precision: bool = True,
-        use_flash_attention: bool = False,
-        min_snr_gamma: float = 5.0,
-        reconstruction_loss_weight: float = 0.0,
-        # Block Swap settings (training VRAM optimization)
-        blocks_to_swap: int = 0,
-        use_pinned_memory: bool = False,
-        num_optimizer_groups: int = 0,
-        # Text encoding settings
-        text_encoding_mode: str = "swap_onthefly",
-        text_encoding_swap_interval: int = 256,
-        # Latent encoding settings
-        latent_encoding_mode: str = "swap_onthefly",
-        latent_encoding_swap_interval: int = 256,
-        sample_width: int = 1024,
-        sample_height: int = 1024,
-        sample_steps: int = 28,
-        sample_cfg_scale: float = 7.0,
-        sample_sampler: str = "euler",
-        sample_schedule_type: str = "sgm_uniform",
-        sample_seed: int = -1,
-        # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
-        prompt_chunking_mode: str = "a1111",  # "a1111", "sd_scripts", "nobos"
-        max_prompt_chunks: int = 0,  # 0 = unlimited
-        resume_from_checkpoint: Optional[str] = None,
-        caption_processing: Optional[dict] = None,
-        # Multi Noise-Timestep (MNT) settings
-        multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",
-        trajectory_blend_alpha: float = 0.7,
-        timestep_sampling_config: Optional[Dict[str, Any]] = None,
-        # Regularization settings (prevent overbaking)
-        regularization_type: Optional[str] = None,  # "snr", "energy", or None
-        snr_regularization_weight: float = 0.1,
-        snr_timestep_adaptive: bool = True,
-        snr_penalty_mode: str = "relu",
-        energy_regularization_weight: float = 0.05,
-        energy_timestep_adaptive: bool = True,
-        energy_penalty_mode: str = "abs",
-        energy_normalize_by_pixels: bool = True,
-        # Unified training framework settings
-        noise_process: str = "add_noise",
-        prediction_target: str = "auto",
-        strict_validation: bool = True,
-        # Reference image settings
-        use_reference_images: bool = False,  # Enable reference image conditioning during training
-        # Vision Encoder settings (SigLIP2 for SDXL/SD1.5 reference image conditioning)
-        train_vision_encoder: bool = False,
-        vision_encoder_path: Optional[str] = None,
-        vision_encoder_lr: Optional[float] = None,
-        gradient_routing_ve: bool = False,  # Block TE gradient when batch has reference images
-        # Parameter change tracking
-        param_tracking: bool = False,
-        param_tracking_interval: int = 100,
-        # Priority training settings
-        priority_training: Optional[Dict[str, Any]] = None,  # Inline priority training config
+        caption_processing: Optional[Dict[str, Any]] = None,
+        **legacy_kwargs: Any,
     ) -> str:
-        """
-        Generate full fine-tuning configuration YAML.
+        """Generate full fine-tuning configuration YAML.
 
-        Args:
-            run_name: Training run identifier
-            dataset_path: Path to dataset directory
-            base_model_path: Path to base model
-            output_dir: Output directory for checkpoints
-            total_steps: Total training steps (mutually exclusive with epochs)
-            epochs: Number of epochs (mutually exclusive with total_steps)
-            batch_size: Batch size
-            learning_rate: Learning rate (typically lower for full fine-tune)
-            lr_scheduler: Learning rate scheduler type
-            optimizer: Optimizer type
-            save_every: Save checkpoint every N steps/epochs
-            sample_every: Generate sample every N steps/epochs
-            sample_prompts: List of prompts for sample generation
-
-        Returns:
-            YAML configuration string
+        See generate_lora_config for argument descriptions. Differences:
+        - learning_rate default 1e-6 (vs 1e-4 for LoRA)
+        - train_text_encoder default True
+        - max_step_saves_to_keep default 3
+        - noise_process default "add_noise", strict_validation default True
+        - Component LRs only emitted if not None (vs always-emit for LoRA)
+        - Bucketing only emitted if enable_bucketing
         """
-        # Validate that either steps or epochs is provided
+        if p is None:
+            p = legacy_kwargs
+        elif legacy_kwargs:
+            p = {**p, **legacy_kwargs}
+        p = _normalize_params(p)
+
+        total_steps = p.get("total_steps")
+        epochs = p.get("epochs")
         if total_steps is None and epochs is None:
             raise ValueError("Either total_steps or epochs must be provided")
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        # Build train config via shared helper
-        train_config = _build_train_section(
-            {
-                "batch_size": batch_size,
-                "learning_rate": learning_rate,
-                "lr_scheduler": lr_scheduler,
-                "lr_warmup_steps": lr_warmup_steps,
-                "optimizer": optimizer,
-                "optimizer_is_paged": optimizer_is_paged,
-                "optimizer_cautious": optimizer_cautious,
-                "optimizer_beta1": optimizer_beta1,
-                "optimizer_beta2": optimizer_beta2,
-                "optimizer_epsilon": optimizer_epsilon,
-                "optimizer_weight_decay": optimizer_weight_decay,
-                "optimizer_schedule_free": optimizer_schedule_free,
-                "optimizer_schedule_free_r": optimizer_schedule_free_r,
-                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
-                "optimizer_use_radam": optimizer_use_radam,
-                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
-                "unet_lr": unet_lr,
-                "text_encoder_lr": text_encoder_lr,
-                "text_encoder_1_lr": text_encoder_1_lr,
-                "text_encoder_2_lr": text_encoder_2_lr,
-                "image_encoder_lr": image_encoder_lr,
-                "mixed_precision": mixed_precision,
-                "debug_latents": debug_latents,
-                "debug_latents_every": debug_latents_every,
-                "enable_bucketing": enable_bucketing,
-                "base_resolutions": base_resolutions,
-                "bucket_strategy": bucket_strategy,
-                "multi_resolution_mode": multi_resolution_mode,
-                "use_flash_attention": use_flash_attention,
-                "min_snr_gamma": min_snr_gamma,
-                "reconstruction_loss_weight": reconstruction_loss_weight,
-                "blocks_to_swap": blocks_to_swap,
-                "use_pinned_memory": use_pinned_memory,
-                "num_optimizer_groups": num_optimizer_groups,
-                "text_encoding_mode": text_encoding_mode,
-                "text_encoding_swap_interval": text_encoding_swap_interval,
-                "use_reference_images": use_reference_images,
-                "vision_encoder_path": vision_encoder_path,
-                "train_vision_encoder": train_vision_encoder,
-                "vision_encoder_lr": vision_encoder_lr,
-                "gradient_routing_ve": gradient_routing_ve,
-                "param_tracking": param_tracking,
-                "param_tracking_interval": param_tracking_interval,
-                "priority_training": priority_training,
-                "latent_encoding_mode": latent_encoding_mode,
-                "latent_encoding_swap_interval": latent_encoding_swap_interval,
-                "multi_noise_timesteps": multi_noise_timesteps,
-                "multi_noise_mode": multi_noise_mode,
-                "trajectory_blend_alpha": trajectory_blend_alpha,
-                "timestep_sampling": timestep_sampling_config,
-                "resume_from_checkpoint": resume_from_checkpoint,
-                "regularization_type": regularization_type,
-                "snr_regularization_weight": snr_regularization_weight,
-                "snr_timestep_adaptive": snr_timestep_adaptive,
-                "snr_penalty_mode": snr_penalty_mode,
-                "energy_regularization_weight": energy_regularization_weight,
-                "energy_timestep_adaptive": energy_timestep_adaptive,
-                "energy_penalty_mode": energy_penalty_mode,
-                "energy_normalize_by_pixels": energy_normalize_by_pixels,
-                "noise_process": noise_process,
-                "prediction_target": prediction_target,
-                "strict_validation": strict_validation,
-            },
-            total_steps=total_steps,
-            epochs=epochs,
-            train_unet=train_unet,
-            train_text_encoder=train_text_encoder,
-            train_image_encoder=train_image_encoder,
-            component_lr_always_emit=False,
-            bucketing_always_emit=False,
-        )
-
-        # Build datasets array
-        # NOTE: caption_processing settings are NOT saved to YAML
-        # They are read from the database (Dataset.caption_processing) at training time
-        # This ensures Dataset Management page settings are always used
+        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
         datasets_array = []
         if dataset_configs:
-            # Use multiple datasets
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
-                ds_caption_types = ds_config.get("caption_types", [])
-                ds_dataset_id = ds_config.get("dataset_id")  # Include dataset_id for YAML editing support
-
+                ds_dataset_id = ds_config.get("dataset_id")
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     "cache_latents_to_disk": cache_latents_to_disk,
-                    # Dataset ID for resolving dataset from YAML edits (required for train_runner.py)
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
-
-                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
                 dataset_entry.update(extract_dataset_params(ds_config))
-
                 datasets_array.append(dataset_entry)
         else:
-            # Fallback: use single dataset_path (backward compatibility)
-            # NOTE: caption_processing is NOT saved - read from database at training time
-            dataset_config = {
+            datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
-            }
+            })
 
-            datasets_array.append(dataset_config)
+        # Full FT defaults differ from LoRA defaults
+        full_ft_defaults = {
+            "learning_rate": 1e-6,
+            "train_text_encoder": True,
+            "noise_process": "add_noise",
+            "strict_validation": True,
+        }
+        for k, v in full_ft_defaults.items():
+            p.setdefault(k, v)
 
         config = {
             "job": run_name,
@@ -1010,36 +472,44 @@ class TrainingConfigGenerator:
                             "type": "full_finetune",
                         },
                         "dtype": {
-                            "weight": weight_dtype,        # Model weight dtype (推奨: fp32, 許容: bf16, 非推奨: fp16/fp8)
-                            "training": training_dtype,    # Training/activation dtype (autocast)
-                            "vae": vae_dtype,              # VAE dtype (推奨: fp32, 許容: fp16 for SDXL madebyollin, 非推奨: bf16/fp8, Z-Image必須: fp32)
-                            "save": output_dtype,          # Save dtype (fp32/fp16/bf16)
+                            "weight": p.get("weight_dtype", "fp16"),
+                            "training": p.get("training_dtype", "fp16"),
+                            "vae": p.get("vae_dtype", "fp16"),
+                            "save": p.get("output_dtype", "fp32"),
                         },
                         "save": {
-                            "save_every": save_every,
-                            "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": max_step_saves_to_keep,
+                            "save_every": p.get("save_every", 100),
+                            "save_every_unit": p.get("save_every_unit", "steps"),
+                            "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 3,
                         },
                         "datasets": datasets_array,
-                        "train": train_config,
+                        "train": _build_train_section(
+                            p,
+                            total_steps=total_steps,
+                            epochs=epochs,
+                            train_unet=p.get("train_unet", True),
+                            train_text_encoder=p.get("train_text_encoder", True),
+                            train_image_encoder=p.get("train_image_encoder", False),
+                            component_lr_always_emit=False,
+                            bucketing_always_emit=False,
+                        ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
                         "sample": {
-                            "sampler": sample_sampler,
-                            "schedule_type": sample_schedule_type,
-                            "sample_every": sample_every,
-                            "width": sample_width,
-                            "height": sample_height,
+                            "sampler": p.get("sample_sampler", "euler"),
+                            "schedule_type": p.get("sample_schedule_type", "sgm_uniform"),
+                            "sample_every": p.get("sample_every", 100),
+                            "width": p.get("sample_width", 1024),
+                            "height": p.get("sample_height", 1024),
                             "prompts": sample_prompts or [],
                             "neg": "",
-                            "seed": sample_seed,
-                            "guidance_scale": sample_cfg_scale,
-                            "sample_steps": sample_steps,
+                            "seed": p.get("sample_seed", -1),
+                            "guidance_scale": p.get("sample_cfg_scale", 7.0),
+                            "sample_steps": p.get("sample_steps", 28),
                         },
-                        # Prompt chunking settings (for long prompts >75 tokens)
-                        "prompt_chunking_mode": prompt_chunking_mode,
-                        "max_prompt_chunks": max_prompt_chunks,
+                        "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
+                        "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
                 ],
             },
@@ -1049,240 +519,77 @@ class TrainingConfigGenerator:
 
     @staticmethod
     def generate_controlnet_config(
+        p: Optional[Dict[str, Any]] = None,
+        *,
         run_name: str,
-        dataset_path: str,  # Deprecated - kept for backward compatibility
         base_model_path: str,
         output_dir: str,
-        dataset_configs: Optional[List[Dict[str, Any]]] = None,  # New: multiple datasets
-        total_steps: Optional[int] = None,
-        epochs: Optional[int] = None,
-        batch_size: int = 1,
-        learning_rate: float = 1e-5,
-        lr_scheduler: str = "constant",
-        lr_warmup_steps: int = 0,
-        optimizer: str = "adamw8bit",
-        optimizer_is_paged: bool = False,
-        optimizer_cautious: bool = False,
-        optimizer_beta1: Optional[float] = None,
-        optimizer_beta2: Optional[float] = None,
-        optimizer_epsilon: Optional[float] = None,
-        optimizer_weight_decay: Optional[float] = None,
-        optimizer_schedule_free: bool = False,
-        optimizer_schedule_free_r: float = 0.0,
-        optimizer_schedule_free_weight_lr_power: float = 2.0,
-        optimizer_use_radam: bool = False,
-        optimizer_stochastic_rounding: bool = False,
-        save_every: int = 500,
-        save_every_unit: str = "steps",
-        max_step_saves_to_keep: int = 5,
-        sample_every: int = 500,
+        dataset_path: str = "",
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,
         sample_prompts: Optional[list] = None,
-        debug_latents: bool = False,
-        debug_latents_every: int = 50,
-        enable_bucketing: bool = False,
-        base_resolutions: Optional[List[int]] = None,
-        bucket_strategy: str = "resize",
-        multi_resolution_mode: str = "max",
-        # ControlNet does NOT train UNet/TE (hardcoded in ControlNetTrainer)
-        unet_lr: Optional[float] = None,
-        cache_latents_to_disk: bool = False,
-        weight_dtype: str = "fp16",
-        training_dtype: str = "fp16",
-        output_dtype: str = "fp32",
-        vae_dtype: str = "fp16",
-        mixed_precision: bool = True,
-        use_flash_attention: bool = False,
-        min_snr_gamma: float = 5.0,
-        reconstruction_loss_weight: float = 0.0,
-        # Text encoding settings
-        text_encoding_mode: str = "swap_onthefly",
-        text_encoding_swap_interval: int = 256,
-        # Latent encoding settings
-        latent_encoding_mode: str = "swap_onthefly",
-        latent_encoding_swap_interval: int = 256,
-        sample_width: int = 512,
-        sample_height: int = 512,
-        sample_steps: int = 20,
-        sample_cfg_scale: float = 7.0,
-        sample_sampler: str = "euler",
-        sample_schedule_type: str = "normal",
-        sample_seed: int = 42,
-        # Prompt chunking settings (SD/SDXL only)
-        prompt_chunking_mode: str = "a1111",
-        max_prompt_chunks: int = 0,
-        resume_from_checkpoint: Optional[str] = None,
-        caption_processing: Optional[dict] = None,
-        # Multi Noise-Timestep (MNT) settings
-        multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",
-        trajectory_blend_alpha: float = 0.7,
-        timestep_sampling_config: Optional[Dict[str, Any]] = None,
-        # Regularization settings
-        regularization_type: Optional[str] = None,
-        snr_regularization_weight: float = 0.1,
-        snr_timestep_adaptive: bool = True,
-        snr_penalty_mode: str = "relu",
-        energy_regularization_weight: float = 0.05,
-        energy_timestep_adaptive: bool = True,
-        energy_penalty_mode: str = "abs",
-        energy_normalize_by_pixels: bool = True,
-        # Unified training framework settings
-        noise_process: str = "auto",
-        prediction_target: str = "auto",
-        strict_validation: bool = False,
-        # ControlNet-specific parameters
-        controlnet_type: str = "standard",  # "standard" or "lllite"
-        controlnet_pretrained_path: Optional[str] = None,
-        controlnet_init_from_unet: bool = True,
-        # LLLite parameters (Phase 2)
-        lllite_conditioning_channels: int = 32,
-        lllite_rank: int = 64,
-        # Condition generation parameters (Phase 4)
-        condition_preprocessors: Optional[List[str]] = None,
-        condition_cache_mode: str = "on_the_fly",
+        caption_processing: Optional[Dict[str, Any]] = None,
+        **legacy_kwargs: Any,
     ) -> str:
-        """
-        Generate ControlNet training configuration YAML.
+        """Generate ControlNet training configuration YAML.
 
-        Args:
-            run_name: Training run identifier
-            dataset_path: Path to dataset directory (deprecated, use dataset_configs)
-            base_model_path: Path to base model
-            output_dir: Output directory for checkpoints
-            total_steps: Total training steps (mutually exclusive with epochs)
-            epochs: Number of epochs (mutually exclusive with total_steps)
-            controlnet_type: "standard" (diffusers ControlNetModel) or "lllite" (sd-scripts compatible)
-            controlnet_pretrained_path: Path to existing ControlNet checkpoint for resume
-            controlnet_init_from_unet: Initialize ControlNet from base UNet weights (standard only)
-            lllite_conditioning_channels: Conditioning channels for LLLite
-            lllite_rank: Rank for LLLite linear layers
-            condition_preprocessors: List of controlnet-aux preprocessor types
-            condition_cache_mode: "pre_generate" or "on_the_fly"
+        ControlNet does NOT train UNet/TE (hardcoded). It uses unet_lr as the
+        ControlNet LR. No block swap, vision encoder, param tracking, reference
+        images, priority training, image_encoder_lr, or split TE LRs.
 
-        Returns:
-            YAML configuration string
+        ControlNet-specific params (in p):
+        - controlnet_type: "standard" or "lllite"
+        - controlnet_pretrained_path: Path to existing ControlNet checkpoint
+        - controlnet_init_from_unet: Init from base UNet weights
+        - lllite_conditioning_channels, lllite_rank
+        - condition_preprocessors, condition_cache_mode
         """
-        # Validate that either steps or epochs is provided
+        if p is None:
+            p = legacy_kwargs
+        elif legacy_kwargs:
+            p = {**p, **legacy_kwargs}
+        p = _normalize_params(p)
+
+        total_steps = p.get("total_steps")
+        epochs = p.get("epochs")
         if total_steps is None and epochs is None:
             raise ValueError("Either total_steps or epochs must be provided")
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        # Build train config via shared helper
-        # ControlNet specifics: train_unet/te always False, no block swap, no vision encoder,
-        # no param tracking, no reference images, no priority training, no image_encoder_lr,
-        # no split TE LRs.
-        train_config = _build_train_section(
-            {
-                "batch_size": batch_size,
-                "learning_rate": learning_rate,
-                "lr_scheduler": lr_scheduler,
-                "lr_warmup_steps": lr_warmup_steps,
-                "optimizer": optimizer,
-                "optimizer_is_paged": optimizer_is_paged,
-                "optimizer_cautious": optimizer_cautious,
-                "optimizer_beta1": optimizer_beta1,
-                "optimizer_beta2": optimizer_beta2,
-                "optimizer_epsilon": optimizer_epsilon,
-                "optimizer_weight_decay": optimizer_weight_decay,
-                "optimizer_schedule_free": optimizer_schedule_free,
-                "optimizer_schedule_free_r": optimizer_schedule_free_r,
-                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
-                "optimizer_use_radam": optimizer_use_radam,
-                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
-                "unet_lr": unet_lr,  # Used as ControlNet LR
-                "mixed_precision": mixed_precision,
-                "debug_latents": debug_latents,
-                "debug_latents_every": debug_latents_every,
-                "enable_bucketing": enable_bucketing,
-                "base_resolutions": base_resolutions or [512] if enable_bucketing else None,
-                "bucket_strategy": bucket_strategy,
-                "multi_resolution_mode": multi_resolution_mode,
-                "use_flash_attention": use_flash_attention,
-                "min_snr_gamma": min_snr_gamma,
-                "reconstruction_loss_weight": reconstruction_loss_weight,
-                "text_encoding_mode": text_encoding_mode,
-                "text_encoding_swap_interval": text_encoding_swap_interval,
-                "latent_encoding_mode": latent_encoding_mode,
-                "latent_encoding_swap_interval": latent_encoding_swap_interval,
-                "multi_noise_timesteps": multi_noise_timesteps,
-                "multi_noise_mode": multi_noise_mode,
-                "trajectory_blend_alpha": trajectory_blend_alpha,
-                "timestep_sampling": timestep_sampling_config,
-                "resume_from_checkpoint": resume_from_checkpoint,
-                "regularization_type": regularization_type,
-                "snr_regularization_weight": snr_regularization_weight,
-                "snr_timestep_adaptive": snr_timestep_adaptive,
-                "snr_penalty_mode": snr_penalty_mode,
-                "energy_regularization_weight": energy_regularization_weight,
-                "energy_timestep_adaptive": energy_timestep_adaptive,
-                "energy_penalty_mode": energy_penalty_mode,
-                "energy_normalize_by_pixels": energy_normalize_by_pixels,
-                "noise_process": noise_process,
-                "prediction_target": prediction_target,
-                "strict_validation": strict_validation,
-            },
-            total_steps=total_steps,
-            epochs=epochs,
-            train_unet=False,
-            train_text_encoder=False,
-            train_image_encoder=False,
-            component_lr_always_emit=False,
-            bucketing_always_emit=False,
-            include_block_swap=False,
-            include_vision_encoder=False,
-            include_param_tracking=False,
-            include_reference_images=False,
-            include_priority_training=False,
-            include_image_encoder_lr=False,
-            include_te_split_lrs=False,
-        )
-
-        # Build datasets array
+        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
                 ds_path = ds_config.get("path", "")
-                ds_caption_types = ds_config.get("caption_types", [])
                 ds_dataset_id = ds_config.get("dataset_id")
-
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     "cache_latents_to_disk": cache_latents_to_disk,
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
-
-                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
                 dataset_entry.update(extract_dataset_params(ds_config))
-
                 datasets_array.append(dataset_entry)
         else:
-            dataset_entry = {
+            datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
-            }
-            datasets_array.append(dataset_entry)
+            })
 
-        # Build ControlNet-specific network config
+        # ControlNet-specific network config
         controlnet_network_config = {
-            "type": controlnet_type,
-            "init_from_unet": controlnet_init_from_unet,
+            "type": p.get("controlnet_type", "standard"),
+            "init_from_unet": p.get("controlnet_init_from_unet", True),
         }
-
-        if controlnet_pretrained_path:
-            controlnet_network_config["pretrained_path"] = controlnet_pretrained_path
-
-        # LLLite-specific parameters
-        if controlnet_type == "lllite":
-            controlnet_network_config["lllite_conditioning_channels"] = lllite_conditioning_channels
-            controlnet_network_config["lllite_rank"] = lllite_rank
-
-        # Condition generation parameters
-        if condition_preprocessors:
-            controlnet_network_config["condition_preprocessors"] = condition_preprocessors
-            controlnet_network_config["condition_cache_mode"] = condition_cache_mode
+        if p.get("controlnet_pretrained_path"):
+            controlnet_network_config["pretrained_path"] = p["controlnet_pretrained_path"]
+        if p.get("controlnet_type") == "lllite":
+            controlnet_network_config["lllite_conditioning_channels"] = p.get("lllite_conditioning_channels", 32)
+            controlnet_network_config["lllite_rank"] = p.get("lllite_rank", 64)
+        if p.get("condition_preprocessors"):
+            controlnet_network_config["condition_preprocessors"] = p["condition_preprocessors"]
+            controlnet_network_config["condition_cache_mode"] = p.get("condition_cache_mode", "on_the_fly")
 
         config = {
             "job": run_name,
@@ -1298,36 +605,51 @@ class TrainingConfigGenerator:
                             "controlnet": controlnet_network_config,
                         },
                         "dtype": {
-                            "weight": weight_dtype,
-                            "training": training_dtype,
-                            "vae": vae_dtype,
-                            "save": output_dtype,
+                            "weight": p.get("weight_dtype", "fp16"),
+                            "training": p.get("training_dtype", "fp16"),
+                            "vae": p.get("vae_dtype", "fp16"),
+                            "save": p.get("output_dtype", "fp32"),
                         },
                         "save": {
-                            "save_every": save_every,
-                            "save_every_unit": save_every_unit,
-                            "max_step_saves_to_keep": max_step_saves_to_keep,
+                            "save_every": p.get("save_every", 500),
+                            "save_every_unit": p.get("save_every_unit", "steps"),
+                            "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 5,
                         },
                         "datasets": datasets_array,
-                        "train": train_config,
+                        "train": _build_train_section(
+                            p,
+                            total_steps=total_steps,
+                            epochs=epochs,
+                            train_unet=False,
+                            train_text_encoder=False,
+                            train_image_encoder=False,
+                            component_lr_always_emit=False,
+                            bucketing_always_emit=False,
+                            include_block_swap=False,
+                            include_vision_encoder=False,
+                            include_param_tracking=False,
+                            include_reference_images=False,
+                            include_priority_training=False,
+                            include_image_encoder_lr=False,
+                            include_te_split_lrs=False,
+                        ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
                         "sample": {
-                            "sampler": sample_sampler,
-                            "schedule_type": sample_schedule_type,
-                            "sample_every": sample_every,
-                            "width": sample_width,
-                            "height": sample_height,
+                            "sampler": p.get("sample_sampler", "euler"),
+                            "schedule_type": p.get("sample_schedule_type", "normal"),
+                            "sample_every": p.get("sample_every", 500),
+                            "width": p.get("sample_width", 512),
+                            "height": p.get("sample_height", 512),
                             "prompts": sample_prompts or [],
                             "neg": "",
-                            "seed": sample_seed,
-                            "guidance_scale": sample_cfg_scale,
-                            "sample_steps": sample_steps,
-                            # condition_image_path is now embedded in each prompt entry
+                            "seed": p.get("sample_seed", 42),
+                            "guidance_scale": p.get("sample_cfg_scale", 7.0),
+                            "sample_steps": p.get("sample_steps", 20),
                         },
-                        "prompt_chunking_mode": prompt_chunking_mode,
-                        "max_prompt_chunks": max_prompt_chunks,
+                        "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
+                        "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
                 ],
             },

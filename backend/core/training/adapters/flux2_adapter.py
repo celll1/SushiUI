@@ -320,6 +320,9 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             trainer.text_encoder.train()
             print(f"[FLUX2FullParameterAdapter] Text Encoder (Qwen3) set to train mode")
         else:
+            if trainer.text_encoder is not None:
+                trainer.text_encoder.requires_grad_(False)
+                trainer.text_encoder.eval()
             print(f"[FLUX2FullParameterAdapter] Text Encoder (Qwen3) is frozen")
 
         # VAE is always frozen

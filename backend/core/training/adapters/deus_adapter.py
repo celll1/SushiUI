@@ -254,6 +254,10 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             if trainer.text_encoder is not None:
                 trainer.text_encoder.requires_grad_(True)
                 trainer.text_encoder.train()
+        else:
+            if trainer.text_encoder is not None:
+                trainer.text_encoder.requires_grad_(False)
+                trainer.text_encoder.eval()
 
         # VAE is always frozen
         if trainer.vae is not None:

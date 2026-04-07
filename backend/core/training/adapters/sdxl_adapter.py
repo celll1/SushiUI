@@ -272,6 +272,16 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             if trainer.text_encoder_2 is not None:
                 trainer.text_encoder_2.requires_grad_(True)
                 trainer.text_encoder_2.train()
+        else:
+            # Explicitly freeze text encoders when not training them.
+            # PyTorch defaults requires_grad=True for float parameters, so this
+            # must be set explicitly to avoid spurious gradients.
+            if trainer.text_encoder is not None:
+                trainer.text_encoder.requires_grad_(False)
+                trainer.text_encoder.eval()
+            if trainer.text_encoder_2 is not None:
+                trainer.text_encoder_2.requires_grad_(False)
+                trainer.text_encoder_2.eval()
 
         # VAE is always frozen
         if trainer.vae is not None:

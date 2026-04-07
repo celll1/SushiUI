@@ -84,7 +84,11 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   base_model_path: "",
   dataset_configs: [],
   total_steps: 1000,
-  epochs: undefined,
+  // Initialized (not undefined) so users can toggle the "Epochs" radio
+  // and submit without having to touch the input — matches legacy behaviour
+  // where useState(10) guaranteed the value was always present.
+  // getRequestData() strips one of them based on `useEpochs`.
+  epochs: 10,
   batch_size: 4,
   learning_rate: 1e-5,
   lr_scheduler: "constant",

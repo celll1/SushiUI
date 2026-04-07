@@ -336,18 +336,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const debugLatents = params.debug_latents ?? false;
   const debugLatentsEvery = params.debug_latents_every ?? 50;
 
-  // Reference image conditioning (FLUX.2 only)
-  const [useReferenceImages, setUseReferenceImages] = useState(false);
+  // Reference image conditioning (FLUX.2 only) — Phase 3k: migrated to params
+  const useReferenceImages = params.use_reference_images ?? false;
 
-  // SigLIP2 Vision Encoder
-  const [visionEncoderPath, setVisionEncoderPath] = useState("");
-  const [trainVisionEncoder, setTrainVisionEncoder] = useState(false);
-  const [gradientRoutingVE, setGradientRoutingVE] = useState(false);
-  const [visionEncoderLr, setVisionEncoderLr] = useState("");
+  // SigLIP2 Vision Encoder — Phase 3k: migrated to params
+  const visionEncoderPath = params.vision_encoder_path ?? "";
+  const trainVisionEncoder = params.train_vision_encoder ?? false;
+  const gradientRoutingVE = params.gradient_routing_ve ?? false;
+  const [localVisionEncoderLrText, setLocalVisionEncoderLrText] = useState<string>("");
+  const visionEncoderLr = localVisionEncoderLrText;
 
-  // Parameter change tracking
-  const [paramTracking, setParamTracking] = useState(false);
-  const [paramTrackingInterval, setParamTrackingInterval] = useState(100);
+  // Parameter change tracking — Phase 3k: migrated to params
+  const paramTracking = params.param_tracking ?? false;
+  const paramTrackingInterval = params.param_tracking_interval ?? 100;
 
   // Priority training (one entry per line in textarea)
   const [priorityEnabled, setPriorityEnabled] = useState(false);
@@ -572,13 +573,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       reconstruction_loss_weight: params.reconstruction_loss_weight,
       text_encoding_mode: params.text_encoding_mode,
       text_encoding_swap_interval: params.text_encoding_swap_interval,
-      use_reference_images: useReferenceImages,
-      vision_encoder_path: visionEncoderPath || null,
-      train_vision_encoder: trainVisionEncoder,
-      vision_encoder_lr: visionEncoderLr ? parseFloat(visionEncoderLr) : null,
-      gradient_routing_ve: gradientRoutingVE,
-      param_tracking: paramTracking,
-      param_tracking_interval: paramTrackingInterval,
+      use_reference_images: params.use_reference_images,
+      vision_encoder_path: params.vision_encoder_path || null,
+      train_vision_encoder: params.train_vision_encoder,
+      vision_encoder_lr: localVisionEncoderLrText ? parseFloat(localVisionEncoderLrText) : null,
+      gradient_routing_ve: params.gradient_routing_ve,
+      param_tracking: params.param_tracking,
+      param_tracking_interval: params.param_tracking_interval,
       latent_encoding_mode: params.latent_encoding_mode,
       latent_encoding_swap_interval: params.latent_encoding_swap_interval,
       blocks_to_swap: params.blocks_to_swap,
@@ -629,8 +630,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
     localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
-    useReferenceImages, visionEncoderPath, trainVisionEncoder,
-    visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval,
+    localVisionEncoderLrText,
     timestepDistribution, timestepMin, timestepMax, timestepMean,
     timestepStd, timestepAlpha, timestepBeta, controlnetType,
     controlnetPretrainedPath, controlnetInitFromUnet, llliteConditioningChannels, llliteRank,
@@ -820,13 +820,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.force_recache !== undefined) setParams(prev => ({ ...prev, force_recache: params.force_recache }));
 
     // Reference images / Vision encoder
-    if (params.use_reference_images !== undefined) setUseReferenceImages(params.use_reference_images);
-    if (params.vision_encoder_path !== undefined) setVisionEncoderPath(params.vision_encoder_path || "");
-    if (params.train_vision_encoder !== undefined) setTrainVisionEncoder(params.train_vision_encoder);
-    if (params.gradient_routing_ve !== undefined) setGradientRoutingVE(params.gradient_routing_ve);
-    if (params.vision_encoder_lr !== undefined) setVisionEncoderLr(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
-    if (params.param_tracking !== undefined) setParamTracking(params.param_tracking);
-    if (params.param_tracking_interval !== undefined) setParamTrackingInterval(params.param_tracking_interval);
+    if (params.use_reference_images !== undefined) setParams(prev => ({ ...prev, use_reference_images: params.use_reference_images }));
+    if (params.vision_encoder_path !== undefined) setParams(prev => ({ ...prev, vision_encoder_path: params.vision_encoder_path || "" }));
+    if (params.train_vision_encoder !== undefined) setParams(prev => ({ ...prev, train_vision_encoder: params.train_vision_encoder }));
+    if (params.gradient_routing_ve !== undefined) setParams(prev => ({ ...prev, gradient_routing_ve: params.gradient_routing_ve }));
+    if (params.vision_encoder_lr !== undefined) {
+      setParams(prev => ({ ...prev, vision_encoder_lr: params.vision_encoder_lr }));
+      setLocalVisionEncoderLrText(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
+    }
+    if (params.param_tracking !== undefined) setParams(prev => ({ ...prev, param_tracking: params.param_tracking }));
+    if (params.param_tracking_interval !== undefined) setParams(prev => ({ ...prev, param_tracking_interval: params.param_tracking_interval }));
 
     // Priority training
     if (params.priority_training) {
@@ -927,8 +930,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Z-Image/FLUX.2: Cannot train text encoder (frozen)
       updateParam("train_text_encoder", false);
       // Z-Image/FLUX.2: VE not supported — clear selection
-      setVisionEncoderPath("");
-      setTrainVisionEncoder(false);
+      updateParam("vision_encoder_path", "");
+      updateParam("train_vision_encoder", false);
     } else {
       // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
       updateParam("weight_dtype", "fp32");
@@ -1439,7 +1442,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sampleSeed !== undefined) updateParam("sample_seed", config.sampleSeed);
     if (config.debugLatents !== undefined) updateParam("debug_latents", config.debugLatents);
     if (config.debugLatentsEvery !== undefined) updateParam("debug_latents_every", config.debugLatentsEvery);
-    if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
+    if (config.useReferenceImages !== undefined) updateParam("use_reference_images", config.useReferenceImages);
     if (config.priority_training) {
       setPriorityEnabled(true);
       const entries = config.priority_training.entries || [];
@@ -1887,7 +1890,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </label>
             <VisionEncoderSelector
               value={visionEncoderPath || null}
-              onChange={(path) => setVisionEncoderPath(path || "")}
+              onChange={(path) => updateParam("vision_encoder_path", path || "")}
               label=""
             />
           </div>
@@ -2999,7 +3002,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     type="checkbox"
                     id="train-vision-encoder"
                     checked={trainVisionEncoder}
-                    onChange={(e) => setTrainVisionEncoder(e.target.checked)}
+                    onChange={(e) => updateParam("train_vision_encoder", e.target.checked)}
                     className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
                   />
                   <label htmlFor="train-vision-encoder" className="text-xs text-gray-300 cursor-pointer">
@@ -3014,7 +3017,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="text"
                       value={visionEncoderLr}
-                      onChange={(e) => setVisionEncoderLr(e.target.value)}
+                      onChange={(e) => setLocalVisionEncoderLrText(e.target.value)}
+                      onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("vision_encoder_lr", isNaN(v) ? null : v); }}
                       placeholder={`Default: ${textEncoderLr || learningRate}`}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
@@ -3026,7 +3030,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="gradient-routing-ve"
                       checked={gradientRoutingVE}
-                      onChange={(e) => setGradientRoutingVE(e.target.checked)}
+                      onChange={(e) => updateParam("gradient_routing_ve", e.target.checked)}
                       className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="gradient-routing-ve" className="text-xs text-gray-300 cursor-pointer">
@@ -3318,7 +3322,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="use-reference-images"
               checked={useReferenceImages}
-              onChange={(e) => setUseReferenceImages(e.target.checked)}
+              onChange={(e) => updateParam("use_reference_images", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="use-reference-images" className="text-sm text-gray-400">
@@ -3924,7 +3928,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="param-tracking"
               checked={paramTracking}
-              onChange={(e) => setParamTracking(e.target.checked)}
+              onChange={(e) => updateParam("param_tracking", e.target.checked)}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="param-tracking" className="text-sm text-gray-400">
@@ -3939,8 +3943,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 min="1"
                 value={paramTrackingInterval}
-                onChange={(e) => setParamTrackingInterval(e.target.value === '' ? '' as any : parseInt(e.target.value))}
-                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setParamTrackingInterval(100); }}
+                onChange={(e) => updateParam("param_tracking_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("param_tracking_interval", 100); }}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
                 placeholder="e.g., 100"
               />

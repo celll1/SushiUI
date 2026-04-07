@@ -4811,6 +4811,119 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
         raise HTTPException(status_code=404, detail="Training run not found")
     return run.to_dict()
 
+# YAML field locations for fields that don't live in process_config.train with the same name.
+# Format: field_name -> (section_path, [yaml_key])  yaml_key defaults to field_name.
+# section_path is dotted: "dtype", "save", "sample", "network", "network.controlnet", "model"
+_YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
+    # dtype section
+    "weight_dtype": ("dtype", "weight"),
+    "training_dtype": ("dtype", "training"),
+    "vae_dtype": ("dtype", "vae"),
+    "output_dtype": ("dtype", "save"),
+    # save section
+    "save_every": ("save",),
+    "save_every_unit": ("save",),
+    "max_step_saves_to_keep": ("save",),
+    # sample section (some keys are renamed in YAML)
+    "sample_every": ("sample",),
+    "sample_prompts": ("sample", "prompts"),
+    "sample_width": ("sample", "width"),
+    "sample_height": ("sample", "height"),
+    "sample_steps": ("sample", "sample_steps"),
+    "sample_cfg_scale": ("sample", "guidance_scale"),
+    "sample_sampler": ("sample", "sampler"),
+    "sample_schedule_type": ("sample", "schedule_type"),
+    "sample_seed": ("sample", "seed"),
+    # network section (LoRA-specific)
+    "lora_rank": ("network", "linear"),
+    "lora_alpha": ("network", "linear_alpha"),
+    "lora_dtype": ("network", "lora_dtype"),
+    # network.controlnet section
+    "controlnet_type": ("network.controlnet", "type"),
+    "controlnet_pretrained_path": ("network.controlnet", "pretrained_path"),
+    "controlnet_init_from_unet": ("network.controlnet", "init_from_unet"),
+    "lllite_conditioning_channels": ("network.controlnet",),
+    "lllite_rank": ("network.controlnet",),
+    "condition_preprocessors": ("network.controlnet",),
+    "condition_cache_mode": ("network.controlnet",),
+    # train section with renamed key
+    "total_steps": ("train", "steps"),
+    "learning_rate": ("train", "lr"),
+    # process_config.model section
+    "base_model_path": ("model", "name_or_path"),
+}
+
+# Method-specific fields: only meaningful for that method.
+_LORA_ONLY_FIELDS = {"lora_rank", "lora_alpha", "lora_dtype"}
+_CONTROLNET_ONLY_FIELDS = {
+    "controlnet_type", "controlnet_pretrained_path", "controlnet_init_from_unet",
+    "lllite_conditioning_channels", "lllite_rank",
+    "condition_preprocessors", "condition_cache_mode",
+}
+
+# Fields excluded from auto-extraction (they need special handling outside the schema loop)
+_AUTO_EXTRACT_EXCLUDE = {
+    "dataset_id", "dataset_configs", "run_name", "training_method",
+    "cache_latents_to_disk",  # Read from datasets[0], not train section
+}
+
+
+def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[str, Any]:
+    """Extract TrainingRunCreateRequest-shaped params from a parsed YAML process_config.
+
+    Uses TrainingRunCreateRequest.model_fields as the schema (single source of truth).
+    For each field, looks up the YAML location via _YAML_FIELD_LOCATIONS, falling back
+    to process_config.train with the same key name.
+
+    LoRA-only fields are set to None when job != "lora".
+    ControlNet-only fields are set to their defaults when job != "controlnet".
+    """
+    train = process_config.get("train", {})
+    dtype_section = process_config.get("dtype", {}) if isinstance(process_config.get("dtype"), dict) else {}
+    save_section = process_config.get("save", {})
+    sample_section = process_config.get("sample", {})
+    network = process_config.get("network", {})
+    cn_network = network.get("controlnet", {}) if isinstance(network, dict) else {}
+    model_section = process_config.get("model", {})
+
+    sections = {
+        "train": train,
+        "dtype": dtype_section,
+        "save": save_section,
+        "sample": sample_section,
+        "network": network,
+        "network.controlnet": cn_network,
+        "model": model_section,
+    }
+
+    result: Dict[str, Any] = {}
+    for field_name, field_info in TrainingRunCreateRequest.model_fields.items():
+        if field_name in _AUTO_EXTRACT_EXCLUDE:
+            continue
+
+        # LoRA-specific fields are None for non-LoRA jobs
+        if field_name in _LORA_ONLY_FIELDS and job != "lora":
+            result[field_name] = None
+            continue
+
+        default = field_info.default
+        # Pydantic uses PydanticUndefined for required fields
+        if default.__class__.__name__ == "PydanticUndefinedType":
+            default = None
+
+        if field_name in _YAML_FIELD_LOCATIONS:
+            spec = _YAML_FIELD_LOCATIONS[field_name]
+            section_path = spec[0]
+            yaml_key = spec[1] if len(spec) > 1 else field_name
+            section_dict = sections.get(section_path, {})
+            result[field_name] = section_dict.get(yaml_key, default)
+        else:
+            # Default: look up in train section with same name
+            result[field_name] = train.get(field_name, default)
+
+    return result
+
+
 @router.get("/training/runs/{run_id}/params")
 async def get_training_run_params(
     run_id: int,
@@ -4876,124 +4989,24 @@ async def get_training_run_params(
             cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
     print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s, found {len(dataset_configs)} datasets")
 
-    # Extract training parameters
-    training_params = process_config.get("train", {})
-    # network_config already extracted above for training method detection
-    sample_config = process_config.get("sample", {})
-    save_config = process_config.get("save", {})
+    # Extract training parameters using schema-driven helper
+    # (uses TrainingRunCreateRequest.model_fields as single source of truth)
+    params = _extract_request_params_from_yaml(process_config, job)
 
-    # Build response in TrainingRunCreateRequest format
-    params = {
-        "run_id": run.id,  # Add run_id for edit mode
-        "dataset_configs": dataset_configs if dataset_configs else None,
-        "run_name": run.run_name,
-        "training_method": "lora" if job == "lora" else ("controlnet" if job == "controlnet" else "full_finetune"),
-        "base_model_path": process_config.get("model", {}).get("name_or_path", run.base_model_path),
-        "total_steps": training_params.get("steps"),
-        "epochs": training_params.get("epochs"),
-        "batch_size": training_params.get("batch_size", 1),
-        "learning_rate": float(training_params.get("lr", 1e-4)),
-        "lr_scheduler": training_params.get("lr_scheduler", "constant"),
-        "lr_warmup_steps": training_params.get("lr_warmup_steps", 0),
-        "optimizer": training_params.get("optimizer", "adamw8bit"),
-        "optimizer_is_paged": training_params.get("optimizer_is_paged", False),
-        "optimizer_cautious": training_params.get("optimizer_cautious", False),
-        "optimizer_beta1": training_params.get("optimizer_beta1"),
-        "optimizer_beta2": training_params.get("optimizer_beta2"),
-        "optimizer_epsilon": training_params.get("optimizer_epsilon"),
-        "optimizer_weight_decay": training_params.get("optimizer_weight_decay"),
-        "optimizer_schedule_free": training_params.get("optimizer_schedule_free", False),
-        "optimizer_schedule_free_r": training_params.get("optimizer_schedule_free_r", 0.0),
-        "optimizer_schedule_free_weight_lr_power": training_params.get("optimizer_schedule_free_weight_lr_power", 2.0),
-        "optimizer_use_radam": training_params.get("optimizer_use_radam", False),
-        "lora_rank": network_config.get("linear", 16) if job == "lora" else None,
-        "lora_alpha": network_config.get("linear_alpha", 16) if job == "lora" else None,
-        "lora_dtype": network_config.get("lora_dtype", "fp32") if job == "lora" else None,
-        "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
-        "save_every_unit": save_config.get("save_every_unit", training_params.get("save_every_unit", "steps")),
-        "max_step_saves_to_keep": save_config.get("max_step_saves_to_keep"),  # None = use training method default
-        "resume_from_checkpoint": training_params.get("resume_from_checkpoint"),
-        "sample_every": sample_config.get("sample_every", training_params.get("sample_every", 100)),
-        "sample_prompts": sample_config.get("prompts", []),
-        "sample_width": sample_config.get("width", 1024),
-        "sample_height": sample_config.get("height", 1024),
-        "sample_steps": sample_config.get("sample_steps", sample_config.get("steps", 28)),
-        "sample_cfg_scale": sample_config.get("guidance_scale", sample_config.get("cfg_scale", 7.0)),
-        "sample_sampler": sample_config.get("sampler", "euler"),
-        "sample_schedule_type": sample_config.get("schedule_type", "sgm_uniform"),
-        "sample_seed": sample_config.get("seed", -1),
-        "debug_latents": training_params.get("debug_latents", False),
-        "debug_latents_every": training_params.get("debug_latents_every", 50),
-        "enable_bucketing": training_params.get("enable_bucketing", False),
-        "base_resolutions": training_params.get("base_resolutions"),
-        "bucket_strategy": training_params.get("bucket_strategy", "resize"),
-        "multi_resolution_mode": training_params.get("multi_resolution_mode", "max"),
-        "cache_latents_to_disk": cache_latents_to_disk,
-        "train_unet": training_params.get("train_unet", True),
-        "train_text_encoder": training_params.get("train_text_encoder", False),
-        "unet_lr": training_params.get("unet_lr"),
-        "text_encoder_lr": training_params.get("text_encoder_lr"),
-        "text_encoder_1_lr": training_params.get("text_encoder_1_lr"),
-        "text_encoder_2_lr": training_params.get("text_encoder_2_lr"),
-        # Parse dtype config (YAML structure: process_config.dtype.weight/training/save/vae)
-        # Note: dtype is at process_config level, NOT inside train section
-        "weight_dtype": process_config.get("dtype", {}).get("weight", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
-        "training_dtype": process_config.get("dtype", {}).get("training", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
-        "output_dtype": process_config.get("dtype", {}).get("save", "fp32") if isinstance(process_config.get("dtype"), dict) else "fp32",
-        "vae_dtype": process_config.get("dtype", {}).get("vae", "fp16") if isinstance(process_config.get("dtype"), dict) else "fp16",
-        "mixed_precision": training_params.get("mixed_precision", True),
-        "use_flash_attention": training_params.get("use_flash_attention", False),
-        "min_snr_gamma": training_params.get("min_snr_gamma", 5.0),
-        "text_encoding_mode": training_params.get("text_encoding_mode", "swap_onthefly"),
-        "text_encoding_swap_interval": training_params.get("text_encoding_swap_interval", 256),
-        "latent_encoding_mode": training_params.get("latent_encoding_mode", "swap_onthefly"),
-        "latent_encoding_swap_interval": training_params.get("latent_encoding_swap_interval", 256),
-        "blocks_to_swap": training_params.get("blocks_to_swap", 0),
-        "use_pinned_memory": training_params.get("use_pinned_memory", False),
-        "num_optimizer_groups": training_params.get("num_optimizer_groups", 0),
-        "multi_noise_timesteps": training_params.get("multi_noise_timesteps", 1),
-        "multi_noise_mode": training_params.get("multi_noise_mode", "independent"),
-        "trajectory_blend_alpha": training_params.get("trajectory_blend_alpha", 0.7),
-        "timestep_sampling": training_params.get("timestep_sampling"),
-        "regularization_type": training_params.get("regularization_type"),
-        "snr_regularization_weight": training_params.get("snr_regularization_weight", 0.0),
-        "snr_timestep_adaptive": training_params.get("snr_timestep_adaptive", True),
-        "snr_penalty_mode": training_params.get("snr_penalty_mode", "relu"),
-        "energy_regularization_weight": training_params.get("energy_regularization_weight", 0.0),
-        "energy_timestep_adaptive": training_params.get("energy_timestep_adaptive", True),
-        "energy_penalty_mode": training_params.get("energy_penalty_mode", "abs"),
-        "energy_normalize_by_pixels": training_params.get("energy_normalize_by_pixels", True),
-        "reconstruction_loss_weight": training_params.get("reconstruction_loss_weight", 0.0),
-        "optimizer_stochastic_rounding": training_params.get("optimizer_stochastic_rounding", False),
-        "train_image_encoder": training_params.get("train_image_encoder", False),
-        "image_encoder_lr": training_params.get("image_encoder_lr"),
-        # Reference image conditioning
-        "use_reference_images": training_params.get("use_reference_images", False),
-        # SigLIP2 Vision Encoder
-        "vision_encoder_path": training_params.get("vision_encoder_path", None),
-        "train_vision_encoder": training_params.get("train_vision_encoder", False),
-        "vision_encoder_lr": training_params.get("vision_encoder_lr", None),
-        "gradient_routing_ve": training_params.get("gradient_routing_ve", False),
-        # Parameter change tracking
-        "param_tracking": training_params.get("param_tracking", False),
-        "param_tracking_interval": training_params.get("param_tracking_interval", 100),
-        # Priority training
-        "priority_training": training_params.get("priority_training", None),
-        # ReLoRA parameters
-        "relora_merge_every": training_params.get("relora_merge_every", 500),
-        "relora_merge_unit": training_params.get("relora_merge_unit", "steps"),
-        "restart_warmup_steps": training_params.get("restart_warmup_steps", 100),
-        "optimizer_reset_strategy": training_params.get("optimizer_reset_strategy", "full_reset"),
-        "optimizer_pruning_ratio": training_params.get("optimizer_pruning_ratio", 0.9),
-        # ControlNet-specific parameters
-        "controlnet_type": network_config.get("controlnet", {}).get("type", "standard") if job == "controlnet" else "standard",
-        "controlnet_pretrained_path": network_config.get("controlnet", {}).get("pretrained_path") if job == "controlnet" else None,
-        "controlnet_init_from_unet": network_config.get("controlnet", {}).get("init_from_unet", True) if job == "controlnet" else True,
-        "lllite_conditioning_channels": network_config.get("controlnet", {}).get("lllite_conditioning_channels", 32) if job == "controlnet" else 32,
-        "lllite_rank": network_config.get("controlnet", {}).get("lllite_rank", 64) if job == "controlnet" else 64,
-        "condition_preprocessors": network_config.get("controlnet", {}).get("condition_preprocessors") if job == "controlnet" else None,
-        "condition_cache_mode": network_config.get("controlnet", {}).get("condition_cache_mode", "on_the_fly") if job == "controlnet" else "on_the_fly",
-    }
+    # Add fields that aren't part of TrainingRunCreateRequest schema
+    params["run_id"] = run.id  # Edit mode marker
+    params["run_name"] = run.run_name
+    params["training_method"] = "lora" if job == "lora" else ("controlnet" if job == "controlnet" else "full_finetune")
+    params["dataset_configs"] = dataset_configs if dataset_configs else None
+    params["cache_latents_to_disk"] = cache_latents_to_disk
+
+    # Fallback for base_model_path if YAML doesn't have it
+    if not params.get("base_model_path"):
+        params["base_model_path"] = run.base_model_path
+
+    # learning_rate must be float (YAML may store as int or string)
+    if params.get("learning_rate") is not None:
+        params["learning_rate"] = float(params["learning_rate"])
 
     print(f"[get_training_run_params] Total time: {time.time() - start_time:.3f}s")
     return params

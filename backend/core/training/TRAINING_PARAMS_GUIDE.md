@@ -81,56 +81,67 @@ DATASET_LEVEL_PARAMS: Dict[str, Any] = {
 
 ## Case B: Top-level パラメータの追加
 
-Top-levelパラメータは**データドリブンな一元管理が未導入**のため、現時点では各箇所を手動で更新する必要があります。**漏れによるサイレントドロップが発生しやすい箇所**のため、特に注意してください。
+Top-levelパラメータも**Pydanticモデル(`TrainingRunCreateRequest`)を単一の真実の情報源(SSoT)**として一元管理されています。
 
-### チェックリスト（全て埋めること）
+### バックエンドの編集箇所（最小2箇所）
 
-#### 1. バックエンド: Pydanticモデル
-- `backend/api/routes.py` の `TrainingRunCreateRequest`（L4458付近）
-- `update_training_run` が使う Pydanticモデル（`TrainingRunUpdateRequest`など）
+#### 1. `backend/api/routes.py` — `TrainingRunCreateRequest` Pydanticモデル（必須）
+SSoTです。フィールドを追加するだけで以下が自動的に処理されます:
+- `create_training_run` / `update_training_run`: `request.model_dump()`経由でgeneratorに渡る
+- `get_training_run_params`: `_extract_request_params_from_yaml()`が`model_fields`を走査して自動抽出
 
-#### 2. バックエンド: リクエスト処理
-- `routes.py` `create_training_run`: `request.your_new_param` を取り出し、`generate_*_config` に渡す
-- `routes.py` `update_training_run`: 同様にupdate処理へ反映
-- `routes.py` `get_training_run_params`: YAMLから読み戻してレスポンスに含める
+```python
+class TrainingRunCreateRequest(BaseModel):
+    # ... 既存のフィールド
+    your_new_param: int = 10  # ← この1行で完結
+```
 
-#### 3. バックエンド: YAML生成
-- `backend/core/training/training_config.py` の**4つの`generate_*_config`関数**すべてに追加:
-  - `generate_lora_config()` (L16付近)
-  - `generate_relora_config()` (L346付近)
-  - `generate_full_finetune_config()` (L584付近)
-  - `generate_controlnet_config()` (L889付近)
+#### 2. 実際の使用箇所（trainer / adapter）
+- `backend/core/training/base_trainer.py` または対応するtrainerクラス
+- 必要に応じて `backend/core/training/adapters/*.py`
 
-  各関数のシグネチャに引数追加 + `train_config` dictへの書き込みが必要。
+`_build_train_section()`ヘルパーが自動でYAMLに書き込みます（フィールド名がそのままYAMLキーになる場合）。trainer側で `self.config.get("your_new_param", 10)` のように消費してください。
 
-  **⚠️ 注意**: 関数が4つあるため、1つ忘れるとその学習方式だけバグります（過去に`ve_reconstruction_mode`で発生済み）。
+### 特殊なYAML配置が必要な場合
 
-#### 4. バックエンド: YAML読み込み・適用
-- `backend/core/training/train_runner.py`: YAMLから読み取り、`BaseTrainer`に渡す
-- `backend/core/training/base_trainer.py` または対応するtrainerクラス: 実際に使用
-- 必要に応じて `backend/core/training/adapters/*.py` にも反映
+新パラメータが`process_config.train`セクション以外（`dtype`, `save`, `sample`, `network`等）に保存されるべき場合、追加で2箇所:
 
-#### 5. データベース
-- `backend/database/models.py` の `TrainingRun` モデル: カラム追加が必要か判断
-- マイグレーションスクリプト: `backend/migrations/` に追加
+#### 3a. `backend/core/training/training_config.py` の `_build_train_section()`
+新しいセクションへの書き込み処理を追加（例: `sample`セクションに保存する場合は対応するgeneratorの`sample`辞書に追加）。
 
-#### 6. フロントエンド
-- `frontend/src/utils/api.ts`
-  - `TrainingRunCreateRequest` / `TrainingRun` / 関連型: フィールド追加
-- `frontend/src/components/training/TrainingConfig.tsx`
-  - state変数: `useState` 追加
-  - UIコンポーネント: 入力欄追加
-  - `handleSubmit` の `requestData`: フィールドを含める
-  - YAML読み戻し処理: 初期値として反映
+#### 3b. `backend/api/routes.py` の `_YAML_FIELD_LOCATIONS`
+YAML位置を明示することで読み戻しが自動化されます:
+```python
+_YAML_FIELD_LOCATIONS = {
+    # ...
+    "your_new_param": ("sample", "your_yaml_key"),  # sample.your_yaml_key
+}
+```
 
-### Top-level改修時の典型的なミスパターン
+### フロントエンド（UIを追加する場合）
+- `frontend/src/utils/api.ts` の `TrainingRunCreateRequest` インターフェース: フィールド追加
+- `frontend/src/components/training/TrainingConfig.tsx`:
+  - state変数 / UI入力欄
+  - `handleSubmit`の`requestData`に含める
+  - Edit Config読み戻し処理（自動的にバックエンドからparams辞書として返る）
 
-| ミス | 症状 | 検出方法 |
-|-----|------|---------|
-| `generate_*_config`のうち1つだけ追加忘れ | 特定の学習方式でのみパラメータ無視 | 4つの関数全てで`grep`して確認 |
-| `handleSubmit`の`requestData`に追加忘れ | バックエンドに値が届かない | ブラウザDevToolsでリクエストボディ確認 |
-| `get_training_run_params`の読み戻し追加忘れ | Edit Config時にデフォルト値に戻る | 編集→保存→再度開いて値保持を確認 |
-| Pydanticモデルに追加忘れ | FastAPIが値を無視（検証エラーなし） | バックエンドログで受信値を確認 |
+### ❌ 触ってはいけない箇所（自動処理される）
+
+| ファイル | 関数 | 自動処理の理由 |
+|---------|------|---------------|
+| `routes.py` create_training_run | `request.model_dump()`で全Pydanticフィールドが流れる | params_dict 経由 |
+| `routes.py` update_training_run | 同上 | 同上 |
+| `routes.py` get_training_run_params | `_extract_request_params_from_yaml()`がmodel_fieldsを走査 | スキーマ駆動 |
+| `training_config.py` `generate_*_config` | `_build_train_section()`が共通dict処理 | LoRA/Full FT/ControlNet全て同じヘルパー |
+
+### Top-level改修時の典型的なミスパターン（旧版・現在は防止済み）
+
+| 旧ミスパターン | 現在の状態 |
+|-----|---------|
+| 4つのgenerate_*_config関数のうち1つに追加忘れ | ✅ `_build_train_section()`で一元化 |
+| `handleSubmit`の`requestData`に追加忘れ | ⚠️ フロントエンドはまだ手動（Phase 3未完） |
+| `get_training_run_params`の読み戻し追加忘れ | ✅ Pydanticスキーマ駆動 |
+| Pydanticモデルに追加忘れ | ⚠️ 手動だがSSoTなので一目瞭然 |
 
 ---
 
